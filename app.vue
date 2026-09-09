@@ -1,5 +1,6 @@
 <template>
-  <div class="layout">
+  <div v-if="isUpstreamConsole" class="upstream-console-layout"><NuxtPage /></div>
+  <div v-else class="layout">
     <!-- 背景装饰 -->
     <div class="bg-decoration">
       <div class="blob blob-1"></div>
@@ -15,6 +16,7 @@
           <span class="brand-text">PanHub</span>
         </NuxtLink>
         <div class="nav-actions">
+          <NuxtLink to="/upstreams" class="console-nav-link">上游管理</NuxtLink>
           <!-- GitHub 链接 -->
           <a
             href="https://github.com/wu529778790/panhub.shenzjd.com"
@@ -74,6 +76,8 @@
 import { ALL_PLUGIN_NAMES } from "./config/plugins";
 import channelsConfig from "~/config/channels.json";
 
+const route = useRoute();
+const isUpstreamConsole = computed(() => route.path === "/upstreams" || route.path.startsWith("/upstreams/"));
 const { settings, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
 const openSettings = ref(false);
@@ -589,4 +593,9 @@ button {
     animation: none;
   }
 }
+</style>
+
+<style>
+.console-nav-link { color: var(--text-primary); font-size: 14px; font-weight: 600; text-decoration: none; padding: 10px 12px; border-radius: 8px; }
+.console-nav-link:hover { background: rgba(0,0,0,.05); }
 </style>

@@ -39,6 +39,10 @@ export default defineNuxtConfig({
       : process.env.NITRO_PRESET || "cloudflare-module",
   },
   routeRules: {
+    "/upstreams": { swr: false, cache: false },
+    "/api/upstreams/**": { swr: false, cache: false },
+    "/telegram": { swr: false, cache: false },
+    "/api/tg/**": { swr: false, cache: false },
     // 热搜接口不缓存，否则 POST 写入后 GET 仍返回旧数据
     "/api/hot-searches": { swr: false, cache: false },
     // 豆瓣热搜允许短时缓存（服务端已有 60 分钟 cache）

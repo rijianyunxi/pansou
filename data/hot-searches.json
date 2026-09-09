@@ -1,65 +1,47 @@
 {
   "items": [
     {
-      "term": "寻秦记",
-      "score": 2,
-      "lastSearched": 1772939897481,
-      "createdAt": 1772897792949
+      "term": "高分词",
+      "score": 3,
+      "lastSearched": 1788965774121,
+      "createdAt": 1788965774121
     },
     {
-      "term": "超时空辉夜姬！",
+      "term": "蜘蛛侠：崭新之日",
       "score": 1,
-      "lastSearched": 1772898138998,
-      "createdAt": 1772898138998
+      "lastSearched": 1788967782799,
+      "createdAt": 1788967782799
     },
     {
-      "term": "惊变28年2：白骨圣殿",
+      "term": "欢迎来龙餐馆",
       "score": 1,
-      "lastSearched": 1772898137253,
-      "createdAt": 1772898137253
+      "lastSearched": 1788967693390,
+      "createdAt": 1788967693390
     },
     {
-      "term": "呼啸山庄",
+      "term": "奥德赛",
       "score": 1,
-      "lastSearched": 1772898135235,
-      "createdAt": 1772898135235
+      "lastSearched": 1788967660788,
+      "createdAt": 1788967660788
     },
     {
-      "term": "至尊马蒂",
+      "term": "忠犬八公的故事",
       "score": 1,
-      "lastSearched": 1772898133443,
-      "createdAt": 1772898133443
+      "lastSearched": 1788967596207,
+      "createdAt": 1788967596207
     },
     {
-      "term": "东京出租车",
+      "term": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "score": 1,
-      "lastSearched": 1772898131582,
-      "createdAt": 1772898131582
+      "lastSearched": 1788965774122,
+      "createdAt": 1788965774122
     },
     {
-      "term": "哈姆奈特",
+      "term": "低分词",
       "score": 1,
-      "lastSearched": 1772898129707,
-      "createdAt": 1772898129707
-    },
-    {
-      "term": "家弑服务",
-      "score": 1,
-      "lastSearched": 1772898127805,
-      "createdAt": 1772898127805
-    },
-    {
-      "term": "庇护之地",
-      "score": 1,
-      "lastSearched": 1772897996979,
-      "createdAt": 1772897996979
-    },
-    {
-      "term": "你行！你上！",
-      "score": 1,
-      "lastSearched": 1772897453837,
-      "createdAt": 1772897453837
+      "lastSearched": 1788965774121,
+      "createdAt": 1788965774121
     }
   ],
-  "updatedAt": 1772939897481
+  "updatedAt": 1788967782799
 }
