@@ -140,10 +140,10 @@ const currentSort = computed(() =>
 }
 
 .filter-pill.active {
-  background: linear-gradient(135deg, var(--primary), #14b8a6);
-  color: white;
+  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
+  color: var(--primary);
   border-color: transparent;
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.3);
+  font-weight: 600;
 }
 
 /* 右侧部分 - 统计和排序 */

@@ -1,6 +1,10 @@
-import { BaseAsyncPlugin } from "../manager";
+import { CodeSearchPlugin, type PluginSearchContext } from "../manager";
 import type { SearchResult } from "../../types/models";
-import { ofetch } from "ofetch";
+import type { UpstreamDefinition } from "../../../../config/upstreams";
+import { fetchRawWithRetry } from "../../utils/fetch";
+import { parseConfiguredUpstreamResponse } from "../../parsers/upstream";
+import { getConfiguredUpstream } from "../../services/upstreamCatalog";
+import { normalizeUpstreamJson } from "../../../../utils/upstreamAdapter";
 
 type HunhepanItem = {
   disk_id: string;
@@ -17,6 +21,10 @@ type HunhepanItem = {
   status: number;
 };
 
+type HunhepanApiResult =
+  | { kind: "items"; items: HunhepanItem[] }
+  | { kind: "results"; results: SearchResult[] };
+
 type HunhepanResponse = {
   code: number;
   msg: string;
@@ -27,85 +35,105 @@ type HunhepanResponse = {
   };
 };
 
-const HUNHEPAN_API = "https://hunhepan.com/open/search/disk";
-const QKPANSO_API = "https://qkpanso.com/v1/search/disk";
-const KUAKE_API = "https://kuake8.com/v1/search/disk";
 const DEFAULT_PAGE_SIZE = 30;
 const MAX_PAGES = 2; // 适度保守，避免过多请求
 
-export class HunhepanPlugin extends BaseAsyncPlugin {
+export class HunhepanPlugin extends CodeSearchPlugin {
   constructor() {
-    super("hunhepan", 3);
+    super({ id: "hunhepan", name: "hunhepan", priority: 3 });
   }
 
-  override async search(
-    keyword: string,
-    ext?: Record<string, any>
-  ): Promise<SearchResult[]> {
-    const timeout = Math.max(
-      3000,
-      Number((ext as any)?.__plugin_timeout_ms) || 10000
-    );
+  override async search(context: PluginSearchContext): Promise<SearchResult[]> {
+    const { keyword, signal } = context;
+    const timeout = context.timeoutMs;
+    const source = getConfiguredUpstream("hunhepan");
+    if (!source || source.enabled === false) return [];
     const allItems: HunhepanItem[] = [];
-    const apis = [HUNHEPAN_API, QKPANSO_API, KUAKE_API];
-    const tasks = apis.map((api) => this.searchApi(api, keyword));
+    const normalized: SearchResult[] = [];
+    // Endpoint, method and response format are catalog configuration. The
+    // Core handler only supplies the Hunhepan request/normalization capability.
+    const apis = [source.url];
+    const tasks = apis.map((api) => this.searchApi(api, keyword, signal, timeout, source.method, source.format, source.mapping));
     const results = await Promise.allSettled(tasks);
-    for (const r of results) {
-      if (r.status === "fulfilled" && Array.isArray(r.value)) {
-        allItems.push(...r.value);
+    for (const result of results) {
+      if (result.status !== "fulfilled") {
+        continue;
       }
+      if (result.value.kind === "results") normalized.push(...result.value.results);
+      else allItems.push(...result.value.items);
     }
+    // A configured transform owns the normalized output. Never mix its output
+    // with the compatibility adapter for the same upstream.
+    if (normalized.length || source.transform?.trim()) return normalized;
     const unique = this.deduplicate(allItems);
     return this.convertResults(unique);
   }
 
   private async searchApi(
     apiUrl: string,
-    keyword: string
-  ): Promise<HunhepanItem[]> {
-    const pageTasks: Array<Promise<HunhepanItem[]>> = [];
+    keyword: string,
+    signal: AbortSignal,
+    timeoutMs: number,
+    method: "GET" | "POST",
+    format: "json" | "html",
+    mapping: UpstreamDefinition["mapping"],
+  ): Promise<HunhepanApiResult> {
+    const pageTasks: Array<Promise<HunhepanApiResult>> = [];
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const body = {
-        q: keyword,
-        exact: true,
-        page,
-        size: DEFAULT_PAGE_SIZE,
-        type: "",
-        time: "",
-        from: "web",
-        user_id: 0,
-        filter: true,
+        q: keyword, exact: true, page, size: DEFAULT_PAGE_SIZE, type: "",
+        time: "", from: "web", user_id: 0, filter: true,
       } as const;
-
+      let requestUrl = apiUrl;
+      if (method === "GET") {
+        const parsed = new URL(apiUrl);
+        parsed.searchParams.set("q", keyword);
+        parsed.searchParams.set("page", String(page));
+        requestUrl = parsed.toString();
+      }
       const headers: Record<string, string> = {
-        "content-type": "application/json",
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
       };
-      if (apiUrl.includes("qkpanso.com"))
-        headers.referer = "https://qkpanso.com/search";
-      else if (apiUrl.includes("kuake8.com"))
-        headers.referer = "https://kuake8.com/search";
-      else if (apiUrl.includes("hunhepan.com"))
-        headers.referer = "https://hunhepan.com/search";
-
       pageTasks.push(
-        ofetch<HunhepanResponse>(apiUrl, {
-          method: "POST",
-          body,
-          headers,
-          timeout: Math.max(3000, 10000),
-        })
-          .then((resp) => {
-            if (!resp || resp.code !== 200) return [] as HunhepanItem[];
-            return resp.data?.list || [];
+        fetchRawWithRetry(
+          requestUrl,
+          { method, body: method === "POST" ? JSON.stringify(body) : undefined, headers, signal },
+          { maxRetries: 0, timeout: Math.max(3000, timeoutMs || 10000), signal },
+        )
+          .then(async (rawBody) => {
+            if (format !== "json") {
+              const configured = await parseConfiguredUpstreamResponse("hunhepan", rawBody, format, { keyword, rawBody, url: apiUrl, page });
+              return configured ? { kind: "results", results: configured } as const : { kind: "items", items: [] as HunhepanItem[] } as const;
+            }
+            const resp = JSON.parse(rawBody) as HunhepanResponse;
+            if (!resp || resp.code !== 200) return { kind: "items", items: [] as HunhepanItem[] } as const;
+            const configured = await parseConfiguredUpstreamResponse("hunhepan", resp, format, {
+              keyword,
+              rawBody,
+              url: apiUrl,
+              page,
+            });
+            if (configured) return { kind: "results", results: configured } as const;
+            if (mapping.items !== "data.list" || mapping.title !== "disk_name" || mapping.url !== "link") {
+              return { kind: "results", results: normalizeUpstreamJson(resp, mapping, "hunhepan") } as const;
+            }
+            return { kind: "items", items: resp.data?.list || [] } as const;
           })
-          .catch(() => [] as HunhepanItem[])
+          .catch(() => {
+            return { kind: "items", items: [] as HunhepanItem[] } as const;
+          })
       );
     }
 
     const pages = await Promise.all(pageTasks);
-    return pages.flat();
+    if (pages.some((page) => page.kind === "results")) {
+      return {
+        kind: "results",
+        results: pages.flatMap((page) => page.kind === "results" ? page.results : []),
+      };
+    }
+    return { kind: "items", items: pages.flatMap((page) => page.kind === "items" ? page.items : []) };
   }
 
   private deduplicate(items: HunhepanItem[]): HunhepanItem[] {
@@ -136,6 +164,7 @@ export class HunhepanPlugin extends BaseAsyncPlugin {
     const out: SearchResult[] = [];
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
+      if (!item) continue;
       const linkType = this.convertDiskType(item.disk_type);
       const uniqueId = `hunhepan-${item.disk_id || i}`;
       const datetime = this.parseTime(item.shared_time);

@@ -1,47 +1,38 @@
 <template>
   <div v-if="isUpstreamConsole" class="upstream-console-layout"><NuxtPage /></div>
   <div v-else class="layout">
-    <!-- 背景装饰 -->
-    <div class="bg-decoration">
-      <div class="blob blob-1"></div>
-      <div class="blob blob-2"></div>
-      <div class="blob blob-3"></div>
-    </div>
-
-    <!-- 顶部导航 -->
-    <header class="header">
-      <nav class="nav">
-        <NuxtLink to="/" class="brand">
-          <span class="brand-icon">🔍</span>
-          <span class="brand-text">PanHub</span>
+    <!-- 顶部导航：左侧 Logo，右侧接口文档 / 设置 -->
+    <header class="topnav" :inert="openSettings">
+      <NuxtLink to="/" class="brand">
+        <span class="brand-mark">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20.5 20.5-4-4"></path>
+          </svg>
+        </span>
+        <span class="brand-text">PanHub</span>
+      </NuxtLink>
+      <nav class="topnav-actions" aria-label="主导航">
+        <NuxtLink
+          v-if="adminSessionActive"
+          class="admin-console-entry"
+          to="/admin"
+          aria-label="打开管理控制台"
+          title="管理控制台">
+          <ConsoleIcon name="shield" :size="16" />
+          <span>管理控制台</span>
         </NuxtLink>
-        <div class="nav-actions">
-          <NuxtLink to="/upstreams" class="console-nav-link">上游管理</NuxtLink>
-          <!-- GitHub 链接 -->
-          <a
-            href="https://github.com/wu529778790/panhub.shenzjd.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="btn-icon github-btn"
-            aria-label="打开 GitHub 仓库"
-            title="GitHub 仓库">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-            </svg>
-          </a>
-          <!-- 设置按钮 -->
-          <button class="btn-icon" type="button" @click="openSettings = true" aria-label="打开设置" title="设置">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-          </button>
-        </div>
+        <button class="btn-icon" type="button" @click="openSettings = true" aria-label="打开设置" title="设置">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
       </nav>
     </header>
 
     <!-- 主内容区 -->
-    <main class="main">
+    <main class="main" :inert="openSettings">
       <NuxtPage />
     </main>
 
@@ -50,9 +41,7 @@
       <SettingsDrawer
         v-model="settings"
         v-model:open="openSettings"
-        :all-plugins="ALL_PLUGIN_NAMES"
-        :all-tg-channels="allTgChannels"
-        @save="saveSettings"
+        :storage-error="storageError"
         @reset-default="resetToDefault" />
     </ClientOnly>
 
@@ -73,14 +62,37 @@
 </template>
 
 <script setup lang="ts">
-import { ALL_PLUGIN_NAMES } from "./config/plugins";
-import channelsConfig from "~/config/channels.json";
+import ConsoleIcon from "./components/upstreams/ConsoleIcon.vue";
 
 const route = useRoute();
-const isUpstreamConsole = computed(() => route.path === "/upstreams" || route.path.startsWith("/upstreams/"));
-const { settings, loadSettings, saveSettings, resetToDefault } = useSettings();
+const isUpstreamConsole = computed(
+  () =>
+    route.path === "/admin" ||
+    route.path.startsWith("/admin/") ||
+    route.path === "/upstreams" ||
+    route.path.startsWith("/upstreams/") ||
+    route.path === "/telegram" ||
+    route.path.startsWith("/telegram/") ||
+    route.path === "/tg-accounts" ||
+    route.path.startsWith("/tg-accounts/") ||
+    route.path === "/monitor" ||
+    route.path.startsWith("/monitor/"),
+);
+const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
+const adminStatus = await useFetch<{ configured: boolean; locked: boolean }>(
+  "/api/auth/admin-status",
+  { key: "public-admin-status", server: true },
+);
+const adminSessionActive = computed(() =>
+  adminStatus.data.value?.configured === true && adminStatus.data.value?.locked === false,
+);
 const openSettings = ref(false);
+watch(() => route.path, () => {
+  openSettings.value = false;
+  if (!isUpstreamConsole.value) void adminStatus.refresh();
+});
+provide("openChannelSettings", () => { openSettings.value = true; });
 const showPasswordGate = ref(false);
 const unlockSubmitting = ref(false);
 const pendingOnUnlock = ref<(() => void) | null>(null);
@@ -121,20 +133,12 @@ function showToast(message: string, type: "info" | "success" | "error" = "info")
   }, 3000);
 }
 
-// 所有可用的 TG 频道（用于设置面板）
-const allTgChannels = computed(() => {
-  const configChannels = (useRuntimeConfig().public as any)?.tgDefaultChannels;
-  return Array.isArray(configChannels) && configChannels.length > 0
-    ? configChannels
-    : channelsConfig.defaultChannels;
-});
-
-// 监听设置保存事件，显示提示
-watch(() => settings.value, (newVal, oldVal) => {
-  if (oldVal && newVal && JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
-    showToast("设置已保存", "success");
+// 监听设置变化并持久化（设置抽屉内即时生效）
+watch(() => JSON.stringify(settings.value), (newVal, oldVal) => {
+  if (settingsReady.value && oldVal !== newVal) {
+    saveSettings();
   }
-}, { deep: true });
+}, { flush: "sync" });
 
 onMounted(() => {
   loadSettings();
@@ -146,32 +150,37 @@ provide('showToast', showToast);
 </script>
 
 <style>
-/* 全局样式重置和现代化设计系统 */
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Noto+Sans+SC:wght@400;500;700;900&family=Syne:wght@600;700;800&display=swap");
+/* 全局样式：干净扁平的浅色设计系统 */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap");
 
 :root {
-  --primary: #0f766e;
-  --primary-dark: #115e59;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-soft: #eff6ff;
   --secondary: #f59e0b;
   --success: #10b981;
   --warning: #d97706;
   --error: #ef4444;
 
-  --bg-primary: #fffdf8;
-  --bg-secondary: #f7f3ea;
-  --bg-glass: rgba(255, 253, 248, 0.86);
+  /* 黑色主按钮（Genspark 风格） */
+  --ink: #111827;
+  --ink-hover: #000000;
 
-  --text-primary: #1f2937;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f7f9;
+  --bg-glass: #ffffff;
+
+  --text-primary: #111827;
   --text-secondary: #4b5563;
   --text-tertiary: #9ca3af;
 
-  --border-light: #e5dfd0;
-  --border-medium: #d4c7ab;
+  --border-light: #e5e7eb;
+  --border-medium: #d1d5db;
 
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  --shadow-sm: 0 1px 2px 0 rgba(17, 24, 39, 0.04);
+  --shadow-md: 0 4px 12px 0 rgba(17, 24, 39, 0.06);
+  --shadow-lg: 0 8px 28px 0 rgba(17, 24, 39, 0.08);
+  --shadow-xl: 0 16px 40px -8px rgba(17, 24, 39, 0.14);
 
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -192,10 +201,8 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: "Manrope", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  background: radial-gradient(circle at 12% -10%, #fff3d9 0%, transparent 42%),
-    radial-gradient(circle at 90% 8%, #d9f7f3 0%, transparent 35%),
-    #fffdf8;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background: #ffffff;
   color: var(--text-primary);
 
   /* iOS Safari兼容性 */
@@ -215,12 +222,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-medium);
+  background: var(--border-light);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+  background: var(--border-medium);
 }
 
 /* 输入框基础样式 */
@@ -255,6 +262,17 @@ button {
     min-height: 44px;
     min-width: 44px;
   }
+
+  .admin-console-entry {
+    width: 38px;
+    min-width: 38px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .admin-console-entry span {
+    display: none;
+  }
 }
 
 /* 动画定义 */
@@ -268,12 +286,6 @@ button {
   to { transform: translateX(0); }
 }
 
-@keyframes blobFloat {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(30px, -50px) scale(1.1); }
-  66% { transform: translate(-20px, 20px) scale(0.9); }
-}
-
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -281,163 +293,123 @@ button {
 </style>
 
 <style scoped>
-/* 主布局 */
+/* 主布局：顶部导航 + 内容区 */
 .layout {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  position: relative;
-  overflow-x: hidden;
 }
 
-/* 背景装饰 - 玻璃拟态效果 */
-.bg-decoration {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: -1;
-  overflow: hidden;
-}
-
-.blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(48px);
-  opacity: 0.28;
-  animation: blobFloat 8s ease-in-out infinite;
-}
-
-.blob-1 {
-  width: 400px;
-  height: 400px;
-  background: linear-gradient(135deg, #0f766e, #14b8a6);
-  top: -100px;
-  left: -100px;
-  animation-delay: 0s;
-}
-
-.blob-2 {
-  width: 300px;
-  height: 300px;
-  background: linear-gradient(135deg, #f59e0b, #fb7185);
-  bottom: -50px;
-  right: -50px;
-  animation-delay: 2s;
-}
-
-.blob-3 {
-  width: 250px;
-  height: 250px;
-  background: linear-gradient(135deg, #0ea5e9, #14b8a6);
-  top: 50%;
-  left: 70%;
-  animation-delay: 4s;
-}
-
-/* 顶部导航 - 玻璃拟态 */
-.header {
-  background: var(--bg-glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+/* 顶部导航 */
+.topnav {
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: var(--shadow-sm);
-}
-
-.nav {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 16px 24px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  padding: 0 24px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-light);
 }
 
-/* 品牌标识 */
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   text-decoration: none;
   color: var(--text-primary);
-  font-weight: 700;
-  font-size: 20px;
-  transition: transform var(--transition-fast);
 }
 
-.brand:hover {
-  transform: scale(1.05);
-}
-
-.brand-icon {
-  font-size: 24px;
-  filter: drop-shadow(0 2px 4px rgba(15, 118, 110, 0.3));
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .brand-text {
-  background: linear-gradient(135deg, var(--primary), var(--secondary));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
-/* 导航操作区 */
-.nav-actions {
+.topnav-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.admin-console-entry {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.admin-console-entry:hover {
+  border-color: #bfdbfe;
+  color: var(--primary-dark);
+  background: var(--primary-soft);
+}
+
+.admin-console-entry:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.topnav-link {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 8px 14px;
+  border-radius: 10px;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.topnav-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.topnav-link.active {
+  color: var(--primary);
+  background: var(--primary-soft);
+  font-weight: 600;
 }
 
 /* 图标按钮 */
 .btn-icon {
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   border: none;
-  background: rgba(255, 255, 255, 0.5);
-  border-radius: var(--radius-md);
+  background: transparent;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-primary);
-  transition: background-color var(--transition-fast), color var(--transition-fast),
-    transform var(--transition-fast), box-shadow var(--transition-fast);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: var(--text-secondary);
+  transition: background-color var(--transition-fast), color var(--transition-fast);
 }
 
 .btn-icon:hover {
-  background: rgba(255, 255, 255, 0.8);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-.btn-icon:active {
-  transform: translateY(0);
-}
-
-.btn-icon svg {
-  stroke: currentColor;
-}
-
-/* GitHub 按钮特殊样式 */
-.github-btn {
-  color: var(--text-secondary);
-}
-
-.github-btn:hover {
-  color: var(--primary);
-  background: rgba(255, 255, 255, 0.8);
-}
-
-.github-btn svg {
-  stroke: none;
-  fill: currentColor;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 /* 主内容区 */
@@ -447,13 +419,13 @@ button {
   max-width: 1100px;
   margin: 0 auto;
   padding: 24px;
-  animation: fadeIn 0.5s ease;
+  animation: fadeIn 0.4s ease;
 }
 
 /* Toast 通知 */
 .toast {
   position: fixed;
-  top: 80px;
+  top: 72px;
   right: 24px;
   padding: 12px 20px;
   border-radius: var(--radius-md);
@@ -493,74 +465,50 @@ button {
 
 /* 移动端优化 */
 @media (max-width: 640px) {
-  .nav {
-    padding: 12px 16px;
+  .topnav {
+    padding: 0 16px;
+    height: 56px;
   }
 
   .main {
     padding: 16px;
   }
 
-  .brand {
-    font-size: 18px;
-  }
-
-  .btn-icon {
-    width: 36px;
-    height: 36px;
-  }
-
   .toast {
     right: 16px;
     left: 16px;
-    top: 70px;
-  }
-
-  .blob {
-    filter: blur(40px);
+    top: 64px;
   }
 }
 
 /* 深色模式支持 */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg-primary: #111827;
-    --bg-secondary: #1f2937;
-    --bg-glass: rgba(17, 24, 39, 0.76);
+  :global(:root) {
+    --primary: #60a5fa;
+    --primary-dark: #93c5fd;
+    --primary-soft: rgba(96, 165, 250, 0.12);
+    --ink: #f3f4f6;
+    --ink-hover: #ffffff;
+    --bg-primary: #0f1218;
+    --bg-secondary: #1a1f29;
+    --bg-glass: #0f1218;
     --text-primary: #f3f4f6;
-    --text-secondary: #d1d5db;
+    --text-secondary: #9ca3af;
     --text-tertiary: #6b7280;
-    --border-light: #374151;
-    --border-medium: #4b5563;
+    --border-light: #242a35;
+    --border-medium: #323a48;
   }
 
-  body {
-    background: radial-gradient(circle at 12% -10%, #0f3d37 0%, transparent 42%),
-      radial-gradient(circle at 90% 8%, #4a2d08 0%, transparent 35%),
-      #0b1220;
+  :global(body) {
+    background: #0f1218;
   }
 
-  .header {
-    background: rgba(17, 24, 39, 0.7);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  .brand-mark {
+    background: #f3f4f6;
   }
 
-  .btn-icon {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--text-primary);
-  }
-
-  .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.15);
-  }
-
-  .github-btn {
-    color: rgba(148, 163, 184, 0.6);
-  }
-
-  .github-btn:hover {
-    color: var(--primary);
-    background: rgba(255, 255, 255, 0.15);
+  .brand-mark svg {
+    stroke: #0f1218;
   }
 
   .toast {
@@ -571,13 +519,8 @@ button {
 
 /* 高对比度模式支持 */
 @media (prefers-contrast: high) {
-  .btn-icon {
-    border-width: 2px;
-  }
-
-  .brand-text {
-    -webkit-text-fill-color: var(--text-primary);
-    color: var(--text-primary);
+  .topnav-link.active {
+    border: 1px solid var(--primary);
   }
 }
 
@@ -588,14 +531,5 @@ button {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-
-  .blob {
-    animation: none;
-  }
 }
-</style>
-
-<style>
-.console-nav-link { color: var(--text-primary); font-size: 14px; font-weight: 600; text-decoration: none; padding: 10px 12px; border-radius: 8px; }
-.console-nav-link:hover { background: rgba(0,0,0,.05); }
 </style>

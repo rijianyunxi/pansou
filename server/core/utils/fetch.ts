@@ -5,6 +5,10 @@
 
 import { ofetch } from "ofetch";
 import type { $Fetch } from "ofetch";
+import { abortableDelay, createAbortScope, runWithSignal } from "./abort";
+import type { DnsLookupRecord } from "../security/dnsGuard";
+import type { IncomingMessage } from "node:http";
+import type { Readable as NodeReadable } from "node:stream";
 
 function normalizeError(error: unknown): Error {
   if (error instanceof Error) return error;
@@ -21,15 +25,10 @@ export interface FetchWithRetryOptions {
   exponentialBackoff?: boolean;
   /** 超时时间（毫秒），默认 8000 */
   timeout?: number;
-  /** 请求失败时是否记录警告日志，默认 true */
+  /** @deprecated 保留兼容性；当前实现不输出 fetch 警告。 */
   logWarnings?: boolean;
-}
-
-/**
- * 指数退避延迟
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  /** 调用方取消信号；取消后不再重试。 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -48,9 +47,15 @@ function sleep(ms: number): Promise<void> {
  * });
  * ```
  */
+export type FetchWithRetryRequestInit = RequestInit & {
+  /** Override ofetch parsing when the caller needs the exact response body. */
+  parseResponse?: (responseText: string) => unknown;
+  responseType?: "json" | "text";
+};
+
 export async function fetchWithRetry<T = any>(
   url: string,
-  options: RequestInit = {},
+  options: FetchWithRetryRequestInit = {},
   retryOptions: FetchWithRetryOptions = {}
 ): Promise<T> {
   const {
@@ -58,8 +63,11 @@ export async function fetchWithRetry<T = any>(
     baseDelay = 1000,
     exponentialBackoff = true,
     timeout = 8000,
-    logWarnings = true,
+    signal: retrySignal,
   } = retryOptions;
+  const signal = retrySignal && options.signal
+    ? AbortSignal.any([retrySignal, options.signal])
+    : retrySignal || options.signal || undefined;
 
   const fetcher: $Fetch = ofetch.create({
     timeout,
@@ -68,16 +76,22 @@ export async function fetchWithRetry<T = any>(
       ...options.headers,
     },
     ...options,
+    retry: 0, // The outer loop is the only retry owner.
+    signal,
   });
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const scope = createAbortScope(timeout, `请求超时 (${timeout}ms)`, signal);
     try {
-      const result = await fetcher<T>(url);
+      signal?.throwIfAborted();
+      const result = await runWithSignal(() => fetcher<T>(url, { signal: scope.signal }), scope.signal);
       return result;
     } catch (error) {
-      lastError = error as Error;
+      lastError = normalizeError(error);
+      scope.dispose();
+      if (signal?.aborted) throw signal.reason || lastError;
 
       // 如果是最后一次尝试，抛出错误
       if (attempt === maxRetries) {
@@ -89,12 +103,36 @@ export async function fetchWithRetry<T = any>(
         ? baseDelay * Math.pow(2, attempt)
         : baseDelay;
 
-      await sleep(delay);
+      await abortableDelay(delay, signal);
+    } finally {
+      scope.dispose();
     }
   }
 
   // 理论上不会到达这里，但为了类型安全
   throw lastError;
+}
+
+
+/**
+ * Fetch the exact upstream response body. This is deliberately separate from
+ * fetchWithRetry<T>: parser plugins need the original JSON bytes rather than a
+ * JSON.stringify() reconstruction of an already parsed object.
+ */
+export async function fetchRawWithRetry(
+  url: string,
+  options: RequestInit = {},
+  retryOptions: FetchWithRetryOptions = {},
+): Promise<string> {
+  return fetchWithRetry<string>(
+    url,
+    {
+      ...options,
+      parseResponse: (responseText: string) => responseText,
+      responseType: "text",
+    },
+    retryOptions,
+  );
 }
 
 /**
@@ -169,4 +207,281 @@ export function createPersistentFetcher(
     // 注意：ofetch 在 Node.js 环境下会自动复用连接
     // 如果需要更精细的控制，可以在这里添加 agent 配置
   });
+}
+
+/*
+ * ============================================================================
+ * DNS 钉住（pinned）出站传输（仅 Node 运行时）
+ * ============================================================================
+ * 背景（todo.md 6.6 #1）：dnsGuard 校验通过后，原生 fetch 会再次解析域名，
+ * 实际连接可能指向被 rebinding 后的恶意 IP。此传输用 node:http/node:https 的
+ * `lookup` 选项把 socket 钉在已校验的 IP 上，同时保持 `host`/`servername` 为
+ * 原始主机名，因此 Host 头、SNI 与 TLS 证书校验仍然匹配真实域名，证书校验
+ * （rejectUnauthorized）保持安全默认值不被削弱。
+ *
+ * Cloudflare Workers 能力差异与降级路径：
+ * - Workers（即使开启 nodejs_compat）无法控制 DNS 解析与底层 socket 连接，
+ *   `loadPinnedHttpTransport()` 返回 null；
+ * - 调用方（safeHttpExecutor）随即降级为原生 fetch + 逐跳静态校验
+ *   （outboundUrl 的 IP/域名黑名单 + dnsGuard 的可用时解析校验），
+ *   与钉住方案落地前的行为一致。
+ * - 所有 node:* 依赖均为运行时探测 + 动态 import，模块顶层不引入任何
+ *   Node 专属运行时依赖，Workers 构建不受影响。
+ */
+
+export interface PinnedRequestInit {
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+export interface PinnedHttpTransport {
+  /**
+   * 发起一个 socket 直接连到已校验地址（而非再次解析 url.hostname）的请求。
+   * 返回 Web Response，响应体为流，交由调用方做大小限制与类型检查。
+   */
+  request(
+    url: URL,
+    init: PinnedRequestInit,
+    pinned: readonly DnsLookupRecord[]
+  ): Promise<Response>;
+}
+
+/** node:http / node:https 所需的最小结构化接口（便于测试注入替身）。 */
+export interface NodeClientRequestLike {
+  end(body?: string): unknown;
+  destroy(error?: Error): unknown;
+  on(event: string, listener: (...args: any[]) => void): unknown;
+}
+
+export interface NodePinnedHttpModule {
+  request(
+    options: Record<string, unknown>,
+    callback?: (response: IncomingMessage) => void
+  ): NodeClientRequestLike;
+}
+
+export interface NodePinnedTransportModules {
+  http: NodePinnedHttpModule;
+  https: NodePinnedHttpModule;
+  stream: {
+    Readable: {
+      toWeb(readable: NodeReadable): ReadableStream<Uint8Array>;
+    };
+  };
+}
+
+function abortError(): Error {
+  const error = new Error("This operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function bareHostname(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, "");
+}
+
+/**
+ * 自定义 lookup：无论系统 DNS 返回什么，一律把连接指向已校验地址。
+ * 兼容 `all: true`（Happy Eyeballs）与单地址两种回调形态。
+ */
+function pinnedLookup(record: DnsLookupRecord): unknown {
+  return (
+    _hostname: string,
+    options: { all?: boolean },
+    callback: (
+      err: Error | null,
+      address: string | Array<{ address: string; family: number }>,
+      family?: number
+    ) => void
+  ): void => {
+    if (options?.all) {
+      callback(null, [{ address: record.address, family: record.family }]);
+    } else {
+      callback(null, record.address, record.family);
+    }
+  };
+}
+
+function toWebRequestHeaders(raw: IncomingMessage["headers"]): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(raw)) {
+    if (value === undefined) continue;
+    headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+  }
+  return headers;
+}
+
+function nodePinnedRequest(
+  modules: NodePinnedTransportModules,
+  url: URL,
+  init: PinnedRequestInit,
+  pinned: readonly DnsLookupRecord[]
+): Promise<Response> {
+  const record = pinned[0];
+  if (!record) {
+    return Promise.reject(new Error("缺少可钉住的已校验解析地址"));
+  }
+  const isHttps = url.protocol === "https:";
+  const mod = isHttps ? modules.https : modules.http;
+  const port = url.port ? Number(url.port) : isHttps ? 443 : 80;
+  const headers: Record<string, string> = { ...init.headers };
+  const hasHeader = (name: string): boolean =>
+    Object.keys(headers).some((key) => key.toLowerCase() === name);
+  if (init.body != null && !hasHeader("content-length")) {
+    // 与 fetch 行为对齐：显式声明长度，避免分块传输编码。
+    headers["content-length"] = String(
+      new TextEncoder().encode(init.body).byteLength
+    );
+  }
+  if (init.body != null && !hasHeader("content-type")) {
+    // 与 fetch 规范对齐：字符串 body 的默认 Content-Type。
+    headers["content-type"] = "text/plain;charset=UTF-8";
+  }
+  const requestInit: Record<string, unknown> = {
+    // host 保持原始主机名：Host 头、SNI（servername）与 TLS 证书校验都继续
+    // 匹配真实域名；pinned lookup 仅把 TCP 连接改道到已校验地址。
+    host: url.hostname,
+    servername: bareHostname(url),
+    port,
+    family: record.family,
+    method: init.method,
+    path: `${url.pathname}${url.search}`,
+    headers,
+    // 每次请求独立 socket：确保每跳真正连到该跳钉住的 IP，杜绝 keep-alive
+    // 连接池把请求复用到旧地址带来的语义模糊。代价是无连接复用。
+    agent: false,
+    lookup: pinnedLookup(record),
+  };
+
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    let currentResponse: IncomingMessage | null = null;
+    let req: NodeClientRequestLike;
+    try {
+      req = mod.request(requestInit, (res) => {
+        try {
+          currentResponse = res;
+          const body = modules.stream.Readable.toWeb(
+            res as NodeReadable
+          ) as ReadableStream<Uint8Array>;
+          const response = new Response(body, {
+            status: res.statusCode ?? 502,
+            statusText: res.statusMessage ?? "",
+            headers: toWebRequestHeaders(res.headers),
+          });
+          settled = true;
+          resolve(response);
+        } catch (error) {
+          settled = true;
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    // 手动接线取消：req.destroy(reason) 保证请求以调用方的原始 reason 失败
+    // （与原生 fetch 拒绝语义一致），而不是 node:http 默认的通用 AbortError。
+    const signal = init.signal;
+    const onAbort = (): void => {
+      const reason = signal?.reason;
+      const error = reason instanceof Error ? reason : abortError();
+      // 先销毁响应流（若头部已到达），保证 body 读取以同一 reason 失败。
+      (currentResponse as NodeReadable | null)?.destroy(error);
+      req.destroy(error);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        req.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
+    }
+    req.on("error", (error: Error) => {
+      if (!settled) reject(error);
+    });
+
+    try {
+      if (init.body != null) {
+        req.end(init.body);
+      } else {
+        req.end();
+      }
+    } catch (error) {
+      req.destroy(error instanceof Error ? error : abortError());
+      if (!settled) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  });
+}
+
+/**
+ * 创建 Node 钉住传输。模块显式注入以便测试替换 https 模块；生产代码请使用
+ * `loadPinnedHttpTransport()`（含运行时能力探测与缓存）。
+ */
+export function createNodePinnedHttpTransport(
+  modules: NodePinnedTransportModules
+): PinnedHttpTransport | null {
+  if (
+    typeof modules.http?.request !== "function" ||
+    typeof modules.https?.request !== "function" ||
+    typeof modules.stream?.Readable?.toWeb !== "function"
+  ) {
+    return null;
+  }
+  return {
+    request: (url, init, pinned) =>
+      nodePinnedRequest(modules, url, init, pinned),
+  };
+}
+
+let pinnedTransportOverride: PinnedHttpTransport | null | undefined;
+let cachedNodeTransport: PinnedHttpTransport | null | undefined;
+
+/**
+ * 测试/管理钩子：固定或禁用（null）钉住传输；undefined 恢复自动探测。
+ */
+export function setPinnedHttpTransport(
+  transport: PinnedHttpTransport | null | undefined
+): void {
+  pinnedTransportOverride = transport;
+}
+
+export async function loadPinnedHttpTransport(): Promise<PinnedHttpTransport | null> {
+  if (pinnedTransportOverride !== undefined) return pinnedTransportOverride;
+  if (cachedNodeTransport !== undefined) return cachedNodeTransport;
+  cachedNodeTransport = null;
+  try {
+    const globalScope = globalThis as {
+      process?: { versions?: { node?: unknown } };
+      navigator?: { userAgent?: string };
+    };
+    // Cloudflare Workers 的固定标识：无自定义 DNS/socket 能力，直接降级。
+    if (globalScope.navigator?.userAgent === "Cloudflare-Workers") {
+      return cachedNodeTransport;
+    }
+    // 真实 Node 运行时探测（Workers 的 nodejs_compat 可能模拟 process）。
+    if (typeof globalScope.process?.versions?.node !== "string") {
+      return cachedNodeTransport;
+    }
+    const [http, https, stream] = await Promise.all([
+      import("node:http"),
+      import("node:https"),
+      import("node:stream"),
+    ]);
+    cachedNodeTransport = createNodePinnedHttpTransport({
+      http,
+      https,
+      stream: stream as unknown as NodePinnedTransportModules["stream"],
+    });
+  } catch {
+    // 无 node:http/https/stream 的运行时：钉住传输不可用，调用方降级。
+    cachedNodeTransport = null;
+  }
+  return cachedNodeTransport;
 }

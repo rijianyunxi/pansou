@@ -1,5 +1,17 @@
 <template>
-  <div class="tg-test-page">
+  <AdminAccessGate
+    v-if="adminChecking || adminLocked"
+    :checking="adminChecking"
+    :configured="adminConfigured"
+    :busy="adminUnlocking"
+    :ready="clientReady"
+    :error="authError"
+    title="Telegram 管理员验证"
+    description="频道清单、诊断请求和上游原始响应属于敏感运维数据。验证成功后会建立 8 小时的独立管理会话。"
+    @submit="unlockAdmin"
+    @clear-error="authError = ''"
+  />
+  <div v-else class="tg-test-page" :data-ready="clientReady ? 'true' : 'false'">
     <header class="tg-head">
       <div>
         <p class="tg-kicker">TELEGRAM CHANNEL DIAGNOSTICS</p>
@@ -8,7 +20,14 @@
           检查公开频道是否可访问，并验证关键词能否提取出网盘链接。
         </p>
       </div>
-      <NuxtLink to="/" class="tg-back">返回搜索首页</NuxtLink>
+      <div class="tg-head-actions">
+        <span class="tg-admin-session"><ConsoleIcon name="shield" :size="14" />管理员会话</span>
+        <button class="tg-back tg-logout" type="button" @click="lockAdmin">
+          <ConsoleIcon name="logout" :size="14" />退出管理
+        </button>
+        <NuxtLink to="/admin?view=telegram" class="tg-back">返回 TG 频道管理</NuxtLink>
+        <NuxtLink to="/admin?view=monitor" class="tg-back">健康监控</NuxtLink>
+      </div>
     </header>
 
     <section class="tg-controls">
@@ -48,8 +67,7 @@
       <div>
         <strong>测试其他公开频道</strong>
         <p>
-          只填写频道用户名，例如 <code>my_channel</code> 或
-          <code>@my_channel</code>，不会接受 URL。
+          支持公开频道用户名和 <code>t.me</code> 链接，仅用于临时调试，不会修改已保存配置。
         </p>
       </div>
       <input
@@ -90,7 +108,7 @@
         <div class="tg-card-head">
           <div>
             <h2>已配置频道</h2>
-            <p>来自 <code>config/channels.json</code>，已去重</p>
+            <p>来自已生效的服务端配置；临时调试频道不会自动加入已保存清单</p>
           </div>
           <span>{{ channels.length }} CHANNELS</span>
         </div>
@@ -157,7 +175,7 @@
               </div>
               <div>
                 <span>请求入口</span
-                ><strong>t.me/s/{{ selectedChannel }}</strong>
+                ><strong>{{ selectedRequestUrl }}</strong>
               </div>
               <div>
                 <span>最近耗时</span
@@ -202,12 +220,14 @@
                 <div class="tg-debug-block">
                   <div class="tg-debug-block-head">
                     <strong>接口入参</strong><span>POST /api/tg/probe</span>
+                    <TelegramCopyButton v-if="selectedInputJson" compact :text="selectedInputJson" label="复制入参" />
                   </div>
                   <pre>{{ formatJson(selectedInput) }}</pre>
                 </div>
                 <div class="tg-debug-block">
                   <div class="tg-debug-block-head">
                     <strong>接口出参</strong><span>JSON</span>
+                    <TelegramCopyButton v-if="selectedOutputJson" compact :text="selectedOutputJson" label="复制出参 JSON" />
                   </div>
                   <pre>{{ formatJson(structuredOutput(selectedReport)) }}</pre>
                 </div>
@@ -223,12 +243,24 @@
                   <div class="tg-debug-block-head">
                     <strong>上游原始响应</strong><span>HTTP {{ selectedReport.upstreamResponse?.status ?? "—" }}</span>
                   </div>
-                  <div class="tg-raw-meta">
-                    <span>正文 {{ selectedReport.upstreamResponse?.bodyLength ?? 0 }} 字符</span>
-                    <span v-if="selectedReport.upstreamResponse?.bodyTruncated">已截断至 30,000 字符</span>
+                  <div class="tg-raw-view-slot">
+                    <TelegramRawBodyView
+                      :body="selectedReport.upstreamResponse?.body || ''"
+                      :keyword="selectedReport.keyword"
+                      :body-length="selectedReport.upstreamResponse?.bodyLength ?? null"
+                      :truncated="!!selectedReport.upstreamResponse?.bodyTruncated"
+                      :base-url="selectedReport.upstreamRequest?.url || ''"
+                      frame-title="上游响应渲染"
+                    />
                   </div>
-                  <pre class="tg-raw-body">{{ selectedReport.upstreamResponse?.body || "无响应正文" }}</pre>
                 </div>
+              </div>
+              <div class="tg-stage-wrap">
+                <TelegramStageCompare
+                  :stages="selectedReport.stages"
+                  :failure-kind="selectedReport.failureKind ?? null"
+                  :elapsed-ms="selectedReport.elapsedMs"
+                />
               </div>
               <details v-if="selectedReport.attempts.length > 1" class="tg-attempts">
                 <summary>查看全部上游尝试（{{ selectedReport.attempts.length }}）</summary>
@@ -284,7 +316,13 @@
 </template>
 
 <script setup lang="ts">
-import channelsConfig from "../config/channels.json";
+import AdminAccessGate from "../components/admin/AdminAccessGate.vue";
+import ConsoleIcon from "../components/upstreams/ConsoleIcon.vue";
+import TelegramCopyButton from "../components/telegram/TelegramCopyButton.vue";
+import TelegramRawBodyView from "../components/telegram/TelegramRawBodyView.vue";
+import TelegramStageCompare from "../components/telegram/TelegramStageCompare.vue";
+import { parseTelegramChannelInput } from "../utils/telegramChannelInput";
+import { buildTgSourceUrl, type TgSourceUrlSettings } from "../utils/tgSourceUrl";
 import type { TgProbeResult } from "../server/core/services/tg";
 useHead({
   title: "Telegram 频道测试",
@@ -292,15 +330,23 @@ useHead({
 });
 
 type StateFilter = "all" | "available" | "warning" | "error" | "untested";
-const configuredChannels = Array.from(
-  new Set([
-    ...channelsConfig.priorityChannels,
-    ...channelsConfig.defaultChannels,
-  ]),
+const clientReady = ref(false);
+const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
+  "/api/auth/admin-status",
+  { key: "telegram-admin-status", server: true },
 );
+const initialAuthStatus = authStatus.data.value;
+const adminChecking = ref(!initialAuthStatus && !authStatus.error.value);
+const adminConfigured = ref(initialAuthStatus?.configured ?? true);
+const adminLocked = ref(initialAuthStatus?.locked ?? true);
+const adminUnlocking = ref(false);
+const authError = ref("");
+const configuredChannels = ref<string[]>([]);
+const sourceSettings = ref<TgSourceUrlSettings>({});
+const route = useRoute();
 const extraChannels = ref<string[]>([]);
 const channels = computed(() =>
-  Array.from(new Set([...configuredChannels, ...extraChannels.value])),
+  Array.from(new Set([...configuredChannels.value, ...extraChannels.value])),
 );
 const keyword = ref("三体");
 const limit = ref(20);
@@ -338,6 +384,9 @@ const errorCount = computed(
   () => Object.values(reports.value).filter((r) => r.state === "error").length,
 );
 const selectedReport = computed(() => reports.value[selectedChannel.value]);
+const selectedRequestUrl = computed(() => {
+  return buildTgSourceUrl("direct", selectedChannel.value, keyword.value, undefined, sourceSettings.value);
+});
 const selectedInput = computed(
   () => requestInputs.value[selectedChannel.value] || null,
 );
@@ -350,19 +399,21 @@ const filteredChannels = computed(() =>
     );
   }),
 );
-function stateOf(channel: string): StateFilter {
+type ReportState = Exclude<StateFilter, "all">;
+function stateOf(channel: string): ReportState {
   return reports.value[channel]?.state || "untested";
 }
 function state(channel: string) {
   return stateOf(channel);
 }
-function stateLabel(channel: string) {
-  return {
+function stateLabel(channel: string): string {
+  const labels: Record<ReportState, string> = {
     available: "可用",
     warning: "待确认",
     error: "异常",
     untested: "未测试",
-  }[stateOf(channel)];
+  };
+  return labels[stateOf(channel)];
 }
 function formatTime(value: string) {
   return value
@@ -388,11 +439,71 @@ function structuredOutput(report: TgProbeResult) {
       : null,
   };
 }
+const selectedInputJson = computed(() =>
+  selectedInput.value ? formatJson(selectedInput.value) : "",
+);
+const selectedOutputJson = computed(() =>
+  selectedReport.value ? formatJson(structuredOutput(selectedReport.value)) : "",
+);
 
 function showNotice(message: string) {
   notice.value = message;
   if (noticeTimer) clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => (notice.value = ""), 4000);
+}
+function adminErrorMessage(error: any): string {
+  const code = error?.statusCode || error?.response?.status;
+  if (code === 401) return "管理员密码错误，或管理会话已过期。";
+  if (code === 403) return "请求被安全策略拒绝，请从当前站点重新打开控制台。";
+  if (code === 429) return "尝试次数过多，请稍后再试。";
+  if (code === 503) return "服务端尚未配置 ADMIN_PASSWORD。";
+  return error?.data?.statusMessage || error?.message || "管理操作失败。";
+}
+async function checkAdminSession() {
+  adminChecking.value = true;
+  try {
+    const status = await $fetch<{ configured: boolean; locked: boolean }>(
+      "/api/auth/admin-status",
+    );
+    adminConfigured.value = status.configured;
+    adminLocked.value = status.locked;
+    if (!status.locked) await loadConfiguredChannels();
+  } catch (error: any) {
+    adminConfigured.value = false;
+    adminLocked.value = true;
+    authError.value = adminErrorMessage(error);
+  } finally {
+    adminChecking.value = false;
+  }
+}
+async function unlockAdmin(password: string) {
+  if (!password.trim() || adminUnlocking.value) return;
+  adminUnlocking.value = true;
+  authError.value = "";
+  try {
+    await $fetch("/api/auth/admin-unlock", {
+      method: "POST",
+      body: { password },
+    });
+    adminLocked.value = false;
+    await loadConfiguredChannels();
+    showNotice("Telegram 管理控制台已解锁。");
+  } catch (error: any) {
+    authError.value = adminErrorMessage(error);
+  } finally {
+    adminUnlocking.value = false;
+  }
+}
+async function lockAdmin() {
+  try {
+    await $fetch("/api/auth/admin-lock", { method: "POST" });
+  } finally {
+    reports.value = {};
+    requestInputs.value = {};
+    running.value = {};
+    adminLocked.value = true;
+    authError.value = "";
+  }
 }
 async function testChannel(channel: string) {
   if (running.value[channel] || !keyword.value.trim()) return;
@@ -411,33 +522,73 @@ async function testChannel(channel: string) {
       retry: 0,
     });
   } catch (error: any) {
-    showNotice(error?.data?.statusMessage || error?.message || "测试请求失败");
+    const code = error?.statusCode || error?.response?.status;
+    if (code === 401) adminLocked.value = true;
+    showNotice(adminErrorMessage(error));
   } finally {
     running.value[channel] = false;
   }
 }
 async function testCustom() {
-  const channel = customChannel.value.trim().replace(/^@/, "");
-  if (!/^[A-Za-z0-9_]{5,64}$/.test(channel)) {
-    showNotice("请输入公开频道用户名，不要填写 URL。");
-    return;
-  }
+  const channel = parseTelegramChannelInput(customChannel.value);
+  if (!channel) { showNotice("请输入有效的公开频道用户名或链接，不支持私密频道。"); return; }
   if (!channels.value.includes(channel)) extraChannels.value.push(channel);
   selectedChannel.value = channel;
   customChannel.value = "";
   await testChannel(channel);
 }
+/** 已停用/已删除的频道不参与批量测试；监控接口不可用时不跳过任何频道（兜底）。 */
+async function inactiveChannelSet(): Promise<Set<string>> {
+  try {
+    const response = await $fetch<{
+      data?: { channels?: Array<{ channel?: string; enabled?: boolean; deleted?: boolean }> };
+    }>("/api/monitor");
+    const entries = response.data?.channels ?? [];
+    return new Set(
+      entries
+        .filter((item) => item.enabled === false || item.deleted === true)
+        .map((item) => String(item.channel || "").replace(/^@/, "")),
+    );
+  } catch {
+    return new Set();
+  }
+}
 async function testAll() {
   if (runningCount.value || !keyword.value.trim()) return;
-  const pending = filteredChannels.value;
+  const inactive = await inactiveChannelSet();
+  const pending = filteredChannels.value.filter((channel) => !inactive.has(channel));
   for (const channel of pending) await testChannel(channel);
-  showNotice(`已完成 ${pending.length} 个频道测试`);
+  const skipped = filteredChannels.value.length - pending.length;
+  showNotice(
+    `已完成 ${pending.length} 个频道测试${skipped > 0 ? `（跳过 ${skipped} 个已停用/已删除频道）` : ""}`,
+  );
 }
 function clearReports() {
   reports.value = {};
   requestInputs.value = {};
   showNotice("已清除频道测试记录");
 }
+async function loadConfiguredChannels() {
+  try {
+    const [channelResponse, sourceResponse] = await Promise.all([
+      $fetch<{ data: { effectiveChannels: string[] } }>("/api/settings/telegram"),
+      $fetch<{ data: TgSourceUrlSettings }>("/api/settings/tg-source"),
+    ]);
+    configuredChannels.value = channelResponse.data.effectiveChannels;
+    sourceSettings.value = sourceResponse.data || {};
+    const requested = typeof route.query.channel === "string" ? parseTelegramChannelInput(route.query.channel) : null;
+    if (requested && !channels.value.includes(requested)) extraChannels.value.push(requested);
+    selectedChannel.value = requested || channels.value[0] || "";
+  } catch (error: any) {
+    if ((error?.statusCode || error?.response?.status) === 401) adminLocked.value = true;
+    showNotice(adminErrorMessage(error));
+  }
+}
+onMounted(async () => {
+  clientReady.value = true;
+  if (adminChecking.value) await checkAdminSession();
+  else if (!adminLocked.value) await loadConfiguredChannels();
+});
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer);
 });
@@ -448,7 +599,7 @@ onBeforeUnmount(() => {
   max-width: 1380px;
   margin: 0 auto;
   padding: 36px 26px 50px;
-  color: #21312c;
+  color: #111827;
 }
 .tg-head {
   display: flex;
@@ -462,7 +613,7 @@ onBeforeUnmount(() => {
     600 10px ui-monospace,
     monospace;
   letter-spacing: 1.6px;
-  color: #7c9388;
+  color: #6b7280;
   margin: 0 0 8px;
 }
 .tg-head h1 {
@@ -472,15 +623,15 @@ onBeforeUnmount(() => {
 }
 .tg-subtitle {
   font-size: 12px;
-  color: #7c8b83;
+  color: #6b7280;
   margin: 8px 0 0;
 }
 .tg-back {
-  border: 1px solid #dfe8e2;
+  border: 1px solid #e5e7eb;
   border-radius: 7px;
   background: #fff;
   padding: 9px 13px;
-  color: #477060;
+  color: #4b5563;
   font-size: 11px;
   text-decoration: none;
 }
@@ -491,7 +642,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 18px;
   background: #fff;
-  border: 1px solid #e5ece7;
+  border: 1px solid #e5e7eb;
   border-radius: 10px;
   margin-bottom: 14px;
 }
@@ -501,7 +652,7 @@ onBeforeUnmount(() => {
 .tg-controls label span,
 .tg-custom > div strong {
   display: block;
-  color: #627b6d;
+  color: #6b7280;
   font-size: 10px;
   margin-bottom: 7px;
 }
@@ -509,11 +660,11 @@ onBeforeUnmount(() => {
 .tg-controls select,
 .tg-custom input {
   height: 39px;
-  border: 1px solid #dce6e0;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
   padding: 0 11px;
   background: #fff;
-  color: #2a4236;
+  color: #1f2937;
   outline: none;
   width: 100%;
   font: 12px inherit;
@@ -521,8 +672,8 @@ onBeforeUnmount(() => {
 .tg-controls input:focus,
 .tg-controls select:focus,
 .tg-custom input:focus {
-  border-color: #72b39a;
-  box-shadow: 0 0 0 3px #72b39a18;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px #93c5fd18;
 }
 .limit-field {
   max-width: 150px;
@@ -531,15 +682,15 @@ onBeforeUnmount(() => {
   height: 39px;
   border-radius: 6px;
   padding: 0 14px;
-  border: 1px solid #dce6e0;
+  border: 1px solid #e5e7eb;
   background: #fff;
-  color: #4f6d5d;
+  color: #4b5563;
   font-size: 11px;
   white-space: nowrap;
 }
 .tg-button.primary {
-  background: #198463;
-  border-color: #198463;
+  background: #2563eb;
+  border-color: #2563eb;
   color: #fff;
 }
 .tg-button:disabled,
@@ -555,7 +706,7 @@ onBeforeUnmount(() => {
 }
 .tg-custom > div p {
   margin: 0;
-  color: #8a9a91;
+  color: #6b7280;
   font-size: 10px;
 }
 .tg-custom code,
@@ -568,7 +719,7 @@ onBeforeUnmount(() => {
 .tg-notice {
   background: #fff8e9;
   border: 1px solid #f0e1b9;
-  color: #977834;
+  color: #b45309;
   border-radius: 7px;
   padding: 11px 14px;
   margin-bottom: 14px;
@@ -582,13 +733,13 @@ onBeforeUnmount(() => {
 }
 .tg-summary > div {
   background: #fff;
-  border: 1px solid #e5ece7;
+  border: 1px solid #e5e7eb;
   border-radius: 9px;
   padding: 15px 17px;
 }
 .tg-summary span {
   display: block;
-  color: #829187;
+  color: #6b7280;
   font-size: 10px;
 }
 .tg-summary strong {
@@ -597,7 +748,7 @@ onBeforeUnmount(() => {
   display: block;
 }
 .tg-summary strong.green {
-  color: #198463;
+  color: #2563eb;
 }
 .tg-layout {
   display: grid;
@@ -608,7 +759,7 @@ onBeforeUnmount(() => {
 .tg-list-card,
 .tg-detail-card {
   background: #fff;
-  border: 1px solid #e5ece7;
+  border: 1px solid #e5e7eb;
   border-radius: 10px;
   overflow: hidden;
 }
@@ -618,7 +769,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 11px;
   padding: 20px;
-  border-bottom: 1px solid #edf2ee;
+  border-bottom: 1px solid #f3f4f6;
 }
 .tg-card-head h2,
 .tg-detail-head h2 {
@@ -628,12 +779,12 @@ onBeforeUnmount(() => {
 .tg-card-head p,
 .tg-detail-head p {
   font-size: 10px;
-  color: #8c9c92;
+  color: #9ca3af;
   margin: 4px 0 0;
 }
 .tg-card-head > span {
   margin-left: auto;
-  color: #a0afa5;
+  color: #9ca3af;
   font:
     9px ui-monospace,
     monospace;
@@ -643,20 +794,20 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 3px;
   padding: 14px 17px;
-  border-bottom: 1px solid #edf2ee;
+  border-bottom: 1px solid #f3f4f6;
   flex-wrap: wrap;
 }
 .tg-filter button {
   border: 0;
-  background: #f4f7f5;
-  color: #829087;
+  background: #f6f7f9;
+  color: #6b7280;
   border-radius: 4px;
   padding: 7px 8px;
   font-size: 10px;
 }
 .tg-filter button.active {
-  background: #e8f5ee;
-  color: #18765a;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-weight: 600;
 }
 .tg-filter button small {
@@ -666,7 +817,7 @@ onBeforeUnmount(() => {
   margin-left: auto;
   width: 135px;
   height: 30px;
-  border: 1px solid #e1e9e4;
+  border: 1px solid #e5e7eb;
   border-radius: 5px;
   padding: 0 8px;
   font-size: 10px;
@@ -685,16 +836,16 @@ onBeforeUnmount(() => {
   padding: 10px 17px;
   text-align: left;
   border: 0;
-  border-bottom: 1px solid #f0f3f1;
+  border-bottom: 1px solid #f3f4f6;
   background: #fff;
-  color: #253b30;
+  color: #1f2937;
 }
 .tg-channel-row:hover {
-  background: #f8fbf9;
+  background: #f6f7f9;
 }
 .tg-channel-row.selected {
-  background: #eff8f3;
-  box-shadow: inset 3px 0 #198463;
+  background: #eff6ff;
+  box-shadow: inset 3px 0 #2563eb;
 }
 .tg-channel-avatar {
   display: grid;
@@ -703,8 +854,8 @@ onBeforeUnmount(() => {
   height: 31px;
   flex: 0 0 31px;
   border-radius: 8px;
-  background: #eef6f1;
-  color: #208363;
+  background: #eff6ff;
+  color: #2563eb;
   font-weight: 700;
   font-size: 13px;
 }
@@ -726,7 +877,7 @@ onBeforeUnmount(() => {
 }
 .tg-channel-name small {
   display: block;
-  color: #9aa8a0;
+  color: #9ca3af;
   font:
     9px ui-monospace,
     monospace;
@@ -738,8 +889,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #89988f;
-  background: #f4f6f5;
+  color: #6b7280;
+  background: #f3f4f6;
   padding: 4px 6px;
   border-radius: 4px;
   font-size: 9px;
@@ -749,25 +900,25 @@ onBeforeUnmount(() => {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #abb7b0;
+  background: #9ca3af;
 }
 .tg-state.available {
-  background: #eaf7ef;
-  color: #288a69;
+  background: #eff6ff;
+  color: #2563eb;
 }
 .tg-state.available i {
-  background: #299c74;
+  background: #2563eb;
 }
 .tg-state.warning {
   background: #fff7e8;
-  color: #ae8b3f;
+  color: #b45309;
 }
 .tg-state.warning i {
   background: #d3a344;
 }
 .tg-state.error {
   background: #fff0ef;
-  color: #bc6c66;
+  color: #dc2626;
 }
 .tg-state.error i {
   background: #d86b65;
@@ -775,7 +926,7 @@ onBeforeUnmount(() => {
 .tg-latency {
   width: 61px;
   text-align: right;
-  color: #8b9a92;
+  color: #9ca3af;
   font:
     9px ui-monospace,
     monospace;
@@ -783,7 +934,7 @@ onBeforeUnmount(() => {
 .tg-empty {
   text-align: center;
   padding: 44px;
-  color: #9aa79f;
+  color: #9ca3af;
   font-size: 11px;
 }
 .tg-detail-head {
@@ -796,8 +947,8 @@ onBeforeUnmount(() => {
   font:
     8px ui-monospace,
     monospace;
-  color: #368367;
-  border: 1px solid #d6eadd;
+  color: #2563eb;
+  border: 1px solid #d1fae5;
   border-radius: 3px;
   padding: 2px 4px;
   vertical-align: middle;
@@ -805,15 +956,15 @@ onBeforeUnmount(() => {
 .tg-icon-button {
   border: 0;
   background: transparent;
-  color: #718b7d;
+  color: #6b7280;
   font-size: 22px;
   min-width: 36px;
   min-height: 36px;
   border-radius: 6px;
 }
 .tg-icon-button:hover:not(:disabled) {
-  background: #eef6f1;
-  color: #198463;
+  background: #eff6ff;
+  color: #2563eb;
 }
 .tg-detail-body {
   padding: 22px;
@@ -825,15 +976,15 @@ onBeforeUnmount(() => {
   margin-bottom: 18px;
 }
 .tg-detail-meta > div {
-  background: #f8faf9;
-  border: 1px solid #e9efeb;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
   border-radius: 6px;
   padding: 11px;
 }
 .tg-detail-meta span {
   display: block;
   font-size: 9px;
-  color: #93a097;
+  color: #9ca3af;
 }
 .tg-detail-meta strong {
   display: block;
@@ -847,8 +998,8 @@ onBeforeUnmount(() => {
   margin-bottom: 20px;
 }
 .tg-result-box.available {
-  background: #eef9f3;
-  border: 1px solid #d8eddf;
+  background: #eff6ff;
+  border: 1px solid #d1fae5;
 }
 .tg-result-box.warning {
   background: #fff9ed;
@@ -867,13 +1018,13 @@ onBeforeUnmount(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #a2b0a8;
+  background: #9ca3af;
 }
 .tg-result-box.available .tg-result-title i {
-  background: #269b71;
+  background: #2563eb;
 }
 .tg-result-box.warning .tg-result-title i {
-  background: #d3a146;
+  background: #f59e0b;
 }
 .tg-result-box.error .tg-result-title i {
   background: #d57169;
@@ -886,24 +1037,24 @@ onBeforeUnmount(() => {
   font:
     9px ui-monospace,
     monospace;
-  color: #80948a;
+  color: #6b7280;
 }
 .tg-result-box p {
   font-size: 9px;
-  color: #8b9a91;
+  color: #9ca3af;
   margin: 8px 0 0;
 }
 .tg-placeholder {
-  border: 1px dashed #dbe6df;
+  border: 1px dashed #e5e7eb;
   border-radius: 7px;
   padding: 42px 18px;
   text-align: center;
-  color: #8e9d94;
+  color: #9ca3af;
   font-size: 11px;
   margin-bottom: 20px;
 }
 .tg-results {
-  border-top: 1px solid #e9efeb;
+  border-top: 1px solid #f3f4f6;
   padding-top: 18px;
 }
 .tg-results-head {
@@ -920,11 +1071,11 @@ onBeforeUnmount(() => {
   font:
     9px ui-monospace,
     monospace;
-  color: #8aa092;
+  color: #9ca3af;
 }
 .tg-results article {
   padding: 11px 0;
-  border-bottom: 1px solid #f0f3f1;
+  border-bottom: 1px solid #f3f4f6;
 }
 .tg-results article strong {
   font-size: 11px;
@@ -933,15 +1084,15 @@ onBeforeUnmount(() => {
   font:
     9px/1.8 ui-monospace,
     monospace;
-  color: #84958a;
+  color: #6b7280;
   margin: 4px 0 0;
   overflow-wrap: anywhere;
 }
 .tg-debug-panel {
   margin: 20px 0;
-  border: 1px solid #dce8e0;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
-  background: #fbfdfc;
+  background: #f9fafb;
   overflow: hidden;
 }
 .tg-debug-panel-head {
@@ -950,7 +1101,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   align-items: flex-start;
   padding: 14px;
-  border-bottom: 1px solid #e8efea;
+  border-bottom: 1px solid #e5e7eb;
 }
 .tg-debug-panel-head h3 {
   margin: 0;
@@ -958,13 +1109,13 @@ onBeforeUnmount(() => {
 }
 .tg-debug-panel-head p {
   margin: 5px 0 0;
-  color: #87988e;
+  color: #6b7280;
   font-size: 9px;
 }
 .tg-debug-panel-head > span,
 .tg-debug-block-head span,
 .tg-attempt-head span {
-  color: #8a9c91;
+  color: #9ca3af;
   font: 9px ui-monospace, monospace;
   white-space: nowrap;
 }
@@ -976,7 +1127,7 @@ onBeforeUnmount(() => {
 }
 .tg-debug-block {
   min-width: 0;
-  border: 1px solid #e5ece7;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
   overflow: hidden;
   background: #fff;
@@ -988,8 +1139,9 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
   padding: 9px 10px;
-  background: #f5f9f6;
-  border-bottom: 1px solid #e8efea;
+  background: #f3f4f6;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
 }
 .tg-debug-block-head strong,
 .tg-attempt-head strong {
@@ -1004,25 +1156,21 @@ onBeforeUnmount(() => {
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #456056;
+  color: #4b5563;
   font: 9px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.tg-debug-block .tg-raw-body {
-  max-height: 360px;
-  white-space: pre-wrap;
-  color: #526d60;
+.tg-debug-block .tg-raw-view-slot {
+  padding: 10px;
 }
-.tg-raw-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 7px 10px 0;
-  color: #9a8a5e;
-  font-size: 9px;
+.tg-debug-block-head .tg-copy {
+  margin-left: auto;
+}
+.tg-stage-wrap {
+  padding: 12px 14px 0;
 }
 .tg-attempts {
   margin: 12px 14px 14px;
-  border: 1px solid #e5ece7;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
   overflow: hidden;
   background: #fff;
@@ -1030,12 +1178,12 @@ onBeforeUnmount(() => {
 .tg-attempts summary {
   cursor: pointer;
   padding: 10px;
-  color: #527263;
+  color: #4b5563;
   font-size: 10px;
-  background: #f5f9f6;
+  background: #f3f4f6;
 }
 .tg-attempt {
-  border-top: 1px solid #e8efea;
+  border-top: 1px solid #e5e7eb;
 }
 .tg-attempt pre {
   max-height: 220px;
@@ -1046,10 +1194,10 @@ onBeforeUnmount(() => {
 }
 .tg-explain {
   margin-top: 20px;
-  background: #f7faf8;
+  background: #f6f7f9;
   border-radius: 7px;
   padding: 13px;
-  color: #7f9487;
+  color: #6b7280;
 }
 .tg-explain strong {
   font-size: 10px;
@@ -1061,7 +1209,7 @@ onBeforeUnmount(() => {
 }
 .tg-footnote {
   text-align: center;
-  color: #9ba89f;
+  color: #9ca3af;
   font-size: 9px;
   margin: 22px 0 0;
 }
@@ -1139,6 +1287,52 @@ onBeforeUnmount(() => {
   }
   .tg-latency {
     display: none;
+  }
+}
+
+.tg-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tg-admin-session {
+  min-height: 38px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  font-size: 10px;
+}
+.tg-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.tg-test-page button:focus-visible,
+.tg-test-page a:focus-visible,
+.tg-test-page input:focus-visible,
+.tg-test-page select:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 3px;
+}
+@media (max-width: 700px) {
+  .tg-head-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .tg-admin-session,
+  .tg-back,
+  .tg-button,
+  .tg-filter button,
+  .tg-icon-button {
+    min-height: 44px;
   }
 }
 </style>

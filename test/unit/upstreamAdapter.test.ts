@@ -63,7 +63,15 @@ describe("upstream adapter", () => {
     ]);
   });
   it("handles nested link arrays", () => {
-    const source = BUILTIN_UPSTREAMS.find((s) => s.id === "jikepan")!;
+    // 嵌套 links 映射是适配器的通用能力（原 jikepan 目录项已下线，此处用等价映射验证）
+    const nestedMapping = {
+      items: "list",
+      title: "name",
+      linkArray: "links",
+      url: "link",
+      type: "service",
+      password: "pwd",
+    };
     expect(
       normalizeUpstreamJson(
         {
@@ -80,9 +88,9 @@ describe("upstream adapter", () => {
             },
           ],
         },
-        source.mapping,
-        source.id,
-      )[0].links[0].type,
+        nestedMapping,
+        "jikepan",
+      )[0]!.links[0]!.type,
     ).toBe("baidu");
   });
   it("rejects invalid array mappings and limits output", () => {

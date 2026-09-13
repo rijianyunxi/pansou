@@ -17,27 +17,36 @@
   },
   "homepage": "https://github.com/wu529778790/panhub.shenzjd.com#readme",
   "scripts": {
-    "build": "nuxt build",
-    "dev": "nuxt dev",
-    "generate": "nuxt generate",
+    "build": "PANHUB_BUILD_DIR=.nuxt-build nuxt build",
+    "dev": "PANHUB_BUILD_DIR=\"${PANHUB_BUILD_DIR:-.nuxt-dev}\" nuxt dev --host 0.0.0.0",
+    "generate": "PANHUB_BUILD_DIR=.nuxt-generate nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "test": "vitest run",
+    "typecheck": "PANHUB_BUILD_DIR=.nuxt-typecheck nuxt typecheck",
     "test:watch": "vitest watch",
     "test:api": "node ./test/api.test.mjs",
     "test:coverage": "vitest run --coverage",
-    "deploy:cf": "wrangler deploy"
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "TagCloud": "^2.5.0",
+    "better-sqlite3": "^13.0.3",
     "cheerio": "^1.0.0",
+    "h3": "^1.15.5",
     "nuxt": "^4.0.3",
     "ofetch": "^1.4.1",
     "p-limit": "^7.2.0",
+    "qrcode": "^1.5.4",
+    "telegram": "^2.26.22",
     "vue": "^3.5.18",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/qrcode": "^1.5.6",
     "@vitest/coverage-v8": "^2.1.0",
     "vitest": "^2.1.9"
   },
@@ -50,7 +59,6 @@
     "百度网盘",
     "115",
     "迅雷",
-    "nuxt",
-    "cloudflare-workers"
+    "nuxt"
   ]
 }

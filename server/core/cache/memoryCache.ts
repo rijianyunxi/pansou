@@ -131,19 +131,12 @@ export class MemoryCache<T = unknown> {
       this.accessOrder.delete(key);
     }
 
-    let cleaned = expiredKeys.length;
-    let freedMemory = expiredKeys.reduce((sum, key) => {
-      const rec = this.store.get(key);
-      return sum + (rec?.size || 0);
-    }, 0);
-
     // 2. 如果仍然超过限制，按 LRU 淘汰
     const sizeOver = this.store.size - this.options.maxSize;
     const memoryOver = memoryUsage - this.options.maxMemoryBytes;
 
     if (sizeOver > 0) {
       this.evictOldest(sizeOver);
-      cleaned += sizeOver;
     } else if (memoryOver > 0) {
       // 基于内存淘汰：需要释放多少字节
       let bytesToFree = memoryOver;
@@ -162,7 +155,6 @@ export class MemoryCache<T = unknown> {
           freed++;
         }
       }
-      cleaned += freed;
     }
 
     // 静默处理清理

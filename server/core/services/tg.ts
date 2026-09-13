@@ -1,14 +1,202 @@
-import { load } from "cheerio";
+import { load, type CheerioAPI } from "cheerio";
 import { ofetch } from "ofetch";
 import type { SearchResult } from "../types/models";
 import { matchesSearchKeyword } from "../utils/searchKeyword";
+import {
+  abortableDelay,
+  createAbortScope,
+  runWithSignal,
+} from "../utils/abort";
+import {
+  buildConfiguredTgUrl,
+  getTgSourceSettings,
+  type TgSourceSettings,
+} from "./tgSourceSettings";
+import { recordTgChannelHealth } from "./tgChannelHealthStore";
+import { getTgChannelPolicy } from "./tgChannelSettings";
+import { parseWithParserPlugin } from "../parsers/runtime";
+import { runWithFallbackRetry } from "../utils/retry";
+import { validateOutboundUrl } from "../security/outboundUrl";
+import { getUnifiedUpstream } from "./upstreamCatalog";
+import type { ParserPluginRecord } from "../parsers/types";
 
 export interface TgFetchOptions {
   limitPerChannel?: number;
   userAgent?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Keep earlier pages while reporting a later page failure. */
+  onWarning?: (error: unknown) => void;
+  /** 最多抓取的分页数；缺省按结果数推导（limit / 20）。 */
+  maxPages?: number;
+  /** fallback 策略：仅直连 / 仅 Jina；缺省先直连、失败后换 Jina。 */
+  fallback?: "direct" | "jina";
+  /** Additional channel URL templates after the primary route. */
+  fallbackUrls?: string[];
+  /** Retries after the first request for each candidate URL. */
+  maxRetries?: number;
+  /** Base delay before retrying the same candidate URL. */
+  retryDelayMs?: number;
+  /** Optional per-upstream transform source. */
+  transform?: string;
+  /** Per-upstream primary URL and headers supplied by the unified catalog. */
+  primaryUrl?: string;
+  headers?: Record<string, string>;
 }
 
 export type TgProbeState = "available" | "warning" | "error";
+
+export type TgFailureKind =
+  | "channel_not_found"
+  | "channel_private"
+  | "network_error"
+  | "structure_changed"
+  | "no_results";
+
+/** M6 诊断契约：每个 fallback 阶段（直连 / Jina）的独立耗时与结果。 */
+export interface TgProbeStage {
+  stage: "direct" | "jina";
+  durationMs: number;
+  ok: boolean;
+  url?: string;
+  bytes?: number;
+  error?: string;
+}
+
+/** 携带机器可读失败类别（tgKind）的 TG 频道抓取错误，搜索 warning 通过它区分五种失败。 */
+export class TgChannelError extends Error {
+  readonly tgKind: TgFailureKind;
+
+  constructor(
+    kind: TgFailureKind,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message);
+    this.name = "TgChannelError";
+    this.tgKind = kind;
+    if (options?.cause !== undefined)
+      (this as { cause?: unknown }).cause = options.cause;
+  }
+}
+
+export interface TgChannelPageClassification {
+  ok: boolean;
+  kind: TgFailureKind;
+  /** 面向人的中文原因短语（不含频道名前缀）。 */
+  reason: string;
+}
+
+const STRUCTURE_REASON =
+  "页面解析失败：未识别到公开消息结构（页面可能已改版，或频道当前没有公开消息）";
+
+/**
+ * 消息节点检测：必须出现在 class 属性内，避免页面正文/注释里提到
+ * "tgme_widget_message" 字样时被误判为仍有消息结构。
+ */
+const TG_MESSAGE_MARKUP_RE = /class="[^"]*\btgme_widget_message/;
+const JINA_MARKDOWN_HEADER_RE = /^Markdown Content:\s*$/m;
+const JINA_TG_SOURCE_RE = /^URL Source:\s*https?:\/\/(?:www\.)?t\.me\/s\//im;
+const JINA_MESSAGE_LINK_RE =
+  /\[\]\(\s*(https?:\/\/(?:www\.)?t\.me\/(?:s\/)?([^\s/)]+)\/(\d+)(?:\?[^)]*)?)\s*\)/gi;
+const JINA_MESSAGE_LINK_MARKER_RE =
+  /\[\]\(\s*https?:\/\/(?:www\.)?t\.me\/(?:s\/)?[^\s/)]+\/\d+(?:\?[^)]*)?\s*\)/i;
+// Jina 将 Telegram 的加入/联系页转成 Markdown，不能仅凭 "Markdown Content"
+// 就当成公开频道，否则私密邀请链接会被误判为可用。
+const TG_PRIVATE_PAGE_RE =
+  /(?:Telegram:\s*Join\b|Join\s+(?:Group\s+Chat|Channel)|tg:\/\/join|t\.me\/\+(?:[A-Za-z0-9_-]+))/i;
+const TG_NOT_FOUND_PAGE_RE = /Telegram:\s*Contact\s+@/i;
+
+export type TgPageFormat = "telegram-html" | "jina-markdown";
+
+/** Jina Reader 返回 Markdown，不能交给 Telegram HTML 适配器。 */
+export function detectTgPageFormat(body: string): TgPageFormat | null {
+  // 先排除 Telegram 的私密/联系页；Jina 会把这些页面也包装成 Markdown。
+  if (TG_PRIVATE_PAGE_RE.test(body) || TG_NOT_FOUND_PAGE_RE.test(body))
+    return null;
+  if (TG_MESSAGE_MARKUP_RE.test(body)) return "telegram-html";
+  if (JINA_MARKDOWN_HEADER_RE.test(body) && JINA_TG_SOURCE_RE.test(body)) {
+    return "jina-markdown";
+  }
+  return null;
+}
+
+/**
+ * 统一构造 Telegram 公开搜索页地址。关键词必须进入上游 q 参数；
+ * 本地 matchesSearchKeyword 仍会作为第二道过滤，避免上游搜索行为变化导致脏结果。
+ */
+export function buildTelegramPageUrl(
+  channel: string,
+  keyword: string,
+  before?: string,
+): string {
+  return buildConfiguredTgUrl("direct", channel, keyword, before);
+}
+
+/**
+ * 依据 t.me 公开预览页的 HTML 判定"拿不到消息"的原因：
+ * 1. 有消息节点 → 成功；
+ * 2. 标题为 "Telegram: Join…" 或含 tg://join → 私有频道 / 邀请链接页；
+ * 3. 标题为 "Telegram: Contact @…" → 频道不存在（或用户名没有公开预览页）；
+ * 4. 其余非空页面 → 结构变化（明确告警，而不是静默当作无结果）。
+ */
+export function classifyTgChannelPage(
+  html: string,
+): TgChannelPageClassification {
+  if (TG_MESSAGE_MARKUP_RE.test(html)) {
+    return { ok: true, kind: "no_results", reason: "" };
+  }
+  if (
+    TG_PRIVATE_PAGE_RE.test(html) ||
+    /<title>[^<]*Telegram:\s*Join/i.test(html)
+  ) {
+    return {
+      ok: false,
+      kind: "channel_private",
+      reason: "为私有频道或仅提供邀请链接，无法抓取公开预览",
+    };
+  }
+  if (
+    TG_NOT_FOUND_PAGE_RE.test(html) ||
+    /<title>[^<]*Telegram:\s*Contact\s+@/i.test(html) ||
+    /property="og:title" content="Telegram:\s*Contact\s+@/i.test(html)
+  ) {
+    return {
+      ok: false,
+      kind: "channel_not_found",
+      reason: "不存在或没有公开预览页（Telegram 返回了联系页）",
+    };
+  }
+  return { ok: false, kind: "structure_changed", reason: STRUCTURE_REASON };
+}
+
+function classifyTgBody(body: string): TgChannelPageClassification {
+  // 必须先分类访问状态，再识别 Jina 格式。Jina 的私密/不存在页面同样
+  // 有 Markdown Content 和 t.me/s URL，不能直接视为公开频道。
+  if (TG_PRIVATE_PAGE_RE.test(body)) {
+    return {
+      ok: false,
+      kind: "channel_private",
+      reason: "为私有频道或仅提供邀请链接，无法抓取公开预览",
+    };
+  }
+  if (TG_NOT_FOUND_PAGE_RE.test(body)) {
+    return {
+      ok: false,
+      kind: "channel_not_found",
+      reason: "不存在或没有公开预览页（Telegram 返回了联系页）",
+    };
+  }
+  const format = detectTgPageFormat(body);
+  if (format === "jina-markdown") {
+    // 公开频道必须至少有一个可识别的公开消息链接；否则只是一个
+    // 空页面/改版页面，不能把它当成“可搜索频道”保存。
+    return JINA_MESSAGE_LINK_MARKER_RE.test(body)
+      ? { ok: true, kind: "no_results", reason: "" }
+      : { ok: false, kind: "structure_changed", reason: STRUCTURE_REASON };
+  }
+  return classifyTgChannelPage(body);
+}
 
 export interface TgProbeRequestSnapshot {
   method: "GET";
@@ -45,6 +233,177 @@ export interface TgProbeResult {
   attempts: TgProbeAttempt[];
   upstreamRequest: TgProbeRequestSnapshot | null;
   upstreamResponse: TgProbeResponseSnapshot | null;
+  /** M6 additive：每个 fallback 阶段（直连 / Jina）的耗时与成败。 */
+  stages: TgProbeStage[];
+  /** M6 additive：五种失败的机器可读类别；成功提取到结果时省略。 */
+  failureKind?: TgFailureKind;
+}
+
+/** 读取每频道策略并与调用方选项合并：策略字段显式配置时优先生效。 */
+function resolveChannelDefaults(
+  channel: string,
+  options: TgFetchOptions,
+): {
+  timeoutMs: number;
+  limitPerChannel?: number;
+  maxPages?: number;
+  fallback?: "direct" | "jina";
+  fallbackUrls?: string[];
+  maxRetries: number;
+  retryDelayMs: number;
+  primaryUrl?: string;
+  headers?: Record<string, string>;
+  transform?: string;
+} {
+  const policy = getTgChannelPolicy(channel);
+  const source = getTgSourceSettings();
+  const configured = getUnifiedUpstream(`tg-${channel}`);
+  return {
+    timeoutMs: policy?.timeoutMs ?? options.timeoutMs ?? 10_000,
+    limitPerChannel: policy?.maxResults ?? options.limitPerChannel,
+    maxPages: policy?.maxPages ?? options.maxPages,
+    fallback: policy?.fallback ?? options.fallback,
+    fallbackUrls: policy?.fallbackUrls ?? options.fallbackUrls ?? source.fallbackUrls,
+    maxRetries: policy?.maxRetries ?? options.maxRetries ?? configured?.retry?.maxRetries ?? configured?.request?.retry?.maxRetries ?? source.retry.maxRetries,
+    retryDelayMs: policy?.retryDelayMs ?? options.retryDelayMs ?? configured?.retry?.delayMs ?? configured?.request?.retry?.delayMs ?? source.retry.delayMs,
+    primaryUrl: options.primaryUrl || configured?.url,
+    headers: options.headers || configured?.request?.headers,
+    transform: options.transform || configured?.transform,
+  };
+}
+
+function buildMirrorPageUrl(pageUrl: string, channel: string): string {
+  const parsed = new URL(pageUrl);
+  return buildConfiguredTgUrl(
+    "jina",
+    channel,
+    parsed.searchParams.get("q") || "",
+    parsed.searchParams.get("before") || undefined,
+  );
+}
+
+function buildCustomTgUrl(
+  template: string,
+  channel: string,
+  keyword: string,
+  before?: string,
+): string {
+  const filled = template
+    .replaceAll("{{channel}}", encodeURIComponent(channel.trim().replace(/^@/, "")))
+    .replaceAll("{{keyword}}", encodeURIComponent(keyword.trim()))
+    .replaceAll("{{before}}", encodeURIComponent(before || ""));
+  const url = new URL(filled);
+  if (keyword.trim()) url.searchParams.set("q", keyword.trim());
+  else url.searchParams.delete("q");
+  if (before) url.searchParams.set("before", before);
+  else url.searchParams.delete("before");
+  validateOutboundUrl(url.toString(), { allowHttp: false });
+  return url.toString();
+}
+
+function buildCandidates(
+  pageUrl: string,
+  channel: string,
+  fallback: "direct" | "jina" | undefined,
+  fallbackUrls: string[] | undefined = undefined,
+): Array<{ url: string; mirror: boolean }> {
+  const primary = { url: pageUrl, mirror: false };
+  if (fallback === "direct") return [primary];
+  if (fallback === "jina")
+    return [{ url: buildMirrorPageUrl(pageUrl, channel), mirror: true }];
+  const custom = (fallbackUrls || []).map((template) => {
+    const parsed = new URL(pageUrl);
+    const url = buildCustomTgUrl(template, channel, parsed.searchParams.get("q") || "", parsed.searchParams.get("before") || undefined);
+    return { url, mirror: /(^|\.)r\.jina\.ai(?:[/:]|$)/i.test(new URL(url).hostname) };
+  });
+  return [primary, ...custom, { url: buildMirrorPageUrl(pageUrl, channel), mirror: true }];
+}
+
+async function fetchTgText(
+  url: string,
+  headers: Record<string, string>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  maxRetries: number,
+  retryDelayMs: number,
+): Promise<string> {
+  const request = () => ofetch<string, "text">(url, {
+    headers,
+    retry: 0,
+    responseType: "text",
+    timeout: timeoutMs,
+    signal,
+  });
+  return runWithFallbackRetry(
+    [url],
+    () => (signal ? runWithSignal(request, signal) : request()),
+    { signal, maxRetries, delayMs: retryDelayMs },
+  );
+}
+
+/**
+ * 带 q 搜索无匹配时，t.me 返回的空页面与"结构变化"无法从单次响应区分。
+ * 二次抓取不带关键词的频道页：有消息节点 → 只是关键词无匹配；否则才是结构变化。
+ */
+async function channelHasMessagesWithoutKeyword(
+  channel: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const body = await fetchTgText(
+      buildTelegramPageUrl(channel, ""),
+      headers,
+      signal,
+      timeoutMs,
+      0,
+      0,
+    );
+    return typeof body === "string" && TG_MESSAGE_MARKUP_RE.test(body);
+  } catch {
+    return false;
+  }
+}
+
+function buildChannelFailure(
+  channel: string,
+  lastBody: string,
+  lastError: unknown,
+): unknown {
+  if (lastBody) {
+    const classification = classifyTgBody(lastBody);
+    if (!classification.ok) {
+      return new TgChannelError(
+        classification.kind,
+        `TG 频道 ${channel} ${classification.reason}`,
+      );
+    }
+  }
+  if (lastError instanceof TgChannelError) return lastError;
+  if (lastError instanceof Error) {
+    return new TgChannelError(
+      "network_error",
+      `TG 频道 ${channel} 请求失败：${lastError.message}`,
+      { cause: lastError },
+    );
+  }
+  return (
+    lastError ??
+    new TgChannelError("network_error", `TG 频道 ${channel} 请求失败`)
+  );
+}
+
+function detectCandidateFormat(
+  body: string,
+  mirror: boolean,
+): TgPageFormat | null {
+  const format = detectTgPageFormat(body);
+  if (!format) return null;
+  // Jina 的正式响应是 Markdown；保留 HTML 兼容分支，避免某些代理/缓存
+  // 把原始 Telegram HTML 透传给 r.jina.ai 时丢失结果。
+  if (mirror || format === "telegram-html") return format;
+  return null;
 }
 
 export async function fetchTgChannelPosts(
@@ -52,199 +411,670 @@ export async function fetchTgChannelPosts(
   keyword: string,
   options: TgFetchOptions = {},
 ): Promise<SearchResult[]> {
-  const ua =
-    options.userAgent ||
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+  const resolved = resolveChannelDefaults(channel, options);
+  const scope = createAbortScope(
+    resolved.timeoutMs,
+    `TG 频道 ${channel} 请求超时 (${resolved.timeoutMs}ms)`,
+    options.signal,
+  );
+  try {
+    return await fetchChannelPages(
+      channel,
+      keyword,
+      options,
+      resolved,
+      scope.signal,
+    );
+  } finally {
+    scope.dispose();
+  }
+}
 
-  const limit = options.limitPerChannel ?? 50;
-  const maxPages = Math.ceil(limit / 20);
+export interface TgChannelValidationResult {
+  ok: boolean;
+  channel: string;
+  /** available 表示已确认有公开预览；其余值对应 TgFailureKind。 */
+  kind: "available" | TgFailureKind;
+  message: string;
+  route: "telegram" | "jina" | "none";
+}
+
+/**
+ * 在用户保存个人频道前，只验证公开预览是否可访问，不解析消息、不写健康记录。
+ * 直连失败时自动尝试 Jina；返回 false 时调用方不应保存该频道。
+ */
+export async function validateTgChannel(
+  channel: string,
+  options: Pick<
+    TgFetchOptions,
+    "userAgent" | "signal" | "timeoutMs" | "fallback" | "headers"
+  > = {},
+): Promise<TgChannelValidationResult> {
+  const normalized = channel.trim().replace(/^@/, "").toLowerCase();
+  const resolved = resolveChannelDefaults(normalized, options);
+  const scope = createAbortScope(
+    Math.min(10_000, Math.max(1_000, resolved.timeoutMs)),
+    `验证 TG 频道 ${normalized} 超时`,
+    options.signal,
+  );
+  const sourceSettings = getTgSourceSettings();
+  const requestHeaders = {
+    ...sourceSettings.headers,
+    ...(resolved.headers || {}),
+    ...(options.headers || {}),
+    ...(options.userAgent ? { "user-agent": options.userAgent } : {}),
+  };
+  let lastBody = "";
+  let lastError: unknown;
+  let route: TgChannelValidationResult["route"] = "none";
+  const classifications: TgChannelPageClassification[] = [];
+  try {
+    const pageUrl = buildTelegramPageUrl(normalized, "");
+    for (const candidate of buildCandidates(
+      pageUrl,
+      normalized,
+      resolved.fallback,
+      resolved.fallbackUrls,
+    )) {
+      scope.signal.throwIfAborted();
+      route = candidate.mirror ? "jina" : "telegram";
+      try {
+        const body = await fetchTgText(
+          candidate.url,
+          requestHeaders,
+          scope.signal,
+          resolved.timeoutMs,
+          resolved.maxRetries,
+          resolved.retryDelayMs,
+        );
+        if (typeof body !== "string") continue;
+        lastBody = body;
+        const classification = classifyTgBody(body);
+        classifications.push(classification);
+        if (
+          !classification.ok &&
+          (classification.kind === "channel_private" ||
+            classification.kind === "channel_not_found")
+        ) {
+          const message =
+            classification.kind === "channel_private"
+              ? "这个频道不是公开频道，或仅提供私密邀请链接，无法添加。"
+              : "找不到这个公开频道，或它没有公开预览页，无法添加。";
+          return {
+            ok: false,
+            channel: normalized,
+            kind: classification.kind,
+            message,
+            route,
+          };
+        }
+        if (
+          classification.ok &&
+          detectCandidateFormat(body, candidate.mirror)
+        ) {
+          return {
+            ok: true,
+            channel: normalized,
+            kind: "available",
+            message: "已确认这是可访问的公开频道。",
+            route,
+          };
+        }
+        lastError = new TgChannelError(
+          classification.kind,
+          classification.reason || STRUCTURE_REASON,
+        );
+      } catch (error: any) {
+        scope.signal.throwIfAborted();
+        // ofetch 在 4xx/5xx 时会把响应放在 error.response；尽量读取错误页，
+        // 否则“频道不存在”会被错误地降级成普通网络失败。
+        const errorBody =
+          typeof error?.response?._data === "string"
+            ? error.response._data
+            : "";
+        if (errorBody) {
+          lastBody = errorBody;
+          const classification = classifyTgBody(errorBody);
+          classifications.push(classification);
+          lastError = classification.ok
+            ? error
+            : new TgChannelError(
+                classification.kind,
+                classification.reason || STRUCTURE_REASON,
+                { cause: error },
+              );
+        } else if (error?.response?.status === 404) {
+          classifications.push({
+            ok: false,
+            kind: "channel_not_found",
+            reason: "不存在或没有公开预览页（Telegram 返回 404）",
+          });
+          lastError = new TgChannelError(
+            "channel_not_found",
+            `TG 频道 ${normalized} 返回 404`,
+            { cause: error },
+          );
+        } else {
+          lastError = error;
+        }
+      }
+    }
+
+    // 优先保留 Telegram 明确返回的“私有/不存在”结论；例如直连拿到
+    // 私有页后，Jina 失败时也不能被最后一次网络错误覆盖。
+    const classification =
+      classifications.find(
+        (item) =>
+          !item.ok &&
+          (item.kind === "channel_private" ||
+            item.kind === "channel_not_found"),
+      ) ||
+      classifications.find((item) => !item.ok) ||
+      (lastBody ? classifyTgBody(lastBody) : null);
+    if (classification && !classification.ok) {
+      const message =
+        classification.kind === "channel_private"
+          ? "这个频道不是公开频道，或仅提供私密邀请链接，无法添加。"
+          : classification.kind === "channel_not_found"
+            ? "找不到这个公开频道，或它没有公开预览页，无法添加。"
+            : "无法确认这个频道的公开消息结构，请稍后重试。";
+      return {
+        ok: false,
+        channel: normalized,
+        kind: classification.kind,
+        message,
+        route,
+      };
+    }
+    const errorMessage =
+      lastError instanceof Error ? lastError.message : "连接失败";
+    return {
+      ok: false,
+      channel: normalized,
+      kind: "network_error",
+      message: `暂时无法连接 Telegram，频道尚未添加（${errorMessage.slice(0, 120)}）。请稍后重试。`,
+      route,
+    };
+  } finally {
+    scope.dispose();
+  }
+}
+
+function configuredTgParser(settings: TgSourceSettings): ParserPluginRecord {
+  const now = new Date().toISOString();
+  return {
+    id: "tg-source",
+    status: "published",
+    manifest: {
+      id: "tg-source",
+      name: "Telegram 来源",
+      version: settings.parserVersion,
+      description: "SQLite 中配置的 Telegram 请求与 transform",
+      format: "auto",
+      target: "telegram",
+      timeoutMs: 5_000,
+      maxResults: 200,
+    },
+    code: settings.transform,
+    versions: [],
+    createdAt: now,
+    updatedAt: now,
+    updatedBy: "system",
+    publishedVersion: settings.parserVersion,
+  };
+}
+
+async function parseTelegramPayload(
+  body: string,
+  channel: string,
+  keyword: string,
+  limit: number,
+  format: TgPageFormat,
+  url: string,
+  page: number,
+  route: "telegram" | "jina",
+  configuredTransform?: string,
+): Promise<SearchResult[]> {
+  const settings = getTgSourceSettings();
+  const parser = configuredTgParser(configuredTransform ? { ...settings, transform: configuredTransform } : settings);
+  const parserFormat = format === "telegram-html" ? "html" : "text";
+  if (
+    parser.manifest.format !== "auto" &&
+    parser.manifest.format !== parserFormat
+  ) {
+    throw new TgChannelError(
+      "structure_changed",
+      `解析插件 ${parser.id} 需要 ${parser.manifest.format}，当前响应是 ${parserFormat}`,
+    );
+  }
+  try {
+    return parseWithParserPlugin(parser, body, {
+      rawBody: body,
+      format: parserFormat,
+      channel,
+      keyword,
+      source: "telegram",
+      url,
+      page,
+      route,
+    }).slice(0, limit);
+  } catch (error) {
+    // Rows from before transform was configurable can still use the safe
+    // compatibility adapter; configured transforms remain authoritative.
+    return format === "jina-markdown"
+      ? parseJinaChannelMarkdown(body, channel, keyword, limit)
+      : parseChannelPage(load(body), channel, keyword, limit);
+  }
+}
+
+async function fetchChannelPages(
+  channel: string,
+  keyword: string,
+  options: TgFetchOptions,
+  resolved: ReturnType<typeof resolveChannelDefaults>,
+  signal: AbortSignal,
+): Promise<SearchResult[]> {
+  signal.throwIfAborted();
+  const sourceSettings = getTgSourceSettings();
+  const requestHeaders = {
+    ...sourceSettings.headers,
+    ...(resolved.headers || {}),
+    ...(options.headers || {}),
+    ...(options.userAgent ? { "user-agent": options.userAgent } : {}),
+  };
+  const limit = Math.min(
+    200,
+    Math.max(1, Math.floor(resolved.limitPerChannel ?? 50)),
+  );
+  const maxPages = resolved.maxPages
+    ? Math.min(50, Math.max(1, Math.floor(resolved.maxPages)))
+    : Math.ceil(limit / 20);
   const allResults: SearchResult[] = [];
+  const seenCursors = new Set<string>();
   let before: string | undefined;
 
   for (let page = 0; page < maxPages && allResults.length < limit; page++) {
-    const baseUrl = `https://t.me/s/${encodeURIComponent(channel)}`;
-    const url = before ? `${baseUrl}?before=${before}` : baseUrl;
+    signal.throwIfAborted();
+    const pageUrl = resolved.primaryUrl
+      ? buildCustomTgUrl(resolved.primaryUrl, channel, keyword, before)
+      : buildTelegramPageUrl(channel, keyword, before);
+    let pageBody = "";
+    let pageFormat: TgPageFormat | null = null;
+    let lastBody = "";
+    let lastError: unknown;
 
-    let html = "";
-    try {
-      html = await ofetch<string>(url, { headers: { "user-agent": ua } });
-    } catch {}
-
-    if (!html || !html.includes("tgme_widget_message")) {
-      const mirrorUrl = before
-        ? `https://r.jina.ai/https://t.me/s/${encodeURIComponent(channel)}?before=${before}`
-        : `https://r.jina.ai/https://t.me/s/${encodeURIComponent(channel)}`;
-
+    for (const candidate of buildCandidates(
+      pageUrl,
+      channel,
+      resolved.fallback,
+      resolved.fallbackUrls,
+    )) {
+      signal.throwIfAborted();
       try {
-        html = await ofetch<string>(mirrorUrl, {
-          headers: { "user-agent": ua },
-        });
-      } catch {}
+        const body = await fetchTgText(
+          candidate.url,
+          requestHeaders,
+          signal,
+          resolved.timeoutMs,
+          resolved.maxRetries,
+          resolved.retryDelayMs,
+        );
+        signal.throwIfAborted();
+        const format =
+          typeof body === "string"
+            ? detectCandidateFormat(body, candidate.mirror)
+            : null;
+        if (format) {
+          pageBody = body;
+          pageFormat = format;
+          break;
+        }
+        lastBody = typeof body === "string" ? body : "";
+        lastError = new TgChannelError(
+          "structure_changed",
+          `TG 频道 ${channel} ${STRUCTURE_REASON}`,
+        );
+      } catch (error) {
+        signal.throwIfAborted(); // Never start the mirror after cancellation.
+        lastError = error;
+      }
+    }
+    if (!pageBody || !pageFormat) {
+      // 带 q 翻页到无匹配页时，页面没有消息节点属于正常"搜完了"；
+      // 二次确认频道本体有消息后，以已累计结果正常结束，不误报结构变化。
+      if (
+        keyword.trim() &&
+        lastBody &&
+        classifyTgBody(lastBody).kind === "structure_changed"
+      ) {
+        const hasMessages = await channelHasMessagesWithoutKeyword(
+          channel,
+          requestHeaders,
+          resolved.timeoutMs,
+          signal,
+        );
+        if (hasMessages) break;
+      }
+      const failure = buildChannelFailure(channel, lastBody, lastError);
+      if (options.onWarning) {
+        options.onWarning(failure);
+        break;
+      }
+      throw failure;
     }
 
-    if (!html || !html.includes("tgme_widget_message")) {
-      break;
-    }
-
-    const $ = load(html || "");
-    const pageResults = parseChannelPage(
-      $,
+    const pageResults = await parseTelegramPayload(
+      pageBody,
       channel,
       keyword,
       limit - allResults.length,
+      pageFormat,
+      pageUrl,
+      page + 1,
+      pageFormat === "jina-markdown" ? "jina" : "telegram",
+      resolved.transform,
     );
     allResults.push(...pageResults);
 
-    const nextLink = $('a[href*="before="]').first();
-    const href = nextLink.attr("href");
-    if (href) {
-      const match = href.match(/before=([^&]+)/);
-      if (match) {
-        before = match[1];
-      } else {
-        break;
-      }
-    } else {
-      break;
-    }
-
+    const cursor = extractTgPaginationCursor(pageBody, pageFormat);
+    if (!cursor || seenCursors.has(cursor)) break;
+    seenCursors.add(cursor);
+    before = cursor;
     if (page < maxPages - 1 && allResults.length < limit) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await abortableDelay(100, signal);
     }
   }
-
   return allResults;
 }
 
+const HTTP_URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi;
+const MARKDOWN_LINK_RE = /\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi;
+const PASSWORD_RE = /(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,6})/i;
+
+function deproxyUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.hostname === "r.jina.ai") {
+      const path = decodeURIComponent(url.pathname || "");
+      if (path.startsWith("/http://") || path.startsWith("/https://")) {
+        return path.slice(1);
+      }
+    }
+    return raw;
+  } catch {
+    return raw;
+  }
+}
+
+function classifyCloudHostname(hostname: string): string {
+  const host = hostname.toLowerCase();
+  if (host === "t.me" || host.endsWith(".t.me")) return "";
+  if (host === "r.jina.ai") return "";
+  const isDomain = (domain: string) =>
+    host === domain || host.endsWith(`.${domain}`);
+  if (isDomain("alipan.com") || isDomain("aliyundrive.com")) return "aliyun";
+  if (host === "pan.baidu.com") return "baidu";
+  if (host === "pan.quark.cn") return "quark";
+  if (host === "pan.xunlei.com") return "xunlei";
+  if (isDomain("123pan.com")) return "123";
+  if (host === "cloud.189.cn") return "tianyi";
+  if (host === "115.com" || host.endsWith(".115.com")) return "115";
+  if (host === "drive.uc.cn") return "uc";
+  if (host === "yun.139.com") return "mobile";
+  return "";
+}
+
+function cleanUrlCandidate(raw: string): string {
+  return (
+    raw
+      .trim()
+      .replace(/\\([\\`*_{}\[\]()#+.!-])/g, "$1")
+      // Telegram 消息常把 📂/👇 等图标紧跟在分享链接后面；它们不是链接内容。
+      .replace(/[#\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "")
+      .replace(/[，。！？；：、）》】]+$/u, "")
+  );
+}
+
+function extractResourceLinks(
+  text: string,
+  hrefs: string[] = [],
+): { type: string; url: string; password: string }[] {
+  const links: { type: string; url: string; password: string }[] = [];
+  const seenUrls = new Set<string>();
+  const password = text.match(PASSWORD_RE)?.[1] || "";
+  const candidates = [...(text.match(HTTP_URL_RE) || []), ...hrefs];
+
+  for (const raw of candidates) {
+    const deproxied = deproxyUrl(cleanUrlCandidate(raw));
+    let url: URL;
+    try {
+      url = new URL(deproxied);
+    } catch {
+      continue;
+    }
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password
+    ) {
+      continue;
+    }
+    const type = classifyCloudHostname(url.hostname);
+    if (!type) continue;
+    const key = url.href;
+    if (seenUrls.has(key)) continue;
+    seenUrls.add(key);
+    links.push({ type, url: deproxied, password });
+  }
+  return links;
+}
+
+function plainMarkdownText(input: string): string {
+  return input
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\((?:https?:\/\/[^)\s]+)\)/g, "$1")
+    .replace(HTTP_URL_RE, "")
+    .replace(/[\\*_~`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanTitle(input: string): string {
+  return plainMarkdownText(input)
+    .replace(/^\s*(?:【(?:标题|名称)】|标题|名称)\s*[:：]\s*/u, "")
+    .replace(
+      /(?:提取码|密码|下载地址|链接|夸克网盘|百度网盘|阿里云盘|迅雷云盘|115网盘|天翼云盘|123云盘|UC网盘)\s*[:：]?/giu,
+      " ",
+    )
+    .replace(/[|｜]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function cleanContent(input: string): string {
+  return plainMarkdownText(input)
+    .replace(/(?:提取码|密码|pwd|pass)[:：\s]*[a-zA-Z0-9]{3,6}/gi, "")
+    .replace(/^\s*(?:【描述】|描述)\s*[:：]\s*/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+interface TgMessageInput {
+  channel: string;
+  keyword: string;
+  limit: number;
+  postId: string;
+  datetime?: string;
+  text: string;
+  hrefs?: string[];
+  title?: string;
+  content?: string;
+  index: number;
+}
+
+function buildSearchResult(message: TgMessageInput): SearchResult | null {
+  if (message.limit <= 0) return null;
+  const links = extractResourceLinks(message.text, message.hrefs);
+  const searchableText = [message.title, message.content, message.text]
+    .filter(Boolean)
+    .join("\n");
+  if (!matchesSearchKeyword(searchableText, message.keyword) || !links.length) {
+    return null;
+  }
+
+  const firstLine =
+    message.title || message.text.split("\n").find((line) => line.trim()) || "";
+  const title = cleanTitle(firstLine) || cleanTitle(message.text).slice(0, 80);
+  const content = cleanContent(message.content || message.text);
+  const timestamp = message.datetime ? Date.parse(message.datetime) : NaN;
+
+  return {
+    message_id: message.postId,
+    unique_id: `tg-${message.channel}-${message.postId || message.index}`,
+    channel: message.channel,
+    datetime: Number.isFinite(timestamp)
+      ? new Date(timestamp).toISOString()
+      : "",
+    title,
+    content,
+    links,
+  };
+}
+
+/**
+ * 解析 Telegram 公开页 HTML 中的消息。该适配器只处理 Telegram DOM；
+ * Jina Reader 的 Markdown 走 parseJinaChannelMarkdown。两者在结果层统一。
+ */
 export function parseChannelPage(
-  $: cheerio.CheerioAPI,
+  $: CheerioAPI,
   channel: string,
   keyword: string,
   limit: number,
 ): SearchResult[] {
   const results: SearchResult[] = [];
-
-  const deproxyUrl = (raw: string): string => {
-    try {
-      const u = new URL(raw);
-      if (u.hostname === "r.jina.ai") {
-        const path = decodeURIComponent(u.pathname || "");
-        if (path.startsWith("/http://") || path.startsWith("/https://")) {
-          return path.slice(1);
-        }
-      }
-      return raw;
-    } catch {
-      return raw;
-    }
-  };
-
-  const classifyByHostname = (hostname: string): string => {
-    const host = hostname.toLowerCase();
-    if (host === "t.me" || host.endsWith(".t.me")) return "";
-    if (host === "r.jina.ai") return "";
-    if (host.endsWith("alipan.com") || host.endsWith("aliyundrive.com"))
-      return "aliyun";
-    if (host === "pan.baidu.com") return "baidu";
-    if (host === "pan.quark.cn") return "quark";
-    if (host === "pan.xunlei.com") return "xunlei";
-    if (host.endsWith("123pan.com")) return "123";
-    if (host === "cloud.189.cn") return "tianyi";
-    if (host === "115.com" || host.endsWith(".115.com")) return "115";
-    if (host === "drive.uc.cn") return "uc";
-    if (host === "yun.139.com") return "mobile";
-    return "";
-  };
-
   $(".tgme_widget_message_wrap").each((i, el) => {
     if (results.length >= limit) return false;
     const root = $(el);
     const text = root.find(".tgme_widget_message_text").text().trim();
     const dateTitle = root.find("time").attr("datetime") || "";
     const postId = root.find(".tgme_widget_message").attr("data-post") || "";
-    const firstLine = text.split("\n")[0] || text.slice(0, 80);
-
-    if (!matchesSearchKeyword(text, keyword)) {
-      return;
-    }
-
-    const links: { type: string; url: string; password: string }[] = [];
-    const seenUrls = new Set<string>();
-    const urlPattern = /https?:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]+/g;
-    const passwdPattern = /(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,6})/i;
-
-    const addUrl = (raw: string) => {
-      const deproxied = deproxyUrl(raw);
-      let host = "";
-      try {
-        host = new URL(deproxied).hostname || "";
-      } catch {
-        return;
-      }
-      const type = classifyByHostname(host);
-      if (!type) return;
-
-      const key = deproxied.toLowerCase();
-      if (seenUrls.has(key)) return;
-      seenUrls.add(key);
-
-      const m = text.match(passwdPattern);
-      const password = m ? m[1] : "";
-      links.push({ type, url: deproxied, password });
-    };
-
-    const urlsFromText = text.match(urlPattern) || [];
-    for (const u of urlsFromText) addUrl(u);
-
-    root.find(".tgme_widget_message_text a[href]").each((_, a) => {
-      const href = $(a).attr("href");
-      if (href) addUrl(href);
-    });
-
-    let title = firstLine;
-    for (const link of links) {
-      const escaped = link.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      title = title.replace(new RegExp(escaped, "g"), "");
-    }
-    title = title
-      .replace(
-        /(名称|描述|链接|大小|标签|夸克|UC|百度|阿里|迅雷|115|天翼|123|移动|提取码|密码|📧|📿|：|,|\.|\||-|\s)+/g,
-        " ",
-      )
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 80);
-    if (!title) title = firstLine.slice(0, 80);
-
-    let content = text;
-    for (const link of links) {
-      const escaped = link.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      content = content.replace(new RegExp(escaped, "g"), "");
-      if (link.password) {
-        content = content.replace(
-          new RegExp(`(?:提取码|密码|pwd|pass)[:：\\s]*${link.password}`, "gi"),
-          "",
-        );
-      }
-    }
-    content = content
-      .replace(/(夸克|UC|百度|阿里|迅雷|115|天翼|123|移动|：|,|\.|\||-)+/g, "")
-      .replace(/\s+/g, " ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-
-    results.push({
-      message_id: postId,
-      unique_id: `tg-${channel}-${postId || i}`,
+    const hrefs = root
+      .find(".tgme_widget_message_text a[href]")
+      .map((_, a) => $(a).attr("href") || "")
+      .get()
+      .filter(Boolean);
+    const result = buildSearchResult({
       channel,
-      datetime: dateTitle ? new Date(dateTitle).toISOString() : "",
-      title,
-      content,
-      links,
+      keyword,
+      limit: limit - results.length,
+      postId,
+      datetime: dateTitle,
+      text,
+      hrefs,
+      index: i,
     });
+    if (result) results.push(result);
+  });
+  return results;
+}
+
+function extractJinaTitle(block: string): string {
+  return (
+    block.match(/(?:^|\n)\s*【标题】\s*[:：]\s*([^\n]+)/u)?.[1]?.trim() ||
+    block
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ||
+    ""
+  );
+}
+
+function extractJinaDescription(block: string): string {
+  const marker = /【描述】\s*[:：]\s*/u.exec(block);
+  if (!marker || marker.index === undefined) return "";
+  const start = marker.index + marker[0].length;
+  const rest = block.slice(start);
+  const end = rest.search(
+    /\n\s*(?:_?\*{1,3}[^\n]*(?:下载地址|类\s*型|标\s*签|来\s*自|频\s*道|群\s*组|搜资源)[^\n]*|【(?:标题|描述)】\s*[:：])/u,
+  );
+  return (end >= 0 ? rest.slice(0, end) : rest).trim();
+}
+
+/**
+ * 解析 Jina Reader 的 Markdown Content。Jina 会把一条消息输出为
+ * `[](https://t.me/<channel>/<postId>)` 加标题、描述和 Markdown 链接，
+ * 与 Telegram HTML DOM 不是同一种格式，不能共用 DOM 解析器。
+ */
+export function parseJinaChannelMarkdown(
+  markdown: string,
+  channel: string,
+  keyword: string,
+  limit: number,
+): SearchResult[] {
+  const results: SearchResult[] = [];
+  const contentStart = markdown.search(/^Markdown Content:\s*$/im);
+  const content =
+    contentStart >= 0
+      ? markdown.slice(markdown.indexOf("\n", contentStart) + 1)
+      : markdown;
+  const expectedChannel = channel.trim().replace(/^@/, "").toLowerCase();
+  const markers = [...content.matchAll(JINA_MESSAGE_LINK_RE)];
+
+  markers.forEach((marker, index) => {
+    if (results.length >= limit) return;
+    const markerText = marker[0];
+    const markerStart = marker.index ?? 0;
+    const blockStart = markerStart + markerText.length;
+    const blockEnd = markers[index + 1]?.index ?? content.length;
+    const block = content.slice(blockStart, blockEnd).trim();
+    const linkedChannel = marker[2] || "";
+    const postId = marker[3] || "";
+    if (linkedChannel.toLowerCase() !== expectedChannel || !postId) return;
+
+    const title = extractJinaTitle(block);
+    const description = extractJinaDescription(block);
+    const hrefs = [...block.matchAll(MARKDOWN_LINK_RE)]
+      .map((link) => link[1])
+      .filter((href): href is string => Boolean(href));
+    const result = buildSearchResult({
+      channel,
+      keyword,
+      limit: limit - results.length,
+      postId: `${linkedChannel}/${postId}`,
+      text: [title, description, block].filter(Boolean).join("\n"),
+      hrefs,
+      title,
+      content: description || block,
+      index,
+    });
+    if (result) results.push(result);
   });
 
   return results;
+}
+
+function extractTgPaginationCursor(
+  body: string,
+  format: TgPageFormat,
+): string | undefined {
+  if (format === "telegram-html") {
+    const href = load(body)("a[href*='before=']").first().attr("href");
+    return href?.match(/[?&]before=(\d+)(?:&|$)/)?.[1];
+  }
+  const urls = [...body.matchAll(/https?:\/\/[^\s)]+/gi)].map(
+    (match) => match[0],
+  );
+  for (const raw of urls) {
+    try {
+      const url = new URL(cleanUrlCandidate(raw));
+      const before = url.searchParams.get("before");
+      if (before && /^\d+$/.test(before)) return before;
+    } catch {
+      // Ignore unrelated malformed Markdown links.
+    }
+  }
+  return undefined;
 }
 
 const TG_RAW_BODY_LIMIT = 30_000;
@@ -268,6 +1098,24 @@ function snapshotResponse(
 }
 
 /**
+ * 诊断探针完成后记录频道健康（source: "probe"）：
+ * - 可用（或页面正常但该关键词零结果）视为成功；
+ * - 页面不可用（不存在/私有/结构变化）与网络失败视为失败。
+ */
+function recordProbeHealth(result: TgProbeResult): void {
+  recordTgChannelHealth({
+    channel: result.channel,
+    at: Date.now(),
+    ok: result.state === "available" || result.failureKind === "no_results",
+    elapsedMs: result.elapsedMs,
+    resultsCount: result.results.length,
+    ...(result.failureKind ? { failureKind: result.failureKind } : {}),
+    message: result.message,
+    source: "probe",
+  });
+}
+
+/**
  * Lightweight diagnostic for the public-channel tester.
  * It only accepts a Telegram channel username and talks to two fixed public
  * web endpoints; it is not an arbitrary URL fetcher.
@@ -279,43 +1127,82 @@ export async function probeTgChannel(
   options: TgFetchOptions = {},
 ): Promise<TgProbeResult> {
   const started = Date.now();
-  const ua =
-    options.userAgent ||
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+  const sourceSettings = getTgSourceSettings();
   const safeLimit = Math.min(50, Math.max(1, Math.floor(limit)));
-  const baseUrl = `https://t.me/s/${encodeURIComponent(channel)}`;
+  const resolved = resolveChannelDefaults(channel, options);
+  const requestHeaders = {
+    ...sourceSettings.headers,
+    ...(resolved.headers || {}),
+    ...(options.headers || {}),
+    ...(options.userAgent ? { "user-agent": options.userAgent } : {}),
+  };
+  const baseUrl = resolved.primaryUrl
+    ? buildCustomTgUrl(resolved.primaryUrl, channel, keyword)
+    : buildTelegramPageUrl(channel, keyword);
+  const candidates = buildCandidates(baseUrl, channel, resolved.fallback, resolved.fallbackUrls).map(
+    (candidate) => ({
+      url: candidate.url,
+      mirror: candidate.mirror,
+      route: (candidate.mirror ? "jina" : "telegram") as "telegram" | "jina",
+      stage: (candidate.mirror ? "jina" : "direct") as "direct" | "jina",
+    }),
+  );
   let route: TgProbeResult["route"] = "none";
   let status: number | null = null;
-  let html = "";
+  let pageBody = "";
+  let pageFormat: TgPageFormat | null = null;
+  let lastBody = "";
   let lastError = "";
   const attempts: TgProbeAttempt[] = [];
+  const stages: TgProbeStage[] = [];
 
-  for (const candidate of [
-    { url: baseUrl, route: "telegram" as const },
-    { url: `https://r.jina.ai/${baseUrl}`, route: "jina" as const },
-  ]) {
+  for (const candidate of candidates) {
     const attemptStarted = Date.now();
     const request: TgProbeRequestSnapshot = {
       method: "GET",
       url: candidate.url,
-      headers: { "user-agent": ua },
+      headers: requestHeaders,
     };
     try {
-      const response = await ofetch.raw<string>(candidate.url, {
-        headers: request.headers,
-        retry: 0,
-        timeout: 10000,
-      });
+      const response = await runWithFallbackRetry(
+        [candidate.url],
+        () => ofetch.raw<string>(candidate.url, {
+          headers: request.headers,
+          retry: 0,
+          timeout: resolved.timeoutMs,
+          signal: options.signal,
+        }),
+        {
+          signal: options.signal,
+          maxRetries: resolved.maxRetries,
+          delayMs: resolved.retryDelayMs,
+        },
+      );
       status = response.status;
-      html = typeof response._data === "string" ? response._data : "";
+      const body = typeof response._data === "string" ? response._data : "";
+      const format = detectCandidateFormat(body, candidate.mirror);
       route = candidate.route;
+      if (!format) lastBody = body;
+      const usable = format !== null;
+      stages.push({
+        stage: candidate.stage,
+        durationMs: Date.now() - attemptStarted,
+        ok: usable,
+        url: candidate.url,
+        bytes: body.length,
+        ...(usable ? {} : { error: classifyTgBody(body).reason }),
+      });
       attempts.push({
         route: candidate.route,
         request,
-        response: snapshotResponse(response.status, response.headers, html),
+        response: snapshotResponse(response.status, response.headers, body),
         elapsedMs: Date.now() - attemptStarted,
       });
-      if (html.includes("tgme_widget_message")) break;
+      if (usable) {
+        pageBody = body;
+        pageFormat = format;
+        break;
+      }
     } catch (error: any) {
       const errorResponse = error?.response;
       const errorBody =
@@ -323,8 +1210,18 @@ export async function probeTgChannel(
       if (typeof errorResponse?.status === "number") {
         status = errorResponse.status;
       }
+      // runWithFallbackRetry wraps the last transport error in a
+      // FallbackExhaustedError. Keep the root error in probe diagnostics so
+      // retry/fallback policy details do not hide the actionable cause.
+      const rootError =
+        error?.name === "FallbackExhaustedError" ? error?.cause : error;
       lastError =
-        error?.cause?.code || error?.code || error?.message || "请求失败";
+        rootError?.cause?.code ||
+        rootError?.code ||
+        rootError?.message ||
+        error?.message ||
+        "请求失败";
+      if (errorBody) lastBody = errorBody;
       attempts.push({
         route: candidate.route,
         request,
@@ -339,6 +1236,14 @@ export async function probeTgChannel(
         elapsedMs: Date.now() - attemptStarted,
         error: lastError,
       });
+      stages.push({
+        stage: candidate.stage,
+        durationMs: Date.now() - attemptStarted,
+        ok: false,
+        url: candidate.url,
+        ...(errorBody ? { bytes: errorBody.length } : {}),
+        error: lastError,
+      });
     }
   }
 
@@ -351,25 +1256,58 @@ export async function probeTgChannel(
     upstreamRequest: lastAttemptWithResponse?.request || null,
     upstreamResponse: lastAttemptWithResponse?.response || null,
   };
-  if (!html || !html.includes("tgme_widget_message")) {
-    return {
+  if (!pageBody || !pageFormat) {
+    // 已拿到页面但缺少对应线路的响应结构 → 明确告警；完全没拿到 → 网络失败。
+    const classification = lastBody ? classifyTgBody(lastBody) : null;
+    let failureKind = classification ? classification.kind : "network_error";
+    let failureMessage = classification
+      ? classification.kind === "structure_changed"
+        ? classification.reason
+        : `频道${classification.reason}`
+      : `公开页面请求失败：${lastError}`;
+    if (classification?.kind === "structure_changed" && keyword.trim()) {
+      const hasMessages = await channelHasMessagesWithoutKeyword(
+        channel,
+        requestHeaders,
+        resolved.timeoutMs,
+        options.signal,
+      );
+      if (hasMessages) {
+        failureKind = "no_results";
+        failureMessage = "关键词无匹配";
+      }
+    }
+    const result: TgProbeResult = {
       channel,
       keyword,
-      state: lastError ? "error" : "warning",
-      message: lastError
-        ? `公开页面请求失败：${lastError}`
-        : "页面可访问，但未识别到公开频道消息结构",
+      state: classification ? "warning" : "error",
+      message: failureMessage,
       elapsedMs,
       checkedAt: new Date().toISOString(),
       route,
       httpStatus: status,
       results: [],
+      failureKind,
+      stages,
       ...diagnostics,
     };
+    recordProbeHealth(result);
+    return result;
   }
 
-  const results = parseChannelPage(load(html), channel, keyword, safeLimit);
-  return {
+  const results = await parseTelegramPayload(
+    pageBody,
+    channel,
+    keyword,
+    safeLimit,
+    pageFormat,
+    attempts.find((attempt) => attempt.response?.body === pageBody)?.request
+      .url || "",
+    1,
+    route === "jina" ? "jina" : "telegram",
+    resolved.transform,
+  );
+  const result: TgProbeResult = {
     channel,
     keyword,
     state: results.length ? "available" : "warning",
@@ -381,6 +1319,10 @@ export async function probeTgChannel(
     route,
     httpStatus: status,
     results,
+    ...(results.length ? {} : { failureKind: "no_results" as const }),
+    stages,
     ...diagnostics,
   };
+  recordProbeHealth(result);
+  return result;
 }

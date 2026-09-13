@@ -1,4 +1,4 @@
-/** Bounded, opt-in live diagnostics. Run: node test/upstream-diagnostics.mjs [keyword]
+/** Bounded, opt-in live diagnostics. Run: TG_CHANNEL=name node test/upstream-diagnostics.mjs [keyword]
  * Invokes the registered plugins directly, bypassing search cache and keyword variants.
  * Does not change the running application or send authentication credentials.
  */
@@ -17,6 +17,7 @@ const jiti = createJiti(import.meta.url);
 const context = new AsyncLocalStorage();
 const nativeFetch = globalThis.fetch.bind(globalThis);
 const keyword = process.argv[2] || '三体';
+const tgChannel = process.env.TG_CHANNEL?.trim();
 const report = {
   startedAt: new Date().toISOString(), keyword,
   limits: { pluginBudgetMs: 20000, requestBudgetMs: 10000, maxRequestsPerPlugin: 12, maxBodyBytes: 2 * 1024 * 1024 },
@@ -91,9 +92,24 @@ const output = path.join(root, 'logs', `upstream-diagnostics-${report.startedAt.
 try {
   const { getOrCreateSearchService } = await jiti.import(path.join(root, 'server/core/services/index.ts'));
   const service = getOrCreateSearchService({ cacheEnabled: false, defaultChannels: [], defaultConcurrency: 1, pluginTimeoutMs: 10000 });
-  const tasks = service.getPluginManager().getPlugins().map(plugin => ({ name: plugin.name(), run: () => plugin.search(keyword, { __plugin_timeout_ms: 10000 }) }));
-  const { fetchTgChannelPosts } = await jiti.import(path.join(root, 'server/core/services/tg.ts'));
-  tasks.push({ name: 'tg:tgsearchers3', run: () => fetchTgChannelPosts('tgsearchers3', keyword, { limitPerChannel: 20 }) });
+  const tasks = service.getPluginManager().snapshot().plugins.map(plugin => ({
+    name: plugin.manifest.id,
+    run: () => {
+      const scope = context.getStore();
+      return plugin.search({
+        searchId: `diagnostic-${Date.now()}`,
+        keyword,
+        keywordVariants: [keyword],
+        timeoutMs: report.limits.requestBudgetMs,
+        signal: scope.controller.signal,
+        ext: Object.freeze({ diagnostic: true }),
+      });
+    },
+  }));
+  if (tgChannel) {
+    const { fetchTgChannelPosts } = await jiti.import(path.join(root, 'server/core/services/tg.ts'));
+    tasks.push({ name: `tg:${tgChannel}`, run: () => fetchTgChannelPosts(tgChannel, keyword, { limitPerChannel: 20 }) });
+  }
   for (const task of tasks) {
     const scope = { name: task.name, count: 0, suppressed: 0, controller: new AbortController() };
     const timer = setTimeout(() => scope.controller.abort(new Error('Diagnostic plugin 20s budget exceeded')), report.limits.pluginBudgetMs);

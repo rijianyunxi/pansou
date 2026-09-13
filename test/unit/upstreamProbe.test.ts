@@ -11,7 +11,7 @@ describe("safe upstream probing", () => {
       "fetch",
       vi.fn().mockResolvedValue(json({ code: 414, msg: "请求验证失败" })),
     );
-    const result = await probeBuiltinUpstream("qkpanso", "三体");
+    const result = await probeBuiltinUpstream("hunhepan", "三体");
     expect(result).toMatchObject({
       state: "error",
       httpStatus: 200,
@@ -41,8 +41,8 @@ describe("safe upstream probing", () => {
     const result = await probeBuiltinUpstream("hunhepan", "test");
     expect(result.state).toBe("available");
     expect(result.results).toHaveLength(1);
-    expect(result.results[0].links[0].type).toBe("quark");
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+    expect(result.results[0]!.links[0]!.type).toBe("quark");
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
       redirect: "manual",
       method: "POST",
     });
@@ -83,14 +83,14 @@ describe("safe upstream probing", () => {
     const result = await probeBuiltinUpstream("hunhepan", "test");
     expect(result.httpStatus).toBeNull();
     expect(result.message).toContain("CERT_HAS_EXPIRED");
-    expect(result.traces[0].error).toContain("certificate expired");
+    expect(result.traces[0]!.error).toContain("certificate expired");
   });
   it("marks HTML transport-only adapters as unconfirmed", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response("<html>Loading…</html>")),
     );
-    expect((await probeBuiltinUpstream("thepiratebay", "test")).state).toBe(
+    expect((await probeBuiltinUpstream("duoduo", "test")).state).toBe(
       "warning",
     );
   });
@@ -105,7 +105,7 @@ describe("safe upstream probing", () => {
           ),
         ),
     );
-    expect((await probeBuiltinUpstream("nyaa", "test")).results[0].title).toBe(
+    expect((await probeBuiltinUpstream("nyaa", "test")).results[0]!.title).toBe(
       "Test",
     );
   });
@@ -130,7 +130,7 @@ describe("safe upstream probing", () => {
     const result = await probeBuiltinUpstream("pansearch", "a&b");
     expect(result.state).toBe("available");
     expect(result.traces).toHaveLength(2);
-    expect(mock.mock.calls[1][0]).toBe(
+    expect(mock.mock.calls[1]![0]).toBe(
       "https://www.pansearch.me/_next/data/safe_build/search.json?keyword=a%26b&offset=0",
     );
   });

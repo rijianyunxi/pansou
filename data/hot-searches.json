@@ -1,47 +1,59 @@
 {
   "items": [
     {
+      "term": "西游记",
+      "score": 4,
+      "lastSearched": 1789241953148,
+      "createdAt": 1789211886554
+    },
+    {
+      "term": "无间道",
+      "score": 3,
+      "lastSearched": 1789230532850,
+      "createdAt": 1789201012397
+    },
+    {
+      "term": "庆余年",
+      "score": 3,
+      "lastSearched": 1789228638112,
+      "createdAt": 1789200460338
+    },
+    {
       "term": "高分词",
       "score": 3,
-      "lastSearched": 1788965774121,
-      "createdAt": 1788965774121
+      "lastSearched": 1789199262060,
+      "createdAt": 1789199262059
     },
     {
-      "term": "蜘蛛侠：崭新之日",
+      "term": "springboot",
       "score": 1,
-      "lastSearched": 1788967782799,
-      "createdAt": 1788967782799
+      "lastSearched": 1789232890758,
+      "createdAt": 1789232890758
     },
     {
-      "term": "欢迎来龙餐馆",
+      "term": "白日梦想家",
       "score": 1,
-      "lastSearched": 1788967693390,
-      "createdAt": 1788967693390
+      "lastSearched": 1789223830261,
+      "createdAt": 1789223830261
     },
     {
-      "term": "奥德赛",
+      "term": "三体",
       "score": 1,
-      "lastSearched": 1788967660788,
-      "createdAt": 1788967660788
-    },
-    {
-      "term": "忠犬八公的故事",
-      "score": 1,
-      "lastSearched": 1788967596207,
-      "createdAt": 1788967596207
-    },
-    {
-      "term": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "score": 1,
-      "lastSearched": 1788965774122,
-      "createdAt": 1788965774122
+      "lastSearched": 1789220513549,
+      "createdAt": 1789220513549
     },
     {
       "term": "低分词",
       "score": 1,
-      "lastSearched": 1788965774121,
-      "createdAt": 1788965774121
+      "lastSearched": 1789199262060,
+      "createdAt": 1789199262060
+    },
+    {
+      "term": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "score": 1,
+      "lastSearched": 1789199262060,
+      "createdAt": 1789199262060
     }
   ],
-  "updatedAt": 1788967782799
+  "updatedAt": 1789241953149
 }

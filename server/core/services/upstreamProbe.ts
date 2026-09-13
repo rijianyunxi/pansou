@@ -1,14 +1,13 @@
 import { load } from "cheerio";
-import {
-  BUILTIN_UPSTREAMS,
-  buildUpstreamRequest,
-  type UpstreamProbe,
-  type ProbeTrace,
-} from "../../../config/upstreams";
+import { type UpstreamProbe, type ProbeTrace } from "../../../config/upstreams";
+import { getConfiguredUpstream } from "./upstreamCatalog";
+import { executeInstructions } from "../instructions/executor";
+import { isCoreCompatibleConfiguration, upstreamToInstructionDefinition } from "./configuredUpstreamPlugin";
 import {
   normalizeUpstreamJson,
   validResourceUrl,
 } from "../../../utils/upstreamAdapter";
+import { parseConfiguredUpstreamResponse } from "../parsers/upstream";
 import type { SearchResult } from "../types/models";
 
 function networkMessage(error: any): string {
@@ -17,13 +16,72 @@ function networkMessage(error: any): string {
   return `${code}: ${cause?.message || "请求失败"}`;
 }
 
-/** Fixed destinations only. No custom URLs, redirects, retries, or TLS overrides. */
-export async function probeBuiltinUpstream(
-  id: string,
+async function probeDeclarativeUpstream(
+  source: NonNullable<ReturnType<typeof getConfiguredUpstream>>,
   keyword: string,
 ): Promise<UpstreamProbe> {
-  const source = BUILTIN_UPSTREAMS.find((s) => s.id === id);
+  const started = Date.now();
+  const result: UpstreamProbe = {
+    sourceId: source.id,
+    checkedAt: new Date().toISOString(),
+    state: "error",
+    message: "",
+    elapsedMs: 0,
+    httpStatus: null,
+    traces: [],
+    raw: "",
+    rawTruncated: false,
+    results: [],
+  };
+  try {
+    const execution = await executeInstructions(upstreamToInstructionDefinition(source), keyword, {
+      limit: 200,
+    });
+    result.results = execution.results;
+    result.traces = execution.traces.map((trace) => ({
+      stage: trace.stage,
+      url: trace.url,
+      method: trace.method,
+      status: trace.status,
+      elapsedMs: trace.elapsedMs,
+      bytes: trace.bytes,
+      contentType: trace.contentType || "",
+      ...(trace.error ? { error: trace.error } : {}),
+    }));
+    const lastResponse = [...result.traces].reverse().find((trace) => trace.status != null);
+    result.httpStatus = lastResponse?.status ?? null;
+    result.raw = execution.raw;
+    result.rawTruncated = execution.rawTruncated;
+    result.state = "available";
+    result.message = result.results.length
+      ? `解析成功，输出 ${result.results.length} 条统一结果`
+      : "请求成功，本次关键词无有效结果";
+    return result;
+  } catch (error) {
+    result.message = error instanceof Error ? error.message : String(error);
+    const lastResponse = [...result.traces].reverse().find((trace) => trace.status != null);
+    result.httpStatus = lastResponse?.status ?? null;
+    return result;
+  } finally {
+    result.elapsedMs = Date.now() - started;
+  }
+}
+
+/** Probe the currently published SQLite catalog entry. Core owns only the safe probe and handler logic. */
+export async function probeConfiguredUpstream(
+  id: string,
+  keyword: string,
+  options: { legacyCore?: boolean } = {},
+): Promise<UpstreamProbe> {
+  const source = getConfiguredUpstream(id);
   if (!source) throw new Error("Unknown upstream");
+  // An edited catalog row must be diagnosed through the same declarative
+  // executor as formal search. The legacy branch remains only for an
+  // untouched seeded Core capability (Nyaa/Next.js/build-id semantics, etc.).
+  if (!options.legacyCore && !isCoreCompatibleConfiguration(source)) {
+    return probeDeclarativeUpstream(source, keyword);
+  }
+  const sourceUrl = source.url;
   const started = Date.now();
   const result: UpstreamProbe = {
     sourceId: id,
@@ -55,16 +113,12 @@ export async function probeBuiltinUpstream(
     result.traces.push(trace);
     const start = Date.now();
     try {
-      const referrers: Record<string, string> = {
-        jikepan: "https://jikepan.xyz/",
-        qupansou: "https://pan.funletu.com/",
-      };
       const response = await fetch(url, {
         method,
         body: body ? JSON.stringify(body) : undefined,
         headers: {
           "user-agent": "Mozilla/5.0",
-          referer: referrers[id] || `${new URL(source.url).origin}/search`,
+          referer: `${new URL(sourceUrl).origin}/search`,
           ...(body ? { "content-type": "application/json" } : {}),
         },
         signal: controller.signal,
@@ -100,8 +154,21 @@ export async function probeBuiltinUpstream(
     }
   }
   try {
-    const req = buildUpstreamRequest(id, keyword);
-    let response = await request(req.url, req.method, req.body);
+    const baseUrl = new URL(source.url);
+    let requestUrl = source.url;
+    let requestBody: Record<string, unknown> | undefined;
+    if (id === "hunhepan" && source.method === "POST") {
+      requestBody = { q: keyword, exact: true, page: 1, size: 30, type: "", time: "", from: "web", user_id: 0, filter: true };
+    } else if (source.method === "POST") {
+      requestBody = { keyword };
+    } else if (source.method === "GET") {
+      const parsed = new URL(source.url);
+      if (id === "nyaa") { parsed.searchParams.set("f", "0"); parsed.searchParams.set("c", "0_0"); parsed.searchParams.set("q", keyword); parsed.searchParams.set("s", "seeders"); parsed.searchParams.set("o", "desc"); }
+      else if (id === "duoduo") requestUrl = `${source.url.replace(/\/$/, "")}/index.php/vod/search/wd/${encodeURIComponent(keyword)}.html`;
+      else parsed.searchParams.set("keyword", keyword);
+      if (requestUrl === source.url) requestUrl = parsed.toString();
+    }
+    let response = await request(requestUrl, source.method, requestBody);
     if (!response.ok) {
       result.message =
         response.status >= 300 && response.status < 400
@@ -111,6 +178,32 @@ export async function probeBuiltinUpstream(
         result.message += "；检测到验证页面";
       return result;
     }
+
+    // The configured transform is the same response path used by formal search.
+    let parserPayload: unknown = response.text;
+    if (source.format === "json") {
+      try {
+        parserPayload = JSON.parse(response.text);
+      } catch {
+        result.message = "HTTP 200，但响应不是预期的 JSON";
+        return result;
+      }
+    }
+    const configured = await parseConfiguredUpstreamResponse(source.id, parserPayload, source.format, {
+      keyword,
+      rawBody: response.text,
+      url: requestUrl,
+      page: 1,
+    });
+    if (configured !== null) {
+      result.results = configured;
+      result.state = "available";
+      result.message = result.results.length
+        ? `解析成功，输出 ${result.results.length} 条统一结果`
+        : "请求成功，本次关键词无有效结果";
+      return result;
+    }
+
     if (id === "pansearch") {
       const buildId = response.text.match(/"buildId":"([a-zA-Z0-9_-]+)"/)?.[1];
       if (!buildId) {
@@ -119,7 +212,7 @@ export async function probeBuiltinUpstream(
         return result;
       }
       response = await request(
-        `https://www.pansearch.me/_next/data/${encodeURIComponent(buildId)}/search.json?keyword=${encodeURIComponent(keyword)}&offset=0`,
+        `${baseUrl.origin}/_next/data/${encodeURIComponent(buildId)}/search.json?keyword=${encodeURIComponent(keyword)}&offset=0`,
       );
       if (!response.ok) {
         result.message = `Next.js 数据接口返回 HTTP ${response.status}`;
@@ -149,16 +242,16 @@ export async function probeBuiltinUpstream(
         result.message = "HTTP 200，但响应不是预期的 JSON";
         return result;
       }
-      const code =
-        source.adapter === "disk-json"
-          ? data.code
-          : id === "jikepan"
-            ? data.msg
-            : data.status;
-      result.businessCode = String(code ?? "缺失");
-      if (code !== (id === "jikepan" ? "success" : 200)) {
-        result.message = `业务校验失败 · ${result.businessCode}：${String(data.msg || data.message || "缺少成功状态").slice(0, 200)}`;
-        return result;
+      // Only the legacy disk endpoint has a mandatory business status code.
+      // Generic JSON sources are validated by their configured field mapping;
+      // requiring data.status === 200 would reject otherwise valid APIs.
+      if (source.adapter === "disk-json") {
+        const code = data.code;
+        result.businessCode = String(code ?? "缺失");
+        if (code !== 200) {
+          result.message = `业务校验失败 · ${result.businessCode}：${String(data.msg || data.message || "缺少成功状态").slice(0, 200)}`;
+          return result;
+        }
       }
       result.results = normalizeUpstreamJson(data, source.mapping, source.id);
     } else if (id === "nyaa") {
@@ -211,3 +304,8 @@ export async function probeBuiltinUpstream(
     result.elapsedMs = Date.now() - started;
   }
 }
+
+/** @deprecated Kept for callers that explicitly exercise Core diagnostics. */
+export async function probeBuiltinUpstream(id: string, keyword: string): Promise<UpstreamProbe> {
+  return probeConfiguredUpstream(id, keyword, { legacyCore: true });
+};

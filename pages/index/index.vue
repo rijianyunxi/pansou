@@ -1,43 +1,57 @@
 <template>
   <div class="home">
-    <!-- 英雄区域 + 热门搜索 -->
-    <div class="hero-row">
-      <div class="hero-noise" aria-hidden="true" />
-      <header class="hero">
-        <div class="hero-accent" aria-hidden="true" />
-        <div class="hero-content">
-          <div class="hero-badge">PanHub 搜索聚合引擎</div>
-          <h1 class="hero-title">
-            <span class="hero-title-line">一键检索</span>
-            <span class="hero-title-line hero-title-line--accent">全网网盘资源</span>
-          </h1>
-          <p class="hero-description">
-            聚合阿里云盘、夸克、百度网盘、115、迅雷等平台 · 快速、直达、少打扰
-          </p>
-          <ul class="hero-features" role="list">
-            <li class="hero-feature">实时聚合</li>
-            <li class="hero-feature">多平台覆盖</li>
-            <li class="hero-feature">结果去重</li>
-          </ul>
-        </div>
-        <div class="hero-shape" aria-hidden="true" />
-      </header>
-      <aside class="hero-aside">
-        <HotSearchSection ref="hotSearchRef" :on-search="quickSearch" />
-      </aside>
-    </div>
+    <!-- 简洁大标题 -->
+    <header class="hero">
+      <h1 class="hero-title">全网网盘资源搜索</h1>
+      <p class="hero-description">
+        网盘、磁力、公开频道，一个搜索框直达。
+      </p>
+    </header>
 
-    <!-- 搜索框 -->
-    <SearchBox
-      v-model="kw"
-      :loading="searchState.loading"
-      :paused="searchState.paused"
-      :searched="searched"
-      :placeholder="placeholder"
-      @search="onSearch"
-      @reset="fullReset"
-      @pause="pauseSearch"
-      @continue="handleContinueSearch" />
+    <section class="search-workspace" aria-label="资源搜索">
+      <div class="search-toolbar">
+        <SearchScopeControl v-model="onlyUserTg" :count="settings.userTgChannels.length" :disabled="searchState.loading || !settingsReady" />
+        <button type="button" class="manage-channels" :disabled="!settingsReady" @click="openChannelSettings">
+          <span aria-hidden="true">+</span> {{ settings.userTgChannels.length ? '管理频道' : '添加频道' }}
+        </button>
+      </div>
+      <SearchBox
+        v-model="kw"
+        :loading="searchState.loading"
+        :paused="searchState.paused"
+        :searched="searched"
+        :search-disabled="!settingsReady || needsChannelConfiguration"
+        :disabled-description-id="needsChannelConfiguration && !searchState.loading ? 'channel-configuration-hint' : undefined"
+        :placeholder="onlyUserTg ? '搜索自定义频道…' : placeholder"
+        @search="onSearch"
+        @reset="fullReset"
+        @pause="pauseSearch"
+        @continue="handleContinueSearch" />
+      <div class="channel-configuration-status" role="status" aria-live="polite">
+        <div v-if="needsChannelConfiguration && !searchState.loading" class="channel-configuration-notice">
+          <div id="channel-configuration-hint">
+            <strong>「自定义频道」还没有可搜索的频道</strong>
+            <p>先添加公开频道，再选择「自定义频道」开始搜索。</p>
+          </div>
+          <button type="button" class="configure-channels" @click="openChannelSettings">添加频道</button>
+        </div>
+      </div>
+      <div class="scope-summary" aria-live="polite">
+        <p v-if="onlyUserTg && settings.userTgChannels.length">只搜索你添加的 {{ settings.userTgChannels.length }} 个公开频道，不会请求其他配置来源。</p>
+        <div v-if="onlyUserTg && settings.userTgChannels.length" class="channel-preview" aria-label="已添加的自定义频道">
+          <span v-for="channel in settings.userTgChannels.slice(0, 3)" :key="channel" class="channel-chip">@{{ channel }}</span>
+          <button v-if="settings.userTgChannels.length > 3" type="button" @click="openChannelSettings">+{{ settings.userTgChannels.length - 3 }} 个</button>
+        </div>
+        <p v-if="searchState.paused">继续时使用本次搜索的原始参数；频道修改将在下一次搜索生效。</p>
+      </div>
+    </section>
+    <p v-if="storageError" class="search-notice" role="alert">{{ storageError }}</p>
+    <p v-if="searchState.warning" class="search-notice" role="status">{{ searchState.warning }}</p>
+
+    <!-- 热门搜索：仅未搜索时展示 -->
+    <div v-if="!searched" class="hot-search-section">
+      <HotSearchSection ref="hotSearchRef" :on-search="quickSearch" />
+    </div>
 
     <!-- 统计和过滤器 -->
     <div v-if="searched" class="stats-bar">
@@ -103,13 +117,13 @@
           :expanded="filterPlatform !== 'all' || isExpanded(group.type)"
           :initial-visible="initialVisible"
           :can-toggle-collapse="false"
-          @toggle="handleToggle(group.type)"
+          @toggle="handleExpand(group.type)"
           @copy="copyLink" />
       </div>
     </section>
 
     <!-- 空状态：仅当搜索完全结束且无结果时显示，搜索进行中不显示 -->
-    <section v-else-if="searched && !searchState.loading && !searchState.deepLoading && !searchState.paused" class="empty-state">
+    <section v-else-if="searched && !searchState.error && !searchState.loading && !searchState.deepLoading && !searchState.paused" class="empty-state">
       <div class="empty-card">
         <div class="empty-icon">🔍</div>
         <h3>未找到相关资源</h3>
@@ -121,11 +135,6 @@
     <section v-if="searchState.error" class="error-alert">
       <span class="error-icon">⚠️</span>
       <span>{{ searchState.error }}</span>
-    </section>
-
-    <!-- 豆瓣电影新片榜 - 搜索时隐藏 -->
-    <section v-if="!searched" class="douban-hot-section">
-      <DoubanHotSection ref="doubanHotRef" :on-search="quickSearch" />
     </section>
   </div>
 </template>
@@ -139,13 +148,11 @@ const apiBase = (config.public?.apiBase as string) || "/api";
 const siteUrl = (config.public?.siteUrl as string) || "";
 
 // 热搜组件引用
-const hotSearchRef = ref<InstanceType<typeof HotSearchSection> | null>(null);
-const doubanHotRef = ref<InstanceType<typeof DoubanHotSection> | null>(null);
+const hotSearchRef = ref<{ init: () => Promise<void>; refresh: () => Promise<void> } | null>(null);
 
 // 页面加载时初始化热搜数据
 onMounted(async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
-  if (doubanHotRef.value) await doubanHotRef.value.init();
   if (hotSearchRef.value) await hotSearchRef.value.init();
 });
 
@@ -196,8 +203,10 @@ useHead({
 
 // 搜索相关状态
 const kw = ref("");
+// Search scope is per visit, never a persisted channel preference.
+const onlyUserTg = ref(false);
 const placeholder =
-  "搜索网盘资源，支持百度云、阿里云盘、夸克网盘、115网盘、迅雷云盘、天翼云盘、123网盘、移动云盘、UC网盘等";
+  "搜索电影、剧集、资料等资源…";
 
 // 排序和过滤
 const sortType = ref<"default" | "date-desc" | "date-asc" | "name-asc" | "name-desc">("default");
@@ -216,21 +225,19 @@ const {
   continueSearch,
   hasResults,
 } = useSearch();
-const { settings, loadSettings } = useSettings();
+const { settings, settingsReady, storageError } = useSettings();
+const needsChannelConfiguration = computed(() => onlyUserTg.value && settings.value.userTgChannels.length === 0);
+const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
 const auth = useAuth();
 const requestUnlock = inject<(onSuccess?: () => void) => void>("requestUnlock");
 
-// 获取搜索选项（使用最新的用户设置）
+// 获取搜索选项（用户自定义频道实时读取最新设置）
 function getSearchOptions() {
   return {
     apiBase,
     keyword: kw.value,
-    settings: {
-      enabledPlugins: settings.value.enabledPlugins,
-      enabledTgChannels: settings.value.enabledTgChannels,
-      concurrency: settings.value.concurrency,
-      pluginTimeoutMs: settings.value.pluginTimeoutMs,
-    },
+    userTgChannels: settings.value.userTgChannels,
+    onlyUserTg: onlyUserTg.value,
   };
 }
 
@@ -245,10 +252,12 @@ async function recordHotSearch(keyword: string) {
 
 // 执行实际搜索逻辑（供 requestUnlock 回调复用）
 async function doSearch() {
-  if (!kw.value || searchState.value.loading) return;
-  loadSettings();
+  if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
-  recordHotSearch(keyword);
+  // 新搜索从全量结果视图开始，避免沿用上一次平台筛选/展开状态。
+  filterPlatform.value = "all";
+  expandedSet.value = new Set();
+  if (!onlyUserTg.value) recordHotSearch(keyword);
   await performSearch({
     ...getSearchOptions(),
     onAuthRequired: requestUnlock ?? undefined,
@@ -257,7 +266,7 @@ async function doSearch() {
 
 // 搜索执行
 async function onSearch() {
-  if (!kw.value || searchState.value.loading) return;
+  if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   if (auth.locked.value && requestUnlock) {
     requestUnlock(doSearch);
     return;
@@ -276,7 +285,6 @@ async function handleContinueSearch() {
   if (!searchState.value.paused) return;
   if (auth.locked.value && requestUnlock) {
     requestUnlock(async () => {
-      loadSettings();
       await continueSearch({
         ...getSearchOptions(),
         onAuthRequired: requestUnlock ?? undefined,
@@ -284,24 +292,20 @@ async function handleContinueSearch() {
     });
     return;
   }
-  loadSettings();
   await continueSearch({
     ...getSearchOptions(),
     onAuthRequired: requestUnlock ?? undefined,
   });
 }
 
-// 完全重置 - 清空输入框、结果、状态，并刷新页面
+// 完全重置 - 清空输入框、结果、状态
 async function fullReset() {
-  // 清空输入框和重置状态
   kw.value = "";
   sortType.value = "default";
   filterPlatform.value = "all";
   expandedSet.value = new Set();
   resetSearch();
-  // 刷新页面以恢复初始状态（包括豆瓣电影）
   await nextTick();
-  if (doubanHotRef.value) await doubanHotRef.value.init();
   if (hotSearchRef.value) await hotSearchRef.value.refresh();
 }
 
@@ -334,12 +338,11 @@ function isExpanded(type: string) {
   return expandedSet.value.has(type);
 }
 
-function handleToggle(type: string) {
-  filterPlatform.value = type;
-}
-
-function visibleItems(type: string, items: any[]) {
-  return isExpanded(type) ? items : items.slice(0, initialVisible);
+function handleExpand(type: string) {
+  const next = new Set(expandedSet.value);
+  if (next.has(type)) next.delete(type);
+  else next.add(type);
+  expandedSet.value = next;
 }
 
 // 排序
@@ -377,199 +380,77 @@ function visibleSorted(items: any[]) {
 </script>
 
 <style scoped>
+.search-workspace { display: flex; flex-direction: column; gap: 18px; padding: 20px; border: 1px solid var(--border-light); border-radius: 24px; background: var(--bg-primary); box-shadow: var(--shadow-sm); }
+.search-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.manage-channels { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; border: 0; border-radius: 8px; padding: 0 10px; background: transparent; color: var(--primary); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.manage-channels span { font-size: 20px; font-weight: 400; }
+.manage-channels:hover { background: var(--primary-soft); }
+.manage-channels:focus-visible, .channel-preview button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.channel-configuration-status:empty, .scope-summary:empty { display: none; }
+.channel-configuration-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding: 14px 16px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); }
+.channel-configuration-notice strong { color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.channel-configuration-notice p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.configure-channels { min-height: 44px; padding: 0 14px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-primary); color: var(--primary); font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.configure-channels:hover { background: var(--primary-soft); }
+.configure-channels:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.scope-summary { color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+.scope-summary p { margin: 0; }
+.channel-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.channel-chip { max-width: 100%; overflow-wrap: anywhere; padding: 3px 9px; background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); }
+.channel-preview button { border: 0; color: var(--primary); background: transparent; cursor: pointer; }
+.search-notice { margin: 0; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: var(--text-secondary); background: var(--bg-secondary); border-radius: 10px; }
+.search-workspace :deep(.search-box) { box-shadow: none; background: var(--bg-secondary); border-radius: 14px; }
+.search-workspace :deep(.search-box.focused) { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+@media (max-width: 480px) {
+  .search-workspace { padding: 14px; gap: 14px; border-radius: 18px; }
+  .search-toolbar { flex-wrap: wrap; gap: 6px; }
+  .search-toolbar :deep(.scope-control) { flex: 1; }
+  .manage-channels { margin-left: auto; }
+}
+
 .home {
   width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
 }
 
-/* 英雄区域 + 热门搜索（frontend-design: editorial + industrial） */
-.hero-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  position: relative;
-  background: linear-gradient(145deg, rgba(15, 118, 110, 0.12) 0%, rgba(15, 118, 110, 0.04) 35%, rgba(245, 158, 11, 0.06) 70%, rgba(15, 118, 110, 0.08) 100%);
-  border-radius: 20px;
-  box-shadow: 0 4px 20px -4px rgba(15, 118, 110, 0.15);
-  overflow: hidden;
-}
-
-.hero-noise {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: overlay;
-  z-index: 0;
-}
-
+/* 大标题 */
 .hero {
-  flex: 1;
-  min-width: 0;
-  padding: 24px 28px;
-  text-align: left;
-  position: relative;
-  z-index: 1;
-}
-
-.hero-accent {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 6px;
-  height: 100%;
-  background: linear-gradient(180deg, var(--primary) 0%, var(--secondary) 50%, var(--primary) 100%);
-  opacity: 1;
-}
-
-.hero-content {
-  position: relative;
-  z-index: 2;
-  padding-left: 12px;
-}
-
-.hero-badge {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--primary);
-  margin-bottom: 10px;
-  padding: 6px 12px;
-  background: rgba(15, 118, 110, 0.12);
-  border: 1px solid rgba(15, 118, 110, 0.25);
-  border-radius: 8px;
-  font-family: "Manrope", sans-serif;
-  animation: heroReveal 0.6s ease-out both;
-  animation-delay: 0.05s;
+  text-align: center;
+  padding: 56px 16px 8px;
 }
 
 .hero-title {
-  font-family: "Syne", "Manrope", sans-serif;
-  font-size: 36px;
+  font-size: clamp(28px, 5vw, 42px);
   font-weight: 800;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   color: var(--text-primary);
-  letter-spacing: -0.04em;
-  line-height: 1.1;
-  max-width: 560px;
-  animation: heroReveal 0.6s ease-out both;
-  animation-delay: 0.12s;
-}
-
-.hero-title-line {
-  display: block;
-}
-
-.hero-title-line--accent {
-  background: linear-gradient(120deg, var(--primary) 0%, #0d9488 40%, var(--secondary) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 
 .hero-description {
   font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0 0 16px;
-  line-height: 1.65;
-  max-width: 520px;
-  animation: heroReveal 0.6s ease-out both;
-  animation-delay: 0.2s;
-}
-
-.hero-features {
-  list-style: none;
+  color: var(--text-tertiary);
   margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
+  line-height: 1.65;
 }
 
-.hero-feature {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--primary-dark);
-  padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(15, 118, 110, 0.2);
-  border-radius: 10px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-  animation: heroReveal 0.6s ease-out both;
-}
-
-.hero-feature:nth-child(1) { animation-delay: 0.28s; }
-.hero-feature:nth-child(2) { animation-delay: 0.34s; }
-.hero-feature:nth-child(3) { animation-delay: 0.4s; }
-
-.hero-feature:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.15);
-  border-color: rgba(15, 118, 110, 0.35);
-}
-
-.hero-shape {
-  position: absolute;
-  right: 8%;
-  bottom: 10%;
-  width: 120px;
-  height: 120px;
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.15) 0%, rgba(245, 158, 11, 0.08) 100%);
-  border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
-  filter: blur(24px);
-  pointer-events: none;
-  z-index: 0;
-}
-
-@keyframes heroReveal {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.hero-aside {
-  flex-shrink: 0;
-  width: 340px;
-}
-
-/* 嵌入时去除热门搜索的独立卡片感 */
-.hero-aside :deep(.tag-cloud-wrap),
-.hero-aside :deep(.loading-state),
-.hero-aside :deep(.tag-cloud-placeholder) {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.hero-aside :deep(.tag-cloud-wrap) {
-  padding: 12px 16px;
-  min-height: 260px;
-}
-
-.hero-aside :deep(.hot-tagcloud) {
-  height: 240px !important;
+/* 热门搜索 */
+.hot-search-section {
+  animation: fadeIn 0.5s ease;
 }
 
 /* 统计和过滤器栏 */
 .stats-bar {
   background: var(--bg-primary);
-  backdrop-filter: blur(10px);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
   padding: 16px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   animation: fadeIn 0.4s ease;
 }
 
@@ -582,7 +463,7 @@ function visibleSorted(items: any[]) {
 .stats-main {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -593,7 +474,6 @@ function visibleSorted(items: any[]) {
   padding: 8px 12px;
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-light);
 }
 
 .stat-label {
@@ -605,7 +485,8 @@ function visibleSorted(items: any[]) {
 .stat-value {
   font-size: 18px;
   font-weight: 700;
-  color: var(--primary);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 加载指示器 */
@@ -614,9 +495,8 @@ function visibleSorted(items: any[]) {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(15, 118, 110, 0.1);
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(15, 118, 110, 0.2);
+  background: var(--primary-soft);
+  border-radius: 999px;
 }
 
 .pulse-dot {
@@ -640,9 +520,8 @@ function visibleSorted(items: any[]) {
   gap: 8px;
   padding: 8px 12px;
   background: rgba(245, 158, 11, 0.1);
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  color: #f59e0b;
+  border-radius: 999px;
+  color: #b45309;
   font-weight: 500;
 }
 
@@ -663,31 +542,29 @@ function visibleSorted(items: any[]) {
 }
 
 .filter-pill {
-  padding: 6px 12px;
+  padding: 7px 14px;
   border: 1px solid var(--border-light);
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border-radius: 999px;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
   cursor: pointer;
   transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    color var(--transition-fast), transform var(--transition-fast),
-    box-shadow var(--transition-fast);
+    color var(--transition-fast);
   white-space: nowrap;
 }
 
 .filter-pill:hover {
-  background: var(--bg-primary);
-  border-color: var(--border-medium);
-  transform: translateY(-1px);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .filter-pill.active {
-  background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color: white;
+  background: var(--primary-soft);
+  color: var(--primary);
   border-color: transparent;
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.28);
+  font-weight: 600;
 }
 
 /* 排序选择器 */
@@ -700,26 +577,23 @@ function visibleSorted(items: any[]) {
 .sort-select {
   padding: 8px 12px;
   border: 1px solid var(--border-light);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border-radius: 999px;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
   cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast);
   min-width: 140px;
 }
 
 .sort-select:hover {
-  background: var(--bg-primary);
   border-color: var(--border-medium);
 }
 
 .sort-select:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
 }
 
 /* 搜索结果区域 */
@@ -743,14 +617,13 @@ function visibleSorted(items: any[]) {
 }
 
 .empty-card {
-  background: var(--bg-glass);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius-xl);
   padding: 32px;
   text-align: center;
   max-width: 400px;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .empty-icon {
@@ -777,8 +650,8 @@ function visibleSorted(items: any[]) {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.25);
   border-radius: var(--radius-md);
   padding: 12px 16px;
   color: var(--error);
@@ -790,60 +663,10 @@ function visibleSorted(items: any[]) {
   font-size: 18px;
 }
 
-/* 热搜推荐 */
-.hot-search-section {
-  animation: fadeIn 0.6s ease;
-}
-
 /* 移动端优化 */
-@media (max-width: 900px) {
-  .hero-row {
-    flex-direction: column;
-  }
-
-  .hero-aside {
-    width: 100%;
-  }
-}
-
 @media (max-width: 640px) {
-  .hero-aside {
-    display: none;
-  }
-
   .hero {
-    padding: 24px 18px;
-  }
-
-  .hero-content {
-    padding-left: 4px;
-  }
-
-  .hero-badge {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    margin-bottom: 10px;
-  }
-
-  .hero-title {
-    font-size: 26px;
-  }
-
-  .hero-description {
-    font-size: 14px;
-    margin-bottom: 16px;
-  }
-
-  .hero-feature {
-    font-size: 12px;
-    padding: 6px 12px;
-  }
-
-  .hero-shape {
-    width: 80px;
-    height: 80px;
-    right: 5%;
-    bottom: 5%;
+    padding: 32px 8px 4px;
   }
 
   .stats-bar {
@@ -887,97 +710,23 @@ function visibleSorted(items: any[]) {
   .empty-card h3 {
     font-size: 18px;
   }
-
-  .suggestions-card {
-    padding: 16px;
-  }
-
-  .tag {
-    padding: 6px 12px;
-    font-size: 12px;
-  }
 }
 
 /* 深色模式支持 */
 @media (prefers-color-scheme: dark) {
-  .hero-row {
-    background: linear-gradient(160deg, rgba(15, 118, 110, 0.16), rgba(245, 158, 11, 0.14));
-    border-color: rgba(45, 212, 191, 0.24);
-  }
-
-
-  .hero-badge {
-    background: rgba(15, 118, 110, 0.25);
-    color: #5eead4;
-    border-color: rgba(45, 212, 191, 0.3);
-  }
-
-  .hero-feature {
-    color: #99f6e4;
-    background: rgba(15, 118, 110, 0.2);
-    border-color: rgba(45, 212, 191, 0.25);
-  }
-
-  .hero-feature:hover {
-    border-color: rgba(45, 212, 191, 0.45);
-  }
-
-  .stat-item {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .loading-indicator {
-    background: rgba(15, 118, 110, 0.18);
-    border-color: rgba(15, 118, 110, 0.3);
-  }
-
-  .filter-pill {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .filter-pill:hover {
-    background: rgba(15, 23, 42, 0.7);
-  }
-
-  .sort-select {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-    color: var(--text-primary);
-  }
-
-  .sort-select:hover {
-    background: rgba(15, 23, 42, 0.7);
-  }
-
-  .empty-card {
-    background: rgba(15, 23, 42, 0.7);
-    border-color: rgba(255, 255, 255, 0.1);
+  .paused-indicator-bar {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
   }
 
   .error-alert {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.4);
-  }
-
-  .hot-search-section {
-    /* HotSearchSection 组件内部已支持深色模式 */
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.35);
   }
 }
 
 /* 高对比度模式支持 */
 @media (prefers-contrast: high) {
-  .hero-title-line--accent {
-    -webkit-text-fill-color: var(--primary);
-    background: none;
-  }
-
-  .hero-badge,
-  .hero-feature {
-    border-width: 2px;
-  }
-
   .filter-pill.active {
     border-width: 2px;
   }
@@ -985,37 +734,16 @@ function visibleSorted(items: any[]) {
   .sort-select {
     border-width: 2px;
   }
-
-  .tag {
-    border-width: 2px;
-  }
 }
 
 /* 减少动画模式支持 */
 @media (prefers-reduced-motion: reduce) {
-  .hero-badge,
-  .hero-title,
-  .hero-description,
-  .hero-feature {
-    animation: none;
-  }
-
-  .hero-feature:hover {
-    transform: none;
-  }
-
-  .hero,
   .stats-bar,
   .results-section,
   .empty-state,
   .error-alert,
   .hot-search-section {
     animation: none;
-  }
-
-  .filter-pill:hover,
-  .sort-select:hover {
-    transform: none;
   }
 
   .pulse-dot {

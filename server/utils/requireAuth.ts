@@ -4,9 +4,9 @@ import { verifyAuthCookie } from "./auth";
 
 export function requireSearchAuth(event: H3Event): void {
   const config = useRuntimeConfig();
-  const password = (config.searchPassword as string) || "";
-  if (!password.trim()) return;
+  const password = String((config as any).searchPassword || "").trim();
+  if (!password) return;
   if (!verifyAuthCookie(event, password)) {
-    throw createError({ statusCode: 401, statusMessage: "search locked" });
+    throw createError({ statusCode: 401, statusMessage: "authentication required" });
   }
 }

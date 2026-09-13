@@ -1,238 +1,176 @@
-# PanHub · 全网最全的网盘搜索
+# PanHub · 全网网盘搜索
 
-> 一个搜索框，搜遍全网网盘资源 —— 即搜即得、聚合去重、免费开源、零广告、轻量部署
+> 一个搜索框，聚合 Telegram 公开频道和可配置上游，提供去重、健康监控与安全的动态来源管理。
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fwu529778790%2Fpanhub.shenzjd.com&project-name=panhub&repository-name=panhub.shenzjd.com)
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wu529778790/panhub.shenzjd.com)
-[![Docker Hub](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/wu529778790/panhub.shenzjd.com/pkgs/container/panhub)
 
 **在线体验**：<https://panhub.shenzjd.com>
 
----
+> 当前运行目标是 **Node.js + SQLite**。SQLite、Telegram Session 和管理配置需要可写的本地文件系统。
 
 ## ✨ 核心特性
 
-### 🔍 智能搜索
+### 🔍 搜索
 
-- **多源聚合**：同时搜索 Telegram 80+ 频道 + 10+ 第三方插件
-- **优先级调度**：高优先级频道优先返回，首屏结果提速 50%+
-- **批量并发**：独立配置优先/普通频道并发数，充分利用网络带宽
-- **暂停/继续**：搜索过程可随时暂停，找到目标立即停止
-- **自动重试**：网络请求失败自动重试（指数退避策略）
-- **智能缓存**：LRU 淘汰 + 内存监控 + 过期清理
+- **多源聚合**：默认搜索 48 个系统 Telegram 公开频道和 4 个内置 Code Plugin（混合盘、PanSearch、多多、Nyaa）；管理员还可以添加 Instructions 上游。
+- **服务端统一调度**：Telegram 与插件来源共享每次搜索的来源任务并发槽，插件按 `priority` 分批调度；默认接口一次性返回结果，不是 SSE 流式响应。
+- **搜索范围选择**：本站搜索使用服务端默认来源；“已选频道”只搜索浏览器当前保存的自定义 Telegram 频道。
+- **暂停/继续与重置**：暂停或重新搜索会取消旧请求；继续搜索使用暂停时保存的关键词和范围快照。
+- **结果处理**：服务端按时间降序合并结果并去重，客户端支持按日期、名称等方式再次排序和按平台分组展示。
+- **自动重试与取消**：网络重试使用可取消的退避；请求断开或超时后停止后续分页、关键词变体和故障转移。
+- **缓存**：内存 LRU 缓存带 TTL、清理和内存上限；缓存键包含来源配置、插件版本、Registry 版本和 Telegram 策略版本。
 
-### 📊 豆瓣影视榜单
+### 🔥 热搜与持久化
 
-- **四大榜单**：Top250、新片榜、口碑榜、北美票房
-- **无限滚动**：滚动到底部自动加载更多内容
-- **骨架屏加载**：流畅的视觉反馈，分类切换立即响应
-- **一键搜索**：点击任意影视名称，自动发起网盘搜索
-- **智能封面**：自动过滤UI标记图标，展示真实电影海报
-
-### 🔥 热门搜索
-
-- **实时热搜**：展示其他用户搜索词，点击即可搜索
-- **数据持久化**：JSON 文件本地存储（Vercel/CF 自动降级内存）
-- **搜索统计**：实时展示热搜榜使用次数
+- 热搜词展示与使用次数统计。
+- Node.js 默认使用 SQLite `data/panhub.sqlite`（WAL）持久化搜索设置、上游目录、Instructions 插件、密钥、解析插件、Telegram 账户/频道配置、健康快照和热搜。
+- 首次创建数据库时会尝试导入旧 JSON 文件；旧文件保留为恢复副本，不再作为运行时主存储。
 
 ### 🎨 用户体验
 
-- **深色模式**：完整支持深色主题，自动跟随系统偏好
-- **响应式设计**：完美适配桌面、平板、手机
-- **密码门**：可配置 `SEARCH_PASSWORD`，搜索时输入密码解锁（Cookie 30 天有效）
-- **优雅降级**：单个插件/频道失败不影响整体
+- Vue 3 + Nuxt 4，支持深色模式和桌面/移动端响应式布局。
+- 可选 `SEARCH_PASSWORD` 搜索密码门，解锁 Cookie 有效期 30 天。
+- 单个频道或上游失败时返回 warning，不会把失败误报为空结果；已完成来源的结果仍会展示。
 
-### 🛡️ 稳定性
+### 🛡️ 稳定性与安全
 
-- **超时控制**：可配置超时，避免无限等待
-- **图片代理**：内置图片代理，解决跨域问题
-- **60+ 测试用例**：核心逻辑 >90% 覆盖率
-
----
+- 单来源超时、整次搜索默认 30 秒预算（可配置，最大 120 秒）。
+- 搜索接口有实例级治理：客户端在途并发默认 3、实例全局在途默认 16，并限制 30 秒窗口内已接纳请求数。
+- 动态 Instructions 请求统一通过 `SafeHttpExecutor`：默认仅 HTTPS（schema 支持显式 `allowInsecureHttp`，但上游目录转换会强制关闭），校验 DNS 解析后的地址，逐跳校验重定向，并限制请求/响应体、端口、请求头和总预算。
+- 健康监控区分网络、HTTP、业务、解析和结果五个维度，并保留有限的历史趋势和熔断状态。
+- 当前回归基线：`pnpm test` 为 58 个 Vitest 文件、551 个用例；Playwright 列表为 18 个交互用例。覆盖率以实际 `pnpm test:coverage` 报告为准。
 
 ## 🚀 快速开始
 
-### 方式一：Vercel 一键部署（推荐）
+### 本地运行
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fwu529778790%2Fpanhub.shenzjd.com&project-name=panhub&repository-name=panhub.shenzjd.com)
-
-### 方式二：Cloudflare Workers 一键部署
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wu529778790/panhub.shenzjd.com)
-
-### 方式三：Docker 部署
+Telegram MTProto 在 PanHub 服务端进程内运行。API ID、API Hash 只配置在服务端 `.env`，登录会话默认保存到 `data/telegram-session.txt`。
 
 ```bash
-# 快速启动
-docker run --name panhub -p 3000:3000 -d ghcr.io/wu529778790/panhub.shenzjd.com:latest
-
-# 数据持久化（推荐）
-mkdir -p /root/panhub/data
-docker run -d --name panhub -p 3000:3000 \
-  -v /root/panhub/data:/app/data \
-  ghcr.io/wu529778790/panhub.shenzjd.com:latest
-```
-
-### 方式四：本地开发
-
-```bash
-# 安装依赖
+# 在项目根目录执行
 pnpm install
-
-# 开发服务器
 pnpm dev
-
-# 运行测试
-pnpm test
-
-# 构建生产版本
-pnpm build
 ```
 
----
+随后访问 <http://localhost:3000>。需要 Telegram 账户功能时，先配置 `TELEGRAM_API_ID` 和 `TELEGRAM_API_HASH`，再打开管理台的「TG 账户管理」完成登录。
+
+生产环境请使用 Node.js 进程管理器或操作系统服务运行 `pnpm build` 生成的 Nitro Node server，并确保 `data/` 可写。
 
 ## 📖 使用指南
 
-### 搜索流程
+### 搜索范围
 
-1. **输入关键词并回车**开始搜索
-2. **快速结果**：优先频道先返回（~50ms）
-3. **深度结果**：剩余频道继续加载
-4. **自动合并**：结果去重、按时间排序、分类型展示
+- **本站**：只提交关键词，例如 `{"kw":"三体"}`；服务端合并系统频道和已启用插件。
+- **已选频道**：提交规范化 Telegram 用户名，例如 `{"kw":"三体","channels":["my_channel"],"channels_mode":"only"}`；只搜索浏览器当前保存的频道。
+- 频道设置只保存在当前浏览器。支持 `@name`、`t.me/name` 和公开消息链接，保存前会进行格式校验。
+- “已选频道”没有频道时前端禁用搜索，后端也会返回 400，不会回退到本站搜索。
 
-### 操作按钮
+### 管理控制台 `/admin`
 
-| 按钮 | 功能 |
-|------|------|
-| **暂停/继续** | 随时控制搜索过程 |
-| **重置** | 取消所有请求，清空结果和输入框 |
-| **热搜词** | 点击直接搜索 |
+管理控制台使用独立的 `ADMIN_PASSWORD` 和管理员 Cookie（有效期 8 小时），不复用 `SEARCH_PASSWORD`。未配置 `ADMIN_PASSWORD` 时管理 API 返回 503。
 
-### 设置面板
+当前 `/admin` 实际提供以下视图：
 
-右上角设置按钮可配置：
+- **健康监控**：通过 `?view=monitor` 打开，汇总上游和 Telegram 频道的健康状态、五维指标、趋势、熔断和行内操作。
+- **上游接口**：默认视图，也可用 `?view=sources` 打开；管理系统来源和自定义上游，编辑请求、响应映射、启停、调试以及版本状态。
+- **TG 账户管理**：通过 `?view=accounts` 打开，支持扫码登录、手机号验证码登录和两步验证；API 凭据与 Session 不在页面填写。
+- **搜索设置**：通过 `?view=settings` 打开，管理正式搜索的插件选择、并发数和插件超时。
+- **垃圾箱**：管理已归档的自定义上游，支持恢复或输入 ID 永久删除。
 
-- **插件管理**：启用/禁用第三方搜索插件
-- **TG 频道**：配置优先/普通频道列表
-- **性能参数**：并发数、超时时间、缓存时长
+旧入口兼容重定向：`/upstreams` → `/admin`（保留查询参数）、`/monitor` → `/admin?view=monitor`、`/tg-accounts` → `/admin?view=accounts`。
 
----
+### Telegram 诊断页 `/telegram`
+
+这是独立于 `/admin` 视图的频道诊断页，使用同一套管理员认证：
+
+- 展示有效的公开频道清单和健康状态。
+- 支持单频道/全部频道检测、原始请求与响应、直连和 Jina fallback 阶段、耗时、结构变化和失败分类。
+- 支持文本/HTML/源码查看、复制报文以及受限沙箱预览。
+- 调试记录保存在当前浏览器内存，不会直接修改正式搜索配置；频道启停、删除和策略配置由管理 API 持久化。
+
+### 解析插件
+
+解析插件与 Instructions 上游是两套不同能力：
+
+- **Instructions**：JSON/HTML 的声明式请求和字段映射，不执行第三方 JavaScript；通过 `/api/plugins` API 管理，发布后热更新。
+- **Parser Plugin**：管理员提供同步 JavaScript 转换函数，运行在受限 `node:vm` 环境中，将已取得的 HTML/JSON/文本转换为统一结果；通过 `/api/parser-plugins` API 管理，并可绑定到上游或 Telegram 频道。
+
+当前仓库包含 `components/admin/ParserPluginMarket.vue` 和对应 API，但该组件尚未接入 `/admin` 的可见导航；不要把 `?view=parsers` 当作当前可用的管理台路由。需要操作时使用 API 或先完成管理台接入，待办见 `TODO.md`。
 
 ## ⚙️ 环境变量
 
 | 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
-| `NITRO_PRESET` | auto-detect | 部署预设（vercel/cloudflare/docker） |
+|---|---:|---|
+| `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `PORT` | `3000` | 服务端口 |
-| `SEARCH_PASSWORD` | 空 | 非空时启用密码门，搜索时需输入正确密码（Cookie 30 天有效） |
+| `SEARCH_PASSWORD` | 空 | 非空时启用搜索密码门，Cookie 有效期 30 天 |
+| `ADMIN_PASSWORD` | 空 | 管理控制台专用密码，不回退到搜索密码 |
+| `PANHUB_SQLITE_DB` | `data/panhub.sqlite` | SQLite 数据库位置 |
+| `PANHUB_LEGACY_DATA_DIR` | 数据库目录 | 首次建库时旧 JSON 的导入目录 |
+| `NUXT_SEARCH_TIMEOUT_MS` | `30000` | 单次搜索总预算，范围 1000–120000 ms |
+| `TELEGRAM_API_ID` | 空 | Telegram MTProto 应用 ID，仅服务端使用 |
+| `TELEGRAM_API_HASH` | 空 | Telegram MTProto 应用 Hash，仅服务端使用 |
+| `TELEGRAM_SESSION_FILE` | `./data/telegram-session.txt` | Telegram 登录 Session 文件 |
 
----
+测试和兼容旧文件的 `PANHUB_*_STORE` 变量不是常规生产配置；默认运行时以 SQLite 为唯一持久化源。
 
 ## 🏗️ 技术架构
 
-### 前端技术栈
+- **前端**：Nuxt 4、Vue 3、TypeScript、原生 CSS。
+- **服务端**：Nitro Node server、H3 API、`better-sqlite3`、Cheerio、`ofetch`。
+- **Telegram**：`telegram` MTProto 客户端，服务端进程内嵌。
+- **测试**：Vitest（隔离单测）+ Playwright（交互/E2E）。
 
-- **框架**：Nuxt.js 4 + Vue 3
-- **样式**：原生 CSS（无框架依赖）
-- **状态管理**：Vue Composition API
-- **类型安全**：TypeScript
+核心目录：
 
-### 后端技术栈
-
-- **运行时**：Nitro（Nuxt 内置）
-- **HTML 解析**：Cheerio
-- **HTTP 客户端**：ofetch
-- **测试框架**：Vitest
-
-### 核心模块
-
-```
+```text
 server/core/
-├── services/
-│   ├── searchService.ts    # 搜索编排器
-│   ├── tg.ts               # TG 频道抓取
-│   ├── doubanHotService.ts # 豆瓣榜单抓取
-│   └── plugins/
-│       ├── manager.ts      # 插件管理器
-│       ├── pansearch.ts    # 盘搜
-│       ├── qupansou.ts     # 去盘搜
-│       └── ...
-├── cache/
-│   └── memoryCache.ts      # LRU 缓存
-└── utils/
-    └── fetch.ts            # 网络请求封装
+├── services/       # 搜索编排、Telegram、上游目录、热搜和系统设置
+├── plugins/        # Code Plugin、Registry、仓库、健康状态和密钥
+├── instructions/   # Instructions schema、校验和执行器
+├── parsers/        # Parser Plugin schema、仓库和 VM 运行时
+├── http/           # SafeHttpExecutor
+├── security/       # URL/DNS、限流和搜索并发治理
+├── telegram/       # MTProto 账户与会话
+├── cache/           # 统一内存缓存
+└── storage/         # SQLite 存储与旧 JSON 首次迁移
 ```
 
----
-
-## 📦 支持的网盘平台
-
-| 平台 | 图标 | 说明 |
-|------|------|------|
-| 阿里云盘 | ☁️ | 支持分享链接解析 |
-| 夸克网盘 | 🔎 | 支持分享链接解析 |
-| 百度网盘 | 🧰 | 支持分享链接解析 |
-| 115网盘 | 📦 | 支持分享链接解析 |
-| 迅雷云盘 | ⚡ | 支持分享链接解析 |
-| UC网盘 | 🧭 | 支持分享链接解析 |
-| 天翼云盘 | ☁️ | 支持分享链接解析 |
-| 123网盘 | # | 支持分享链接解析 |
-| 移动云盘 | 📱 | 支持分享链接解析 |
-
----
-
-## 🤝 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-### 开发规范
-
-- 使用 TypeScript 编写
-- 核心功能必须包含单元测试
-- 提交前运行 `pnpm test`
-- 遵循 [Conventional Commits](https://www.conventionalcommits.org/)
-
-### 测试
+## 🧪 开发与测试
 
 ```bash
-# 运行所有测试
-pnpm test
-
-# 监听模式
+pnpm dev
+pnpm test                 # 默认不访问公网
 pnpm test:watch
-
-# 生成覆盖率报告
 pnpm test:coverage
+pnpm test:api              # 需先启动本地服务
+pnpm test:e2e              # 首次运行需 pnpm exec playwright install chromium
+pnpm test:live            # 显式公网测试
+pnpm typecheck
+pnpm build                # Node server 生产构建
+pnpm preview
 ```
 
----
+提交前至少运行：
 
-## 🛡️ 免责声明
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+git diff --check
+```
 
-- 本项目仅用于技术学习与搜索聚合演示
-- 不存储、不传播任何受版权保护的内容
-- 所有资源链接来自公开网络（Telegram 频道、第三方网站）
-- 请遵守当地法律法规与平台使用条款
-- 侵权问题请联系源站处理
+## 📦 支持的网盘类型
 
----
+搜索结果目前按以下类型展示（具体是否有结果取决于上游）：阿里云盘、夸克、百度网盘、115、迅雷、UC、天翼、123 及其他网盘/磁力链接。
+
+## ⚠️ 免责声明
+
+本项目仅用于技术学习与搜索聚合演示，不存储或传播资源内容。资源链接来自公开 Telegram 频道和第三方网站，请遵守适用法律法规及各平台服务条款。
 
 ## 📄 许可证
 
-[MIT License](LICENSE)
+`package.json` 声明项目采用 MIT License。
 
 ---
 
-## 🙏 鸣谢
-
-- [Nuxt.js](https://nuxt.com/) - 渐进式 Vue 框架
-- [Nitro](https://nitro.unjs.io/) - Web 服务器工具包
-- [Cheerio](https://cheerio.js.org/) - 快速、灵活的 HTML 解析器
-- [Vitest](https://vitest.dev/) - 下一代测试框架
-
----
-
-**⭐ 如果觉得有用，请给个 Star 支持一下！**
-
-**在线体验**：<https://panhub.shenzjd.com>
+开发边界、接口协议、Manifest/Instructions schema、备份恢复和当前剩余待办统一见 [`TODO.md`](TODO.md)。

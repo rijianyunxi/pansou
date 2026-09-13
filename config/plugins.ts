@@ -1,17 +1,3 @@
-// 插件名称常量
-export const ALL_PLUGIN_NAMES = [
-  "pansearch",
-  "qupansou",
-  "panta",
-  "hunhepan",
-  "jikepan",
-  "labi",
-  "thepiratebay",
-  "duoduo",
-  "xuexizhinan",
-  "nyaa",
-] as const;
-
 // 平台信息配置
 export const PLATFORM_INFO: Record<
   string,
@@ -28,13 +14,6 @@ export const PLATFORM_INFO: Record<
   mobile: { name: "移动云盘", color: "#0ea5e9", icon: "📱" },
   others: { name: "其他网盘", color: "#6b7280", icon: "…" },
 };
-
-// 默认用户设置
-export const DEFAULT_USER_SETTINGS = {
-  enabledPlugins: [...ALL_PLUGIN_NAMES],
-  concurrency: 4,
-  pluginTimeoutMs: 5000,
-} as const;
 
 // 本地存储键名
 export const STORAGE_KEYS = {

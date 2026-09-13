@@ -2,9 +2,13 @@
 .output
 .data
 .nuxt
+.nuxt-*
 .nitro
 .cache
 dist
+.tmp
+playwright-report
+test-results
 
 # Node dependencies
 node_modules
@@ -17,6 +21,7 @@ logs
 .DS_Store
 .fleet
 .idea
+.claude/settings.local.json
 
 # Local env files
 .env
@@ -25,3 +30,22 @@ logs
 
 # Runtime data (hot-searches.json)
 data/hot-searches.json
+data/plugins.json
+data/plugins.json.*.tmp
+data/plugin-secrets.json
+data/plugin-secrets.json.*.tmp
+data/plugin-health.json
+data/plugin-health.json.*.tmp
+data/search-settings.json
+data/search-settings.json.*.tmp
+data/tg-channel-settings.json
+data/tg-channel-settings.json.*.tmp
+data/tg-channel-health.json
+data/tg-channel-health.json.*.tmp
+# SQLite runtime database
+data/panhub.sqlite
+data/panhub.sqlite-shm
+data/panhub.sqlite-wal
+
+# Telegram login session (sensitive runtime credential)
+data/telegram-session.txt

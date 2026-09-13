@@ -6,7 +6,6 @@ export default defineEventHandler((event) => {
 
   const urls = [
     { loc: `${base}/`, priority: 0.9 },
-    { loc: `${base}/api`, priority: 0.3 },
   ];
 
   const body =

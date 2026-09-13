@@ -71,6 +71,49 @@ describe("fetchWithRetry", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("should stop retrying when aborted during backoff", async () => {
+    const controller = new AbortController();
+    mockFetch.mockRejectedValue(new Error("Network error"));
+    const request = fetchWithRetry(
+      "https://api.example.com/test",
+      { signal: controller.signal },
+      { maxRetries: 3, baseDelay: 1000, signal: controller.signal }
+    );
+    setTimeout(() => controller.abort(new Error("cancelled")), 5);
+
+    await expect(request).rejects.toThrow("cancelled");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors a pre-aborted RequestInit.signal without issuing a request", async () => {
+    const controller = new AbortController(); controller.abort(new Error("cancelled"));
+    await expect(fetchWithRetry("https://api.example.com/test", { signal: controller.signal })).rejects.toThrow("cancelled");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("honors RequestInit.signal during backoff without a second signal option", async () => {
+    const controller = new AbortController();
+    mockFetch.mockRejectedValue(new Error("network"));
+    const promise = fetchWithRetry("https://api.example.com/test", { signal: controller.signal }, { baseDelay: 1000 });
+    setTimeout(() => controller.abort(new Error("cancelled")), 5);
+    await expect(promise).rejects.toThrow("cancelled");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables ofetch retries so maxRetries is a real request budget", async () => {
+    mockFetch.mockResolvedValue({});
+    await fetchWithRetry("https://api.example.com/test");
+    expect(ofetchModule.ofetch.create).toHaveBeenCalledWith(expect.objectContaining({ retry: 0 }));
+  });
+
+  it("enforces per-attempt timeout even when a parent signal is present", async () => {
+    const controller = new AbortController();
+    mockFetch.mockImplementation(() => new Promise(() => {}));
+    await expect(fetchWithRetry("https://api.example.com/test", { signal: controller.signal }, { timeout: 10, maxRetries: 0 })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(mockFetch.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
   it("应该使用自定义超时时间", async () => {
     const mockResponse = { data: "test" };
     mockFetch.mockResolvedValueOnce(mockResponse);

@@ -14,22 +14,18 @@ describe("extractMergedFromResponse", () => {
     expect(extractMergedFromResponse(null as any)).toEqual({});
   });
 
-  it("应正确解析 merged_by_type 格式", () => {
+  it("应正确解析扁平结果数组", () => {
     const data = {
-      merged_by_type: {
-        aliyun: [
-          { url: "https://a.com", password: "", note: "测试", datetime: "2025-01-01" },
-        ],
-        quark: [
-          { url: "https://q.com", password: "123", note: "夸克", datetime: "2025-01-02" },
-        ],
-      },
+      results: [
+        { type: "aliyun", url: "https://a.com", password: "", note: "测试", datetime: "2025-01-01", source: "tg:a" },
+        { type: "quark", url: "https://q.com", password: "123", note: "夸克", datetime: "2025-01-02", source: "plugin:p@1" },
+      ],
     };
     const result = extractMergedFromResponse(data);
     expect(result.aliyun).toHaveLength(1);
-    expect(result.aliyun![0].url).toBe("https://a.com");
+    expect(result.aliyun![0]!.url).toBe("https://a.com");
     expect(result.quark).toHaveLength(1);
-    expect(result.quark![0].password).toBe("123");
+    expect(result.quark![0]!.password).toBe("123");
   });
 
   it("应正确解析 results 中的 SearchResult 格式（带 links）", () => {
@@ -47,9 +43,9 @@ describe("extractMergedFromResponse", () => {
     };
     const result = extractMergedFromResponse(data);
     expect(result.aliyun).toHaveLength(1);
-    expect(result.aliyun![0].url).toBe("https://a.com");
-    expect(result.aliyun![0].note).toBe("标题");
-    expect(result.aliyun![0].source).toBe("tg:test_channel");
+    expect(result.aliyun![0]!.url).toBe("https://a.com");
+    expect(result.aliyun![0]!.note).toBe("标题");
+    expect(result.aliyun![0]!.source).toBe("tg:test_channel");
   });
 
   it("应正确解析 results 中的扁平 MergedLink 格式", () => {
@@ -60,8 +56,8 @@ describe("extractMergedFromResponse", () => {
     };
     const result = extractMergedFromResponse(data);
     expect(result.others).toHaveLength(1);
-    expect(result.others![0].url).toBe("https://x.com");
-    expect(result.others![0].note).toBe("扁平");
+    expect(result.others![0]!.url).toBe("https://x.com");
+    expect(result.others![0]!.note).toBe("扁平");
   });
 
   it("应正确解析 data.items 数组", () => {
@@ -72,7 +68,7 @@ describe("extractMergedFromResponse", () => {
     };
     const result = extractMergedFromResponse(data);
     expect(result.others).toHaveLength(1);
-    expect(result.others![0].url).toBe("https://i.com");
+    expect(result.others![0]!.url).toBe("https://i.com");
   });
 
   it("应正确解析 data 本身为数组", () => {
@@ -81,11 +77,10 @@ describe("extractMergedFromResponse", () => {
     ];
     const result = extractMergedFromResponse(data as any);
     expect(result.others).toHaveLength(1);
-    expect(result.others![0].url).toBe("https://arr.com");
+    expect(result.others![0]!.url).toBe("https://arr.com");
   });
 
-  it("空 merged_by_type 应返回空对象", () => {
-    const data = { merged_by_type: {} };
-    expect(extractMergedFromResponse(data)).toEqual({});
+  it("空结果数组应返回空对象", () => {
+    expect(extractMergedFromResponse({ results: [] })).toEqual({});
   });
 });

@@ -1,15 +1,19 @@
-import { BaseAsyncPlugin, registerGlobalPlugin } from "./manager";
+import { CodeSearchPlugin, type PluginSearchContext } from "./manager";
 import type { SearchResult } from "../types/models";
-import { ofetch } from "ofetch";
 import { load } from "cheerio";
 import { fetchWithRetry } from "../utils/fetch";
-import { createLogger } from "../utils/logger";
+import { parseConfiguredUpstreamResponse } from "../parsers/upstream";
+import { getConfiguredUpstream } from "../services/upstreamCatalog";
 
-const logger = createLogger("duoduo");
-
-const BASE = "https://tv.yydsys.top";
-const SEARCH = (kw: string) =>
-  `${BASE}/index.php/vod/search/wd/${encodeURIComponent(kw)}.html`;
+function configuredBase(): string {
+  return getConfiguredUpstream("duoduo")?.url || "";
+}
+function searchUrl(kw: string): string {
+  const base = configuredBase().replace(/\/$/, "");
+  return /\/index\.php\/vod\/search/i.test(base)
+    ? `${base}/wd/${encodeURIComponent(kw)}.html`
+    : `${base}/index.php/vod/search/wd/${encodeURIComponent(kw)}.html`;
+}
 
 const re = {
   magnet: /magnet:\?xt=urn:btih:[0-9a-fA-F]{40}[^"'\s]*/g,
@@ -45,16 +49,16 @@ function collectLinks(html: string): SearchResult["links"] {
   return links;
 }
 
-async function fetchDetail(url: string) {
+async function fetchDetail(url: string, signal: AbortSignal) {
   const html = await fetchWithRetry<string>(
     url,
     {
-      headers: { "user-agent": "Mozilla/5.0", referer: BASE + "/" },
+      headers: { "user-agent": "Mozilla/5.0", referer: new URL(configuredBase()).origin + "/" },
     },
     {
       maxRetries: 2,
       timeout: 10000,
-      logWarnings: false,
+      signal,
     }
   ).catch(() => "");
   if (!html) return [];
@@ -63,23 +67,35 @@ async function fetchDetail(url: string) {
   return collectLinks(text);
 }
 
-export class DuoduoPlugin extends BaseAsyncPlugin {
+export class DuoduoPlugin extends CodeSearchPlugin {
   constructor() {
-    super("duoduo", 2);
+    super({ id: "duoduo", name: "duoduo", priority: 2 });
   }
-  override async search(keyword: string): Promise<SearchResult[]> {
+  override async search(context: PluginSearchContext): Promise<SearchResult[]> {
+    const { keyword, signal } = context;
+    const source = getConfiguredUpstream("duoduo");
+    if (!source || source.enabled === false) return [];
+    const url = searchUrl(keyword);
     const html = await fetchWithRetry<string>(
-      SEARCH(keyword),
+      url,
       {
-        headers: { "user-agent": "Mozilla/5.0", referer: BASE + "/" },
+        method: source.method,
+        body: source.method === "POST" ? JSON.stringify({ keyword }) : undefined,
+        headers: { "user-agent": "Mozilla/5.0", referer: new URL(configuredBase()).origin + "/", ...(source.method === "POST" ? { "content-type": "application/json" } : {}) },
       },
       {
         maxRetries: 2,
         timeout: 10000,
-        logWarnings: false,
+          signal,
       }
     ).catch(() => "");
     if (!html) return [];
+    const configured = await parseConfiguredUpstreamResponse("duoduo", html, source.format, {
+      keyword,
+      url,
+      page: 1,
+    });
+    if (configured) return configured;
     const $ = load(html);
     const out: SearchResult[] = [];
     const tasks: Promise<any>[] = [];
@@ -89,10 +105,10 @@ export class DuoduoPlugin extends BaseAsyncPlugin {
       const href = a.attr("href") || "";
       const title = a.text().trim();
       if (!href || !title) return;
-      const detail = href.startsWith("/") ? `${BASE}${href}` : href;
+      const detail = href.startsWith("/") ? `${new URL(source.url).origin}${href}` : href;
       tasks.push(
         (async () => {
-          const links = await fetchDetail(detail);
+          const links = await fetchDetail(detail, signal);
           if (links.length) {
             out.push({
               message_id: "",
@@ -112,5 +128,3 @@ export class DuoduoPlugin extends BaseAsyncPlugin {
     return out;
   }
 }
-
-registerGlobalPlugin(new DuoduoPlugin());

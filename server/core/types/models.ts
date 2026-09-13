@@ -1,8 +1,10 @@
 export interface Link {
-  type: string;
+  type?: string;
   url: string;
   password: string;
 }
+
+export type SearchResultSource = "telegram" | "plugin";
 
 export interface SearchResult {
   message_id: string;
@@ -14,23 +16,43 @@ export interface SearchResult {
   links: Link[];
   tags?: string[];
   images?: string[];
+  /** Runtime provenance. Additive fields keep the existing result contract intact. */
+  source?: SearchResultSource;
+  pluginId?: string;
+  pluginVersion?: string;
+  registryVersion?: number;
 }
 
 export interface MergedLink {
+  /** 网盘类型，用于前端平台分组；扁平响应不再依赖 merged_by_type。 */
+  type?: string;
   url: string;
   password: string;
   note: string;
   datetime: string; // ISO string
-  source?: string; // e.g. "tg:channel" or "plugin:name"
+  source?: string; // e.g. "tg:channel" or "plugin:id@version"
+  pluginId?: string;
+  pluginVersion?: string;
+  registryVersion?: number;
   images?: string[];
 }
 
 export type MergedLinks = Record<string, MergedLink[]>;
 
+export interface SearchResponseMeta {
+  registryVersion: number;
+  pluginVersions: Record<string, string>;
+}
+
+export type SearchResponseItem = SearchResult | MergedLink;
+
 export interface SearchResponse {
   total: number;
-  results?: SearchResult[];
-  merged_by_type?: MergedLinks;
+  meta?: SearchResponseMeta;
+  /** 默认响应为扁平 MergedLink[]；res=results 时返回原始 SearchResult[]。 */
+  results?: SearchResponseItem[];
+  /** 仅 res=all 使用，避免再返回按平台嵌套的 merged_by_type。 */
+  items?: MergedLink[];
 }
 
 export interface GenericResponse<T> {
@@ -40,11 +62,14 @@ export interface GenericResponse<T> {
 }
 
 export interface SearchRequest {
+  /** append (default): system + user channels; only: user TG, no plugins */
+  channels_mode?: "append" | "only";
   kw: string;
   channels?: string[];
   conc?: number;
   refresh?: boolean;
-  res?: "all" | "results" | "merge" | "merged_by_type";
+  /** links（默认）返回扁平链接；results 返回原始消息；all 返回两者。 */
+  res?: "links" | "all" | "results";
   src?: "all" | "tg" | "plugin";
   plugins?: string[];
   ext?: Record<string, any>;

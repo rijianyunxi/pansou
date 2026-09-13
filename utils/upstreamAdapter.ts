@@ -35,7 +35,7 @@ export function inferDriveType(url: string, value = ""): string {
     caiyun: "mobile",
     "123pan": "123",
   };
-  const type = value.toLowerCase();
+  const type = value.trim().toLowerCase();
   if (aliases[type]) return aliases[type];
   if (
     [
@@ -54,8 +54,8 @@ export function inferDriveType(url: string, value = ""): string {
     ].includes(type)
   )
     return type;
-  if (url.startsWith("magnet:")) return "magnet";
-  if (url.startsWith("ed2k:")) return "ed2k";
+  if (/^magnet:/i.test(url)) return "magnet";
+  if (/^ed2k:/i.test(url)) return "ed2k";
   const hosts: Record<string, string> = {
     "pan.baidu.com": "baidu",
     "pan.quark.cn": "quark",

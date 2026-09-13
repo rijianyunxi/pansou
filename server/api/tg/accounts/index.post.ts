@@ -1,0 +1,4 @@
+import { createError, defineEventHandler, readBody } from "h3";
+import { requireAdminAuth } from "../../../utils/requireAdminAuth";
+import { getTgAccountStore } from "../../../core/telegram/accountStore";
+export default defineEventHandler(async (event) => { requireAdminAuth(event); try { return { code: 0, data: getTgAccountStore().save(await readBody(event)) }; } catch (error) { throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : String(error) }); } });

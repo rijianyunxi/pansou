@@ -1,53 +1,65 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
-import { PluginManager, registerGlobalPlugin } from "../plugins/manager";
+import { PluginManager } from "../plugins/manager";
+import { InstructionsPlugin } from "../instructions/plugin";
+import { createConfiguredUpstreamPlugin, isCoreCompatibleConfiguration } from "./configuredUpstreamPlugin";
+import {
+  getPluginRepository,
+  resolvePublishedDefinition,
+  asVersionCheckable,
+} from "../plugins/repository";
+import { getPluginSecretStore } from "../plugins/secretStore";
+import { getPluginHealthStore } from "../plugins/healthStore";
+import { getSystemSettings } from "./systemSettingsService";
 import { HunhepanPlugin } from "../plugins/example/hunhepan";
-// import { ZhizhenPlugin } from "../plugins/zhizhen";
-// import { OugePlugin } from "../plugins/ouge";
-// import { WanouPlugin } from "../plugins/wanou";
-import { LabiPlugin } from "../plugins/labi";
-import { PantaPlugin } from "../plugins/panta";
-// import { SusuPlugin } from "../plugins/susu";
-import { JikepanPlugin } from "../plugins/jikepan";
-import { QupansouPlugin } from "../plugins/qupansou";
-// import { Fox4kPlugin } from "../plugins/fox4k";
-// import { Hdr4kPlugin } from "../plugins/hdr4k";
-import { ThePirateBayPlugin } from "../plugins/thepiratebay";
 import { DuoduoPlugin } from "../plugins/duoduo";
-// import { MuouPlugin } from "../plugins/muou";
-// import { Pan666Plugin } from "../plugins/pan666";
-import { XuexizhinanPlugin } from "../plugins/xuexizhinan";
-// import { HubanPlugin } from "../plugins/huban";
-// import { PanyqPlugin } from "../plugins/panyq";
 import { PansearchPlugin } from "../plugins/pansearch";
-// import { ShandianPlugin } from "../plugins/shandian";
 import { NyaaPlugin } from "../plugins/nyaa";
-// import { SolidTorrentsPlugin } from "../plugins/solidtorrents";
-// import { X1337xPlugin } from "../plugins/x1337x";
-// import { TorrentGalaxyPlugin } from "../plugins/torrentgalaxy";
+import { getConfiguredUpstreamVersion, listConfiguredUpstreams } from "./upstreamCatalog";
+import type { SearchPlugin } from "../plugins/manager";
 
 const SERVICE_CONTEXT_KEY = "__panhub_search_service__";
 
 /**
  * 创建插件管理器并注册所有可用插件
  */
+function createConfiguredCorePlugin(handler: string): SearchPlugin | undefined {
+  switch (handler) {
+    case "hunhepan": return new HunhepanPlugin();
+    case "duoduo": return new DuoduoPlugin();
+    case "pansearch": return new PansearchPlugin();
+    case "nyaa": return new NyaaPlugin();
+    default: return undefined;
+  }
+}
+
+function createConfiguredPlugin(
+  source: ReturnType<typeof listConfiguredUpstreams>[number],
+): SearchPlugin | undefined {
+  const handler = source.runtime?.kind === "core" ? source.runtime.handler : undefined;
+  const core = handler && createConfiguredCorePlugin(handler);
+  // Core is retained only as a capability for an untouched seed definition.
+  // Once an executable field is edited, the declarative configuration becomes
+  // authoritative and the generic executor handles the source.
+  if (core && core.manifest.id === source.id && isCoreCompatibleConfiguration(source)) return core;
+  // No core capability is required for a declarative source. The same
+  // instructions executor handles its request and response mapping.
+  return createConfiguredUpstreamPlugin(
+    source,
+    (pluginId, names) => getPluginSecretStore().getMany(pluginId, names),
+  );
+}
+
+function loadConfiguredPlugins(): SearchPlugin[] {
+  return listConfiguredUpstreams()
+    .map(createConfiguredPlugin)
+    .filter((plugin): plugin is SearchPlugin => !!plugin);
+}
+
 function createPluginManager(): PluginManager {
   const pm = new PluginManager();
-  // 直接注册内置插件（避免使用 Nitro 插件 impound 机制）
-  // 仅注册稳定可用的插件；其余暂时禁用，待适配后再启用
-  registerGlobalPlugin(new HunhepanPlugin());
-  // zhizhen 暂时下线，待稳定后再恢复
-  registerGlobalPlugin(new LabiPlugin());
-  registerGlobalPlugin(new PantaPlugin());
-  registerGlobalPlugin(new JikepanPlugin());
-  registerGlobalPlugin(new QupansouPlugin());
-  registerGlobalPlugin(new ThePirateBayPlugin());
-  registerGlobalPlugin(new DuoduoPlugin());
-  registerGlobalPlugin(new XuexizhinanPlugin());
-  registerGlobalPlugin(new PansearchPlugin());
-  registerGlobalPlugin(new NyaaPlugin());
-  // 下线未通过单测的插件，待后续适配稳定后再恢复：
-  // Zhizhen, Ouge, Wanou, Susu, Fox4k, Hdr4k, Muou, Pan666, Huban, Panyq, Shandian, SolidTorrents, 1337x, TorrentGalaxy
-  pm.registerAllGlobalPlugins();
+  // Core contains capabilities only. The catalog decides which source exists,
+  // whether it is declarative or core-backed, and all endpoint settings.
+  for (const plugin of loadConfiguredPlugins()) pm.register(plugin);
   return pm;
 }
 
@@ -55,13 +67,37 @@ function createPluginManager(): PluginManager {
  * 创建搜索服务选项
  */
 function createServiceOptions(runtimeConfig: any): SearchServiceOptions {
+  const system = getSystemSettings(runtimeConfig);
   return {
-    priorityChannels: runtimeConfig.priorityChannels || [],
-    defaultChannels: runtimeConfig.defaultChannels || [],
-    defaultConcurrency: runtimeConfig.defaultConcurrency || 10,
-    pluginTimeoutMs: runtimeConfig.pluginTimeoutMs || 15000,
+    priorityChannels: system.priorityChannels,
+    defaultChannels: system.defaultChannels,
+    defaultConcurrency: system.defaultConcurrency,
+    pluginTimeoutMs: system.pluginTimeoutMs,
+    searchTimeoutMs: runtimeConfig.searchTimeoutMs,
     cacheEnabled: !!runtimeConfig.cacheEnabled,
     cacheTtlMinutes: runtimeConfig.cacheTtlMinutes || 30,
+    dynamicPluginLoader: async () => {
+      const configured = loadConfiguredPlugins();
+      const configuredIds = new Set(configured.map((plugin) => plugin.manifest.id));
+      const records = await getPluginRepository().list();
+      const secretStore = getPluginSecretStore();
+      const declarativeRecords = records
+        .map(resolvePublishedDefinition)
+        .filter(
+          (definition): definition is NonNullable<typeof definition> =>
+            !!definition && definition.manifest.kind === "instructions" &&
+            !configuredIds.has(definition.manifest.id)
+        )
+        .map(
+          (definition) =>
+            new InstructionsPlugin(
+              definition,
+              (pluginId, names) => secretStore.getMany(pluginId, names),
+            )
+        );
+      return [...configured, ...declarativeRecords];
+    },
+    healthStore: getPluginHealthStore(),
   };
 }
 
@@ -77,8 +113,21 @@ export function getOrCreateSearchService(runtimeConfig: any): SearchService {
   }
 
   // 创建新实例
-  const options = createServiceOptions(runtimeConfig);
   const pluginManager = createPluginManager();
+  const options = createServiceOptions(runtimeConfig);
+  const loader = options.dynamicPluginLoader;
+  if (loader) {
+    // 多进程/多副本一致性：Registry 刷新前先做 stat 级版本检查，
+    // 配置未变化时跳过全量重载；变化时由 manager 原子替换快照。
+    pluginManager.setUpdateSource({
+      getRepositoryVersion: async () => {
+        const checkable = asVersionCheckable(getPluginRepository());
+        const repositoryVersion = checkable ? await checkable.getConfigVersion() : null;
+        return `${getConfiguredUpstreamVersion()}|${repositoryVersion ?? "unknown"}`;
+      },
+      load: loader,
+    });
+  }
   const service = new SearchService(options, pluginManager);
 
   // 存储到上下文

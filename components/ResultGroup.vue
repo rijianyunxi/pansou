@@ -40,6 +40,13 @@
 
           <div class="resource-meta">
             <div class="meta-tags">
+              <span v-if="r.source" class="meta-tag source" :title="r.source">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M8 12h8M12 8v8"></path>
+                </svg>
+                来源: {{ formatSource(r.source) }}
+              </span>
               <span class="meta-tag date">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
@@ -100,6 +107,13 @@ const visibleItems = computed(() =>
   props.expanded ? props.items : props.items.slice(0, props.initialVisible)
 );
 
+function formatSource(source?: string) {
+  if (!source) return "";
+  if (source.startsWith("tg:")) return `TG @${source.slice(3)}`;
+  if (source.startsWith("plugin:")) return `插件 ${source.slice(7)}`;
+  return source;
+}
+
 function formatDate(d?: string) {
   if (!d) return "";
   const dt = new Date(d);
@@ -110,22 +124,18 @@ function formatDate(d?: string) {
 </script>
 
 <style scoped>
-/* 结果卡片主体 - 玻璃拟态设计 */
+/* 结果卡片主体 - 白色扁平卡片 */
 .result-card {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--bg-primary);
   border: 1px solid var(--border-light);
   border-radius: 16px;
-  box-shadow: 0 8px 22px rgba(17, 24, 39, 0.06);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
-  transition: box-shadow var(--transition-normal), transform var(--transition-normal),
-    border-color var(--transition-normal);
+  transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
 }
 
 .result-card:hover {
-  box-shadow: 0 14px 28px rgba(17, 24, 39, 0.1);
-  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
 }
 
 /* 卡片头部 */
@@ -134,20 +144,8 @@ function formatDate(d?: string) {
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--bg-primary);
   border-bottom: 1px solid var(--border-light);
-  position: relative;
-}
-
-.card-header::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 16px;
-  right: 16px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--primary), transparent 70%);
-  opacity: 0.25;
 }
 
 /* 平台徽章 */
@@ -161,7 +159,6 @@ function formatDate(d?: string) {
   color: white;
   font-size: 16px;
   font-weight: 700;
-  box-shadow: 0 5px 10px rgba(17, 24, 39, 0.2);
   flex-shrink: 0;
 }
 
@@ -260,7 +257,7 @@ function formatDate(d?: string) {
 }
 
 .resource-item:hover {
-  background: rgba(15, 118, 110, 0.04);
+  background: var(--bg-secondary);
 }
 
 .resource-content {
@@ -346,8 +343,8 @@ function formatDate(d?: string) {
 }
 
 .meta-tag.date {
-  background: rgba(99, 102, 241, 0.08);
-  border-color: rgba(99, 102, 241, 0.15);
+  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
+  border-color: transparent;
   color: var(--primary);
 }
 
@@ -394,7 +391,7 @@ function formatDate(d?: string) {
 /* 卡片底部 */
 .card-footer {
   padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--bg-primary);
   border-top: 1px solid var(--border-light);
   text-align: center;
 }
@@ -403,25 +400,19 @@ function formatDate(d?: string) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, var(--primary), #14b8a6);
-  color: white;
+  padding: 10px 20px;
+  background: var(--ink);
+  color: #fff;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: 999px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.3);
+  transition: background-color var(--transition-fast);
 }
 
 .load-more-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.4);
-}
-
-.load-more-btn:active {
-  transform: translateY(0);
+  background: var(--ink-hover);
 }
 
 .load-more-btn svg {
@@ -488,7 +479,7 @@ function formatDate(d?: string) {
   }
 
   .resource-item:hover {
-    background: rgba(99, 102, 241, 0.08);
+    background: rgba(255, 255, 255, 0.04);
   }
 
   .meta-tag {

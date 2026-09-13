@@ -11,12 +11,24 @@
       <ClientOnly>
         <div
           v-show="!loading && searches.length > 0"
-          ref="tagCloudRef"
-          class="tag-cloud-wrap"
-          @click="onContainerClick"
-        />
+          class="tag-cloud-card"
+        >
+          <div class="cloud-title">热门搜索</div>
+          <div
+            ref="tagCloudRef"
+            class="tag-cloud-wrap"
+            @click="onContainerClick"
+            @mouseenter="pauseTagCloud"
+            @mouseleave="resumeTagCloud"
+            @focusin="pauseTagCloud"
+            @focusout="resumeTagCloud"
+          />
+        </div>
         <template #fallback>
-          <div class="tag-cloud-placeholder" />
+          <div class="tag-cloud-card">
+            <div class="cloud-title">热门搜索</div>
+            <div class="tag-cloud-placeholder" />
+          </div>
         </template>
       </ClientOnly>
     </div>
@@ -25,6 +37,9 @@
 
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, nextTick } from "vue";
+import type { TagCloud as TagCloudInstanceApi, TagCloudOptions } from "TagCloud";
+
+type PanHubTagCloudOptions = TagCloudOptions & { direction?: number };
 
 interface Props {
   onSearch: (term: string) => void;
@@ -44,8 +59,18 @@ const searches = ref<HotSearchItem[]>([]);
 const hasInitialized = ref(false);
 const tagCloudRef = ref<HTMLElement | null>(null);
 const isUpdating = ref(false);
-let tagCloudInstance: { update: (t: string[]) => void; destroy: () => void } | null = null;
+let tagCloudInstance: TagCloudInstanceApi | null = null;
+let tagCloudPaused = false;
+let prefersReducedMotion = false;
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
+
+// 热搜词展示截断：过长的词会撑爆标签云，点击时再映射回完整原词
+const HOT_TERM_MAX_CHARS = 14;
+let displayToTerm = new Map<string, string>();
+
+function truncateTerm(term: string) {
+  return term.length > HOT_TERM_MAX_CHARS ? `${term.slice(0, HOT_TERM_MAX_CHARS)}…` : term;
+}
 
 async function fetchHotSearches() {
   loading.value = true;
@@ -77,7 +102,14 @@ async function refresh() {
 }
 
 function getTerms(): string[] {
-  return searches.value.map((s) => s.term);
+  displayToTerm = new Map();
+  const displayTerms: string[] = [];
+  for (const s of searches.value) {
+    const display = truncateTerm(s.term);
+    if (!displayToTerm.has(display)) displayToTerm.set(display, s.term);
+    displayTerms.push(display);
+  }
+  return displayTerms;
 }
 
 async function initTagCloud() {
@@ -105,7 +137,17 @@ async function initTagCloud() {
     return;
   }
 
-  const TagCloud = (await import("TagCloud")).default;
+  prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  tagCloudPaused = prefersReducedMotion;
+
+  const TagCloud = (await import("TagCloud")).default as unknown as (
+    container: Element,
+    texts: string[],
+    options?: PanHubTagCloudOptions,
+  ) => TagCloudInstanceApi;
+  // initTagCloud can be triggered by both the data watcher and the page ref;
+  // re-check after the async import so concurrent calls cannot mount two loops.
+  if (tagCloudInstance || !tagCloudRef.value) return;
   tagCloudInstance = TagCloud(tagCloudRef.value, terms, {
     radius: 150,
     maxSpeed: "slow",
@@ -115,6 +157,17 @@ async function initTagCloud() {
     containerClass: "hot-tagcloud",
     itemClass: "hot-tagcloud-item",
   });
+  if (tagCloudPaused) tagCloudInstance.pause();
+}
+
+function pauseTagCloud() {
+  tagCloudPaused = true;
+  tagCloudInstance?.pause();
+}
+
+function resumeTagCloud() {
+  tagCloudPaused = prefersReducedMotion;
+  if (!prefersReducedMotion) tagCloudInstance?.resume();
 }
 
 function destroyTagCloud() {
@@ -132,18 +185,23 @@ function destroyTagCloud() {
 function onContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
   if (target?.classList?.contains("hot-tagcloud-item")) {
-    const term = target.innerText?.trim();
-    if (term) props.onSearch(term);
+    const display = target.innerText?.trim();
+    if (display) props.onSearch(displayToTerm.get(display) ?? display);
   }
 }
 
 watch(
   () => [searches.value.length, loading.value] as const,
   async ([len, ld]) => {
-    if (!ld && len > 0) {
-      await nextTick();
-      initTagCloud();
+    if (ld) return;
+    if (len === 0) {
+      // The ClientOnly node is replaced when the API returns an empty list;
+      // release the old instance so a later refresh can mount a fresh cloud.
+      destroyTagCloud();
+      return;
     }
+    await nextTick();
+    initTagCloud();
   },
   { flush: "post" }
 );
@@ -164,25 +222,34 @@ defineExpose({ init, refresh });
   width: 100%;
 }
 
-.tag-cloud-wrap {
-  min-height: 340px;
-  padding: 20px;
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(8px);
+/* 白色扁平卡片 + 灰色小标题 */
+.tag-cloud-card {
+  background: var(--bg-primary);
   border: 1px solid var(--border-light);
-  border-radius: 14px;
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 20px;
+}
+
+.cloud-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.tag-cloud-wrap {
+  min-height: 320px;
   cursor: pointer;
 }
 
 .tag-cloud-placeholder {
-  min-height: 340px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid var(--border-light);
-  border-radius: 14px;
+  min-height: 300px;
 }
 
 /* 覆盖 TagCloud 默认样式，适配项目主题 */
-.tag-cloud-wrap :deep(.hot-tagcloud) {
+.tag-cloud-card :deep(.hot-tagcloud) {
   position: relative;
   width: 100%;
   height: 300px;
@@ -191,19 +258,19 @@ defineExpose({ init, refresh });
   will-change: transform;
 }
 
-.tag-cloud-wrap :deep(.hot-tagcloud-item) {
-  color: var(--primary-dark, #0f766e) !important;
+.tag-cloud-card :deep(.hot-tagcloud-item) {
+  color: var(--text-secondary, #4b5563) !important;
   font-weight: 600 !important;
   font-family: inherit !important;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition: color 0.15s ease;
   /* GPU 加速 */
   transform: translateZ(0);
-  will-change: transform, opacity;
+  will-change: transform, color;
 }
 
-.tag-cloud-wrap :deep(.hot-tagcloud-item:hover) {
-  opacity: 0.9;
+.tag-cloud-card :deep(.hot-tagcloud-item:hover) {
+  color: var(--primary, #2563eb) !important;
 }
 
 .loading-state {
@@ -214,17 +281,16 @@ defineExpose({ init, refresh });
   gap: 12px;
   padding: 40px 20px;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(8px);
+  background: var(--bg-primary);
   border: 1px solid var(--border-light);
-  border-radius: 14px;
+  border-radius: 16px;
 }
 
 .spinner {
   width: 28px;
   height: 28px;
-  border: 3px solid rgba(15, 118, 110, 0.2);
-  border-top-color: var(--primary);
+  border: 3px solid var(--border-light);
+  border-top-color: var(--text-primary);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -236,12 +302,15 @@ defineExpose({ init, refresh });
 }
 
 @media (max-width: 640px) {
-  .tag-cloud-wrap {
-    min-height: 260px;
+  .tag-cloud-card {
     padding: 12px;
   }
 
-  .tag-cloud-wrap :deep(.hot-tagcloud) {
+  .tag-cloud-wrap {
+    min-height: 260px;
+  }
+
+  .tag-cloud-card :deep(.hot-tagcloud) {
     height: 240px;
   }
 
@@ -251,23 +320,12 @@ defineExpose({ init, refresh });
 }
 
 @media (prefers-color-scheme: dark) {
-  .tag-cloud-wrap {
-    background: rgba(17, 24, 39, 0.5);
-    border-color: rgba(75, 85, 99, 0.4);
+  .tag-cloud-card :deep(.hot-tagcloud-item) {
+    color: #9ca3af !important;
   }
 
-  .tag-cloud-wrap :deep(.hot-tagcloud-item) {
-    color: #99f6e4 !important;
-  }
-
-  .tag-cloud-placeholder {
-    background: rgba(17, 24, 39, 0.5);
-    border-color: rgba(75, 85, 99, 0.4);
-  }
-
-  .loading-state {
-    background: rgba(17, 24, 39, 0.5);
-    border-color: rgba(75, 85, 99, 0.4);
+  .tag-cloud-card :deep(.hot-tagcloud-item:hover) {
+    color: #60a5fa !important;
   }
 }
 

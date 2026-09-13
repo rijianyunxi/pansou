@@ -1,19 +1,13 @@
 import { createError, defineEventHandler, readBody, setHeader } from "h3";
 import { probeTgChannel, type TgProbeResult } from "../../core/services/tg";
-import { requireSearchAuth } from "../../utils/requireAuth";
+import { requireAdminAuth } from "../../utils/requireAdminAuth";
 
 let active = 0;
 const channelPattern = /^[A-Za-z0-9_]{5,64}$/;
 
 export default defineEventHandler(async (event): Promise<TgProbeResult> => {
   setHeader(event, "Cache-Control", "no-store");
-  if (!import.meta.dev) {
-    throw createError({
-      statusCode: 403,
-      statusMessage: "Telegram diagnostics are only enabled in development",
-    });
-  }
-  requireSearchAuth(event);
+  requireAdminAuth(event);
   const body = await readBody(event);
   const channel =
     typeof body?.channel === "string"

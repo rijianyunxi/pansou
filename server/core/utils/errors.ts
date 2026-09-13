@@ -28,6 +28,8 @@ export interface ErrorDetail {
   message: string;
   source?: string;
   timestamp: number;
+  /** 机器可读细分码（如 tg_channel_not_found），同一 type 下可进一步区分失败原因。 */
+  code?: string;
 }
 
 /**
@@ -38,6 +40,8 @@ export interface WarningInfo {
   message: string;
   source?: string;
   count: number;
+  /** 与 ErrorDetail.code 对应的机器可读细分码。 */
+  code?: string;
 }
 
 /**
@@ -45,6 +49,26 @@ export interface WarningInfo {
  */
 export function classifyError(error: any, source?: string): ErrorDetail {
   const timestamp = Date.now();
+
+  // TG 频道抓取的五种失败（TgChannelError.tgKind）：网络失败 / 结构变化 /
+  // 频道不存在 / 频道私有，用现有 ErrorType 承载并用 code 细分。
+  if (typeof error?.tgKind === "string" && error.tgKind) {
+    const typeByKind: Record<string, ErrorType> = {
+      network_error: ErrorType.NETWORK_ERROR,
+      structure_changed: ErrorType.PARSE_ERROR,
+      channel_not_found: ErrorType.VALIDATION_ERROR,
+      channel_private: ErrorType.VALIDATION_ERROR,
+      no_results: ErrorType.UNKNOWN_ERROR,
+    };
+    return {
+      type: typeByKind[error.tgKind] ?? ErrorType.UNKNOWN_ERROR,
+      severity: error.tgKind === "structure_changed" ? ErrorSeverity.HIGH : ErrorSeverity.MEDIUM,
+      message: error?.message || "未知错误",
+      source,
+      timestamp,
+      code: `tg_${error.tgKind}`,
+    };
+  }
 
   // 网络错误
   if (
@@ -65,7 +89,9 @@ export function classifyError(error: any, source?: string): ErrorDetail {
 
   // 超时错误
   if (
-    error?.message?.includes("timeout") ||
+    error?.name === "TimeoutError" ||
+    error?.cause?.name === "TimeoutError" ||
+    error?.message?.toLowerCase().includes("timeout") ||
     error?.message?.includes("超时")
   ) {
     return {
@@ -152,6 +178,7 @@ export class ErrorCollector {
             message: error.message,
             source: error.source,
             count: 1,
+            ...(error.code ? { code: error.code } : {}),
           });
         }
       });

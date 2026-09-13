@@ -2,517 +2,440 @@
   <div
     v-if="open"
     class="drawer-mask"
-    @click.self="
-      () => {
-        emitSave();
-        $emit('update:open', false);
-      }
-    ">
-    <div class="drawer" role="dialog" aria-modal="true" aria-label="搜索设置">
+    @click.self="closeDrawer">
+    <div ref="drawerEl" class="drawer" role="dialog" aria-modal="true" aria-label="自定义频道">
       <header class="drawer__header">
         <div>
-          <strong>搜索设置</strong>
-          <p class="header-subtitle">修改后自动保存</p>
+          <strong>自定义频道</strong>
+          <p class="header-subtitle">管理已添加的公开频道 · 在首页选择搜索范围</p>
         </div>
         <button
           class="btn btn--close"
           type="button"
           aria-label="关闭设置"
-          @click="
-            () => {
-              emitSave();
-              $emit('update:open', false);
-            }
-          ">
+          @click="closeDrawer">
           关闭
         </button>
       </header>
 
       <div class="drawer-body">
-        <aside class="drawer-nav">
-          <button
-            type="button"
-            class="nav-link"
-            :class="{ active: activeSection === 'plugins' }"
-            @click="onNavClick('settings-plugins', 'plugins')">
-            插件来源
-          </button>
-          <button
-            type="button"
-            class="nav-link"
-            :class="{ active: activeSection === 'channels' }"
-            @click="onNavClick('settings-channels', 'channels')">
-            频道来源
-          </button>
-          <button
-            type="button"
-            class="nav-link"
-            :class="{ active: activeSection === 'performance' }"
-            @click="onNavClick('settings-performance', 'performance')">
-            性能并发
-          </button>
-        </aside>
+        <section class="drawer__section">
+          <div class="section__title">
+            <strong>已添加的公开频道</strong>
+            <span class="tiny-hint">{{ inner.userTgChannels.length }}/50</span>
+          </div>
+          <p class="hint">
+            添加公开频道用户名或链接。本站搜索不会使用这些频道；选择首页「自定义频道」后，只搜索这里的频道。
+          </p>
 
-        <div ref="drawerMainRef" class="drawer-main" @scroll="onDrawerScroll">
-          <section id="settings-plugins" class="drawer__section">
-            <div class="section__title">
-              <strong>插件来源</strong>
-              <div class="section__tools">
-                <button class="btn" type="button" @click="onSelectAll">全选</button>
-                <button class="btn" type="button" @click="onClearAll">全不选</button>
-              </div>
-            </div>
-            <div class="plugin-grid">
-              <label v-for="name in allPlugins" :key="name" class="plugin-item">
-                <input
-                  type="checkbox"
-                  :value="name"
-                  v-model="inner.enabledPlugins"
-                  @change="saveTemp" />
-                <span>{{ name }}</span>
-              </label>
-            </div>
-          </section>
+          <p v-if="storageError" class="feedback feedback--error" role="alert">{{ storageError }}</p>
+          <form class="channel-add" @submit.prevent="addChannel">
+            <input
+              ref="channelInput"
+              v-model="newChannel"
+              :disabled="checking"
+              @input="channelError = ''; channelStatus = ''"
+              :aria-invalid="!!channelError"
+              :aria-busy="checking"
+              aria-describedby="channel-help"
+              class="input"
+              type="text"
+              placeholder="@频道名 或 t.me/s/频道名"
+              aria-label="频道用户名"
+              autocomplete="off"
+              spellcheck="false" />
+            <button class="btn btn--primary" type="submit" :disabled="!newChannel.trim() || checking">
+              {{ checking ? "验证中…" : "添加频道" }}
+            </button>
+          </form>
+          <p id="channel-help" class="tiny-hint">支持 @name、t.me/s/name 和公开消息链接。输入 t.me/name 会自动转换为 t.me/s/name 进行公开页验证；私密邀请链接、失效或不可访问的频道不会保存。</p>
+          <p v-if="channelError" class="feedback feedback--error" role="alert">{{ channelError }}</p>
+          <p v-else-if="channelStatus" class="feedback" role="status">{{ channelStatus }}</p>
+          <p v-else-if="newChannel.trim()" class="hint">尚未添加，请点击「添加」或按 Enter。</p>
 
-          <section id="settings-channels" class="drawer__section">
-            <div class="section__title">
-              <strong>频道来源</strong>
-              <div class="section__tools">
-                <button class="btn" type="button" @click="onSelectAllTg">全选</button>
-                <button class="btn" type="button" @click="onClearAllTg">全不选</button>
-              </div>
-            </div>
-            <div class="plugin-grid">
-              <label v-for="name in allTgChannels" :key="name" class="plugin-item">
-                <input
-                  type="checkbox"
-                  :value="name"
-                  v-model="inner.enabledTgChannels"
-                  @change="saveTemp" />
-                <span>{{ name }}</span>
-              </label>
-            </div>
-          </section>
-
-          <section id="settings-performance" class="drawer__section">
-            <div class="section__title"><strong>性能与并发</strong></div>
-
-            <div class="field">
-              <label class="label" for="concurrency-input">插件并发数</label>
-              <input
-                id="concurrency-input"
-                type="number"
-                min="1"
-                max="16"
-                v-model.number="inner.concurrency"
-                @change="saveTemp"
-                class="input"
-                :placeholder="String(DEFAULT_CONCURRENCY)"
-                :title="`默认 ${DEFAULT_CONCURRENCY}，范围 1-16`" />
-              <span class="hint">默认 {{ DEFAULT_CONCURRENCY }}，范围 1-16</span>
-            </div>
-
-            <div class="field">
-              <label class="label" for="timeout-input">插件超时(ms)</label>
-              <input
-                id="timeout-input"
-                type="number"
-                min="1000"
-                step="500"
-                v-model.number="inner.pluginTimeoutMs"
-                @change="saveTemp"
-                class="input"
-                :placeholder="String(DEFAULT_PLUGIN_TIMEOUT)"
-                :title="`默认 ${DEFAULT_PLUGIN_TIMEOUT} ms`" />
-              <span class="hint">默认 {{ DEFAULT_PLUGIN_TIMEOUT }} ms</span>
-            </div>
-          </section>
-        </div>
+          <ul v-if="inner.userTgChannels.length" class="channel-list">
+            <li v-for="name in inner.userTgChannels" :key="name" class="channel-item">
+              <span class="channel-avatar">{{ name.charAt(0).toUpperCase() }}</span>
+              <span class="channel-name">@{{ name }}<small>已加入搜索列表</small></span>
+              <button
+                class="channel-remove"
+                type="button"
+                :aria-label="`移除频道 ${name}`"
+                title="移除"
+                @click="removeChannel(name)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </li>
+          </ul>
+          <p v-else class="hint empty-hint">还没有添加公开频道。添加后，在首页选择「自定义频道」即可搜索。</p>
+        </section>
       </div>
 
       <footer class="drawer__footer">
-        <button class="btn btn--subtle" type="button" @click="$emit('reset-default')">恢复默认</button>
+        <button class="btn btn--subtle" type="button" @click="$emit('reset-default')">清空频道列表</button>
       </footer>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-interface UserSettings {
-  enabledTgChannels: string[];
-  enabledPlugins: string[];
-  concurrency: number;
-  pluginTimeoutMs: number;
-}
+import { parseTelegramChannelInput } from "../utils/telegramChannelInput";
+import { MAX_USER_TG_CHANNELS } from "../utils/telegramChannels";
+import type { UserSettings } from "~/composables/useSettings";
+
 const props = defineProps<{
   modelValue: UserSettings;
   open: boolean;
-  allPlugins: string[];
-  allTgChannels: string[];
+  storageError?: string;
 }>();
-const emit = defineEmits([
-  "update:modelValue",
-  "update:open",
-  "save",
-  "reset-default",
-]);
 
-const inner = ref<UserSettings>({
-  enabledTgChannels: [],
-  enabledPlugins: [],
-  concurrency: 4,
-  pluginTimeoutMs: 5000,
-});
+const emit = defineEmits<{
+  (e: "update:modelValue", value: UserSettings): void;
+  (e: "update:open", value: boolean): void;
+  (e: "reset-default"): void;
+}>();
 
-const DEFAULT_CONCURRENCY = 4;
-const DEFAULT_PLUGIN_TIMEOUT = 5000;
-const drawerMainRef = ref<HTMLElement | null>(null);
-const activeSection = ref<"plugins" | "channels" | "performance">("plugins");
-
-watch(
-  () => props.modelValue,
-  (v) => {
-    if (!v) return;
-    inner.value = JSON.parse(JSON.stringify(v));
-  },
-  { immediate: true }
-);
-
-watch(
-  () => props.open,
-  async (open) => {
-    if (!open) return;
+const inner = computed(() => props.modelValue);
+const newChannel = ref("");
+const channelError = ref("");
+const channelStatus = ref("");
+const checking = ref(false);
+const channelInput = ref<HTMLInputElement | null>(null);
+const drawerEl = ref<HTMLElement | null>(null);
+let previousFocus: HTMLElement | null = null;
+let previousOverflow = "";
+watch(() => props.open, async (open) => {
+  if (open) {
+    previousFocus = document.activeElement as HTMLElement;
+    previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     await nextTick();
-    setActiveSectionByScroll();
+    channelInput.value?.focus();
+  } else {
+    document.body.style.overflow = previousOverflow;
+    await nextTick();
+    previousFocus?.focus();
   }
-);
-
-function saveTemp() {
-  emit("update:modelValue", inner.value);
-  emit("save");
-}
-function emitSave() {
-  emit("update:modelValue", inner.value);
-  emit("save");
-}
-function onSelectAll() {
-  inner.value.enabledPlugins = [...props.allPlugins];
-  saveTemp();
-}
-function onClearAll() {
-  inner.value.enabledPlugins = [];
-  saveTemp();
-}
-
-function onSelectAllTg() {
-  inner.value.enabledTgChannels = [...props.allTgChannels];
-  saveTemp();
-}
-function onClearAllTg() {
-  inner.value.enabledTgChannels = [];
-  saveTemp();
+});
+onMounted(() => document.addEventListener("keydown", handleKeydown));
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", handleKeydown);
+  if (props.open) document.body.style.overflow = previousOverflow;
+});
+function closeDrawer() { emit("update:open", false); }
+function handleKeydown(event: KeyboardEvent) {
+  if (!props.open) return;
+  if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
+  if (event.key !== "Tab") return;
+  const elements = drawerEl.value?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href]');
+  if (!elements?.length) return;
+  const first = elements[0];
+  const last = elements[elements.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
 }
 
-function onNavClick(
-  id: "settings-plugins" | "settings-channels" | "settings-performance",
-  key: "plugins" | "channels" | "performance"
-) {
-  activeSection.value = key;
-  const root = drawerMainRef.value;
-  const el = root?.querySelector<HTMLElement>(`#${id}`);
-  if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function setActiveSectionByScroll() {
-  const root = drawerMainRef.value;
-  if (!root) return;
-  const ids = [
-    { id: "settings-plugins", key: "plugins" as const },
-    { id: "settings-channels", key: "channels" as const },
-    { id: "settings-performance", key: "performance" as const },
-  ];
-  const threshold = root.scrollTop + 24;
-  let current = ids[0].key;
-
-  for (const item of ids) {
-    const el = root.querySelector<HTMLElement>(`#${item.id}`);
-    if (!el) continue;
-    if (el.offsetTop <= threshold) current = item.key;
+async function addChannel() {
+  const name = parseTelegramChannelInput(newChannel.value);
+  channelStatus.value = "";
+  channelError.value = "";
+  if (!name) {
+    channelError.value = "请输入公开频道用户名或链接，例如 @channel_name 或 t.me/s/channel_name；不支持私密邀请链接。";
+    return;
   }
-  activeSection.value = current;
+  if (inner.value.userTgChannels.includes(name)) {
+    channelStatus.value = `@${name} 已在列表中，无需重复添加。`;
+    newChannel.value = "";
+    return;
+  }
+  if (inner.value.userTgChannels.length >= MAX_USER_TG_CHANNELS) {
+    channelError.value = "最多可添加 50 个公开频道。";
+    return;
+  }
+
+  checking.value = true;
+  try {
+    const validation = await $fetch<{ ok: boolean; message?: string }>("/api/tg/validate-channel", {
+      method: "POST",
+      body: { channel: name },
+      retry: 0,
+    });
+    if (!validation.ok) {
+      channelError.value = validation.message || "该频道不可用或不是公开频道，未添加。";
+      return;
+    }
+    emit("update:modelValue", {
+      ...inner.value,
+      userTgChannels: [...inner.value.userTgChannels, name],
+    });
+    newChannel.value = "";
+    channelStatus.value = `已验证 @${name}，已加入自定义频道列表。`;
+    await nextTick();
+    channelInput.value?.focus();
+  } catch (reason: any) {
+    channelError.value = reason?.data?.statusMessage || reason?.message || "频道验证失败，未添加。请稍后重试。";
+  } finally {
+    checking.value = false;
+  }
 }
 
-function onDrawerScroll() {
-  setActiveSectionByScroll();
+async function removeChannel(name: string) {
+  channelStatus.value = `已移除 @${name}。`;
+  emit("update:modelValue", {
+    ...inner.value,
+    userTgChannels: inner.value.userTgChannels.filter((c) => c !== name),
+  });
+  await nextTick();
+  channelInput.value?.focus();
 }
 </script>
 
 <style scoped>
+.feedback { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--primary-soft); color: var(--text-primary); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.feedback--error { color: var(--text-primary); border-left: 3px solid #dc2626; background: var(--bg-secondary); }
+.channel-name { overflow-wrap: anywhere; }
+.channel-name small { display: block; color: var(--text-secondary); font-size: 11px; font-weight: 400; margin-top: 3px; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .drawer-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  z-index: 900;
+  background: rgba(17, 24, 39, 0.4);
   backdrop-filter: blur(3px);
   display: flex;
   justify-content: flex-end;
-  z-index: 1000;
-  animation: fadeIn 0.3s ease;
+  animation: mask-in 0.2s ease;
+}
+
+@keyframes mask-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .drawer {
-  width: min(460px, 92vw);
-  height: 100vh;
-  background: rgba(255, 253, 248, 0.96);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.2);
-  padding: 16px;
+  width: min(420px, 100vw);
+  height: 100%;
+  background: var(--bg-primary);
   display: flex;
   flex-direction: column;
+  padding: 20px;
+  animation: drawer-in 0.25s ease;
   overflow: hidden;
-  overscroll-behavior: contain;
-  border-left: 1px solid var(--border-medium);
-  animation: slideInRight 0.3s ease;
+}
+
+@keyframes drawer-in {
+  from { transform: translateX(24px); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
 }
 
 .drawer__header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 10px;
-  padding-bottom: 12px;
+  gap: 12px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--border-light);
 }
 
 .drawer__header strong {
   font-size: 17px;
-  font-weight: 800;
+  font-weight: 700;
   color: var(--text-primary);
 }
 
 .header-subtitle {
   margin: 4px 0 0;
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
+}
+
+.btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--close {
+  padding: 7px 12px;
+}
+
+.btn--primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--ink-hover);
+  border-color: var(--ink-hover);
+  color: #fff;
+}
+
+.btn--subtle {
+  border-color: transparent;
+  color: var(--text-secondary);
 }
 
 .drawer-body {
-  display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 10px;
-  min-height: 0;
   flex: 1;
-}
-
-.drawer-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  position: sticky;
-  top: 0;
-  height: fit-content;
-}
-
-.nav-link {
-  display: block;
-  padding: 8px 6px;
-  border-radius: 9px;
-  border: 1px solid var(--border-light);
-  background: rgba(255, 255, 255, 0.4);
-  color: var(--text-secondary);
-  font-size: 11px;
-  text-align: center;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.nav-link:hover {
-  border-color: var(--border-medium);
-  color: var(--primary-dark);
-}
-
-.nav-link.active {
-  border-color: rgba(15, 118, 110, 0.45);
-  background: rgba(15, 118, 110, 0.14);
-  color: var(--primary-dark);
-}
-
-.drawer-main {
-  min-width: 0;
-  height: 100%;
   overflow-y: auto;
-  padding-right: 2px;
+  padding: 18px 2px;
 }
 
 .drawer__section {
-  background: rgba(255, 255, 255, 0.42);
-  border: 1px solid rgba(212, 199, 171, 0.6);
-  border-radius: 12px;
-  padding: 10px;
-  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .section__title {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 8px;
 }
 
 .section__title strong {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
-.section__tools {
-  display: flex;
-  gap: 6px;
-}
-
-.plugin-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-@media (min-width: 820px) {
-  .plugin-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-.plugin-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-light);
-  border-radius: 999px;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    transform var(--transition-fast);
-  min-width: 0;
-}
-
-.plugin-item:hover {
-  background: var(--bg-primary);
-  border-color: var(--border-medium);
-  transform: translateY(-1px);
-}
-
-.plugin-item input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  min-height: 16px;
-  max-width: 16px;
-  max-height: 16px;
-  margin: 0;
-  flex: 0 0 16px;
-  cursor: pointer;
-  accent-color: var(--primary);
-}
-
-.plugin-item span {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tiny-hint {
   font-size: 12px;
   color: var(--text-secondary);
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-
-.label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 700;
-}
-
-.input {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border-light);
-  background: var(--bg-secondary);
-  border-radius: 10px;
-  font-size: 12px;
-  color: var(--text-primary);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-.input:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
-}
-
-.input::placeholder {
-  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .hint {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
-.btn {
-  padding: 7px 10px;
+.empty-hint {
+  padding: 12px 0;
+}
+
+.channel-add {
+  display: flex;
+  gap: 8px;
+}
+
+.input {
+  min-height: 44px;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  font-size: 13px;
   border: 1px solid var(--border-light);
-  background: var(--bg-secondary);
+  border-radius: 10px;
+  background: var(--bg-primary);
   color: var(--text-primary);
-  border-radius: 9px;
-  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.input:focus {
+  border-color: var(--primary);
+}
+
+.input::placeholder {
+  color: var(--text-secondary);
+}
+
+.channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-primary);
+}
+
+.channel-avatar {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--primary);
   font-size: 12px;
   font-weight: 600;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    color var(--transition-fast), transform var(--transition-fast),
-    box-shadow var(--transition-fast);
-  white-space: nowrap;
 }
 
-.btn:hover {
-  background: var(--bg-primary);
-  border-color: var(--border-medium);
-  transform: translateY(-1px);
-}
-
-.btn:active {
-  transform: translateY(0);
-}
-
-.btn--close {
-  min-width: 56px;
-}
-
-.btn--subtle {
-  color: var(--text-secondary);
-  border-color: var(--border-medium);
-  background: rgba(255, 255, 255, 0.55);
-}
-
-.btn--subtle:hover {
+.channel-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
   color: var(--text-primary);
-  border-color: var(--primary);
-  background: rgba(15, 118, 110, 0.08);
+  overflow-wrap: anywhere;
+}
+
+.channel-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.channel-remove:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--error);
 }
 
 .drawer__footer {
-  margin-top: 8px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  padding-top: 8px;
+  padding-top: 14px;
   border-top: 1px solid var(--border-light);
 }
 
@@ -521,120 +444,20 @@ function onDrawerScroll() {
     width: 100vw;
     padding: 14px;
   }
-
-  .drawer-body {
-    grid-template-columns: 1fr;
-  }
-
-  .drawer-nav {
-    position: static;
-    flex-direction: row;
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
-
-  .nav-link {
-    white-space: nowrap;
-    min-width: 84px;
-  }
-
-  .plugin-grid {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .drawer__footer {
-    justify-content: center;
-  }
 }
 
 @media (prefers-color-scheme: dark) {
-  .drawer {
-    background: rgba(17, 24, 39, 0.92);
-    border-left-color: rgba(75, 85, 99, 0.8);
+  .drawer-mask {
+    background: rgba(0, 0, 0, 0.55);
   }
 
-  .nav-link {
-    background: rgba(30, 41, 59, 0.55);
-    border-color: rgba(100, 116, 139, 0.35);
-    color: var(--text-secondary);
+  .btn--primary {
+    color: #0f1218;
   }
 
-  .nav-link:hover {
-    background: rgba(15, 23, 42, 0.7);
-    border-color: rgba(100, 116, 139, 0.55);
-    color: #ccfbf1;
-  }
-
-  .nav-link.active {
-    border-color: rgba(45, 212, 191, 0.45);
-    background: rgba(15, 118, 110, 0.25);
-    color: #ccfbf1;
-  }
-
-  .drawer__section {
-    background: rgba(15, 23, 42, 0.36);
-    border-color: rgba(100, 116, 139, 0.42);
-  }
-
-  .plugin-item {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .plugin-item:hover {
-    background: rgba(15, 23, 42, 0.7);
-    border-color: rgba(100, 116, 139, 0.5);
-  }
-
-  .input {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-    color: var(--text-primary);
-  }
-
-  .btn {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .btn:hover {
-    background: rgba(15, 23, 42, 0.7);
-    border-color: rgba(100, 116, 139, 0.5);
-  }
-
-  .btn--subtle {
-    color: var(--text-secondary);
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.45);
-  }
-
-  .btn--subtle:hover {
-    color: #ccfbf1;
-    border-color: rgba(45, 212, 191, 0.45);
-    background: rgba(15, 118, 110, 0.18);
+  .btn--primary:hover:not(:disabled) {
+    color: #0f1218;
   }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .drawer-mask,
-  .drawer {
-    animation: none;
-  }
-
-  .plugin-item:hover,
-  .btn:hover {
-    transform: none;
-  }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideInRight {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
+@media (prefers-reduced-motion: reduce) { .drawer, .drawer-mask { animation: none; } }
 </style>

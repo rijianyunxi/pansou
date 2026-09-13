@@ -1,20 +1,23 @@
 /**
  * 热搜功能测试
- * 测试 JSON 文件持久化
+ * 测试 SQLite 持久化
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getOrCreateHotSearchService, resetHotSearchService } from "../../server/core/services/hotSearchService";
+import type { HotSearchService } from "../../server/core/services/hotSearchService";
 
-describe("HotSearchService (JSON file store)", () => {
-  const service = getOrCreateHotSearchService();
-
+describe("HotSearchService (SQLite store)", () => {
+  let service: HotSearchService;
+  let resetHotSearchService: () => void;
   beforeAll(async () => {
+    const module = await import("../../server/core/services/hotSearchService");
+    resetHotSearchService = module.resetHotSearchService;
+    service = module.getOrCreateHotSearchService();
     await service.clearHotSearches();
   });
 
   afterAll(() => {
-    resetHotSearchService();
+    resetHotSearchService?.();
   });
 
   it("应该能够记录搜索词", async () => {
@@ -22,8 +25,8 @@ describe("HotSearchService (JSON file store)", () => {
     const searches = await service.getHotSearches(10);
 
     expect(searches.length).toBeGreaterThan(0);
-    expect(searches[0].term).toBe("测试电影");
-    expect(searches[0].score).toBe(1);
+    expect(searches[0]!.term).toBe("测试电影");
+    expect(searches[0]!.score).toBe(1);
   });
 
   it("应该能够增加已有搜索词的分数", async () => {
@@ -89,10 +92,10 @@ describe("HotSearchService (JSON file store)", () => {
 
     const searches = await service.getHotSearches(10);
 
-    expect(searches[0].term).toBe("高分词");
-    expect(searches[0].score).toBe(3);
-    expect(searches[1].term).toBe("低分词");
-    expect(searches[1].score).toBe(1);
+    expect(searches[0]!.term).toBe("高分词");
+    expect(searches[0]!.score).toBe(3);
+    expect(searches[1]!.term).toBe("低分词");
+    expect(searches[1]!.score).toBe(1);
   });
 
   it("应该处理空搜索词", async () => {
@@ -114,7 +117,7 @@ describe("HotSearchService (JSON file store)", () => {
     expect(searches.length).toBeGreaterThanOrEqual(0);
   });
 
-  it("应该返回文件大小（或 0）", async () => {
+  it("SQLite 存储不再报告旧 JSON 文件大小", async () => {
     const size = service.getDatabaseSize();
     expect(typeof size).toBe("number");
     expect(size).toBeGreaterThanOrEqual(0);
