@@ -41,7 +41,6 @@ describe("SqlitePluginRepository", () => {
     dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
     dbPath = join(dir, "panhub.sqlite");
     process.env.PANHUB_SQLITE_DB = dbPath;
-    process.env.PANHUB_LEGACY_DATA_DIR = dir;
     vi.resetModules();
     repositoryModule = await import("../../server/core/plugins/repository");
     storage = await import("../../server/core/storage/sqlite");
@@ -50,7 +49,6 @@ describe("SqlitePluginRepository", () => {
   afterEach(async () => {
     storage.resetSqliteDatabase(dbPath);
     delete process.env.PANHUB_SQLITE_DB;
-    delete process.env.PANHUB_LEGACY_DATA_DIR;
     await rm(dir, { recursive: true, force: true });
   });
 

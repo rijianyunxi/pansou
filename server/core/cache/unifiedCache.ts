@@ -141,10 +141,3 @@ export class UnifiedCache {
     this.caches.forEach((cache) => cache.forceCleanup());
   }
 }
-
-/**
- * 创建搜索缓存实例
- */
-export function createSearchCache(config: UnifiedCacheConfig): UnifiedCache {
-  return new UnifiedCache(config, "search");
-}

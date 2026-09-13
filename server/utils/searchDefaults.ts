@@ -27,7 +27,7 @@ export function resolveSearchDefaults(
   config: { defaultChannels?: string[] },
 ): EffectiveSearchParams {
   const own = normalizeTelegramChannels(req.channels ?? []);
-  const only = req.channelsMode === "only" || req.channelsMode === "replace";
+  const only = req.channelsMode === "only";
   if (only && !own.length) throw createError({ statusCode: 400, statusMessage: "channels are required when channels_mode=only" });
   const defaults = settings.channels ?? config.defaultChannels ?? [];
   const channels = normalizeTelegramChannels(only ? own : [...defaults, ...own])

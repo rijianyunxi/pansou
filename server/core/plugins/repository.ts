@@ -411,6 +411,3 @@ let repository: PluginRepository | undefined;
 export function getPluginRepository(): PluginRepository {
   return repository || (repository = new SqlitePluginRepository());
 }
-export function setPluginRepository(value: PluginRepository): void {
-  repository = value;
-}

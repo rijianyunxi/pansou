@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createPluginHealthChecker } from "../../server/core/plugins/pluginHealth";
 import { SqlitePluginHealthStore } from "../../server/core/plugins/healthStore";
-import { getSqliteDatabase } from "../../server/core/storage/sqlite";
 import { SearchService, type SearchServiceOptions } from "../../server/core/services/searchService";
 import { PluginManager } from "../../server/core/plugins/manager";
 import type { PluginSearchContext, SearchPlugin } from "../../server/core/plugins/manager";
@@ -80,7 +79,7 @@ describe("plugin health persistence", () => {
     );
     await service.flushHealthSnapshot();
 
-    const persisted = getSqliteDatabase(dbPath).get<any>("plugin_health", "state", {});
+    const persisted = await store.load();
     expect(persisted["broken-plugin"]?.totalFailureCount).toBeGreaterThan(0);
     expect(persisted["broken-plugin"]?.lastErrorCategory).toBeDefined();
     await rm(dir, { recursive: true, force: true });

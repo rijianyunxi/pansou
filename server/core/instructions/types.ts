@@ -121,13 +121,3 @@ export interface InstructionPluginDefinition {
   request: InstructionRequest;
   response: InstructionResponse;
 }
-
-export interface InstructionExecutionTrace {
-  stage: string;
-  url: string;
-  method: string;
-  status: number | null;
-  elapsedMs: number;
-  bytes: number;
-  error?: string;
-}

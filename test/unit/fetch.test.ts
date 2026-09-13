@@ -49,7 +49,7 @@ describe("fetchWithRetry", () => {
     const result = await fetchWithRetry(
       "https://api.example.com/test",
       {},
-      { maxRetries: 2, baseDelay: 10, logWarnings: false }
+      { maxRetries: 2, baseDelay: 10 }
     );
 
     expect(result).toEqual(mockResponse);
@@ -63,7 +63,7 @@ describe("fetchWithRetry", () => {
       fetchWithRetry(
         "https://api.example.com/test",
         {},
-        { maxRetries: 1, baseDelay: 10, logWarnings: false }
+        { maxRetries: 1, baseDelay: 10 }
       )
     ).rejects.toThrow("Network error");
 

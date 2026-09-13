@@ -23,7 +23,6 @@
 
 - 热搜词展示与使用次数统计。
 - Node.js 默认使用 SQLite `data/panhub.sqlite`（WAL）持久化搜索设置、上游目录、Instructions 插件、密钥、解析插件、Telegram 账户/频道配置、健康快照和热搜。
-- 首次创建数据库时会尝试导入旧 JSON 文件；旧文件保留为恢复副本，不再作为运行时主存储。
 
 ### 🎨 用户体验
 
@@ -37,7 +36,7 @@
 - 搜索接口有实例级治理：客户端在途并发默认 3、实例全局在途默认 16，并限制 30 秒窗口内已接纳请求数。
 - 动态 Instructions 请求统一通过 `SafeHttpExecutor`：默认仅 HTTPS（schema 支持显式 `allowInsecureHttp`，但上游目录转换会强制关闭），校验 DNS 解析后的地址，逐跳校验重定向，并限制请求/响应体、端口、请求头和总预算。
 - 健康监控区分网络、HTTP、业务、解析和结果五个维度，并保留有限的历史趋势和熔断状态。
-- 当前回归基线：`pnpm test` 为 58 个 Vitest 文件、551 个用例；Playwright 列表为 18 个交互用例。覆盖率以实际 `pnpm test:coverage` 报告为准。
+- 当前回归基线：`pnpm test` 为 59 个 Vitest 文件、552 个用例；Playwright 列表为 18 个交互用例。覆盖率以实际 `pnpm test:coverage` 报告为准。
 
 ## 🚀 快速开始
 
@@ -105,13 +104,12 @@ pnpm dev
 | `SEARCH_PASSWORD` | 空 | 非空时启用搜索密码门，Cookie 有效期 30 天 |
 | `ADMIN_PASSWORD` | 空 | 管理控制台专用密码，不回退到搜索密码 |
 | `PANHUB_SQLITE_DB` | `data/panhub.sqlite` | SQLite 数据库位置 |
-| `PANHUB_LEGACY_DATA_DIR` | 数据库目录 | 首次建库时旧 JSON 的导入目录 |
 | `NUXT_SEARCH_TIMEOUT_MS` | `30000` | 单次搜索总预算，范围 1000–120000 ms |
 | `TELEGRAM_API_ID` | 空 | Telegram MTProto 应用 ID，仅服务端使用 |
 | `TELEGRAM_API_HASH` | 空 | Telegram MTProto 应用 Hash，仅服务端使用 |
 | `TELEGRAM_SESSION_FILE` | `./data/telegram-session.txt` | Telegram 登录 Session 文件 |
 
-测试和兼容旧文件的 `PANHUB_*_STORE` 变量不是常规生产配置；默认运行时以 SQLite 为唯一持久化源。
+SQLite 结构化表是唯一持久化源；项目不读取旧 JSON 或通用 KV 配置。
 
 ## 🏗️ 技术架构
 
@@ -132,7 +130,7 @@ server/core/
 ├── security/       # URL/DNS、限流和搜索并发治理
 ├── telegram/       # MTProto 账户与会话
 ├── cache/           # 统一内存缓存
-└── storage/         # SQLite 存储与旧 JSON 首次迁移
+└── storage/         # SQLite 结构化存储
 ```
 
 ## 🧪 开发与测试

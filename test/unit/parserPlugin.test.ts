@@ -1,8 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { describe, expect, it, afterEach } from "vitest";
-import { SqliteDatabase } from "../../server/core/storage/sqlite";
+import { describe, expect, it } from "vitest";
 import { parseWithParserPlugin } from "../../server/core/parsers/runtime";
 import { SqliteParserPluginRepository } from "../../server/core/parsers/repository";
 import type { ParserPluginRecord } from "../../server/core/parsers/types";
@@ -48,20 +44,5 @@ describe("parser plugin runtime", () => {
   });
   it("does not expose process or require", () => {
     expect(() => parseWithParserPlugin(record("text", "() => process.env"), "x", { rawBody: "", format: "text" })).toThrow(/禁止的运行时关键字/);
-  });
-});
-
-describe("sqlite storage", () => {
-  let dir: string;
-  afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true }); });
-  it("persists json namespaces transactionally", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-sqlite-"));
-    const db = new SqliteDatabase(join(dir, "data.sqlite"));
-    db.set("settings", "state", { enabled: true });
-    expect(db.get("settings", "state", {})).toEqual({ enabled: true });
-    db.transaction(() => { db.set("settings", "state", { enabled: false }); db.set("plugin", "a", { version: 1 }); });
-    expect(db.get("settings", "state", {})).toEqual({ enabled: false });
-    expect(db.list("plugin")).toHaveLength(1);
-    db.close();
   });
 });

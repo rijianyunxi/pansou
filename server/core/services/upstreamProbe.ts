@@ -71,14 +71,12 @@ async function probeDeclarativeUpstream(
 export async function probeConfiguredUpstream(
   id: string,
   keyword: string,
-  options: { legacyCore?: boolean } = {},
 ): Promise<UpstreamProbe> {
   const source = getConfiguredUpstream(id);
   if (!source) throw new Error("Unknown upstream");
-  // An edited catalog row must be diagnosed through the same declarative
-  // executor as formal search. The legacy branch remains only for an
-  // untouched seeded Core capability (Nyaa/Next.js/build-id semantics, etc.).
-  if (!options.legacyCore && !isCoreCompatibleConfiguration(source)) {
+  // Edited catalog rows use the same declarative executor as formal search;
+  // untouched built-ins retain their specialized Core diagnostics.
+  if (!isCoreCompatibleConfiguration(source)) {
     return probeDeclarativeUpstream(source, keyword);
   }
   const sourceUrl = source.url;
@@ -304,8 +302,3 @@ export async function probeConfiguredUpstream(
     result.elapsedMs = Date.now() - started;
   }
 }
-
-/** @deprecated Kept for callers that explicitly exercise Core diagnostics. */
-export async function probeBuiltinUpstream(id: string, keyword: string): Promise<UpstreamProbe> {
-  return probeConfiguredUpstream(id, keyword, { legacyCore: true });
-};

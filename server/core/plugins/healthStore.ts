@@ -38,4 +38,3 @@ export class SqlitePluginHealthStore implements PluginHealthStore {
 }
 let healthStore: PluginHealthStore | undefined;
 export function getPluginHealthStore(): PluginHealthStore { return healthStore || (healthStore = new SqlitePluginHealthStore()); }
-export function setPluginHealthStore(value: PluginHealthStore): void { healthStore = value; }

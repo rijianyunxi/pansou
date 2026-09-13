@@ -181,7 +181,7 @@ const DUODUO_TRANSFORM = `function transform(payload, $, context) {
   });
 }`;
 
-/** Default transforms used when an older SQLite row predates the function field. */
+/** Default transforms offered when resetting a built-in upstream in the editor. */
 export const DEFAULT_UPSTREAM_TRANSFORMS: Readonly<Record<string, string>> = {
   hunhepan: HUNHEPAN_TRANSFORM,
   nyaa: NYAA_TRANSFORM,
@@ -192,6 +192,7 @@ export const DEFAULT_UPSTREAM_TRANSFORMS: Readonly<Record<string, string>> = {
 export function getDefaultUpstreamTransform(id: string): string | undefined {
   return DEFAULT_UPSTREAM_TRANSFORMS[id];
 }
+
 export const BUILTIN_UPSTREAMS: UpstreamDefinition[] = [
   {
     id: "hunhepan",

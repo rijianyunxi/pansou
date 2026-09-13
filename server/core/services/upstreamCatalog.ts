@@ -15,7 +15,6 @@ import {
   setTgChannelState,
 } from "./tgChannelSettings";
 
-const TRANSFORM_META_KEY = "upstream_catalog.default_transforms_migrated";
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 const HTTP_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const MAX_TAGS = 24;
@@ -165,42 +164,6 @@ function readDeletedIds(db: ReturnType<typeof getSqliteDatabase>): Set<string> {
   );
 }
 
-interface TransformMigrationState {
-  ids: Set<string>;
-  initialized: boolean;
-}
-
-function parseTransformMigrationIds(value: unknown): Set<string> {
-  if (!Array.isArray(value)) return new Set();
-  return new Set(value.map((id) => String(id || "").trim().toLowerCase()).filter((id) => ID_RE.test(id)));
-}
-
-function readTransformMigrationState(db: ReturnType<typeof getSqliteDatabase>): TransformMigrationState {
-  const current = db.getRow<{ value: string }>("SELECT value FROM schema_meta WHERE key=?", TRANSFORM_META_KEY);
-  if (current) {
-    try { return { ids: parseTransformMigrationIds(JSON.parse(current.value)), initialized: true }; }
-    catch { return { ids: new Set(), initialized: true }; }
-  }
-
-  // Import the old marker once without routing runtime reads through the KV API.
-  const legacy = db.getRow<{ value: string }>(
-    "SELECT value FROM legacy_kv WHERE namespace=? AND key=?",
-    "upstream_catalog",
-    "default_transforms_migrated",
-  );
-  if (!legacy) return { ids: new Set(), initialized: false };
-  try { return { ids: parseTransformMigrationIds(JSON.parse(legacy.value)), initialized: false }; }
-  catch { return { ids: new Set(), initialized: false }; }
-}
-
-function writeTransformMigrationState(db: ReturnType<typeof getSqliteDatabase>, ids: Set<string>): void {
-  db.run(
-    "INSERT INTO schema_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-    TRANSFORM_META_KEY,
-    JSON.stringify([...ids].sort()),
-  );
-}
-
 function writeCatalog(db: ReturnType<typeof getSqliteDatabase>, catalog: StoredCatalog, now = Date.now()): void {
   db.run("DELETE FROM upstream_definitions");
   for (const [id, definition] of Object.entries(catalog)) {
@@ -229,55 +192,30 @@ function writeDeletedIds(db: ReturnType<typeof getSqliteDatabase>, deleted: Set<
 function read(): StoredCatalog {
   const db = getSqliteDatabase();
   const deleted = readDeletedIds(db);
-  const transformMigration = readTransformMigrationState(db);
-  const migratedTransforms = transformMigration.ids;
   const existing = readPersistedCatalog(db);
-  // Normalize seeds through the same sanitizer as persisted rows so the
-  // first read and subsequent SQLite reads produce stable versions.
+  // Built-ins are bootstrap definitions. Persisted rows remain authoritative,
+  // including deliberate removal of optional executable fields.
   const seed = sanitize(Object.fromEntries(BUILTIN_UPSTREAMS.map((source) => [source.id, clone(source)])));
-  const migratedTransformSnapshot = JSON.stringify([...migratedTransforms].sort());
   const merged = Object.fromEntries(Object.keys(seed)
     .filter((id) => !deleted.has(id))
     .map((id) => {
       const persisted = existing[id];
-      if (!persisted) {
-        if (seed[id]?.transform && !migratedTransforms.has(id)) migratedTransforms.add(id);
-        return [id, seed[id]!];
-      }
+      if (!persisted) return [id, seed[id]!];
       const next = { ...seed[id]!, ...persisted } as UpstreamDefinition;
-      // Once a row has been saved, its optional executable fields are
-      // authoritative, except for the one-time migration of old rows that
-      // predate persisted transforms.
       for (const key of ["runtime", "request", "response", "transform"] as const) {
         if (!Object.prototype.hasOwnProperty.call(persisted, key)) delete next[key];
       }
-      if (!Object.prototype.hasOwnProperty.call(persisted, "transform") &&
-          seed[id]?.transform && !migratedTransforms.has(id)) {
-        next.transform = seed[id]!.transform;
-        migratedTransforms.add(id);
-      }
       return [id, next];
     })) as StoredCatalog;
-  // Preserve user-created catalog rows, but never resurrect a deleted row.
+
+  // Preserve user-created rows, but never resurrect an explicitly deleted row.
   for (const [id, source] of Object.entries(existing)) {
     if (!deleted.has(id) && !merged[id]) merged[id] = source;
   }
 
-  const needsSeedMigration = Object.entries(seed).some(([id, source]) => {
-    if (deleted.has(id)) return false;
-    const current = existing[id];
-    return !current ||
-      current.builtin !== true ||
-      current.enabled === undefined ||
-      current.runtime?.kind !== source.runtime?.kind ||
-      current.runtime?.handler !== source.runtime?.handler;
-  });
-  const migrationChanged = migratedTransformSnapshot !== JSON.stringify([...migratedTransforms].sort());
-  if (!Object.keys(existing).length || needsSeedMigration || migrationChanged || !transformMigration.initialized) {
-    db.transaction(() => {
-      if (!Object.keys(existing).length || needsSeedMigration || migrationChanged) writeCatalog(db, merged);
-      if (migrationChanged || !transformMigration.initialized) writeTransformMigrationState(db, migratedTransforms);
-    });
+  const missingSeed = Object.keys(seed).some((id) => !deleted.has(id) && !existing[id]);
+  if (!Object.keys(existing).length || missingSeed) {
+    db.transaction(() => writeCatalog(db, merged));
   }
   return merged;
 }

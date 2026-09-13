@@ -33,7 +33,7 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   const src = value.src ?? "all";
   if (!["all", "tg", "plugin"].includes(src as string)) return invalid("Invalid src");
   const mode = value.channels_mode ?? "append";
-  if (!["append", "only", "replace"].includes(mode as string)) return invalid("Invalid channels_mode (append or only)");
+  if (!["append", "only"].includes(mode as string)) return invalid("Invalid channels_mode (append or only)");
   const channels = normalizeTelegramChannels(list(value.channels, "channels") ?? []);
   if (channels.some((name) => !TG_CHANNEL_PATTERN.test(name))) return invalid("channels must contain public Telegram usernames, not URLs");
   if (mode !== "append" && !channels.length) return invalid("channels are required when channels_mode=only");
@@ -50,7 +50,7 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
     extra.__plugin_timeout_ms = integer(extra.__plugin_timeout_ms, 1000, 60000, "ext.__plugin_timeout_ms");
   }
   return {
-    kw: value.kw.trim(), channels, channels_mode: mode === "replace" ? "only" : mode as "append" | "only",
+    kw: value.kw.trim(), channels, channels_mode: mode as "append" | "only",
     src: src as SearchRequest["src"], res: res as SearchRequest["res"],
     plugins: list(value.plugins, "plugins"), cloud_types: list(value.cloud_types, "cloud_types"),
     conc: integer(value.conc, 1, 16, "conc"), refresh: value.refresh === true || value.refresh === "true", ext: extra,

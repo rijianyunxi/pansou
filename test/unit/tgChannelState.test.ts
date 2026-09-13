@@ -89,9 +89,9 @@ describe("tgChannelSettings 频道覆盖状态存储", () => {
     expect(store.getTgChannelPoliciesVersion()).toBeGreaterThan(before);
 
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    const written = db.get<any>("tg_channel_settings", "state", {});
-    expect(written.channelState).toEqual({ offchan: { enabled: false, deleted: false } });
-    expect(written.policies).toEqual({});
+    expect(db.getRow("SELECT enabled,deleted FROM tg_channel_states WHERE channel=?", "offchan"))
+      .toEqual({ enabled: 0, deleted: 0 });
+    expect(db.allRows("SELECT channel FROM tg_channel_policies")).toEqual([]);
   });
 
   it("delete 覆盖：内置默认频道置 deleted=true，可保留 enabled 状态", async () => {
@@ -153,23 +153,20 @@ describe("tgChannelSettings 频道覆盖状态存储", () => {
     expect(store.getTgChannelPoliciesVersion()).toBeGreaterThan(version);
 
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    const written = db.get<any>("tg_channel_settings", "state", {});
-    expect(written.channelState).toEqual({ offchan: { enabled: false, deleted: false } });
+    expect(db.getRow("SELECT enabled,deleted FROM tg_channel_states WHERE channel=?", "offchan"))
+      .toEqual({ enabled: 0, deleted: 0 });
   });
 
   it("读取 SQLite 中的策略与覆盖状态并清洗非法条目", async () => {
     const store = await freshStore();
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    db.set("tg_channel_settings", "state", {
-      policies: { gooddemo: { timeoutMs: 5000 }, "bad key": { timeoutMs: 1 } },
-      channelState: {
-        offchan: { enabled: false, deleted: false },
-        gonechan: { enabled: true, deleted: true },
-        "bad key": { enabled: false },
-        noopchan: { enabled: true, deleted: false },
-        brokenchan: "nope",
-      },
-    });
+    const now = Date.now();
+    db.run("INSERT INTO tg_channel_policies(channel,timeout_ms,updated_at) VALUES(?,?,?)", "gooddemo", 5000, now);
+    db.run("INSERT INTO tg_channel_policies(channel,timeout_ms,updated_at) VALUES(?,?,?)", "bad key", 1, now);
+    db.run("INSERT INTO tg_channel_states(channel,enabled,deleted,updated_at) VALUES(?,?,?,?)", "offchan", 0, 0, now);
+    db.run("INSERT INTO tg_channel_states(channel,enabled,deleted,updated_at) VALUES(?,?,?,?)", "gonechan", 1, 1, now);
+    db.run("INSERT INTO tg_channel_states(channel,enabled,deleted,updated_at) VALUES(?,?,?,?)", "bad key", 0, 0, now);
+    db.run("INSERT INTO tg_channel_states(channel,enabled,deleted,updated_at) VALUES(?,?,?,?)", "noopchan", 1, 0, now);
     expect(store.getTgChannelPolicies()).toEqual({ gooddemo: { timeoutMs: 5000 } });
     expect(store.getTgChannelStates()).toEqual({
       offchan: { enabled: false, deleted: false },

@@ -403,26 +403,6 @@ async function requireAuthorizedClient(): Promise<TelegramClientType> {
   return c;
 }
 
-async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index]!);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-/** 解析频道引用（用户名或缓存过的数字 id）为 InputPeer */
-async function resolvePeer(c: TelegramClientType, ref: string): Promise<Api.TypeInputPeer> {
-  const cached = entityCache.get(ref);
-  if (cached) return c.getInputEntity(cached);
-  return c.getInputEntity(ref);
-}
-
 function channelToItem(channel: Api.Channel, extra?: Partial<ChannelItem>): ChannelItem {
   const id = channel.id.toString();
   entityCache.set(id, channel);
@@ -438,99 +418,6 @@ function channelToItem(channel: Api.Channel, extra?: Partial<ChannelItem>): Chan
     about: null,
     ...extra,
   };
-}
-
-function chatToItem(chat: Api.Channel | Api.Chat, extra?: Partial<ChannelItem>): ChannelItem {
-  if (chat instanceof ApiRuntime.Chat) {
-    // 普通小组（非超级群组），无用户名
-    const id = chat.id.toString();
-    entityCache.set(id, chat);
-    return {
-      ref: id,
-      id,
-      title: chat.title,
-      username: null,
-      verified: false,
-      broadcast: false,
-      megagroup: true,
-      participantsCount: chat.participantsCount ?? null,
-      about: null,
-      ...extra,
-    };
-  }
-  return channelToItem(chat, extra);
-}
-
-/**
- * 全局搜索频道 / 群组：contacts.search。
- * 该接口走服务端搜索索引（标题/用户名前缀匹配），收录不全，很多小频道搜不到；
- * 因此当查询本身像用户名时，额外做一次 contacts.resolveUsername 精确解析，命中置顶。
- */
-export async function searchChannels(query: string, limit = 20): Promise<ChannelItem[]> {
-  const c = await requireAuthorizedClient();
-  const result = await c.invoke(new ApiRuntime.contacts.Search({ q: query, limit }));
-
-  const merged: (Api.Channel | Api.Chat)[] = [];
-  const seen = new Set<string>();
-  const push = (chat: Api.Channel | Api.Chat) => {
-    const id = chat.id.toString();
-    if (!seen.has(id)) {
-      seen.add(id);
-      merged.push(chat);
-    }
-  };
-  for (const chat of result.chats) {
-    if (chat instanceof ApiRuntime.Channel || chat instanceof ApiRuntime.Chat) push(chat);
-  }
-
-  if (/^[A-Za-z0-9_]{4,64}$/.test(query)) {
-    try {
-      const resolved = await c.invoke(new ApiRuntime.contacts.ResolveUsername({ username: query }));
-      const peer = resolved.peer;
-      let hit: Api.Channel | Api.Chat | null = null;
-      if (peer instanceof ApiRuntime.PeerChannel) {
-        hit =
-          resolved.chats.find(
-            (chat): chat is Api.Channel =>
-              chat instanceof ApiRuntime.Channel && chat.id.toString() === peer.channelId.toString(),
-          ) ?? null;
-      } else if (peer instanceof ApiRuntime.PeerChat) {
-        hit =
-          resolved.chats.find(
-            (chat): chat is Api.Chat => chat instanceof ApiRuntime.Chat && chat.id.toString() === peer.chatId.toString(),
-          ) ?? null;
-      }
-      // 精确命中的用户名置顶（若已在前缀结果里则移到最前）
-      if (hit) {
-        const index = merged.indexOf(hit);
-        if (index > 0) merged.splice(index, 1);
-        if (index !== 0) merged.unshift(hit);
-      }
-    } catch {
-      // 用户名不存在（USERNAME_NOT_OCCUPIED）等，忽略即可
-    }
-  }
-
-  return mapWithConcurrency(merged, 4, async (chat): Promise<ChannelItem> => {
-    let participantsCount: number | null = null;
-    let about: string | null = null;
-    if (chat instanceof ApiRuntime.Channel && chat.accessHash) {
-      try {
-        const full = await c.invoke(
-          new ApiRuntime.channels.GetFullChannel({
-            channel: new ApiRuntime.InputChannel({ channelId: chat.id, accessHash: chat.accessHash }),
-          }),
-        );
-        if (full.fullChat instanceof ApiRuntime.ChannelFull) {
-          participantsCount = full.fullChat.participantsCount ?? null;
-          about = full.fullChat.about || null;
-        }
-      } catch {
-        // 部分频道拿不到完整信息，忽略
-      }
-    }
-    return chatToItem(chat, { participantsCount, about });
-  });
 }
 
 /** 我加入的频道 / 群组：messages.getDialogs 过滤 */

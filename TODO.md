@@ -27,7 +27,7 @@
 - [x] 动态 Instructions 插件：JSON/HTML 请求、字段映射、分页、多阶段、受限变量、样本验证、版本发布、停用、回滚、导入导出和热更新。
 - [x] Parser Plugin：同步 JavaScript 转换器运行时、版本仓库、测试、发布、停用、归档、回滚、导入导出，以及按上游/TG 频道绑定。
 - [x] 上游目录和搜索设置服务端持久化；浏览器只保留 UI 偏好和临时诊断状态。
-- [x] SQLite `data/panhub.sqlite` 统一存储配置、插件、密钥、TG 账户/频道设置、健康快照和热搜；首次建库可导入旧 JSON 并保留旧文件。
+- [x] SQLite `data/panhub.sqlite` 通过结构化表统一存储配置、插件、密钥、TG 账户/频道设置、健康快照和热搜。
 - [x] 管理控制台 `/admin`：健康监控、上游接口、TG 账户管理、搜索设置和垃圾箱；`/upstreams`、`/monitor`、`/tg-accounts` 提供兼容重定向。
 - [x] `/telegram` 诊断页：单频道/批量探测、原始报文、直连/Jina 阶段、耗时、结构变化告警和受限预览。
 - [x] 五维健康状态（network/http/business/parsing/results）、失败分类、熔断、加权轮询、失败切换、有限历史趋势和本地持久化。
@@ -78,7 +78,7 @@
 - [ ] 评估 Prometheus/OpenTelemetry；在此之前不承诺已有监控端点兼容这些协议。
 - [ ] 明确原始报文、调试日志和 SQLite 备份的保留期限及自动清理策略。
 - [ ] 若未来恢复 CI/CD，再增加依赖漏洞扫描、密钥扫描和公网测试隔离；当前 `.github/` 工作流已删除。
-- [ ] 完成 `data/hot-searches.json` 的 Git 跟踪清理：它只应作为旧数据首启迁移输入，运行时热搜已使用 SQLite；执行 `git rm --cached data/hot-searches.json` 后再提交。
+- [x] 删除旧 `data/hot-searches.json`；运行时热搜只使用 SQLite。
 
 ---
 
@@ -165,7 +165,7 @@
 
 数据库文件包含敏感配置，不应提交 Git。备份时复制完整 SQLite 数据库，不要只复制 `-wal` 或 `-shm`；恢复建议停止实例后替换数据库再启动。
 
-旧 `data/*.json` 文件只在数据库首次创建时作为迁移输入并保留为恢复副本。`PANHUB_LEGACY_DATA_DIR` 可指定迁移目录；测试使用的 `PANHUB_*_STORE` 兼容变量不应作为常规生产配置。
+SQLite 结构化表是唯一持久化源；不再读取旧 JSON、`json_store` 或通用 KV 配置。
 
 ### 5.2 管理认证和密钥
 
@@ -238,7 +238,7 @@ function transform(payload, $, context) {
 - `server/api/`：Nitro/H3 API 路由。
 - `server/core/`：搜索、插件、Instructions、Parser Plugin、健康、Telegram、缓存、安全和 SQLite。
 - `config/`：内置频道、插件和上游种子配置。
-- `data/`：运行时 SQLite 与旧 JSON 迁移输入；不要提交运行数据。
+- `data/`：运行时 SQLite 与 Telegram Session；不要提交运行数据。
 - `test/unit/`：隔离单测；`test/live/`：显式公网测试；`test/e2e/`：Playwright 测试。
 - `examples/plugins/`：可导入 Instructions 示例。
 
@@ -291,7 +291,7 @@ pnpm exec playwright install chromium
 - [x] 删除豆瓣热榜、图片代理和约 20 个失效/低质量来源；当前内置 Code Plugin 只保留 `hunhepan`、`pansearch`、`duoduo`、`nyaa`。
 - [x] 删除 Docker、Docker Compose、Oracle Cloud/OCI（仓库中未发现专用配置）、Vercel 和 Cloudflare 的部署入口与配置；README/TODO 仅保留 Node.js 运行说明。
 - [x] 将旧开发说明、搜索范围审查、健康/诊断记录合并为当前文档，删除相互矛盾的历史测试数字和重复 TODO。
-- 文档核对发现 `data/hot-searches.json` 仍被 Git 跟踪；具体修复任务保留在第 2 节，本节不重复列项。
+- [x] 删除旧 JSON/KV 持久化兼容层、旧迁移环境变量和仓库内个人工具配置。
 
 ---
 
@@ -307,7 +307,7 @@ pnpm exec playwright install chromium
 
 在本次审计中执行并确认：
 
-- `pnpm test`：58 个测试文件、551 个用例通过。
+- `pnpm test`：59 个测试文件、552 个用例通过。
 - `pnpm exec playwright test --list`：7 个 spec 文件、18 个交互用例。
 - `pnpm typecheck`：通过。
 - `git status --short`：存在大量既有未提交代码改动；本次只编辑 README/TODO，未重置或覆盖这些代码改动。

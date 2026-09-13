@@ -184,4 +184,3 @@ export class SqliteParserPluginRepository {
 
 let repository: SqliteParserPluginRepository | undefined;
 export function getParserPluginRepository(): SqliteParserPluginRepository { return repository || (repository = new SqliteParserPluginRepository()); }
-export function setParserPluginRepository(value: SqliteParserPluginRepository): void { repository = value; }

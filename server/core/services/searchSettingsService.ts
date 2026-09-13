@@ -48,6 +48,3 @@ export function saveSearchSettings(patch: unknown): SearchSettings {
   });
   return clone(next);
 }
-export function setPluginTrashed(id: string, trashed: boolean): SearchSettings {
-  const current = getSearchSettings(); const set = new Set(current.trashedPlugins); if (trashed) set.add(id); else set.delete(id); return saveSearchSettings({ trashedPlugins: [...set] });
-}

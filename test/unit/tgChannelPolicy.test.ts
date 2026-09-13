@@ -112,12 +112,11 @@ describe("tgChannelSettings 存储（沿用 settings 持久化模式）", () => 
 
   it("读取 SQLite 中的策略时宽松清洗非法条目", async () => {
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    db.set("tg_channel_settings", "state", { policies: {
-      gooddemo: { timeoutMs: 5000, maxPages: 99 },
-      "bad key": { timeoutMs: 1 },
-      "stale@": { fallback: "direct" },
-      emptypol: { timeoutMs: "fast" },
-    } });
+    const now = Date.now();
+    db.run("INSERT INTO tg_channel_policies(channel,timeout_ms,max_pages,updated_at) VALUES(?,?,?,?)", "gooddemo", 5000, 99, now);
+    db.run("INSERT INTO tg_channel_policies(channel,timeout_ms,updated_at) VALUES(?,?,?)", "bad key", 1, now);
+    db.run("INSERT INTO tg_channel_policies(channel,fallback,updated_at) VALUES(?,?,?)", "stale@", "direct", now);
+    db.run("INSERT INTO tg_channel_policies(channel,timeout_ms,updated_at) VALUES(?,?,?)", "emptypol", "fast", now);
     expect(getTgChannelPolicies()).toEqual({ gooddemo: { timeoutMs: 5000 } });
     expect(getTgChannelPolicy("GOODDEMO")!.timeoutMs).toBe(5000);
   });

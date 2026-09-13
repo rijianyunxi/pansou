@@ -235,9 +235,6 @@ export function saveTgSourceSettings(raw: unknown): TgSourceSettings {
   return structuredClone(next);
 }
 
-export function getTgTransform(): string {
-  return getTgSourceSettings().transform;
-}
 
 export function saveTgTransform(transform: unknown): TgSourceSettings {
   if (typeof transform !== "string") throw new Error("transform 必须是 JavaScript 文本");

@@ -146,16 +146,11 @@ describe("TG 频道健康存储", () => {
   it("从 SQLite 恢复并清洗历史快照", async () => {
     const store = await freshStore();
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    db.set("tg_channel_health", "state", {
-      goodchan: [
-        { at: 1_700_000_000_000, ok: true, elapsedMs: 50, resultsCount: 1, source: "probe" },
-        { at: 1_700_000_001_000, ok: false, elapsedMs: 80, resultsCount: 0, failureKind: "channel_not_found", source: "probe" },
-        { at: "bad", ok: true, source: "probe" },
-        { at: 1_700_000_002_000, ok: true, elapsedMs: 10, resultsCount: 0, source: "nope" },
-      ],
-      "bad key!": [{ at: 1, ok: true, elapsedMs: 1, resultsCount: 1, source: "search" }],
-      brokenchan: "nope",
-    });
+    db.run("INSERT INTO tg_channel_health VALUES(?,?,?,?,?,?,?,?)", "goodchan", 1_700_000_000_000, 1, 50, 1, "probe", null, null);
+    db.run("INSERT INTO tg_channel_health VALUES(?,?,?,?,?,?,?,?)", "goodchan", 1_700_000_001_000, 0, 80, 0, "probe", "channel_not_found", null);
+    db.run("INSERT INTO tg_channel_health VALUES(?,?,?,?,?,?,?,?)", "goodchan", "bad", 1, 0, 0, "probe", null, null);
+    db.run("INSERT INTO tg_channel_health VALUES(?,?,?,?,?,?,?,?)", "goodchan", 1_700_000_002_000, 1, 10, 0, "nope", null, null);
+    db.run("INSERT INTO tg_channel_health VALUES(?,?,?,?,?,?,?,?)", "bad key!", 1, 1, 1, 1, "search", null, null);
     const restored = store;
     const summary = restored.getTgChannelHealthSummary("goodchan")!;
     expect(summary.recent).toHaveLength(2);

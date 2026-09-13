@@ -9,4 +9,3 @@ export class SqlitePluginSecretStore implements PluginSecretStore {
 }
 let secretStore: PluginSecretStore | undefined;
 export function getPluginSecretStore(): PluginSecretStore { return secretStore || (secretStore = new SqlitePluginSecretStore()); }
-export function setPluginSecretStore(value: PluginSecretStore): void { secretStore = value; }

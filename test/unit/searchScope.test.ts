@@ -22,9 +22,6 @@ describe("search scope contract", () => {
     expect(resolve({ kw: "test", channels_mode: "only", src: "plugin", plugins: ["nyaa"], channels: ["@OwnChan"] }))
       .toMatchObject({ channels: ["ownchan"], src: "tg", plugins: [] });
   });
-  it("legacy replace is a strict user TG-only alias", () => {
-    expect(resolve({ kw: "test", channels_mode: "replace", channels: "ownchan" }).src).toBe("tg");
-  });
   it("GET and POST have identical normalized scope", () => {
     expect(resolve({ kw: "test", channels: "@OwnChan,shared_chan", channels_mode: "only", conc: "2", refresh: "false" }))
       .toEqual(resolve({ kw: "test", channels: ["@OwnChan", "shared_chan"], channels_mode: "only", conc: 2, refresh: false }));

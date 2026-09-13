@@ -1,5 +1,3 @@
-import type { SearchResult } from "../types/models";
-
 export type ParserInputFormat = "html" | "json" | "text";
 /** Manifest format; auto receives the actual format in context and adapts payload/$ accordingly. */
 export type ParserPluginFormat = ParserInputFormat | "auto";
@@ -55,10 +53,3 @@ export interface ParserExecutionContext {
   rawBody: string;
   format: ParserInputFormat;
 }
-
-export type ParserOutput = Partial<SearchResult> & {
-  url?: string;
-  type?: string;
-  password?: string;
-  links?: Array<{ url: string; type?: string; password?: string }>;
-};

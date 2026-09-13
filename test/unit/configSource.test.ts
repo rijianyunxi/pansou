@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,35 +21,23 @@ describe("formal configuration sources", () => {
     dir = "";
   });
 
-  it("upstream catalog reads structured rows without using the KV adapter", async () => {
-    const setup = await setupDatabase("panhub-config-source-upstream-");
+  it("creates only normalized configuration tables", async () => {
+    const setup = await setupDatabase("panhub-config-source-schema-");
     dir = setup.dir;
-    const catalog = await import("../../server/core/services/upstreamCatalog");
     const storage = await import("../../server/core/storage/sqlite");
     const db = storage.getSqliteDatabase();
-    const seeded = catalog.getConfiguredUpstream("hunhepan")!;
 
-    vi.spyOn(db, "get").mockImplementation(() => { throw new Error("legacy get must not be used"); });
-    vi.spyOn(db, "set").mockImplementation(() => { throw new Error("legacy set must not be used"); });
-    vi.spyOn(db, "getUpdatedAt").mockImplementation(() => { throw new Error("legacy timestamp must not be used"); });
-
-    const updated = catalog.saveConfiguredUpstream({
-      ...seeded,
-      url: "https://structured.example/search",
-    });
-    expect(catalog.getConfiguredUpstream("hunhepan")?.url).toBe(updated.url);
-
-    db.run(
-      "INSERT INTO legacy_kv(namespace,key,value,updated_at) VALUES(?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
-      "upstream_catalog",
-      "definitions",
-      JSON.stringify({ hunhepan: { ...seeded, url: "https://legacy.example/search" } }),
-      Date.now(),
-    );
-    expect(catalog.getConfiguredUpstream("hunhepan")?.url).toBe("https://structured.example/search");
+    const tables = db.allRows<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+    ).map((row) => row.name);
+    expect(tables).toContain("upstream_definitions");
+    expect(tables).toContain("tg_channel_policies");
+    expect(tables).not.toContain("legacy_kv");
+    expect(tables).not.toContain("json_store");
+    expect(tables).not.toContain("schema_meta");
   });
 
-  it("TG channel settings read and write structured tables without the KV adapter", async () => {
+  it("TG setting mutations touch only their normalized rows", async () => {
     const setup = await setupDatabase("panhub-config-source-tg-");
     dir = setup.dir;
     const tgSettings = await import("../../server/core/services/tgChannelSettings");
@@ -57,14 +45,27 @@ describe("formal configuration sources", () => {
     const db = storage.getSqliteDatabase();
 
     tgSettings.setTgChannelState("offchan", { enabled: false });
-    vi.spyOn(db, "get").mockImplementation(() => { throw new Error("legacy get must not be used"); });
-    vi.spyOn(db, "set").mockImplementation(() => { throw new Error("legacy set must not be used"); });
-    vi.spyOn(db, "getUpdatedAt").mockImplementation(() => { throw new Error("legacy timestamp must not be used"); });
+    const stateBefore = db.getRow<{ updated_at: number }>(
+      "SELECT updated_at FROM tg_channel_states WHERE channel=?",
+      "offchan",
+    )!.updated_at;
+
+    tgSettings.saveTgChannelPolicies({ policydemo: { maxPages: 2 } });
+    tgSettings.setUpstreamParser("source-demo", "parser-demo");
 
     expect(tgSettings.getTgChannelState("offchan")).toEqual({ enabled: false, deleted: false });
-    expect(tgSettings.getTgChannelSettingsVersion()).toContain("offchan");
-    tgSettings.saveTgChannelPolicies({ policydemo: { maxPages: 2 } });
-    expect(db.getRow<{ max_pages: number }>("SELECT max_pages FROM tg_channel_policies WHERE channel=?", "policydemo")?.max_pages).toBe(2);
+    expect(db.getRow<{ max_pages: number }>(
+      "SELECT max_pages FROM tg_channel_policies WHERE channel=?",
+      "policydemo",
+    )?.max_pages).toBe(2);
+    expect(db.getRow<{ plugin_id: string }>(
+      "SELECT plugin_id FROM parser_bindings WHERE scope=? AND source_id=?",
+      "upstream", "source-demo",
+    )?.plugin_id).toBe("parser-demo");
+    expect(db.getRow<{ updated_at: number }>(
+      "SELECT updated_at FROM tg_channel_states WHERE channel=?",
+      "offchan",
+    )?.updated_at).toBe(stateBefore);
   });
 
   it("search defaults use system settings from SQLite when channels are unset", async () => {

@@ -13,7 +13,6 @@ describe("SqlitePluginSecretStore", () => {
     dir = await mkdtemp(join(tmpdir(), "panhub-secrets-"));
     dbPath = join(dir, "panhub.sqlite");
     process.env.PANHUB_SQLITE_DB = dbPath;
-    process.env.PANHUB_LEGACY_DATA_DIR = dir;
     vi.resetModules();
     const secrets = await import("../../server/core/plugins/secretStore");
     store = new secrets.SqlitePluginSecretStore();
@@ -23,7 +22,6 @@ describe("SqlitePluginSecretStore", () => {
   afterEach(async () => {
     storage.resetSqliteDatabase(dbPath);
     delete process.env.PANHUB_SQLITE_DB;
-    delete process.env.PANHUB_LEGACY_DATA_DIR;
     await rm(dir, { recursive: true, force: true });
   });
 

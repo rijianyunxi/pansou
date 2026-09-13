@@ -46,7 +46,6 @@ describe("SQLite configuration consistency", () => {
     dir = await mkdtemp(join(tmpdir(), "panhub-config-consistency-"));
     dbPath = join(dir, "panhub.sqlite");
     process.env.PANHUB_SQLITE_DB = dbPath;
-    process.env.PANHUB_LEGACY_DATA_DIR = dir;
     vi.resetModules();
     [searchSettings, repository, manager, storage] = await Promise.all([
       import("../../server/core/services/searchSettingsService"),
@@ -59,7 +58,6 @@ describe("SQLite configuration consistency", () => {
   afterEach(async () => {
     storage.resetSqliteDatabase(dbPath);
     delete process.env.PANHUB_SQLITE_DB;
-    delete process.env.PANHUB_LEGACY_DATA_DIR;
     await rm(dir, { recursive: true, force: true });
   });
 
