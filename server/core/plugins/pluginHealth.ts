@@ -132,6 +132,17 @@ export interface PluginHealthStatus {
   totalFailureCount: number;
   successCount: number;
   requestCount: number;
+  /** 最近 100 次请求结果，旧到新；1=成功，0=失败。 */
+  recent?: string;
+  /** 最近 100 次请求明细，供 SQLite 事件表持久化与卡片展示。 */
+  recentOutcomes?: Array<{
+    at: number;
+    ok: boolean;
+    responseTimeMs?: number;
+    resultCount?: number;
+    errorCategory?: string;
+    message?: string;
+  }>;
   zeroResultCount: number;
   resultCount: number;
   parsingSuccessRate: number;
@@ -341,6 +352,7 @@ export function sanitizePluginHealthSnapshot(
       errorCounts: sanitizeCategoryCounts(status.errorCounts),
       dimensions: sanitizeDimensions(status.dimensions),
       history: sanitizeHistory(status.history),
+      recent: typeof status.recent === "string" ? status.recent.slice(-100).replace(/[^01]/g, "") : "",
       lastErrorMessage: clampMessage(status.lastErrorMessage),
     };
   }
@@ -392,6 +404,8 @@ export class PluginHealthChecker {
       totalFailureCount: 0,
       successCount: 0,
       requestCount: 0,
+      recent: "",
+      recentOutcomes: [],
       zeroResultCount: 0,
       resultCount: 0,
       parsingSuccessRate: 0,
@@ -467,6 +481,18 @@ export class PluginHealthChecker {
   }
 
   /** 追加一条检查记录到按小时聚合的有界历史。 */
+  private appendOutcome(
+    current: InternalPluginHealthStatus,
+    outcome: { ok: boolean; at: number; responseTimeMs?: number; resultCount?: number; errorCategory?: string; message?: string },
+  ): void {
+    current.recentOutcomes = [...(current.recentOutcomes || []), outcome].slice(-100);
+  }
+
+  /** 记录请求级结果，供健康卡片准确展示最近 100 次成功/失败。 */
+  private appendRecent(current: InternalPluginHealthStatus, success: boolean): void {
+    current.recent = `${current.recent || ""}${success ? "1" : "0"}`.slice(-100);
+  }
+
   private appendHistory(
     current: InternalPluginHealthStatus,
     outcome: { success: boolean; zeroResult: boolean; category?: string },
@@ -559,6 +585,8 @@ export class PluginHealthChecker {
         resultCount > 0 ? undefined : "搜索成功但返回 0 条结果"
       );
     }
+    this.appendRecent(current, true);
+    this.appendOutcome(current, { ok: true, at: now, responseTimeMs, resultCount });
     this.appendHistory(
       current,
       { success: true, zeroResult: resultCount === 0 },
@@ -640,7 +668,11 @@ export class PluginHealthChecker {
         // unknown_error：失败位置不明，仅累计失败统计，不覆盖既有维度结论。
         break;
     }
+    this.appendRecent(current, false);
+    this.appendOutcome(current, { ok: false, at: now, errorCategory: category, message: options.errorMessage });
     this.appendHistory(current, { success: false, zeroResult: false, category }, now);
+    current.recentOutcomes!.at(-1)!.responseTimeMs = typeof options.responseTimeMs === "number" ? Math.max(0, Math.floor(options.responseTimeMs)) : undefined;
+    current.recentOutcomes!.at(-1)!.message = options.errorMessage;
 
     if (wasHalfOpen || current.failureCount >= this.config.maxFailures) {
       current.isHealthy = false;
@@ -743,6 +775,8 @@ export class PluginHealthChecker {
         ...status,
         name,
         errorCounts: { ...(status.errorCounts || {}) },
+        recent: typeof status.recent === "string" ? status.recent.slice(-100).replace(/[^01]/g, "") : "",
+        recentOutcomes: Array.isArray(status.recentOutcomes) ? status.recentOutcomes.slice(-100) : [],
         dimensions: sanitizeDimensions(status.dimensions),
         history: sanitizeHistory(status.history),
         halfOpenProbeInFlight: false,

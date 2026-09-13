@@ -4,10 +4,6 @@ import { fetchTgChannelPosts, parseChannelPage } from "../../server/core/service
 import { ofetch } from "ofetch";
 import { getTgSourceSettings, saveTgSourceSettings } from "../../server/core/services/tgSourceSettings";
 
-// 让 tgChannelSettings 指向一个必然不存在的存储路径，保证单测不受本机 data/ 目录影响。
-vi.hoisted(() => {
-  process.env.PANHUB_TG_CHANNEL_SETTINGS_STORE = "./.tmp/vitest-tg-channel-settings/absent.json";
-});
 vi.mock("ofetch", () => ({ ofetch: vi.fn() }));
 const fetcher = vi.mocked(ofetch);
 

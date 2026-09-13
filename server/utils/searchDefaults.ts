@@ -1,5 +1,6 @@
 import { createError } from "h3";
 import { getSearchSettings, type SearchSettings } from "../core/services/searchSettingsService";
+import { getSystemSettings } from "../core/services/systemSettingsService";
 import type { SearchRequest } from "../core/types/models";
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
 
@@ -42,5 +43,6 @@ export function resolveSearchDefaults(
 }
 
 export function applySearchDefaults(req: SearchDefaultsInput): EffectiveSearchParams {
-  return resolveSearchDefaults(req, getSearchSettings(), useRuntimeConfig());
+  const system = getSystemSettings(useRuntimeConfig());
+  return resolveSearchDefaults(req, getSearchSettings(), system);
 }

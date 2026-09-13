@@ -135,10 +135,10 @@ describe("tgChannelSettings 频道覆盖状态存储", () => {
     store.setTgChannelState("offchan", { enabled: false });
     const version = store.getTgChannelPoliciesVersion();
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    const originalSet = db.set.bind(db);
-    vi.spyOn(db, "set").mockImplementationOnce(() => { throw new Error("read only"); });
+    const originalTransaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce(() => { throw new Error("read only"); });
     expect(() => store.setTgChannelState("offchan", { enabled: true })).toThrow("read only");
-    vi.spyOn(db, "set").mockImplementation(originalSet);
+    vi.spyOn(db, "transaction").mockImplementation(originalTransaction);
     expect(store.getTgChannelState("offchan")).toEqual({ enabled: false, deleted: false });
     expect(store.getTgChannelPoliciesVersion()).toBe(version);
   });

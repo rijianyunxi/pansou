@@ -75,7 +75,7 @@ function createServiceOptions(runtimeConfig: any): SearchServiceOptions {
     pluginTimeoutMs: system.pluginTimeoutMs,
     searchTimeoutMs: runtimeConfig.searchTimeoutMs,
     cacheEnabled: !!runtimeConfig.cacheEnabled,
-    cacheTtlMinutes: runtimeConfig.cacheTtlMinutes || 30,
+    cacheTtlMinutes: system.cacheTtlMinutes,
     dynamicPluginLoader: async () => {
       const configured = loadConfiguredPlugins();
       const configuredIds = new Set(configured.map((plugin) => plugin.manifest.id));

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   assertSafeHostResolution,
   resolveSafeHostAddresses,
+  setDohResolver,
   type HostResolver,
 } from "../../server/core/security/dnsGuard";
 
@@ -10,6 +11,10 @@ const resolveTo = (addresses: string[]): HostResolver => async () =>
     address,
     family: address.includes(":") ? 6 : 4,
   }));
+
+afterEach(() => {
+  setDohResolver(undefined);
+});
 
 describe("assertSafeHostResolution", () => {
   it("rejects when any resolved address is private", async () => {
@@ -81,6 +86,29 @@ describe("resolveSafeHostAddresses", () => {
       { address: "93.184.216.34", family: 4 },
       { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
     ]);
+  });
+
+  it("re-resolves synthetic 198.18/15 answers through the DoH fallback", async () => {
+    setDohResolver(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ]);
+
+    await expect(
+      resolveSafeHostAddresses("example.com", resolveTo(["198.18.0.119"]))
+    ).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("does not bypass mixed or ordinary private resolutions", async () => {
+    setDohResolver(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ]);
+
+    await expect(
+      resolveSafeHostAddresses(
+        "rebind.example",
+        resolveTo(["198.18.0.119", "192.168.1.10"])
+      )
+    ).rejects.toThrow(/DNS 解析到内网或保留地址/);
   });
 
   it("still rejects private resolutions", async () => {

@@ -2,16 +2,17 @@
   <dialog
     ref="dialog"
     class="source-dialog"
+    :class="{ 'source-dialog-readonly': readonly }"
     aria-labelledby="editor-title"
     @close="$emit('close')"
     @click="onBackdrop"
   >
-    <form class="editor-form" @submit.prevent="save">
+    <form class="editor-form" @submit.prevent="handleSubmit">
       <header class="editor-header">
         <div>
           <span class="editor-kicker">UPSTREAM</span>
           <h2 id="editor-title">
-            {{ source ? "编辑上游" : "新增上游" }}
+            {{ readonly ? "上游详情" : source ? "编辑上游" : "新增上游" }}
           </h2>
         </div>
         <button
@@ -31,7 +32,8 @@
           required
           maxlength="40"
           placeholder="例如：我的资源接口"
-          autofocus
+          :autofocus="!readonly"
+          :readonly="readonly"
         />
       </label>
 
@@ -40,6 +42,7 @@
         <input
           v-model="form.description"
           maxlength="100"
+          :readonly="readonly"
           placeholder="描述这个接口的用途或资源类型"
         />
       </label>
@@ -47,14 +50,14 @@
       <div class="editor-grid source-kind-grid">
         <label>
           来源类型
-          <select v-model="form.sourceKind">
+          <select v-model="form.sourceKind" :disabled="readonly">
             <option value="http">HTTP 上游</option>
             <option value="telegram">TG 频道</option>
           </select>
         </label>
         <label v-if="form.sourceKind === 'telegram'">
           TG 频道
-          <input v-model="form.channel" placeholder="@channel_username" pattern="@?[A-Za-z0-9_]{5,64}" />
+          <input v-model="form.channel" placeholder="@channel_username" pattern="@?[A-Za-z0-9_]{5,64}" :readonly="readonly" />
         </label>
       </div>
 
@@ -66,20 +69,21 @@
           type="url"
           placeholder="https://api.example.com/search"
           maxlength="500"
+          :readonly="readonly"
         />
       </label>
 
       <div class="editor-grid">
         <label>
           请求方式
-          <select v-model="form.method">
+          <select v-model="form.method" :disabled="readonly">
             <option>GET</option>
             <option>POST</option>
           </select>
         </label>
         <label>
           响应格式
-          <select v-model="form.format">
+          <select v-model="form.format" :disabled="readonly">
             <option value="json">JSON</option>
             <option value="html">HTML</option>
           </select>
@@ -91,16 +95,16 @@
         <div class="editor-grid reliability-grid">
           <label>
             备用 URL
-            <textarea v-model="fallbackUrlsText" class="code-input" rows="3" spellcheck="false" placeholder="每行一个 HTTPS 地址；主地址失败后按顺序尝试" />
+            <textarea v-model="fallbackUrlsText" class="code-input" rows="3" spellcheck="false" placeholder="每行一个 HTTPS 地址；主地址失败后按顺序尝试" :readonly="readonly" />
           </label>
           <div class="editor-grid retry-grid">
             <label>
               单地址重试
-              <input v-model.number="retryMaxRetries" type="number" min="0" max="3" />
+              <input v-model.number="retryMaxRetries" type="number" min="0" max="3" :readonly="readonly" />
             </label>
             <label>
               重试间隔 (ms)
-              <input v-model.number="retryDelayMs" type="number" min="0" max="5000" step="100" />
+              <input v-model.number="retryDelayMs" type="number" min="0" max="5000" step="100" :readonly="readonly" />
             </label>
           </div>
         </div>
@@ -110,6 +114,7 @@
             <textarea
               v-model="requestQueryText"
               class="code-input"
+              :readonly="readonly"
               rows="5"
               spellcheck="false"
               aria-describedby="request-config-help"
@@ -121,6 +126,7 @@
             <textarea
               v-model="requestBodyText"
               class="code-input"
+              :readonly="readonly"
               rows="5"
               spellcheck="false"
               aria-describedby="request-config-help"
@@ -132,6 +138,7 @@
             <textarea
               v-model="requestHeadersText"
               class="code-input"
+              :readonly="readonly"
               rows="5"
               spellcheck="false"
               aria-describedby="request-config-help"
@@ -148,9 +155,9 @@
       <details class="editor-meta">
         <summary>标签与分类</summary>
         <div class="editor-grid">
-          <label>管理标签 <input v-model="tagsText" placeholder="例如：稳定, 免费, 推荐" /></label>
-          <label>网盘类型 <input v-model="form.driveType" placeholder="例如：阿里云盘 / 夸克 / 磁力" /></label>
-          <label>资源类型 <input v-model="resourceTypesText" placeholder="例如：电影, 动漫, 小说, 音乐, 资料" /></label>
+          <label>管理标签 <input v-model="tagsText" placeholder="例如：稳定, 免费, 推荐" :readonly="readonly" /></label>
+          <label>网盘类型 <input v-model="form.driveType" placeholder="例如：阿里云盘 / 夸克 / 磁力" :readonly="readonly" /></label>
+          <label>资源类型 <input v-model="resourceTypesText" placeholder="例如：电影, 动漫, 小说, 音乐, 资料" :readonly="readonly" /></label>
         </div>
       </details>
 
@@ -167,6 +174,7 @@
               <button
                 type="button"
                 class="function-action-button"
+                :disabled="readonly"
                 @click="openTransformImport"
               >
                 <ConsoleIcon name="upload" :size="14" />
@@ -187,6 +195,7 @@
             id="upstream-transform"
             v-model="form.transform"
             class="code-input"
+            :readonly="readonly"
             rows="14"
             spellcheck="false"
             aria-describedby="transform-help"
@@ -199,21 +208,40 @@
             class="transform-file"
             type="file"
             accept=".js,.mjs,text/javascript"
+            :disabled="readonly"
             @change="importTransform"
           />
         </div>
       </details>
 
+      <slot name="readonly-extra" />
+
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
       <footer>
-        <button type="button" class="button secondary" @click="dialog?.close()">
-          取消
-        </button>
-        <button type="submit" class="button primary">
-          <ConsoleIcon name="check" />
-          {{ source ? "保存配置" : "创建上游" }}
-        </button>
+        <template v-if="readonly">
+          <button type="button" class="button secondary" @click="dialog?.close()">
+            关闭
+          </button>
+          <button type="button" class="button secondary" @click="$emit('edit')">
+            <ConsoleIcon name="edit" :size="15" />修改配置
+          </button>
+          <button type="button" class="button secondary" :disabled="running" @click="$emit('debug')">
+            <ConsoleIcon name="play" :size="15" />打开调试
+          </button>
+          <button type="button" class="button danger-button" @click="$emit('delete')">
+            <ConsoleIcon name="trash" :size="15" />删除上游
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" class="button secondary" @click="dialog?.close()">
+            取消
+          </button>
+          <button type="submit" class="button primary">
+            <ConsoleIcon name="check" />
+            {{ source ? "保存配置" : "创建上游" }}
+          </button>
+        </template>
       </footer>
     </form>
   </dialog>
@@ -229,6 +257,8 @@ import {
 
 const props = defineProps<{
   source?: UpstreamDefinition | null;
+  readonly?: boolean;
+  running?: boolean;
 }>();
 
 type EditableUpstreamDefinition = UpstreamDefinition & { transform?: string };
@@ -236,6 +266,9 @@ type EditableUpstreamDefinition = UpstreamDefinition & { transform?: string };
 const emit = defineEmits<{
   close: [];
   save: [source: EditableUpstreamDefinition];
+  edit: [];
+  debug: [];
+  delete: [];
 }>();
 
 const EMPTY_TRANSFORM = "function transform(payload, $, context) {\n  return [];\n}";
@@ -375,6 +408,11 @@ function onBackdrop(event: MouseEvent) {
   ) {
     dialog.value.close();
   }
+}
+
+function handleSubmit() {
+  if (props.readonly) return;
+  save();
 }
 
 function save() {

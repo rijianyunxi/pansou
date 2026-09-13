@@ -79,8 +79,6 @@ export interface TgSourceSettings {
   parserVersion: string;
 }
 
-const NAMESPACE = "tg_source_settings";
-const KEY = "config";
 const DEFAULTS: TgSourceSettings = {
   directTemplate: "https://t.me/s/{{channel}}",
   jinaTemplate: "https://r.jina.ai/https://t.me/s/{{channel}}",
@@ -200,10 +198,15 @@ function normalize(raw: unknown): TgSourceSettings {
 
 export function getTgSourceSettings(): TgSourceSettings {
   const db = getSqliteDatabase();
-  const current = db.get<unknown>(NAMESPACE, KEY, null);
-  if (current) return structuredClone(normalize(current));
+  const row = db.getRow<any>("SELECT * FROM tg_source_settings WHERE id=1");
+  if (row) {
+    let headers: unknown = {}; let fallbackUrls: unknown = [];
+    try { headers = JSON.parse(row.headers); } catch {}
+    try { fallbackUrls = JSON.parse(row.fallback_urls); } catch {}
+    return normalize({ directTemplate: row.direct_template, jinaTemplate: row.jina_template, userAgent: row.user_agent, headers, transform: row.transform, fallbackUrls, retry: { maxRetries: row.max_retries, delayMs: row.delay_ms }, parserVersion: row.parser_version });
+  }
   const seeded = normalize(DEFAULTS);
-  db.set(NAMESPACE, KEY, seeded);
+  db.run("INSERT INTO tg_source_settings(id,direct_template,jina_template,user_agent,headers,transform,fallback_urls,max_retries,delay_ms,parser_version,updated_at) VALUES(1,?,?,?,?,?,?,?,?,?,?)", seeded.directTemplate, seeded.jinaTemplate, seeded.userAgent, JSON.stringify(seeded.headers), seeded.transform, JSON.stringify(seeded.fallbackUrls), seeded.retry.maxRetries, seeded.retry.delayMs, seeded.parserVersion, Date.now());
   return structuredClone(seeded);
 }
 
@@ -227,7 +230,8 @@ export function saveTgSourceSettings(raw: unknown): TgSourceSettings {
       ? { parserVersion: bumpParserVersion(current.parserVersion) }
       : {}),
   });
-  getSqliteDatabase().set(NAMESPACE, KEY, next);
+  const db = getSqliteDatabase();
+  db.run("INSERT INTO tg_source_settings(id,direct_template,jina_template,user_agent,headers,transform,fallback_urls,max_retries,delay_ms,parser_version,updated_at) VALUES(1,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET direct_template=excluded.direct_template,jina_template=excluded.jina_template,user_agent=excluded.user_agent,headers=excluded.headers,transform=excluded.transform,fallback_urls=excluded.fallback_urls,max_retries=excluded.max_retries,delay_ms=excluded.delay_ms,parser_version=excluded.parser_version,updated_at=excluded.updated_at", next.directTemplate, next.jinaTemplate, next.userAgent, JSON.stringify(next.headers), next.transform, JSON.stringify(next.fallbackUrls), next.retry.maxRetries, next.retry.delayMs, next.parserVersion, Date.now());
   return structuredClone(next);
 }
 
@@ -243,7 +247,7 @@ export function saveTgTransform(transform: unknown): TgSourceSettings {
 export function getTgSourceSettingsVersion(): string {
   const db = getSqliteDatabase();
   const value = getTgSourceSettings();
-  return `${db.getUpdatedAt(NAMESPACE, KEY) ?? 0}:${JSON.stringify(value)}`;
+  return `${db.getRow<any>("SELECT updated_at FROM tg_source_settings WHERE id=1")?.updated_at ?? 0}:${JSON.stringify(value)}`;
 }
 
 export function buildConfiguredTgUrl(

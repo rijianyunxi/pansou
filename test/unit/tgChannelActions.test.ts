@@ -194,7 +194,7 @@ describe("频道启停/删除端点", () => {
   });
 
   it("持久化失败时返回非 0 code 与 message", async () => {
-    vi.spyOn(getSqliteDatabase(), "set").mockImplementationOnce(() => {
+    vi.spyOn(getSqliteDatabase(), "transaction").mockImplementationOnce(() => {
       throw new Error("read only");
     });
     const { body } = await call("POST", "/api/tg/channels/offchan/disable");

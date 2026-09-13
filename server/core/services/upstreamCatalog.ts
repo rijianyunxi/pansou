@@ -15,10 +15,7 @@ import {
   setTgChannelState,
 } from "./tgChannelSettings";
 
-const NAMESPACE = "upstream_catalog";
-const KEY = "definitions";
-const DELETED_KEY = "deleted";
-const TRANSFORM_MIGRATION_KEY = "default_transforms_migrated";
+const TRANSFORM_META_KEY = "upstream_catalog.default_transforms_migrated";
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 const HTTP_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const MAX_TAGS = 24;
@@ -62,7 +59,7 @@ function telegramUrl(route: "direct" | "jina", channel: string): string {
   return buildConfiguredTgUrl(route, channel, "");
 }
 
-function runtimeDefaultChannels(): string[] {
+function systemDefaultChannels(): string[] {
   try {
     return normalizeTelegramChannels(getSystemSettings(useRuntimeConfig()).defaultChannels);
   } catch {
@@ -152,33 +149,99 @@ function sanitize(raw: unknown): StoredCatalog {
   return out;
 }
 
-function readIdSet(store: ReturnType<typeof getSqliteDatabase>, key: string): Set<string> {
-  const raw = store.get<unknown>(NAMESPACE, key, []);
-  if (!Array.isArray(raw)) return new Set();
-  return new Set(raw.map((value) => String(value || "").trim().toLowerCase()).filter((id) => ID_RE.test(id)));
+function readPersistedCatalog(db: ReturnType<typeof getSqliteDatabase>): StoredCatalog {
+  const rawCatalog: Record<string, unknown> = {};
+  for (const row of db.allRows<{ id: string; definition: string }>("SELECT id,definition FROM upstream_definitions")) {
+    try { rawCatalog[row.id] = JSON.parse(row.definition); } catch { /* ignore malformed rows */ }
+  }
+  return sanitize(rawCatalog);
+}
+
+function readDeletedIds(db: ReturnType<typeof getSqliteDatabase>): Set<string> {
+  return new Set(
+    db.allRows<{ id: string }>("SELECT id FROM deleted_upstreams")
+      .map((row) => String(row.id || "").trim().toLowerCase())
+      .filter((id) => ID_RE.test(id)),
+  );
+}
+
+interface TransformMigrationState {
+  ids: Set<string>;
+  initialized: boolean;
+}
+
+function parseTransformMigrationIds(value: unknown): Set<string> {
+  if (!Array.isArray(value)) return new Set();
+  return new Set(value.map((id) => String(id || "").trim().toLowerCase()).filter((id) => ID_RE.test(id)));
+}
+
+function readTransformMigrationState(db: ReturnType<typeof getSqliteDatabase>): TransformMigrationState {
+  const current = db.getRow<{ value: string }>("SELECT value FROM schema_meta WHERE key=?", TRANSFORM_META_KEY);
+  if (current) {
+    try { return { ids: parseTransformMigrationIds(JSON.parse(current.value)), initialized: true }; }
+    catch { return { ids: new Set(), initialized: true }; }
+  }
+
+  // Import the old marker once without routing runtime reads through the KV API.
+  const legacy = db.getRow<{ value: string }>(
+    "SELECT value FROM legacy_kv WHERE namespace=? AND key=?",
+    "upstream_catalog",
+    "default_transforms_migrated",
+  );
+  if (!legacy) return { ids: new Set(), initialized: false };
+  try { return { ids: parseTransformMigrationIds(JSON.parse(legacy.value)), initialized: false }; }
+  catch { return { ids: new Set(), initialized: false }; }
+}
+
+function writeTransformMigrationState(db: ReturnType<typeof getSqliteDatabase>, ids: Set<string>): void {
+  db.run(
+    "INSERT INTO schema_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    TRANSFORM_META_KEY,
+    JSON.stringify([...ids].sort()),
+  );
+}
+
+function writeCatalog(db: ReturnType<typeof getSqliteDatabase>, catalog: StoredCatalog, now = Date.now()): void {
+  db.run("DELETE FROM upstream_definitions");
+  for (const [id, definition] of Object.entries(catalog)) {
+    db.run(
+      "INSERT INTO upstream_definitions(id,source_kind,channel,name,description,url,method,format,enabled,definition,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      id,
+      definition.sourceKind,
+      definition.channel ?? null,
+      definition.name,
+      definition.description,
+      definition.url,
+      definition.method,
+      definition.format,
+      definition.enabled === false ? 0 : 1,
+      JSON.stringify(definition),
+      now,
+    );
+  }
+}
+
+function writeDeletedIds(db: ReturnType<typeof getSqliteDatabase>, deleted: Set<string>, now = Date.now()): void {
+  db.run("DELETE FROM deleted_upstreams");
+  for (const id of deleted) db.run("INSERT INTO deleted_upstreams(id,deleted_at) VALUES(?,?)", id, now);
 }
 
 function read(): StoredCatalog {
-  const store = getSqliteDatabase();
-  const deleted = readIdSet(store, DELETED_KEY);
-  const migratedTransforms = readIdSet(store, TRANSFORM_MIGRATION_KEY);
-  const existing = sanitize(store.get<unknown>(NAMESPACE, KEY, {}));
+  const db = getSqliteDatabase();
+  const deleted = readDeletedIds(db);
+  const transformMigration = readTransformMigrationState(db);
+  const migratedTransforms = transformMigration.ids;
+  const existing = readPersistedCatalog(db);
   // Normalize seeds through the same sanitizer as persisted rows so the
   // first read and subsequent SQLite reads produce stable versions.
   const seed = sanitize(Object.fromEntries(BUILTIN_UPSTREAMS.map((source) => [source.id, clone(source)])));
-  let migrationChanged = false;
+  const migratedTransformSnapshot = JSON.stringify([...migratedTransforms].sort());
   const merged = Object.fromEntries(Object.keys(seed)
     .filter((id) => !deleted.has(id))
     .map((id) => {
       const persisted = existing[id];
       if (!persisted) {
-        // Treat shipped configurations as ordinary catalog rows. Remember that
-        // their default transform has already been applied so a later user
-        // save that intentionally clears it is not overwritten on read.
-        if (seed[id]?.transform && !migratedTransforms.has(id)) {
-          migratedTransforms.add(id);
-          migrationChanged = true;
-        }
+        if (seed[id]?.transform && !migratedTransforms.has(id)) migratedTransforms.add(id);
         return [id, seed[id]!];
       }
       const next = { ...seed[id]!, ...persisted } as UpstreamDefinition;
@@ -192,10 +255,6 @@ function read(): StoredCatalog {
           seed[id]?.transform && !migratedTransforms.has(id)) {
         next.transform = seed[id]!.transform;
         migratedTransforms.add(id);
-        migrationChanged = true;
-      } else if (Object.prototype.hasOwnProperty.call(persisted, "transform") && !migratedTransforms.has(id)) {
-        migratedTransforms.add(id);
-        migrationChanged = true;
       }
       return [id, next];
     })) as StoredCatalog;
@@ -213,9 +272,12 @@ function read(): StoredCatalog {
       current.runtime?.kind !== source.runtime?.kind ||
       current.runtime?.handler !== source.runtime?.handler;
   });
-  if (!Object.keys(existing).length || needsSeedMigration || migrationChanged) {
-    store.set(NAMESPACE, KEY, merged);
-    store.set(NAMESPACE, TRANSFORM_MIGRATION_KEY, [...migratedTransforms]);
+  const migrationChanged = migratedTransformSnapshot !== JSON.stringify([...migratedTransforms].sort());
+  if (!Object.keys(existing).length || needsSeedMigration || migrationChanged || !transformMigration.initialized) {
+    db.transaction(() => {
+      if (!Object.keys(existing).length || needsSeedMigration || migrationChanged) writeCatalog(db, merged);
+      if (migrationChanged || !transformMigration.initialized) writeTransformMigrationState(db, migratedTransforms);
+    });
   }
   return merged;
 }
@@ -281,7 +343,7 @@ export function listUnifiedUpstreams(): UpstreamDefinition[] {
   const settings = getSearchSettings();
   const states = getTgChannelStates();
   const channels = new Set([
-    ...runtimeDefaultChannels(),
+    ...systemDefaultChannels(),
     ...(settings.channels || []),
     ...Object.keys(states),
     ...Object.keys(catalog).filter((id) => id.startsWith("tg-")).map((id) => id.slice(3)),
@@ -336,9 +398,15 @@ export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
   const store = getSqliteDatabase();
-  const deleted = readIdSet(store, DELETED_KEY);
-  if (deleted.delete(id)) store.set(NAMESPACE, DELETED_KEY, [...deleted]);
-  store.set(NAMESPACE, KEY, catalog);
+  const deleted = readDeletedIds(store);
+  if (deleted.delete(id)) {
+    store.transaction(() => {
+      writeDeletedIds(store, deleted);
+      writeCatalog(store, catalog);
+    });
+  } else {
+    store.transaction(() => writeCatalog(store, catalog));
+  }
   return clone(next);
 }
 
@@ -370,10 +438,11 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
   const settings = getSearchSettings();
-  const configured = settings.channels === null ? runtimeDefaultChannels() : settings.channels;
+  const configured = settings.channels === null ? systemDefaultChannels() : settings.channels;
   if (!configured.includes(channel)) saveSearchSettings({ channels: [...configured, channel] });
   clearTgChannelState(channel);
-  getSqliteDatabase().set(NAMESPACE, KEY, catalog);
+  const db = getSqliteDatabase();
+  db.transaction(() => writeCatalog(db, catalog));
   return clone(next);
 }
 
@@ -387,7 +456,7 @@ export function deleteConfiguredTelegramUpstream(idOrChannel: string): void {
   const channel = raw.startsWith("tg-") ? raw.slice(3) : raw.replace(/^@/, "");
   if (!TG_CHANNEL_PATTERN.test(channel)) throw new Error("Unknown Telegram upstream");
   const settings = getSearchSettings();
-  const defaults = runtimeDefaultChannels();
+  const defaults = systemDefaultChannels();
   const catalog = read();
   if (settings.channels?.includes(channel)) {
     saveSearchSettings({ channels: settings.channels.filter((item) => item !== channel) });
@@ -399,7 +468,8 @@ export function deleteConfiguredTelegramUpstream(idOrChannel: string): void {
   }
   if (catalog[telegramId(channel)]) {
     delete catalog[telegramId(channel)];
-    getSqliteDatabase().set(NAMESPACE, KEY, catalog);
+    const db = getSqliteDatabase();
+    db.transaction(() => writeCatalog(db, catalog));
   }
 }
 
@@ -417,7 +487,8 @@ export function setUnifiedUpstreamEnabled(id: string, enabled: boolean): Upstrea
     const state = setTgChannelState(source.channel, { enabled, deleted: false });
     const current = read()[source.id] || source;
     const next = { ...current, enabled: state.enabled && !state.deleted };
-    getSqliteDatabase().set(NAMESPACE, KEY, { ...read(), [source.id]: next });
+    const db = getSqliteDatabase();
+    db.transaction(() => writeCatalog(db, { ...read(), [source.id]: next }));
     return clone(buildTelegramDefinition(source.channel, next));
   }
   return setConfiguredUpstreamEnabled(source.id, enabled);
@@ -428,12 +499,12 @@ export function deleteConfiguredUpstream(id: string): void {
   const store = getSqliteDatabase();
   const catalog = read();
   if (!catalog[key]) throw new Error("Unknown upstream");
-  const deleted = readIdSet(store, DELETED_KEY);
+  const deleted = readDeletedIds(store);
   deleted.add(key);
   delete catalog[key];
   store.transaction(() => {
-    store.set(NAMESPACE, KEY, catalog);
-    store.set(NAMESPACE, DELETED_KEY, [...deleted]);
+    writeCatalog(store, catalog);
+    writeDeletedIds(store, deleted);
   });
 }
 
@@ -444,7 +515,8 @@ export function setConfiguredUpstreamEnabled(id: string, enabled: boolean): Upst
   if (!current) throw new Error("Unknown upstream");
   const next = { ...current, enabled: !!enabled };
   catalog[key] = next;
-  getSqliteDatabase().set(NAMESPACE, KEY, catalog);
+  const db = getSqliteDatabase();
+  db.transaction(() => writeCatalog(db, catalog));
   return clone(next);
 }
 
@@ -453,7 +525,9 @@ export function getConfiguredUpstreamVersion(): string {
   // Seed first, then read the timestamp. This keeps the version stable even
   // for the very first request that creates the SQLite catalog row.
   const catalog = read();
-  return `${db.getUpdatedAt(NAMESPACE, KEY) ?? 0}:${db.getUpdatedAt(NAMESPACE, DELETED_KEY) ?? 0}:${JSON.stringify(catalog)}`;
+  const catalogUpdatedAt = db.getRow<{ updated_at: number | null }>("SELECT MAX(updated_at) AS updated_at FROM upstream_definitions")?.updated_at ?? 0;
+  const deletedUpdatedAt = db.getRow<{ deleted_at: number | null }>("SELECT MAX(deleted_at) AS deleted_at FROM deleted_upstreams")?.deleted_at ?? 0;
+  return `${catalogUpdatedAt}:${deletedUpdatedAt}:${JSON.stringify(catalog)}`;
 }
 
 
@@ -523,11 +597,11 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
     imported.push(clone(next));
   }
   const store = getSqliteDatabase();
-  const deleted = readIdSet(store, DELETED_KEY);
+  const deleted = readDeletedIds(store);
   for (const source of imported) deleted.delete(source.id);
   store.transaction(() => {
-    store.set(NAMESPACE, KEY, nextCatalog);
-    store.set(NAMESPACE, DELETED_KEY, [...deleted]);
+    writeCatalog(store, nextCatalog);
+    writeDeletedIds(store, deleted);
   });
   void actor;
   return imported;

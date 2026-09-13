@@ -97,115 +97,105 @@
           </button>
         </div>
       </div>
-      <div class="table-scroll">
-        <table class="source-table monitor-table">
-          <thead>
-            <tr>
-              <th>对象</th>
-              <th>类型</th>
-              <th>状态</th>
-              <th class="monitor-col-metrics">关键指标</th>
-              <th class="monitor-col-checked">最近检查</th>
-              <th class="action-column">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in filteredRows"
-              :key="row.key"
-              :class="{ 'disabled-row': row.state === 'disabled' || row.state === 'trashed' }"
+      <div class="monitor-card-grid" role="list" aria-label="健康状态列表">
+        <article
+          v-for="row in filteredRows"
+          :key="row.key"
+          class="monitor-card"
+          :class="{ 'disabled-card': row.state === 'disabled' || row.state === 'trashed' }"
+          role="listitem"
+        >
+          <header class="monitor-card-header">
+            <div class="monitor-card-identity">
+              <span class="card-checkbox" aria-hidden="true"></span>
+              <span class="source-avatar monitor-avatar monitor-card-avatar" :data-kind="row.kind">
+                {{ row.kind === "channel" ? "T" : row.name.charAt(0).toUpperCase() }}
+              </span>
+              <div class="source-text">
+                <div class="monitor-card-name">
+                  <span class="monitor-kind-tag">{{ row.kind === "channel" ? "TG" : "CODEX" }}</span>
+                  <strong>{{ row.name }}</strong>
+                </div>
+                <div class="monitor-card-id" :title="row.id">{{ row.detail || row.id }}</div>
+              </div>
+            </div>
+            <span class="state-badge monitor-status" :class="STATE_TONES[row.state]">
+              <span class="status-dot" :class="STATE_TONES[row.state]"></span>{{ STATE_LABELS[row.state] }}
+            </span>
+          </header>
+
+          <section class="monitor-health-block" aria-label="最近 100 次健康统计">
+            <div class="monitor-health-heading">
+              <span>健康状态</span>
+              <span class="monitor-health-counts">
+                <strong class="success-text">成功 {{ row.health.successCount }}</strong>
+                <strong class="failure-text">失败 {{ row.health.failureCount }}</strong>
+              </span>
+            </div>
+            <div
+              class="monitor-health-strip"
+              role="img"
+              :aria-label="`最近 100 次：成功 ${row.health.successCount} 次，失败 ${row.health.failureCount} 次，成功率 ${healthPercent(row)}`"
             >
-              <td>
-                <div class="source-identity">
-                  <span class="source-avatar monitor-avatar" :data-kind="row.kind">{{
-                    row.kind === "channel" ? "T" : row.name.charAt(0).toUpperCase()
-                  }}</span>
-                  <div class="source-text">
-                    <div class="source-name">
-                      {{ row.name
-                      }}<span v-if="row.version" class="method-tag">{{ row.version }}</span>
-                    </div>
-                    <div class="source-address" :title="row.detail || row.id">
-                      {{ row.detail || row.id }}
-                    </div>
-                  </div>
-                </div>
-              </td>
-              <td>
-                <span class="state-badge">{{ row.typeLabel }}</span>
-              </td>
-              <td>
-                <span class="state-badge" :class="STATE_TONES[row.state]">
-                  <span class="status-dot" :class="STATE_TONES[row.state]"></span>{{ STATE_LABELS[row.state] }}
-                </span>
-              </td>
-              <td class="monitor-col-metrics">
-                <span v-for="metric in row.metrics" :key="metric" class="monitor-metric">{{ metric }}</span>
-              </td>
-              <td class="monitor-col-checked">
-                <span class="latency">{{ checkedAtText(row) }}</span>
-              </td>
-              <td class="action-column">
-                <div v-if="row.kind === 'upstream'" class="monitor-actions">
-                  <template v-if="!row.trashed">
-                    <button
-                      class="button secondary small"
-                      type="button"
-                      :disabled="busyKey === row.key"
-                      @click="toggleUpstream(row)"
-                    >{{ row.enabled ? "停用" : "启用" }}</button>
-                  </template>
-                  <NuxtLink v-else to="/admin?view=sources" class="text-button monitor-restore-hint">
-                    垃圾箱可恢复
-                  </NuxtLink>
-                  <button class="button secondary small" type="button" @click="emit('focus-upstream', row.id)">详情</button>
-                  <button
-                    v-if="row.upstreamKind === 'instructions'"
-                    class="button danger-button small"
-                    type="button"
-                    :disabled="busyKey === row.key"
-                    @click="requestDeleteUpstream(row)"
-                  >删除</button>
-                </div>
-                <div v-else class="monitor-actions">
-                  <button
-                    class="button secondary small"
-                    type="button"
-                    :disabled="busyKey === row.key"
-                    @click="toggleChannel(row)"
-                  >{{ row.trashed || !row.enabled ? "启用" : "停用" }}</button>
-                  <button class="button secondary small" type="button" @click="emit('debug-channel', row.id)">调试</button>
-                  <button
-                    class="button danger-button small"
-                    type="button"
-                    :disabled="busyKey === row.key"
-                    @click="requestDeleteChannel(row)"
-                  >删除</button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="!filteredRows.length" class="empty-sources">
-          <ConsoleIcon name="activity" :size="28" />
-          <h3>{{ rows.length ? "没有匹配的对象" : "暂无监控数据" }}</h3>
-          <p>
-            {{
-              rows.length
-                ? "换一个关键词，或调整类型筛选。"
-                : "后端 /api/monitor 尚未返回数据；接口就绪后这里会显示上游与频道的健康状态。"
-            }}
-          </p>
-          <button
-            v-if="rows.length"
-            class="button secondary small"
-            type="button"
-            @click="resetFilters"
-          >重置筛选</button>
-          <button v-else class="button secondary small" type="button" :disabled="loading" @click="loadMonitor()">
-            重新加载
-          </button>
-        </div>
+              <span
+                v-for="(sample, index) in row.health.segments"
+                :key="`${row.key}-health-${index}`"
+                class="health-segment"
+                :class="`is-${sample}`"
+                :title="healthSampleTitle(sample, index)"
+              ></span>
+            </div>
+            <div class="monitor-health-footer">
+              <span>最近 100 次</span>
+              <strong>{{ healthPercent(row) }}</strong>
+            </div>
+          </section>
+
+          <div class="monitor-card-meta">
+            <span><ConsoleIcon name="clock" :size="14" />{{ checkedAtText(row) }}</span>
+            <span v-if="row.version">版本 {{ row.version }}</span>
+            <span v-else>{{ row.typeLabel }}</span>
+          </div>
+
+          <footer class="monitor-card-actions">
+            <button
+              class="monitor-action-label"
+              type="button"
+              @click="row.kind === 'channel' ? emit('debug-channel', row.id) : emit('focus-upstream', row.id)"
+            ><ConsoleIcon name="grid" :size="16" />{{ row.kind === "channel" ? "调试" : "详情" }}</button>
+            <button class="monitor-icon-action" type="button" :aria-label="`刷新 ${row.name}`" title="刷新" :disabled="loading" @click="loadMonitor()">
+              <ConsoleIcon name="refresh" :size="18" />
+            </button>
+            <button
+              v-if="row.kind === 'channel' || row.upstreamKind === 'instructions'"
+              class="monitor-icon-action danger"
+              type="button"
+              :aria-label="`删除 ${row.name}`"
+              title="删除"
+              :disabled="busyKey === row.key || deleteBusy"
+              @click="row.kind === 'channel' ? requestDeleteChannel(row) : requestDeleteUpstream(row)"
+            ><ConsoleIcon name="trash" :size="17" /></button>
+            <button
+              v-else
+              class="monitor-icon-action"
+              type="button"
+              aria-label="打开上游目录"
+              title="打开上游目录"
+              @click="emit('focus-upstream', row.id)"
+            ><ConsoleIcon name="sliders" :size="17" /></button>
+            <span class="monitor-enable-label">启用</span>
+            <button
+              class="toggle monitor-card-toggle"
+              :class="{ on: row.enabled && !row.trashed }"
+              type="button"
+              role="switch"
+              :aria-checked="row.enabled && !row.trashed"
+              :aria-label="`${row.enabled && !row.trashed ? '停用' : '启用'} ${row.name}`"
+              :disabled="busyKey === row.key || deleteBusy"
+              @click="row.kind === 'channel' ? toggleChannel(row) : toggleUpstream(row)"
+            ><span></span></button>
+          </footer>
+        </article>
       </div>
       <footer class="table-footer">
         <span><span class="status-dot neutral"></span>{{ filteredRows.length }} / {{ rows.length }} 个对象</span>
@@ -432,10 +422,6 @@ function syncAutoRefresh() {
 
 watch(autoRefresh, () => syncAutoRefresh());
 
-function resetFilters() {
-  filter.value = "all";
-  search.value = "";
-}
 
 /** 上游启停：乐观更新 → 调用端点 → 重新拉取；失败回滚。 */
 async function toggleUpstream(row: MonitorRow) {
@@ -571,6 +557,17 @@ async function confirmDeleteChannel() {
   }
 }
 
+function healthPercent(row: MonitorRow): string {
+  return row.health.successRate === null ? "—" : `${Math.round(row.health.successRate * 10) / 10}%`;
+}
+
+function healthSampleTitle(sample: MonitorRow["health"]["samples"][number], index: number): string {
+  const position = index + 1;
+  if (sample === "success") return `第 ${position} 组（5 次）：成功`;
+  if (sample === "failure") return `第 ${position} 组（5 次）：包含失败`;
+  return `第 ${position} 组（5 次）：暂无记录`;
+}
+
 onMounted(async () => {
   if (!loaded.value) await loadMonitor();
   syncAutoRefresh();
@@ -667,6 +664,74 @@ onBeforeUnmount(() => {
   color: #9aa39e;
   font-size: 9px;
   font-weight: 400;
+}
+.monitor-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 22px 30px 26px;
+}
+.monitor-card {
+  min-width: 0;
+  padding: 22px 20px 18px;
+  border: 1px solid #e1e7e4;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 5px 16px rgba(25, 48, 38, .035);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.monitor-card:hover {
+  border-color: #b7d9c9;
+  box-shadow: 0 10px 24px rgba(25, 48, 38, .08);
+  transform: translateY(-1px);
+}
+.monitor-card.disabled-card { opacity: .68; }
+.monitor-card-header, .monitor-card-identity, .monitor-card-name, .monitor-health-heading, .monitor-health-counts, .monitor-card-meta, .monitor-card-actions {
+  display: flex;
+  align-items: center;
+}
+.monitor-card-header { justify-content: space-between; gap: 12px; }
+.monitor-card-identity { min-width: 0; gap: 12px; }
+.card-checkbox {
+  width: 23px; height: 23px; flex: 0 0 23px; border: 2px solid #dfe4e2; border-radius: 8px;
+  background: #fff;
+}
+.monitor-card-avatar { width: 45px; height: 45px; border-radius: 13px; font-size: 15px; }
+.monitor-card-name { gap: 9px; min-width: 0; }
+.monitor-card-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #2c2d2f; font-size: 16px; font-weight: 700; }
+.monitor-kind-tag { padding: 5px 10px; border-radius: 9px; background: #e9e7ff; color: #4542d6; font-size: 11px; font-weight: 750; letter-spacing: .08em; }
+.monitor-card-id { margin-top: 7px; overflow: hidden; color: #a2a29d; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-status { flex: 0 0 auto; padding: 6px 12px; border-radius: 999px; font-size: 12px; }
+.monitor-health-block { margin-top: 26px; }
+.monitor-health-heading { justify-content: space-between; gap: 8px; color: #989b98; font-size: 13px; font-weight: 650; }
+.monitor-health-counts { gap: 12px; font-size: 15px; }
+.success-text { color: #0daf73; }
+.failure-text { color: #cf5847; }
+.monitor-health-strip { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 4px; margin-top: 16px; }
+.health-segment { height: 14px; min-width: 0; border-radius: 3px; background: #eceeec; }
+.health-segment.is-success { background: #19bd68; }
+.health-segment.is-failure { background: #e56b5e; }
+.monitor-health-footer { display: flex; justify-content: space-between; margin-top: 9px; color: #a2a29d; font-size: 12px; }
+.monitor-health-footer strong { color: #0daf73; font-size: 18px; font-weight: 700; }
+.monitor-card-meta { gap: 14px; margin-top: 22px; padding-top: 16px; border-top: 1px solid #edf0ee; color: #aaa9a3; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.monitor-card-meta span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-card-actions { gap: 8px; margin-top: 16px; }
+.monitor-action-label, .monitor-icon-action { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #e0e4e2; background: #fff; color: #545957; }
+.monitor-action-label { gap: 8px; min-height: 42px; padding: 0 17px; border-radius: 13px; font-size: 15px; font-weight: 700; }
+.monitor-icon-action { width: 42px; height: 42px; border-radius: 13px; }
+.monitor-action-label:hover:not(:disabled), .monitor-icon-action:hover:not(:disabled) { border-color: #b9d5c6; background: #f6fbf8; color: #12784f; }
+.monitor-icon-action.danger { color: #d35d4f; border-color: #f0c9c2; }
+.monitor-enable-label { margin-left: auto; color: #aaa9a3; font-size: 13px; }
+.monitor-card-toggle { flex: 0 0 auto; }
+@media (max-width: 980px) { .monitor-card-grid { grid-template-columns: 1fr; } }
+@media (max-width: 560px) {
+  .monitor-card-grid { padding: 16px 14px 20px; }
+  .monitor-card { padding: 18px 15px 15px; }
+  .monitor-card-header { align-items: flex-start; flex-direction: column; }
+  .monitor-status { align-self: flex-end; margin-top: -4px; }
+  .monitor-health-strip { gap: 3px; }
+  .monitor-action-label { padding-inline: 12px; }
+  .monitor-icon-action { width: 38px; height: 38px; }
 }
 .monitor-table th,
 .monitor-table td {

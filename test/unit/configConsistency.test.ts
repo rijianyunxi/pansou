@@ -1,26 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  JsonPluginRepository,
-  resolvePublishedDefinition,
-} from "../../server/core/plugins/repository";
-import {
-  definePluginManifest,
-  PluginManager,
-  type SearchPlugin,
-} from "../../server/core/plugins/manager";
 import type { InstructionPluginDefinition } from "../../server/core/instructions/types";
+import type { SearchPlugin } from "../../server/core/plugins/manager";
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fakePlugin(id: string, version = "1.0.0"): SearchPlugin {
-  return {
-    manifest: definePluginManifest({ id, name: id, priority: 1, version }),
-    search: async () => [],
-  };
-}
+type SearchSettingsModule = typeof import("../../server/core/services/searchSettingsService");
+type RepositoryModule = typeof import("../../server/core/plugins/repository");
+type ManagerModule = typeof import("../../server/core/plugins/manager");
 
 const definition = (
   version: string,
@@ -47,198 +34,145 @@ const definition = (
   },
 });
 
-describe("searchSettingsService cross-process consistency", () => {
+describe("SQLite configuration consistency", () => {
   let dir = "";
-  let service: typeof import("../../server/core/services/searchSettingsService");
+  let dbPath = "";
+  let searchSettings: SearchSettingsModule;
+  let repository: RepositoryModule;
+  let manager: ManagerModule;
+  let storage: typeof import("../../server/core/storage/sqlite");
 
-  const loadService = async (recheckMs = "30") => {
+  beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "panhub-config-consistency-"));
-    process.env.PANHUB_SEARCH_SETTINGS_STORE = join(dir, "search-settings.json");
-    process.env.PANHUB_SEARCH_SETTINGS_RECHECK_MS = recheckMs;
+    dbPath = join(dir, "panhub.sqlite");
+    process.env.PANHUB_SQLITE_DB = dbPath;
+    process.env.PANHUB_LEGACY_DATA_DIR = dir;
     vi.resetModules();
-    service = await import("../../server/core/services/searchSettingsService");
-  };
+    [searchSettings, repository, manager, storage] = await Promise.all([
+      import("../../server/core/services/searchSettingsService"),
+      import("../../server/core/plugins/repository"),
+      import("../../server/core/plugins/manager"),
+      import("../../server/core/storage/sqlite"),
+    ]);
+  });
 
   afterEach(async () => {
-    delete process.env.PANHUB_SEARCH_SETTINGS_STORE;
-    delete process.env.PANHUB_SEARCH_SETTINGS_RECHECK_MS;
-    if (dir) await rm(dir, { recursive: true, force: true });
-    dir = "";
+    storage.resetSqliteDatabase(dbPath);
+    delete process.env.PANHUB_SQLITE_DB;
+    delete process.env.PANHUB_LEGACY_DATA_DIR;
+    await rm(dir, { recursive: true, force: true });
   });
 
-  it("picks up a settings file created by another process after the short TTL", async () => {
-    await loadService();
-    expect(service.getSearchSettings().channels).toBeNull();
-    expect(service.getSearchSettingsVersion()).toBeNull();
-
-    // "Another process" creates the store behind this instance's back.
-    await writeFile(
-      join(dir, "search-settings.json"),
-      JSON.stringify({ channels: ["extchan"], concurrency: 4 }, null, 2),
-      "utf-8"
-    );
-    await sleep(60); // one recheck window has elapsed
-    const fresh = service.getSearchSettings();
-    expect(fresh.channels).toEqual(["extchan"]);
-    expect(fresh.concurrency).toBe(4);
-    expect(service.getSearchSettingsVersion()).not.toBeNull();
+  it("returns empty settings from a fresh SQLite database", () => {
+    expect(searchSettings.getSearchSettings()).toEqual({
+      plugins: null,
+      channels: null,
+      concurrency: null,
+      pluginTimeoutMs: null,
+      trashedPlugins: [],
+    });
+    expect(searchSettings.getSearchSettingsVersion()).toBe("0:*:*");
   });
 
-  it("reloads an existing store rewritten by another process", async () => {
-    await loadService();
-    const store = join(dir, "search-settings.json");
-    await writeFile(store, JSON.stringify({ channels: ["achan"] }, null, 2), "utf-8");
-    expect(service.getSearchSettings().channels).toEqual(["achan"]);
+  it("persists search settings across fresh module instances", async () => {
+    const saved = searchSettings.saveSearchSettings({
+      channels: ["@achan", "bchan"],
+      plugins: ["plugin-b", "plugin-a"],
+      concurrency: 4,
+      pluginTimeoutMs: 9000,
+    });
+    expect(saved).toMatchObject({
+      channels: ["achan", "bchan"],
+      plugins: ["plugin-b", "plugin-a"],
+      concurrency: 4,
+      pluginTimeoutMs: 9000,
+    });
+    expect(storage.getSqliteDatabase().getRow("SELECT concurrency,plugin_timeout_ms,plugins_configured,channels_configured FROM search_settings WHERE id=1"))
+      .toEqual({ concurrency: 4, plugin_timeout_ms: 9000, plugins_configured: 1, channels_configured: 1 });
 
-    // Rewrite with different content and a forced distinct mtime so the
-    // detection never depends on filesystem timestamp granularity.
-    await writeFile(
-      store,
-      JSON.stringify({ channels: ["bchan"], pluginTimeoutMs: 9000 }, null, 2),
-      "utf-8"
-    );
-    await utimes(store, new Date(), new Date(Date.now() + 10_000));
-    await sleep(60);
-    const fresh = service.getSearchSettings();
-    expect(fresh.channels).toEqual(["bchan"]);
-    expect(fresh.pluginTimeoutMs).toBe(9000);
+    storage.resetSqliteDatabase(dbPath);
+    vi.resetModules();
+    searchSettings = await import("../../server/core/services/searchSettingsService");
+    storage = await import("../../server/core/storage/sqlite");
+    expect(searchSettings.getSearchSettings()).toMatchObject({
+      channels: ["achan", "bchan"],
+      plugins: ["plugin-a", "plugin-b"],
+      concurrency: 4,
+      pluginTimeoutMs: 9000,
+    });
+    expect(searchSettings.getSearchSettingsVersion()).toBeTypeOf("string");
   });
 
-  it("falls back to defaults when another process deletes the store file", async () => {
-    await loadService();
-    const store = join(dir, "search-settings.json");
-    await writeFile(store, JSON.stringify({ channels: ["gonechan"] }, null, 2), "utf-8");
-    expect(service.getSearchSettings().channels).toEqual(["gonechan"]);
+  it("detects SQLite repository changes without filesystem polling", async () => {
+    const repo = new repository.SqlitePluginRepository();
+    const initialVersion = await repo.getConfigVersion();
+    expect(initialVersion).toContain(":");
+    expect(await repo.refreshIfChanged()).toBe(false);
 
-    await unlink(store);
-    await sleep(60);
-    expect(service.getSearchSettings().channels).toBeNull();
-  });
-
-  it("keeps own saves immediately visible and refreshes the version stamp", async () => {
-    await loadService();
-    const saved = service.saveSearchSettings({ plugins: ["labi"], concurrency: 3 });
-    expect(saved.plugins).toEqual(["labi"]);
-    expect(service.getSearchSettings().plugins).toEqual(["labi"]);
-    const version = service.getSearchSettingsVersion();
-    expect(version).toBeTypeOf("string");
-
-    // Different content length guarantees a new signature even on filesystems
-    // with coarse mtime granularity.
-    service.saveSearchSettings({ plugins: ["labi", "duoduo"] });
-    expect(service.getSearchSettings().plugins).toEqual(["labi", "duoduo"]);
-    expect(service.getSearchSettingsVersion()).not.toEqual(version);
-  });
-});
-
-describe("JsonPluginRepository version checks", () => {
-  let dir = "";
-  afterEach(async () => {
-    if (dir) await rm(dir, { recursive: true, force: true });
-    dir = "";
-  });
-
-  it("exposes a config version and detects external rewrites", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-config-consistency-"));
-    const store = join(dir, "plugins.json");
-    const repo = new JsonPluginRepository(store);
     await repo.saveDraft(definition("1.0.0"), "alice");
-    const versionBefore = await repo.getConfigVersion();
-    expect(versionBefore).toBeTypeOf("string");
+    const changedVersion = await repo.getConfigVersion();
+    expect(changedVersion).not.toBe(initialVersion);
     expect(await repo.refreshIfChanged()).toBe(false);
 
-    // "Another process" rewrites the store behind this instance's back
-    // (longer updatedBy guarantees a different mtime+size signature).
-    const raw = JSON.parse(await readFile(store, "utf-8"));
-    raw.records["repo-fixture"].updatedBy = "other-process-".padEnd(40, "x");
-    await writeFile(store, JSON.stringify(raw, null, 2) + "\n", "utf-8");
-
-    expect(await repo.refreshIfChanged()).toBe(true);
-    // No further change: the second check is a no-op.
-    expect(await repo.refreshIfChanged()).toBe(false);
-    expect((await repo.get("repo-fixture"))?.updatedBy).toContain("other-process");
-
-    // Own writes refresh the baseline: no spurious external-change detection.
-    await repo.audit("repo-fixture", "debugged", "local");
-    expect(await repo.refreshIfChanged()).toBe(false);
-    expect(await repo.getConfigVersion()).not.toEqual(versionBefore);
+    storage.resetSqliteDatabase(dbPath);
+    vi.resetModules();
+    repository = await import("../../server/core/plugins/repository");
+    storage = await import("../../server/core/storage/sqlite");
+    const reloaded = new repository.SqlitePluginRepository();
+    expect((await reloaded.get("repo-fixture"))?.updatedBy).toBe("alice");
+    expect(await reloaded.getConfigVersion()).toBe(changedVersion);
   });
 
-  it("reports an unknown version while the store file does not exist", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-config-consistency-"));
-    const repo = new JsonPluginRepository(join(dir, "absent.json"));
-    expect(await repo.getConfigVersion()).toBeNull();
-    expect(await repo.refreshIfChanged()).toBe(false);
-  });
-});
-
-describe("registry version check against the plugin repository", () => {
-  let dir = "";
-  afterEach(async () => {
-    if (dir) await rm(dir, { recursive: true, force: true });
-    dir = "";
-  });
-
-  it("adopts plugins published by another process and keeps the registry on failure", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-config-consistency-"));
-    const store = join(dir, "plugins.json");
-    const repo = new JsonPluginRepository(store);
-    const manager = new PluginManager();
-    manager.register(fakePlugin("builtin"));
+  it("adopts plugins published by another repository instance and keeps the registry on failure", async () => {
+    const repo = new repository.SqlitePluginRepository();
+    const pluginManager = new manager.PluginManager();
+    const fakePlugin = (id: string, version = "1.0.0"): SearchPlugin => ({
+      manifest: manager.definePluginManifest({ id, name: id, priority: 1, version }),
+      search: async () => [],
+    });
+    pluginManager.register(fakePlugin("builtin"));
 
     let loads = 0;
     let failLoad = false;
-    manager.setUpdateSource({
+    pluginManager.setUpdateSource({
       getRepositoryVersion: () => repo.getConfigVersion(),
       load: async () => {
         loads++;
         if (failLoad) throw new Error("repository unavailable");
         const records = await repo.list();
         return records
-          .map(resolvePublishedDefinition)
-          .filter((def): def is InstructionPluginDefinition => !!def)
-          .map((def) => fakePlugin(def.manifest.id, def.manifest.version));
+          .map(repository.resolvePublishedDefinition)
+          .filter((value): value is InstructionPluginDefinition => !!value)
+          .map((value) => fakePlugin(value.manifest.id, value.manifest.version));
       },
     });
 
-    // Nothing published yet: version unknown (missing file) → verify once, no churn.
-    expect(await manager.checkForUpdates()).toBe(false);
-    expect(manager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
+    expect(await pluginManager.checkForUpdates()).toBe(false);
+    expect(pluginManager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
 
-    // Another "process" publishes through a second repository instance.
-    const other = new JsonPluginRepository(store);
+    const other = new repository.SqlitePluginRepository();
     await other.saveDraft(definition("1.0.0"), "other");
     await other.validate("repo-fixture", "other", { sampleParsed: true });
     await other.publish("repo-fixture", "other");
 
-    expect(await manager.checkForUpdates()).toBe(true);
-    expect(manager.snapshot().plugins.map((plugin) => plugin.manifest.id).sort()).toEqual([
-      "builtin",
-      "repo-fixture",
-    ]);
-    const adoptedVersion = manager.configVersion;
+    expect(await pluginManager.checkForUpdates()).toBe(true);
+    expect(pluginManager.snapshot().plugins.map((plugin) => plugin.manifest.id).sort()).toEqual(["builtin", "repo-fixture"]);
+    const adoptedVersion = pluginManager.configVersion;
     expect(adoptedVersion).not.toBeNull();
-
-    // Unchanged file: stat-only check, loader skipped.
-    expect(await manager.checkForUpdates()).toBe(false);
+    expect(await pluginManager.checkForUpdates()).toBe(false);
     expect(loads).toBe(2);
-    expect(manager.configVersion).toEqual(adoptedVersion);
+    expect(pluginManager.configVersion).toBe(adoptedVersion);
 
-    // External disable removes the plugin from the registry snapshot.
     await other.disable("repo-fixture", "other");
-    expect(await manager.checkForUpdates()).toBe(true);
-    expect(manager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
+    expect(await pluginManager.checkForUpdates()).toBe(true);
+    expect(pluginManager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
 
-    // Refresh failure keeps the last valid registry; recovery applies the change.
     failLoad = true;
     await other.publish("repo-fixture", "other");
-    await expect(manager.checkForUpdates()).rejects.toThrow("repository unavailable");
-    expect(manager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
+    await expect(pluginManager.checkForUpdates()).rejects.toThrow("repository unavailable");
+    expect(pluginManager.snapshot().plugins.map((plugin) => plugin.manifest.id)).toEqual(["builtin"]);
     failLoad = false;
-    expect(await manager.checkForUpdates()).toBe(true);
-    expect(manager.snapshot().plugins.map((plugin) => plugin.manifest.id).sort()).toEqual([
-      "builtin",
-      "repo-fixture",
-    ]);
+    expect(await pluginManager.checkForUpdates()).toBe(true);
+    expect(pluginManager.snapshot().plugins.map((plugin) => plugin.manifest.id).sort()).toEqual(["builtin", "repo-fixture"]);
   });
 });

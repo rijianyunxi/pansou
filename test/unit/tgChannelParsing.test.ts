@@ -15,10 +15,6 @@ import {
 } from "../../server/core/services/tg";
 import { classifyError } from "../../server/core/utils/errors";
 
-// 让 tgChannelSettings 指向一个必然不存在的存储路径，保证单测不受本机 data/ 目录影响。
-vi.hoisted(() => {
-  process.env.PANHUB_TG_CHANNEL_SETTINGS_STORE = "./.tmp/vitest-tg-channel-settings/absent.json";
-});
 vi.mock("ofetch", () => ({ ofetch: Object.assign(vi.fn(), { raw: vi.fn() }) }));
 const fetcher = vi.mocked(ofetch);
 const fetcherRaw = (ofetch as unknown as { raw: ReturnType<typeof vi.fn> }).raw;

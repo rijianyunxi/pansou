@@ -17,11 +17,18 @@ export interface TgAccountView extends Omit<TgAccountRecord, "apiHash" | "sessio
   hasApiHash: boolean;
   hasSession: boolean;
 }
-const NAMESPACE = "tg_accounts";
-const KEY = "records";
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
-function read(): Record<string, TgAccountRecord> { return getSqliteDatabase().get<Record<string, TgAccountRecord>>(NAMESPACE, KEY, {}); }
-function write(records: Record<string, TgAccountRecord>): void { getSqliteDatabase().set(NAMESPACE, KEY, records); }
+function read(): Record<string, TgAccountRecord> {
+  const rows = getSqliteDatabase().allRows<any>("SELECT id,name,phone,api_id,api_hash,session_string,enabled,created_at,updated_at FROM tg_accounts");
+  return Object.fromEntries(rows.map(row => [row.id, { id: row.id, name: row.name, ...(row.phone ? { phone: row.phone } : {}), apiId: row.api_id, ...(row.api_hash ? { apiHash: row.api_hash } : {}), ...(row.session_string ? { sessionString: row.session_string } : {}), enabled: Boolean(row.enabled), createdAt: row.created_at, updatedAt: row.updated_at }]));
+}
+function write(records: Record<string, TgAccountRecord>): void {
+  const db = getSqliteDatabase();
+  db.transaction(() => {
+    db.run("DELETE FROM tg_accounts");
+    for (const record of Object.values(records)) db.run("INSERT INTO tg_accounts(id,name,phone,api_id,api_hash,session_string,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", record.id, record.name, record.phone || null, record.apiId, record.apiHash || null, record.sessionString || null, record.enabled ? 1 : 0, record.createdAt, record.updatedAt);
+  });
+}
 function view(record: TgAccountRecord): TgAccountView {
   const { apiHash: _apiHash, sessionString: _sessionString, ...safe } = record;
   const app = getTelegramAppConfig();

@@ -94,10 +94,10 @@ describe("tgChannelSettings 存储（沿用 settings 持久化模式）", () => 
     saveTgChannelPolicies({ policydemo: { maxPages: 2 } });
     expect(getTgChannelPoliciesVersion()).toBeGreaterThan(before);
     const db = (await import("../../server/core/storage/sqlite")).getSqliteDatabase();
-    const originalSet = db.set.bind(db);
-    vi.spyOn(db, "set").mockImplementationOnce(() => { throw new Error("read only"); });
+    const originalTransaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce(() => { throw new Error("read only"); });
     expect(() => saveTgChannelPolicies({ policydemo: { maxPages: 3 } })).toThrow("read only");
-    vi.spyOn(db, "set").mockImplementation(originalSet);
+    vi.spyOn(db, "transaction").mockImplementation(originalTransaction);
     expect(getTgChannelPolicy("policydemo")!.maxPages).toBe(2);
     expect(getTgChannelPolicies().policydemo!.maxPages).toBe(2);
   });

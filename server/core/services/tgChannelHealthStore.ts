@@ -14,9 +14,6 @@ import { TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
  *   节奏（SearchService 健康快照定时器）或显式 flushTgChannelHealth() 驱动，
  *   失败静默（健康数据不能影响搜索主链路）。
  */
-const DB_NAMESPACE = "tg_channel_health";
-const DB_KEY = "state";
-
 /** 每频道保留的最近记录数。 */
 export const MAX_TG_CHANNEL_HEALTH_RECORDS = 20;
 /** 最多跟踪的频道数（超出淘汰最久未检查的频道）。 */
@@ -143,8 +140,12 @@ export function sanitizeTgChannelHealthSnapshot(raw: unknown): StoredSnapshot {
 }
 
 function load(): StoredSnapshot {
-  const raw = getSqliteDatabase().get<StoredSnapshot>(DB_NAMESPACE, DB_KEY, {});
-  return sanitizeTgChannelHealthSnapshot(raw);
+  const rows = getSqliteDatabase().allRows<any>("SELECT channel,checked_at,ok,elapsed_ms,results_count,source,failure_kind,message FROM tg_channel_health ORDER BY channel,checked_at");
+  const snapshot: StoredSnapshot = {};
+  for (const row of rows) {
+    (snapshot[row.channel] ||= []).push({ at: row.checked_at, ok: Boolean(row.ok), elapsedMs: row.elapsed_ms, resultsCount: row.results_count, source: row.source, ...(row.failure_kind ? { failureKind: row.failure_kind } : {}), ...(row.message ? { message: row.message } : {}) });
+  }
+  return sanitizeTgChannelHealthSnapshot(snapshot);
 }
 
 function getStore(): StoredSnapshot {
@@ -155,7 +156,11 @@ function getStore(): StoredSnapshot {
 export function flushTgChannelHealth(): boolean {
   if (!dirty) return true;
   try {
-    getSqliteDatabase().set(DB_NAMESPACE, DB_KEY, cached || {});
+    const db = getSqliteDatabase();
+    db.transaction(() => {
+      db.run("DELETE FROM tg_channel_health");
+      for (const [channel, records] of Object.entries(cached || {})) for (const record of records) db.run("INSERT OR IGNORE INTO tg_channel_health(channel,checked_at,ok,elapsed_ms,results_count,source,failure_kind,message) VALUES(?,?,?,?,?,?,?,?)", channel, record.at, record.ok ? 1 : 0, record.elapsedMs, record.resultsCount, record.source, record.failureKind || null, record.message || null);
+    });
     dirty = false;
     return true;
   } catch {

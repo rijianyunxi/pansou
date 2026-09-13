@@ -84,7 +84,6 @@
 
         <template v-if="view === 'sources'">
           <section class="sources-panel directory-panel" aria-label="上游接口目录">
-            <h2 class="panel-title">上游接口</h2>
             <div class="source-toolbar directory-toolbar" aria-label="上游查询与操作">
               <label class="source-search"><ConsoleIcon name="search" :size="16" /><input v-model="search" type="search" aria-label="搜索上游名称或地址" placeholder="搜索名称或地址…" /></label>
               <label class="source-type-filter">
@@ -362,7 +361,6 @@ useHead({
     },
   ],
 });
-const STORAGE_KEY = "panhub.upstream-console.v2";
 const clientReady = ref(false);
 const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
   "/api/auth/admin-status",
@@ -858,30 +856,6 @@ function notify(message: string) {
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => (notice.value = ""), 4000);
 }
-function persist() {
-  try {
-    const compactReports = Object.fromEntries(
-      Object.entries(reports.value).map(([id, r]) => [
-        id,
-        {
-          ...r,
-          raw: r.raw.slice(0, 30000),
-          rawTruncated: r.rawTruncated || r.raw.length > 30000,
-          results: r.results.slice(0, 100),
-        },
-      ]),
-    );
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ reports: compactReports }),
-    );
-    storageError.value = "";
-  } catch {
-    storageError.value =
-      "浏览器存储不可用或空间不足：当前修改仅保留在本次会话，请勿关闭页面。";
-  }
-}
-
 onMounted(async () => {
   clientReady.value = true;
   if (adminChecking.value) await checkAdminSession();
@@ -890,20 +864,6 @@ onMounted(async () => {
     return;
   }
   await loadUpstreamCatalog();
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    for (const source of sources.value) {
-      const r = saved?.reports?.[source.id];
-      if (
-        r && r.sourceId === source.id &&
-        ["available", "warning", "error"].includes(r.state) &&
-        typeof r.raw === "string" && typeof r.elapsedMs === "number" &&
-        Array.isArray(r.results) && Array.isArray(r.traces) && typeof r.message === "string"
-      ) reports.value[source.id] = r;
-    }
-  } catch {
-    storageError.value = "本地诊断记录读取失败，已使用服务端上游目录。";
-  }
 });
 function openDetail(source: UpstreamDefinition) {
   selectedId.value = source.id;
@@ -918,19 +878,13 @@ function openDebug(source: UpstreamDefinition) {
 }
 function focusTelegramUpstream(channel: string) {
   const normalized = String(channel || "").replace(/^@/, "").toLowerCase();
-  setView("sources");
-  nextTick(() => {
-    const source = sources.value.find((item) => item.sourceKind === "telegram" && item.channel === normalized);
-    if (source) openDetail(source);
-  });
+  const source = sources.value.find((item) => item.sourceKind === "telegram" && item.channel === normalized);
+  if (source) openDebug(source);
+  else notify(`未找到频道 @${normalized} 的上游配置。`);
 }
 function focusUpstream(id: string) {
-  setView("sources");
-  selectedId.value = id;
-  nextTick(() => {
-    const source = sources.value.find((item) => item.id === id);
-    if (source) openDetail(source);
-  });
+  const source = sources.value.find((item) => item.id === id);
+  if (source) openDetail(source);
 }
 function setView(value: ConsoleView) {
   // A success toast belongs to the previous view; do not leave stale
@@ -997,7 +951,6 @@ async function testSource(source: UpstreamDefinition) {
         );
     if (disposed) return;
     reports.value[source.id] = result;
-    persist();
     notify(`${source.name}：${result.message}`);
   } catch (error: any) {
     if (!disposed) {
@@ -1065,7 +1018,6 @@ async function confirmArchive() {
     selectedId.value = "hunhepan";
     archiveTarget.value = null;
     await loadPluginRecords();
-    persist();
     notify("上游已删除，并将在下一次搜索时从 Registry 移除。");
   } catch (error: any) {
     notify(apiErrorMessage(error));
@@ -1131,7 +1083,6 @@ async function purgeArchived() {
     purgeConfirmation.value = "";
     delete reports.value[target.id];
     await loadPluginRecords();
-    persist();
     notify("上游及其全部历史记录已永久删除。");
   } catch (error: any) {
     notify(apiErrorMessage(error));

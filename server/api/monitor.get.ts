@@ -40,6 +40,7 @@ export interface MonitorUpstreamHealth {
   successCount: number;
   /** 累计失败次数（区别于 PluginHealthStatus.failureCount 的连续失败数）。 */
   failureCount: number;
+  recent?: string;
   zeroResultCount: number;
   lastSuccessAt: number | null;
   lastFailureAt: number | null;
@@ -106,6 +107,7 @@ function mapUpstreamHealth(status: PluginHealthStatus | undefined): MonitorUpstr
     requestCount: status.requestCount,
     successCount: status.successCount,
     failureCount: status.totalFailureCount,
+    ...(status.recent || status.recentOutcomes?.length ? { recent: status.recent ?? status.recentOutcomes!.map((event) => event.ok ? "1" : "0").join("") } : {}),
     zeroResultCount: status.zeroResultCount,
     lastSuccessAt: status.lastSuccessTime ?? null,
     lastFailureAt: status.lastFailureTime ?? null,

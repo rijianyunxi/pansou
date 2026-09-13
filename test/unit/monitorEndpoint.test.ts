@@ -188,7 +188,7 @@ describe("GET /api/monitor", () => {
     const health = byId.hunhepan.health;
     expect(Object.keys(health).sort()).toEqual([
       "circuitState", "dimensions", "failureCount", "healthy", "history",
-      "lastErrorMessage", "lastFailureAt", "lastSuccessAt", "requestCount",
+      "lastErrorMessage", "lastFailureAt", "lastSuccessAt", "recent", "requestCount",
       "successCount", "zeroResultCount",
     ]);
     expect(health.healthy).toBe(true);

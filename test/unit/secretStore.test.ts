@@ -1,18 +1,33 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { JsonPluginSecretStore } from "../../server/core/plugins/secretStore";
 
-async function tempStore(): Promise<{ store: JsonPluginSecretStore; path: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "panhub-secrets-"));
-  const path = join(dir, "plugin-secrets.json");
-  return { store: new JsonPluginSecretStore(path), path };
-}
+describe("SqlitePluginSecretStore", () => {
+  let dir = "";
+  let dbPath = "";
+  let store: InstanceType<typeof import("../../server/core/plugins/secretStore").SqlitePluginSecretStore>;
+  let storage: typeof import("../../server/core/storage/sqlite");
 
-describe("JsonPluginSecretStore", () => {
-  it("round-trips values per plugin and persists them outside the definition", async () => {
-    const { store, path } = await tempStore();
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "panhub-secrets-"));
+    dbPath = join(dir, "panhub.sqlite");
+    process.env.PANHUB_SQLITE_DB = dbPath;
+    process.env.PANHUB_LEGACY_DATA_DIR = dir;
+    vi.resetModules();
+    const secrets = await import("../../server/core/plugins/secretStore");
+    store = new secrets.SqlitePluginSecretStore();
+    storage = await import("../../server/core/storage/sqlite");
+  });
+
+  afterEach(async () => {
+    storage.resetSqliteDatabase(dbPath);
+    delete process.env.PANHUB_SQLITE_DB;
+    delete process.env.PANHUB_LEGACY_DATA_DIR;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("round-trips values per plugin and persists them in SQLite", async () => {
     await store.set("plugin-a", "apiKey", "sk-abc");
     await store.set("plugin-a", "token", "tkn-1");
 
@@ -23,13 +38,11 @@ describe("JsonPluginSecretStore", () => {
       apiKey: "sk-abc",
       token: "tkn-1",
     });
-
-    const raw = JSON.parse(await readFile(path, "utf8"));
-    expect(raw.secrets["plugin-a"].apiKey).toBe("sk-abc");
+    expect(storage.getSqliteDatabase().getRow("SELECT value FROM plugin_secrets WHERE plugin_id=? AND name=?", "plugin-a", "apiKey"))
+      .toEqual({ value: "sk-abc" });
   });
 
   it("deletes without touching other plugins or names", async () => {
-    const { store } = await tempStore();
     await store.set("a", "k", "v1");
     await store.set("b", "k", "v2");
     await store.delete("a", "k");

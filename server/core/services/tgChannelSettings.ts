@@ -22,14 +22,9 @@ interface TgChannelSettingsState {
   upstreamParsers: UpstreamParserBindingMap;
 }
 
-const DB_NAMESPACE = "tg_channel_settings";
-const DB_KEY = "state";
 const NUMERIC_FIELDS = ["timeoutMs", "maxPages", "maxResults", "maxRetries", "retryDelayMs"] as const;
 let version = 0;
 
-function emptyState(): TgChannelSettingsState {
-  return { policies: {}, channelState: {}, parsers: {}, upstreamParsers: {} };
-}
 
 function sanitizePolicies(raw: unknown): TgChannelPolicyMap {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -56,47 +51,61 @@ function sanitizePolicies(raw: unknown): TgChannelPolicyMap {
   return out;
 }
 
-function sanitizeParsers(raw: unknown): Record<string, TgChannelParserBinding> {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out: Record<string, TgChannelParserBinding> = {};
-  for (const [rawKey, value] of Object.entries(raw as Record<string, unknown>)) {
-    const channel = rawKey.trim().replace(/^@/, "").toLowerCase();
-    if (!TG_CHANNEL_PATTERN.test(channel) || !value || typeof value !== "object") continue;
-    const input = value as Record<string, unknown>;
-    const pluginId = typeof input.pluginId === "string" && input.pluginId.trim() ? input.pluginId.trim() : null;
-    if (pluginId) out[channel] = { pluginId, updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date(0).toISOString() };
-  }
-  return out;
-}
-
-function sanitizeUpstreamParsers(raw: unknown): UpstreamParserBindingMap {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out: UpstreamParserBindingMap = {};
-  for (const [rawKey, value] of Object.entries(raw as Record<string, unknown>)) {
-    const id = rawKey.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(id) || !value || typeof value !== "object") continue;
-    const input = value as Record<string, unknown>;
-    const pluginId = typeof input.pluginId === "string" && input.pluginId.trim() ? input.pluginId.trim() : null;
-    if (pluginId) out[id] = { pluginId, updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date(0).toISOString() };
-  }
-  return out;
-}
 
 function readState(): TgChannelSettingsState {
-  const raw = getSqliteDatabase().get(DB_NAMESPACE, DB_KEY, emptyState()) as Partial<TgChannelSettingsState>;
-  return {
-    policies: sanitizePolicies(raw.policies),
-    channelState: sanitizeChannelStates(raw.channelState),
-    parsers: sanitizeParsers(raw.parsers),
-    upstreamParsers: sanitizeUpstreamParsers(raw.upstreamParsers),
-  };
+  const db = getSqliteDatabase();
+  const policies: TgChannelPolicyMap = {};
+  for (const row of db.allRows<any>("SELECT * FROM tg_channel_policies")) {
+    let fallbackUrls: string[] | undefined;
+    try { fallbackUrls = row.fallback_urls ? JSON.parse(row.fallback_urls) : undefined; } catch { fallbackUrls = undefined; }
+    const policy = sanitizePolicies({ [row.channel]: { ...(row.timeout_ms != null ? { timeoutMs: row.timeout_ms } : {}), ...(row.max_pages != null ? { maxPages: row.max_pages } : {}), ...(row.max_results != null ? { maxResults: row.max_results } : {}), ...(row.max_retries != null ? { maxRetries: row.max_retries } : {}), ...(row.retry_delay_ms != null ? { retryDelayMs: row.retry_delay_ms } : {}), ...(row.fallback ? { fallback: row.fallback } : {}), ...(fallbackUrls ? { fallbackUrls } : {}) } })[row.channel];
+    if (policy) policies[row.channel] = policy;
+  }
+  const channelState = sanitizeChannelStates(Object.fromEntries(db.allRows<any>("SELECT channel,enabled,deleted FROM tg_channel_states").map(row => [row.channel, { enabled: Boolean(row.enabled), deleted: Boolean(row.deleted) }])));
+  const parsers: Record<string, TgChannelParserBinding> = {};
+  const upstreamParsers: UpstreamParserBindingMap = {};
+  for (const row of db.allRows<any>("SELECT scope,source_id,plugin_id,updated_at FROM parser_bindings")) {
+    const target = row.scope === "telegram" ? parsers : upstreamParsers;
+    target[row.source_id] = { pluginId: row.plugin_id, updatedAt: row.updated_at };
+  }
+  return { policies, channelState, parsers, upstreamParsers };
 }
 
 function writeState(next: TgChannelSettingsState): void {
-  getSqliteDatabase().set(DB_NAMESPACE, DB_KEY, next);
+  const db = getSqliteDatabase();
+  const now = Date.now();
+  db.transaction(() => {
+    db.run("DELETE FROM tg_channel_policies");
+    for (const [channel, policy] of Object.entries(next.policies)) {
+      db.run(
+        "INSERT INTO tg_channel_policies(channel,timeout_ms,max_pages,max_results,max_retries,retry_delay_ms,fallback,fallback_urls,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        channel,
+        policy.timeoutMs ?? null,
+        policy.maxPages ?? null,
+        policy.maxResults ?? null,
+        policy.maxRetries ?? null,
+        policy.retryDelayMs ?? null,
+        policy.fallback ?? null,
+        policy.fallbackUrls ? JSON.stringify(policy.fallbackUrls) : null,
+        now,
+      );
+    }
+
+    db.run("DELETE FROM tg_channel_states");
+    for (const [channel, state] of Object.entries(next.channelState)) {
+      db.run("INSERT INTO tg_channel_states(channel,enabled,deleted,updated_at) VALUES(?,?,?,?)", channel, state.enabled ? 1 : 0, state.deleted ? 1 : 0, now);
+    }
+
+    db.run("DELETE FROM parser_bindings");
+    for (const [sourceId, binding] of Object.entries(next.parsers)) {
+      db.run("INSERT INTO parser_bindings(scope,source_id,plugin_id,updated_at) VALUES(?,?,?,?)", "telegram", sourceId, binding.pluginId, binding.updatedAt);
+    }
+    for (const [sourceId, binding] of Object.entries(next.upstreamParsers)) {
+      db.run("INSERT INTO parser_bindings(scope,source_id,plugin_id,updated_at) VALUES(?,?,?,?)", "upstream", sourceId, binding.pluginId, binding.updatedAt);
+    }
+  });
   version++;
 }
-
 export function getTgChannelPolicies(): TgChannelPolicyMap {
   return structuredClone(readState().policies);
 }
@@ -127,7 +136,13 @@ export function getTgChannelPoliciesVersion(): number {
  */
 export function getTgChannelSettingsVersion(): string {
   const db = getSqliteDatabase();
-  return `${db.getUpdatedAt(DB_NAMESPACE, DB_KEY) ?? 0}:${JSON.stringify(readState())}`;
+  const row = db.getRow<{ updated_at: number | null }>(
+    "SELECT MAX(updated_at) AS updated_at FROM (SELECT updated_at FROM tg_channel_policies UNION ALL SELECT updated_at FROM tg_channel_states)",
+  );
+  const parserRow = db.getRow<{ updated_at: string | null }>(
+    "SELECT MAX(updated_at) AS updated_at FROM parser_bindings",
+  );
+  return `${row?.updated_at ?? 0}:${parserRow?.updated_at ?? ""}:${JSON.stringify(readState())}`;
 }
 
 export function getTgChannelParsers(): Record<string, TgChannelParserBinding> {

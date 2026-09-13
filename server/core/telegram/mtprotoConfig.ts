@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 export const mtprotoConfig = {
@@ -9,8 +8,4 @@ export const mtprotoConfig = {
 
 export function hasMtprotoCredentials(): boolean {
   return Number.isInteger(mtprotoConfig.apiId) && mtprotoConfig.apiId > 0 && mtprotoConfig.apiHash.length > 0;
-}
-
-export function sessionFileExists(): boolean {
-  return fs.existsSync(mtprotoConfig.sessionFile);
 }

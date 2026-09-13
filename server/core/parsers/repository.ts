@@ -6,8 +6,6 @@ import type {
   ParserPluginStatus,
 } from "./types";
 
-const NAMESPACE = "parser_plugins";
-const KEY = "records";
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const VERSION_RE = /^\d+\.\d+\.\d+$/;
 const MAX_CODE = 100_000;
@@ -29,10 +27,18 @@ function validateParserSyntax(code: string): void {
 }
 
 function read(): Record<string, ParserPluginRecord> {
-  const value = getSqliteDatabase().get<Record<string, ParserPluginRecord>>(NAMESPACE, KEY, {});
-  return value && typeof value === "object" ? value : {};
+  const rows = getSqliteDatabase().allRows<{ id: string; record: string }>("SELECT id,record FROM parser_plugins");
+  const out: Record<string, ParserPluginRecord> = {};
+  for (const row of rows) { try { out[row.id] = JSON.parse(row.record) as ParserPluginRecord; } catch { /* ignore corrupt row */ } }
+  return out;
 }
-function write(records: Record<string, ParserPluginRecord>): void { getSqliteDatabase().set(NAMESPACE, KEY, records); }
+function write(records: Record<string, ParserPluginRecord>): void {
+  const db = getSqliteDatabase();
+  db.transaction(() => {
+    db.run("DELETE FROM parser_plugins");
+    for (const [id, record] of Object.entries(records)) db.run("INSERT INTO parser_plugins(id,record,updated_at) VALUES(?,?,?)", id, JSON.stringify(record), Date.now());
+  });
+}
 
 export function validateParserManifest(input: unknown): ParserPluginManifest {
   if (!input || typeof input !== "object") throw new Error("parser manifest 必须是对象");

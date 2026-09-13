@@ -1,139 +1,53 @@
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
-import { mkdirSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
 import { getSqliteDatabase } from "../storage/sqlite";
 
-/**
- * 管理端搜索配置的 SQLite 存储。
- *
- * 旧版 data/search-settings.json 会在 SQLite 首次创建时被导入到
- * json_store(search_settings/state)，原文件保留作为恢复副本。之后所有读写
- * 都只走 SQLite，避免多个 JSON 文件之间出现配置覆盖和热更新延迟。
- */
-export interface SearchSettings {
-  plugins: string[] | null;
-  channels: string[] | null;
-  concurrency: number | null;
-  pluginTimeoutMs: number | null;
-  trashedPlugins: string[];
-}
-
-const DEFAULT_SETTINGS: SearchSettings = {
-  plugins: null,
-  channels: null,
-  concurrency: null,
-  pluginTimeoutMs: null,
-  trashedPlugins: [],
-};
+export interface SearchSettings { plugins: string[] | null; channels: string[] | null; concurrency: number | null; pluginTimeoutMs: number | null; trashedPlugins: string[]; }
 const MAX_CHANNELS = 200;
-const DB_NAMESPACE = "search_settings";
-const DB_KEY = "state";
-function getLegacyPath(): string | undefined {
-  const value = process.env.PANHUB_SEARCH_SETTINGS_STORE?.trim();
-  return value || undefined;
-}
-let legacyCached: SearchSettings | null = null;
-let legacyStamp: string | null = null;
-let legacyCheckedAt = 0;
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function getStore() {
-  return getSqliteDatabase();
-}
-
-
-function legacySignature(): string | null {
-  const path = getLegacyPath();
-  if (!path) return null;
-  try { const s = statSync(path); return `${Math.round(s.mtimeMs)}:${s.size}`; } catch { return null; }
-}
-function getLegacySettings(): SearchSettings {
-  const now = Date.now();
-  const stamp = legacySignature();
-  const configuredRecheck = Number(process.env.PANHUB_SEARCH_SETTINGS_RECHECK_MS);
-  const recheckMs = Number.isFinite(configuredRecheck) && configuredRecheck >= 0 ? configuredRecheck : 1500;
-  if (legacyCached && now - legacyCheckedAt < recheckMs) return legacyCached;
-  legacyCheckedAt = now;
-  if (!stamp) { legacyCached = { ...DEFAULT_SETTINGS }; legacyStamp = null; return legacyCached; }
-  if (legacyCached && stamp === legacyStamp) return legacyCached;
-  const path = getLegacyPath();
-  try { legacyCached = sanitize(JSON.parse(readFileSync(path!, "utf8"))); legacyStamp = stamp; } catch { legacyCached = { ...DEFAULT_SETTINGS }; legacyStamp = stamp; }
-  return legacyCached;
-}
-function saveLegacySettings(next: SearchSettings): void {
-  const path = getLegacyPath();
-  if (!path) throw new Error("legacy search settings path is not configured");
-  mkdirSync(dirname(path), { recursive: true }); const tmp = `${path}.${process.pid}.tmp`;
-  try { writeFileSync(tmp, JSON.stringify(next, null, 2), "utf8"); renameSync(tmp, path); }
-  catch (error) { try { unlinkSync(tmp); } catch {} throw error; }
-  legacyCached = next; legacyStamp = legacySignature(); legacyCheckedAt = Date.now();
-}
-
-function sanitize(raw: unknown): SearchSettings {
-  const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+const clone = <T>(value: T): T => structuredClone(value);
+function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettings {
+  const value = raw || {};
   const strList = (input: unknown, filter?: (s: string) => boolean): string[] | null => {
     if (!Array.isArray(input)) return null;
-    const seen = new Set<string>();
-    const result: string[] = [];
-    for (const item of input) {
-      if (typeof item !== "string") continue;
-      const name = item.trim();
-      if (!name || seen.has(name)) continue;
-      if (filter && !filter(name)) continue;
-      seen.add(name);
-      result.push(name);
-    }
+    const seen = new Set<string>(); const result: string[] = [];
+    for (const item of input) { if (typeof item !== "string") continue; const name = item.trim(); if (!name || seen.has(name) || (filter && !filter(name))) continue; seen.add(name); result.push(name); }
     return result;
   };
-
-  const plugins = strList(value.plugins, (s) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s));
+  const plugins = strList(value.plugins, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s));
   const rawChannels = strList(value.channels);
-  const channels = rawChannels === null
-    ? null
-    : normalizeTelegramChannels(rawChannels).filter((name) => TG_CHANNEL_PATTERN.test(name));
-  if (channels && channels.length > MAX_CHANNELS) channels.length = MAX_CHANNELS;
-  const trashedPlugins = strList(value.trashedPlugins, (s) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s)) || [];
-
-  const concurrency = typeof value.concurrency === "number" && value.concurrency >= 1 && value.concurrency <= 16
-    ? Math.round(value.concurrency)
-    : null;
-  const pluginTimeoutMs = typeof value.pluginTimeoutMs === "number" && value.pluginTimeoutMs >= 1000 && value.pluginTimeoutMs <= 60_000
-    ? Math.round(value.pluginTimeoutMs)
-    : null;
+  const channels = rawChannels === null ? null : normalizeTelegramChannels(rawChannels).filter(name => TG_CHANNEL_PATTERN.test(name)).slice(0, MAX_CHANNELS);
+  const trashedPlugins = strList(value.trashedPlugins, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s)) || [];
+  const concurrency = typeof value.concurrency === "number" && value.concurrency >= 1 && value.concurrency <= 16 ? Math.round(value.concurrency) : null;
+  const pluginTimeoutMs = typeof value.pluginTimeoutMs === "number" && value.pluginTimeoutMs >= 1000 && value.pluginTimeoutMs <= 60_000 ? Math.round(value.pluginTimeoutMs) : null;
   return { plugins, channels, concurrency, pluginTimeoutMs, trashedPlugins };
 }
 
 export function getSearchSettings(): SearchSettings {
-  if (getLegacyPath()) return clone(getLegacySettings());
-  return clone(sanitize(getStore().get(DB_NAMESPACE, DB_KEY, DEFAULT_SETTINGS)));
+  const db = getSqliteDatabase();
+  const row = db.getRow<{ concurrency: number | null; plugin_timeout_ms: number | null; plugins_configured: number; channels_configured: number }>("SELECT concurrency,plugin_timeout_ms,plugins_configured,channels_configured FROM search_settings WHERE id=1");
+  const pluginRows = db.allRows<{ plugin_id: string; trashed: number }>("SELECT plugin_id,trashed FROM search_setting_plugins ORDER BY plugin_id");
+  const channelRows = db.allRows<{ channel: string }>("SELECT channel FROM search_setting_channels ORDER BY position");
+  const configuredPlugins = pluginRows.filter(row => !row.trashed).map(row => row.plugin_id);
+  const trashedPlugins = pluginRows.filter(row => row.trashed).map(row => row.plugin_id);
+  return sanitize({ plugins: row?.plugins_configured ? configuredPlugins : null, channels: row?.channels_configured ? channelRows.map(row => row.channel) : null, concurrency: row?.concurrency ?? null, pluginTimeoutMs: row?.plugin_timeout_ms ?? null, trashedPlugins });
 }
-
-/** Opaque, process-local-independent version used by consumers that need to observe changes. */
 export function getSearchSettingsVersion(): string | null {
-  if (getLegacyPath()) return legacySignature();
-  return JSON.stringify(getSearchSettings());
+  const db = getSqliteDatabase();
+  const row = db.getRow<{ updated_at: number }>("SELECT updated_at FROM search_settings WHERE id=1");
+  const counts = db.getRow<{ updated_at: number }>("SELECT MAX(updated_at) AS updated_at FROM (SELECT updated_at FROM search_settings UNION ALL SELECT 0 AS updated_at)");
+  return `${row?.updated_at ?? counts?.updated_at ?? 0}:${getSearchSettings().plugins?.join(",") || "*"}:${getSearchSettings().channels?.join(",") || "*"}`;
 }
-
 export function saveSearchSettings(patch: unknown): SearchSettings {
-  const current = getSearchSettings();
-  const merged = {
-    ...current,
-    ...((patch && typeof patch === "object" ? patch : {}) as Record<string, unknown>),
-  };
-  const next = sanitize(merged);
-  if (getLegacyPath()) saveLegacySettings(next);
-  else getStore().set(DB_NAMESPACE, DB_KEY, next);
+  const next = sanitize({ ...getSearchSettings(), ...((patch && typeof patch === "object") ? patch as Record<string, unknown> : {}) });
+  const db = getSqliteDatabase(); const now = Date.now();
+  db.transaction(() => {
+    db.run("INSERT INTO search_settings(id,concurrency,plugin_timeout_ms,plugins_configured,channels_configured,updated_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=excluded.concurrency,plugin_timeout_ms=excluded.plugin_timeout_ms,plugins_configured=excluded.plugins_configured,channels_configured=excluded.channels_configured,updated_at=excluded.updated_at", next.concurrency, next.pluginTimeoutMs, next.plugins !== null ? 1 : 0, next.channels !== null ? 1 : 0, now);
+    db.run("DELETE FROM search_setting_plugins");
+    for (const id of [...(next.plugins || []), ...next.trashedPlugins]) db.run("INSERT INTO search_setting_plugins(plugin_id,trashed) VALUES(?,?)", id, next.trashedPlugins.includes(id) ? 1 : 0);
+    db.run("DELETE FROM search_setting_channels");
+    for (const [position, channel] of (next.channels || []).entries()) db.run("INSERT INTO search_setting_channels(channel,position) VALUES(?,?)", channel, position);
+  });
   return clone(next);
 }
-
-/** 从垃圾箱恢复 / 放入垃圾箱（仅适用于页面发布的规则插件）。 */
 export function setPluginTrashed(id: string, trashed: boolean): SearchSettings {
-  const current = getSearchSettings();
-  const set = new Set(current.trashedPlugins);
-  if (trashed) set.add(id);
-  else set.delete(id);
-  return saveSearchSettings({ trashedPlugins: [...set] });
+  const current = getSearchSettings(); const set = new Set(current.trashedPlugins); if (trashed) set.add(id); else set.delete(id); return saveSearchSettings({ trashedPlugins: [...set] });
 }

@@ -1,12 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  JsonPluginRepository,
-  resolvePublishedDefinition,
-} from "../../server/core/plugins/repository";
 import type { InstructionPluginDefinition } from "../../server/core/instructions/types";
+
+type RepositoryModule = typeof import("../../server/core/plugins/repository");
 
 const definition = (
   version: string,
@@ -33,33 +31,43 @@ const definition = (
   },
 });
 
-describe("JsonPluginRepository", () => {
+describe("SqlitePluginRepository", () => {
   let dir = "";
+  let dbPath = "";
+  let repositoryModule: RepositoryModule;
+  let storage: typeof import("../../server/core/storage/sqlite");
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
+    dbPath = join(dir, "panhub.sqlite");
+    process.env.PANHUB_SQLITE_DB = dbPath;
+    process.env.PANHUB_LEGACY_DATA_DIR = dir;
+    vi.resetModules();
+    repositoryModule = await import("../../server/core/plugins/repository");
+    storage = await import("../../server/core/storage/sqlite");
+  });
+
   afterEach(async () => {
-    if (dir) await rm(dir, { recursive: true, force: true });
+    storage.resetSqliteDatabase(dbPath);
+    delete process.env.PANHUB_SQLITE_DB;
+    delete process.env.PANHUB_LEGACY_DATA_DIR;
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("requires sample validation before publish and supports disable/rollback", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"), "alice", "initial");
-    await expect(repo.publish("repo-fixture", "alice")).rejects.toThrow(
-      "样本解析验证"
-    );
-    await expect(repo.validate("repo-fixture", "alice")).rejects.toThrow(
-      "样本解析测试"
-    );
-    await repo.validate("repo-fixture", "alice", {
-      sampleParsed: true,
-      sampleResultCount: 2,
-    });
+    await expect(repo.publish("repo-fixture", "alice")).rejects.toThrow("样本解析验证");
+    await expect(repo.validate("repo-fixture", "alice")).rejects.toThrow("样本解析测试");
+    await repo.validate("repo-fixture", "alice", { sampleParsed: true, sampleResultCount: 2 });
     await repo.publish("repo-fixture", "alice");
     await repo.saveDraft(definition("2.0.0"), "bob", "change");
+
     const record = await repo.get("repo-fixture");
-    expect(record?.status).toBe("draft");
+    expect(record?.status).toBe("published");
     expect(record?.publishedVersion).toBe("1.0.0");
     expect(record?.versions).toHaveLength(2);
-    expect(resolvePublishedDefinition(record!)?.manifest.version).toBe("1.0.0");
+    expect(repositoryModule.resolvePublishedDefinition(record!)?.manifest.version).toBe("1.0.0");
 
     await repo.validate("repo-fixture", "bob", { sampleParsed: true });
     await repo.publish("repo-fixture", "bob");
@@ -68,97 +76,67 @@ describe("JsonPluginRepository", () => {
     await repo.disable("repo-fixture");
     const disabled = await repo.get("repo-fixture");
     expect(disabled?.status).toBe("disabled");
-    expect(resolvePublishedDefinition(disabled!)).toBeUndefined();
-    await repo.audit("repo-fixture", "debugged", "carol", {
-      resultCount: 3,
-    });
-    const reloaded = new JsonPluginRepository(join(dir, "plugins.json"));
+    expect(repositoryModule.resolvePublishedDefinition(disabled!)).toBeUndefined();
+    await repo.audit("repo-fixture", "debugged", "carol", { resultCount: 3 });
+
+    const reloaded = new repositoryModule.SqlitePluginRepository();
     const persisted = await reloaded.get("repo-fixture");
     expect(persisted?.versions).toHaveLength(2);
     expect(persisted?.auditTrail.map((entry) => entry.action)).toEqual([
-      "draft_saved",
-      "validation_failed",
-      "validated",
-      "published",
-      "draft_saved",
-      "validated",
-      "published",
-      "rolled_back",
-      "disabled",
-      "debugged",
+      "draft_saved", "validation_failed", "validated", "published", "draft_saved",
+      "validated", "published", "rolled_back", "disabled", "debugged",
     ]);
-    expect(persisted?.auditTrail.at(-1)).toMatchObject({
-      actor: "carol",
-      metadata: { resultCount: 3 },
-    });
+    expect(persisted?.auditTrail.at(-1)).toMatchObject({ actor: "carol", metadata: { resultCount: 3 } });
+    expect(storage.getSqliteDatabase().getRow("SELECT status,published_version FROM plugin_records WHERE id=?", "repo-fixture"))
+      .toEqual({ status: "disabled", published_version: "1.0.0" });
   });
 
   it("does not allow an existing immutable version to be overwritten", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"));
-
-    await expect(
-      repo.saveDraft(definition("1.0.0", "https://example.org/changed"))
-    ).rejects.toThrow("不可修改");
+    await expect(repo.saveDraft(definition("1.0.0", "https://example.org/changed"))).rejects.toThrow("不可修改");
   });
 
   it("only permanently deletes archived plugins", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"));
-
-    await expect(repo.purge("repo-fixture", "admin")).rejects.toThrow(
-      "永久删除前必须先归档"
-    );
+    await expect(repo.purge("repo-fixture", "admin")).rejects.toThrow("永久删除前必须先归档");
     await repo.archive("repo-fixture", "admin");
     await repo.purge("repo-fixture", "admin");
-
     expect(await repo.get("repo-fixture")).toBeUndefined();
     expect(await repo.list({ includeArchived: true })).toEqual([]);
   });
 
   it("restores archived plugins without enabling them", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"));
     await repo.validate("repo-fixture", "system", { sampleParsed: true });
     await repo.publish("repo-fixture");
     await repo.archive("repo-fixture");
-
     const restored = await repo.restore("repo-fixture");
     expect(restored.status).toBe("disabled");
     expect(restored.publishedVersion).toBe("1.0.0");
   });
 
-  it("re-enables a disabled published plugin and audits the action", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+  it("re-enables a disabled published plugin and persists the result in SQLite", async () => {
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"));
     await repo.validate("repo-fixture", "system", { sampleParsed: true });
     await repo.publish("repo-fixture");
     await repo.disable("repo-fixture");
-
     const enabled = await repo.enable("repo-fixture", "admin");
     expect(enabled.status).toBe("published");
     expect(enabled.publishedVersion).toBe("1.0.0");
-    expect(resolvePublishedDefinition(enabled)?.manifest.version).toBe("1.0.0");
-    expect(enabled.auditTrail.at(-1)).toMatchObject({
-      action: "enabled",
-      actor: "admin",
-      metadata: { version: "1.0.0" },
-    });
+    expect(repositoryModule.resolvePublishedDefinition(enabled)?.manifest.version).toBe("1.0.0");
+    expect(enabled.auditTrail.at(-1)).toMatchObject({ action: "enabled", actor: "admin", metadata: { version: "1.0.0" } });
 
-    // enable 后重新落盘可恢复（新实例读取到 enabled 状态）
-    const reloaded = new JsonPluginRepository(join(dir, "plugins.json"));
+    const reloaded = new repositoryModule.SqlitePluginRepository();
     expect((await reloaded.get("repo-fixture"))?.status).toBe("published");
   });
 
   it("refuses to enable a plugin that was never published", async () => {
-    dir = await mkdtemp(join(tmpdir(), "panhub-repository-"));
-    const repo = new JsonPluginRepository(join(dir, "plugins.json"));
+    const repo = new repositoryModule.SqlitePluginRepository();
     await repo.saveDraft(definition("1.0.0"));
-
     await expect(repo.enable("repo-fixture")).rejects.toThrow("从未发布");
   });
 });

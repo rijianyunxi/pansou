@@ -32,12 +32,15 @@ export interface MonitorHistoryBucket {
 export interface MonitorDimension {
   state?: string | null;
   passRate?: number | null;
-  recent?: number | null;
+  /** 最近样本（旧 → 新），兼容旧接口误返回 number 的情况。 */
+  recent?: string | number | null;
   lastMessage?: string | null;
 }
 
 export interface MonitorUpstreamHealth {
   healthy?: boolean | null;
+  /** 新接口可直接提供请求级最近样本；当前接口缺省时由 results/network/history 兼容推导。 */
+  recent?: string | null;
   circuitState?: string | null;
   requestCount?: number | null;
   successCount?: number | null;
@@ -99,6 +102,21 @@ export interface MonitorData {
   channels?: MonitorChannelEntry[] | null;
 }
 
+export type MonitorHealthSample = "success" | "failure" | "unknown";
+
+export interface MonitorHealthStats {
+  /** 只统计最近 100 次可识别的成功/失败结果。 */
+  windowSize: number;
+  successCount: number;
+  failureCount: number;
+  totalCount: number;
+  successRate: number | null;
+  /** 旧 → 新，用于卡片上的 20 组状态色块；未采满窗口时用 unknown 补齐。 */
+  samples: MonitorHealthSample[];
+  /** 每个色块代表最近 100 次中的 5 次。 */
+  segments: MonitorHealthSample[];
+}
+
 export interface MonitorRow {
   /** upstream:<id> / channel:<name>，用于乐观更新的定位。 */
   key: string;
@@ -124,6 +142,7 @@ export interface MonitorRow {
   failingDimension: boolean;
   /** 乐观启停时用于重算状态：频道 health.state 原始值。 */
   healthState: string;
+  health: MonitorHealthStats;
 }
 
 export interface MonitorKindSummary {
@@ -190,6 +209,90 @@ export function extractMonitorData(payload: unknown): MonitorData {
     upstreams: Array.isArray(data.upstreams) ? (data.upstreams as MonitorUpstreamEntry[]) : [],
     channels: Array.isArray(data.channels) ? (data.channels as MonitorChannelEntry[]) : [],
   };
+}
+
+const HEALTH_WINDOW_SIZE = 100;
+
+function sampleFromValue(value: unknown): MonitorHealthSample {
+  if (value === true || value === 1 || value === "1" || value === "pass" || value === "success") return "success";
+  if (value === false || value === 0 || value === "0" || value === "fail" || value === "failure") return "failure";
+  // “e” 表示成功但零结果：对成功率而言请求是成功的。
+  if (value === "e" || value === "empty") return "success";
+  return "unknown";
+}
+
+function samplesFromRecentString(value: unknown): MonitorHealthSample[] {
+  if (typeof value !== "string") return [];
+  return [...value].map(sampleFromValue).filter((sample) => sample !== "unknown");
+}
+
+function samplesFromHistory(health: MonitorUpstreamHealth): MonitorHealthSample[] {
+  const buckets = health.history?.buckets;
+  if (!Array.isArray(buckets)) return [];
+  const samples: MonitorHealthSample[] = [];
+  for (const bucket of buckets) {
+    const success = Math.max(0, Math.floor(num(bucket?.s) ?? 0));
+    const failure = Math.max(0, Math.floor(num(bucket?.f) ?? 0));
+    samples.push(...Array.from({ length: success }, () => "success" as const));
+    samples.push(...Array.from({ length: failure }, () => "failure" as const));
+  }
+  return samples.slice(-HEALTH_WINDOW_SIZE);
+}
+
+function statsFromSamples(samples: MonitorHealthSample[], fallbackSuccess = 0, fallbackFailure = 0): MonitorHealthStats {
+  let normalized = samples.filter((sample) => sample !== "unknown").slice(-HEALTH_WINDOW_SIZE);
+  if (!normalized.length && (fallbackSuccess > 0 || fallbackFailure > 0)) {
+    const total = fallbackSuccess + fallbackFailure;
+    const scale = total > HEALTH_WINDOW_SIZE ? HEALTH_WINDOW_SIZE / total : 1;
+    const success = Math.min(fallbackSuccess, Math.round(fallbackSuccess * scale));
+    const failure = Math.min(fallbackFailure, HEALTH_WINDOW_SIZE - success);
+    normalized = [
+      ...Array.from({ length: success }, () => "success" as const),
+      ...Array.from({ length: failure }, () => "failure" as const),
+    ];
+  }
+  const successCount = normalized.filter((sample) => sample === "success").length;
+  const failureCount = normalized.filter((sample) => sample === "failure").length;
+  const totalCount = successCount + failureCount;
+  const padded = Array(HEALTH_WINDOW_SIZE - normalized.length).fill("unknown").concat(normalized);
+  const segments = Array.from({ length: 20 }, (_, index) => {
+    const group = padded.slice(index * 5, index * 5 + 5);
+    if (group.includes("failure")) return "failure";
+    if (group.includes("success")) return "success";
+    return "unknown";
+  });
+  return {
+    windowSize: HEALTH_WINDOW_SIZE,
+    successCount,
+    failureCount,
+    totalCount,
+    successRate: totalCount ? (successCount / totalCount) * 100 : null,
+    samples: padded,
+    segments,
+  };
+}
+
+/** 将接口返回的健康快照统一为卡片所需的最近 100 次统计。 */
+export function healthStats(
+  kind: MonitorKind,
+  health: MonitorUpstreamHealth | MonitorChannelHealth | null | undefined,
+): MonitorHealthStats {
+  if (!health) return statsFromSamples([]);
+  if (kind === "channel") {
+    const samples = Array.isArray((health as MonitorChannelHealth).recent)
+      ? (health as MonitorChannelHealth).recent!.map((record) => sampleFromValue(record?.ok))
+      : [];
+    return statsFromSamples(samples);
+  }
+  const upstream = health as MonitorUpstreamHealth;
+  const dimensions = upstream.dimensions || {};
+  const recent = [
+    samplesFromRecentString(upstream.recent),
+    samplesFromRecentString(dimensions.results?.recent),
+    samplesFromRecentString(dimensions.network?.recent),
+    samplesFromHistory(upstream),
+  ].find((candidate) => candidate.length) || [];
+  return statsFromSamples(recent, num(upstream.successCount) ?? 0, num(upstream.failureCount) ?? 0);
 }
 
 function hasFailingDimension(health: MonitorUpstreamHealth | null | undefined): boolean {
@@ -349,6 +452,7 @@ function buildUpstreamRow(entry: MonitorUpstreamEntry): MonitorRow | null {
     healthHealthy: bool(health?.healthy),
     failingDimension: hasFailingDimension(health),
     healthState: "",
+    health: healthStats("upstream", health),
   };
 }
 
@@ -376,6 +480,7 @@ function buildChannelRow(entry: MonitorChannelEntry): MonitorRow | null {
     healthHealthy: null,
     failingDimension: false,
     healthState: text(health?.state),
+    health: healthStats("channel", health),
   };
 }
 
