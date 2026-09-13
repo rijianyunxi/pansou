@@ -16,14 +16,7 @@ coverage/
 playwright-report/
 test-results/
 
-# Runtime data
-# SQLite databases, WAL files, Telegram sessions, and other generated state
-# are all local runtime artifacts and must never be committed.
-data/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.db
+
 
 # Logs
 logs/
