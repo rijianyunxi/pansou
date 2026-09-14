@@ -50,6 +50,40 @@ it("bounds the whole search, aborts TG, skips queued/deep channels and preserves
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("reports every successful backend source independently", async () => {
+  tg.mockImplementation((channel) => Promise.resolve(results(channel)));
+  const source = plugin("plugin-one", async () => results("plugin-one"));
+  const updates: Array<{ kind: string; id: string; count: number }> = [];
+  const response = service([source], { searchTimeoutMs: 1000 }).searchWithWarnings(
+    "test", ["firstchan", "secondchan"], 4, false, "results", "all", undefined, undefined, {},
+    { onSourceSuccess: (update) => updates.push({ kind: update.source.kind, id: update.source.id, count: update.results.length }) },
+  );
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((await response).response.total).toBe(15);
+  expect(updates).toEqual(expect.arrayContaining([
+    { kind: "telegram", id: "firstchan", count: 5 },
+    { kind: "telegram", id: "secondchan", count: 5 },
+    { kind: "plugin", id: "plugin-one", count: 5 },
+  ]));
+});
+
+it("reports each successful plugin interface call across keyword variants", async () => {
+  const calls: string[] = [];
+  const updates: string[] = [];
+  const source = plugin("variants", async (context) => {
+    calls.push(context.keyword);
+    return results(context.keyword, 1);
+  });
+  const response = service([source], { searchTimeoutMs: 1000 }).searchWithWarnings(
+    "a", [], 4, false, "results", "plugin", undefined, undefined, {},
+    { onSourceSuccess: (update) => updates.push(update.request.keyword) },
+  );
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((await response).response.total).toBe(4);
+  expect(updates).toEqual(calls);
+  expect(updates).toEqual(["a", "电影", "movie", "1080p"]);
+});
+
 it("shares the concurrency cap between TG and plugins and honors concurrency=1", async () => {
   let active = 0;
   let maximum = 0;

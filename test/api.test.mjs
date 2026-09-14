@@ -47,6 +47,43 @@ async function safeFetch(url, opts) {
   }
 }
 
+function parseSse(text) {
+  const events = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    let event = "message";
+    const data = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (data.length) events.push({ event, data: JSON.parse(data.join("\n")) });
+  }
+  return events;
+}
+
+async function safeSearch(url, opts = {}) {
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(20000),
+      ...opts,
+      headers: { Accept: "text/event-stream", "Content-Type": "application/json", ...(opts.headers || {}) },
+      ...(opts.body && typeof opts.body !== "string" ? { body: JSON.stringify(opts.body) } : {}),
+    });
+    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+      throw new Error("search endpoint did not return text/event-stream");
+    }
+    const events = parseSse(await response.text());
+    const complete = events.findLast((item) => item.event === "complete");
+    if (!complete) throw new Error("search stream ended without complete event");
+    return complete.data;
+  } catch (e) {
+    failures++;
+    err("Search stream error:", url, e?.message || e);
+    return null;
+  }
+}
+
 async function testHealth() {
   if (process.env.PLUGINS) {
     log("[skip] health (PLUGINS specified)");
@@ -89,7 +126,7 @@ async function testSearchGetPlugin() {
         refresh: "true",
         ext: JSON.stringify({ __plugin_timeout_ms: 6000, __detail_limit: 6 }),
       });
-      const data = await safeFetch(`${API_BASE}/search?${q.toString()}`);
+      const data = await safeSearch(`${API_BASE}/search?${q.toString()}`);
       if (!data) {
         err(`plugin:${name}: response null for kw=${kw}`);
         continue;
@@ -127,7 +164,7 @@ async function testSearchGetAll() {
     refresh: "true",
     ext: JSON.stringify({ __plugin_timeout_ms: 6000, __detail_limit: 6 }),
   });
-  const data = await safeFetch(`${API_BASE}/search?${q.toString()}`);
+  const data = await safeSearch(`${API_BASE}/search?${q.toString()}`);
   expect(!!data, "search GET all: response should not be null");
   if (!data) return;
   expect(data.code === 0, "search GET all: code should be 0");
@@ -154,7 +191,7 @@ async function testSearchPostTG() {
     refresh: true,
     ext: { __plugin_timeout_ms: 6000 },
   };
-  const data = await safeFetch(`${API_BASE}/search`, { method: "POST", body });
+  const data = await safeSearch(`${API_BASE}/search`, { method: "POST", body });
   expect(!!data, "search POST tg: response should not be null");
   if (!data) return;
   expect(data.code === 0, "search POST tg: code should be 0");

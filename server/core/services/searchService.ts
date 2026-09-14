@@ -10,7 +10,7 @@ import {
 } from "./tgChannelSettings";
 import { recordTgChannelHealth, flushTgChannelHealth } from "./tgChannelHealthStore";
 import { getTgSourceSettingsVersion } from "./tgSourceSettings";
-import type { MergedLink, SearchResponse, SearchResult } from "../types/models";
+import type { MergedLink, SearchResponse, SearchResult, SearchSourceUpdate } from "../types/models";
 import {
   PluginManager,
   type SearchPlugin,
@@ -36,11 +36,13 @@ interface PluginSearchExecution {
 
 export interface SearchExecutionOptions {
   signal?: AbortSignal;
+  onSourceSuccess?: (update: SearchSourceUpdate) => void;
 }
 
 interface SearchExecution {
   signal: AbortSignal;
   schedule: ReturnType<typeof pLimit>;
+  onSourceSuccess?: (update: SearchSourceUpdate) => void;
 }
 
 interface PluginRunContext {
@@ -204,7 +206,11 @@ export class SearchService {
     const limit = Number.isFinite(configuredConcurrency)
       ? Math.min(16, Math.max(1, Math.floor(configuredConcurrency))) : 4;
     const scope = createAbortScope(timeoutMs, `整次搜索超时 (${timeoutMs}ms)，已返回完成的来源`, executionOptions.signal);
-    const execution = { signal: scope.signal, schedule: pLimit(limit) };
+    const execution = {
+      signal: scope.signal,
+      schedule: pLimit(limit),
+      onSourceSuccess: executionOptions.onSourceSuccess,
+    };
     try {
       const result = await this.performSearch(
         keyword, channels, limit, forceRefresh, resultType, sourceType,
@@ -358,6 +364,19 @@ export class SearchService {
     if (!forceRefresh && cacheEnabled) {
       const cached = this.cache.get(CacheNamespace.TG_SEARCH, cacheKey);
       if (cached.hit && cached.value) {
+        const annotated = this.annotateTelegramResults(cached.value);
+        for (const channel of chList) {
+          const channelResults = annotated.filter(
+            (result) => result.channel.replace(/^@/, "").toLowerCase() === channel.toLowerCase()
+          );
+          if (channelResults.length) {
+            this.emitSourceSuccess(execution, {
+              source: { kind: "telegram", id: channel, cached: true },
+              request: { keyword, phase: "cache" },
+              results: channelResults,
+            });
+          }
+        }
         return cached.value;
       }
     }
@@ -387,7 +406,7 @@ export class SearchService {
       }
     };
     const createChannelTask =
-      (channel: string, limitPerChannel: number) => async () => {
+      (channel: string, limitPerChannel: number, phase: "shallow" | "deep") => async () => {
         // 每频道超时策略：显式配置时覆盖全局默认（外层 searchTimeoutMs 预算仍然生效）。
         const channelTimeoutMs = getTgChannelPolicy(channel)?.timeoutMs ?? timeoutMs;
         const scope = createAbortScope(channelTimeoutMs, `TG 频道 ${channel} 请求超时 (${channelTimeoutMs}ms)`, execution?.signal);
@@ -425,6 +444,11 @@ export class SearchService {
             recordChannelHealth(false, 0, warning);
           } else {
             recordChannelHealth(true, results.length);
+            this.emitSourceSuccess(execution, {
+              source: { kind: "telegram", id: channel },
+              request: { keyword, phase },
+              results: this.annotateTelegramResults(results),
+            });
           }
           return results;
         } catch (error) {
@@ -447,7 +471,7 @@ export class SearchService {
     };
 
     const shallowTasks = [...priorityList, ...normalList].map((channel) =>
-      createChannelTask(channel, SearchService.TG_CHANNEL_LIMIT)
+      createChannelTask(channel, SearchService.TG_CHANNEL_LIMIT, "shallow")
     );
     const shallowResults = flattenResults(
       await this.runWithConcurrency(shallowTasks, concurrency, execution)
@@ -462,7 +486,7 @@ export class SearchService {
     ) {
       const deepTasks = [...priorityList, ...normalList]
         .filter((channel) => !failedChannels.has(channel))
-        .map((channel) => createChannelTask(channel, SearchService.TG_DEEP_CHANNEL_LIMIT));
+        .map((channel) => createChannelTask(channel, SearchService.TG_DEEP_CHANNEL_LIMIT, "deep"));
       const deepResults = flattenResults(
         await this.runWithConcurrency(deepTasks, concurrency, execution)
       );
@@ -536,8 +560,28 @@ export class SearchService {
     if (!forceRefresh && cacheEnabled) {
       const cached = this.cache.get(CacheNamespace.PLUGIN_SEARCH, cacheKey);
       if (cached.hit && cached.value) {
+        const rebound = this.rebindRegistryVersion(cached.value, registrySnapshot.version);
+        const resultsByPlugin = new Map<string, SearchResult[]>();
+        for (const result of rebound) {
+          const id = result.pluginId || "unknown";
+          const results = resultsByPlugin.get(id) || [];
+          results.push(result);
+          resultsByPlugin.set(id, results);
+        }
+        for (const [id, results] of resultsByPlugin) {
+          this.emitSourceSuccess(execution, {
+            source: {
+              kind: "plugin",
+              id,
+              version: results[0]?.pluginVersion,
+              cached: true,
+            },
+            request: { keyword, phase: "cache" },
+            results,
+          });
+        }
         return {
-          results: this.rebindRegistryVersion(cached.value, registrySnapshot.version),
+          results: rebound,
           registryVersion: registrySnapshot.version,
           pluginVersions,
         };
@@ -651,20 +695,27 @@ export class SearchService {
           signal: scope.signal,
           ext: Object.freeze({ ...run.ext }),
         };
-        const current = await runWithSignal(() => plugin.search(context), scope.signal);
-        results = this.mergeUniqueResults(
-          results,
-          this.annotatePluginResults(current || [], plugin, run.registryVersion)
+        const current = this.annotatePluginResults(
+          await runWithSignal(() => plugin.search(context), scope.signal) || [],
+          plugin,
+          run.registryVersion,
         );
+        this.emitSourceSuccess(run.execution, {
+          source: { kind: "plugin", id: name, version: plugin.manifest.version },
+          request: { keyword: query, phase: "variant" },
+          results: current.slice(0, plugin.manifest.maxResults),
+        });
+        results = this.mergeUniqueResults(results, current);
         if (
           results.length >= SearchService.PLUGIN_VARIANT_TRIGGER ||
           index === run.variants.length - 1
         ) break;
       }
+      const limitedResults = results.slice(0, plugin.manifest.maxResults);
       this.healthChecker.recordSuccess(name, Date.now() - startedAt, {
-        resultCount: results.length,
+        resultCount: limitedResults.length,
       });
-      return results.slice(0, plugin.manifest.maxResults);
+      return limitedResults;
     } catch (error) {
       // A caller/global deadline is not an upstream outage; do not trip its circuit.
       if (run.execution.signal.aborted) {
@@ -768,6 +819,18 @@ export class SearchService {
       // temporarily unavailable; a config outage must not break search.
     } finally {
       this.dynamicRefreshPromise = undefined;
+    }
+  }
+
+  private emitSourceSuccess(
+    execution: SearchExecution | undefined,
+    update: SearchSourceUpdate
+  ): void {
+    if (!execution?.onSourceSuccess || execution.signal.aborted) return;
+    try {
+      execution.onSourceSuccess({ ...update, results: [...update.results] });
+    } catch {
+      // Streaming observers must never turn a successful backend call into a source failure.
     }
   }
 

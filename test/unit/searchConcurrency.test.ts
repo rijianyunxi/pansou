@@ -105,7 +105,8 @@ describe("search route governance", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     vi.unstubAllGlobals();
   });
-  beforeEach(() => {
+  beforeEach(async () => {
+    await vi.waitFor(() => expect(searchGovernor.totalInFlight()).toBe(0));
     searchGovernor.reset();
     search.mockReset().mockResolvedValue({ response: { total: 0 }, warnings: [] });
   });
@@ -128,7 +129,9 @@ describe("search route governance", () => {
     expect(Number(rejected.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
     expect(await rejected.text()).toContain("too many concurrent searches");
     resolvers.forEach((resolve) => resolve({ response: { total: 0 }, warnings: [] }));
-    expect((await Promise.all(pending)).map((response) => response.status)).toEqual([200, 200, 200]);
+    const responses = await Promise.all(pending);
+    await Promise.all(responses.map((response) => response.text()));
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
   });
 
   it("releases the in-flight slot when a client disconnects mid-search", async () => {
@@ -139,9 +142,11 @@ describe("search route governance", () => {
     const controller = new AbortController();
     const request = fetch(`${base}/search/get?kw=test`, { signal: controller.signal });
     await waitUntilAdmitted(1);
-    const assertion = expect(request).rejects.toMatchObject({ name: "AbortError" });
+    const response = await request;
+    const body = response.text();
     controller.abort();
-    await assertion;
+    await expect(body).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(searchGovernor.totalInFlight()).toBe(0));
     let next!: Response;
     for (let attempt = 0; attempt < 50; attempt++) {
       next = await getSearch();
@@ -149,6 +154,7 @@ describe("search route governance", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(next.status).toBe(200);
+    await next.text();
     // The aborted search and this fresh search each consumed one rate token;
     // the intermediate concurrency 429s were free.
     expect(next.headers.get("x-ratelimit-remaining")).toBe("28");
@@ -162,12 +168,15 @@ describe("search route governance", () => {
     expect((await getSearch()).status).toBe(429);
     expect((await fetch(`${base}/health`)).status).toBe(200);
     resolvers.forEach((resolve) => resolve({ response: { total: 0 }, warnings: [] }));
-    await Promise.all(pending);
+    const responses = await Promise.all(pending);
+    await Promise.all(responses.map((response) => response.text()));
   });
 
   it("rate-limits a client after 30 admitted searches within the window", async () => {
     for (let i = 0; i < SEARCH_GOVERNANCE_LIMITS.perClientWindowLimit; i++) {
-      expect((await getSearch()).status).toBe(200);
+      const response = await getSearch();
+      expect(response.status).toBe(200);
+      await response.text();
     }
     const rejected = await getSearch();
     expect(rejected.status).toBe(429);

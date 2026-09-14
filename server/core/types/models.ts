@@ -55,6 +55,24 @@ export interface SearchResponse {
   items?: MergedLink[];
 }
 
+export interface SearchSourceUpdate {
+  source: {
+    kind: SearchResultSource;
+    id: string;
+    version?: string;
+    cached?: boolean;
+  };
+  request: {
+    keyword: string;
+    phase: "shallow" | "deep" | "variant" | "cache";
+  };
+  results: SearchResult[];
+}
+
+export interface SearchStreamResultData {
+  update: SearchSourceUpdate;
+}
+
 export interface GenericResponse<T> {
   code: number;
   message: string;

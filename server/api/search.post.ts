@@ -1,16 +1,12 @@
-import { defineEventHandler, readBody, setHeader } from "h3";
-import { requireSearchAuth } from "../utils/requireAuth";
-import { executeSearch } from "../utils/executeSearch";
-import { withRequestSignal } from "../utils/requestSignal";
+import { defineEventHandler, readBody } from "h3";
 import { beginSearchLease } from "../core/security/concurrency";
+import { prepareSearch } from "../utils/executeSearch";
+import { requireSearchAuth } from "../utils/requireAuth";
+import { sendSearchStream } from "../utils/sendSearchStream";
 
 export default defineEventHandler(async (event) => {
-  setHeader(event, "Cache-Control", "private, no-store");
   requireSearchAuth(event);
+  const prepared = prepareSearch(await readBody(event));
   const lease = beginSearchLease(event);
-  try {
-    return await withRequestSignal(event, async (signal) => executeSearch(await readBody(event), signal));
-  } finally {
-    lease.release();
-  }
+  return sendSearchStream(event, prepared, lease);
 });

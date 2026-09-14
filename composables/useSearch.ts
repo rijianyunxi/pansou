@@ -1,6 +1,13 @@
 import { computed, ref } from "vue";
-import type { MergedLinks, GenericResponse, SearchResponse } from "../server/core/types/models";
+import type {
+  GenericResponse,
+  MergedLink,
+  MergedLinks,
+  SearchResponse,
+  SearchStreamResultData,
+} from "../server/core/types/models";
 import { extractMergedFromResponse } from "../utils/extractMergedFromResponse";
+import { consumeSearchEventStream } from "../utils/searchEventStream";
 
 export interface SearchOptions {
   apiBase: string;
@@ -21,6 +28,26 @@ export interface SearchState {
   merged: MergedLinks;
 }
 
+function mergedLinkKey(link: MergedLink): string {
+  return [link.url, link.password, link.source, link.note].join("\u0000");
+}
+
+function mergeIncremental(current: MergedLinks, incoming: MergedLinks): MergedLinks {
+  const merged: MergedLinks = {};
+  for (const type of new Set([...Object.keys(current), ...Object.keys(incoming)])) {
+    const seen = new Set<string>();
+    merged[type] = [];
+    for (const link of [...(current[type] || []), ...(incoming[type] || [])]) {
+      const key = mergedLinkKey(link);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged[type]!.push(link);
+    }
+    if (merged[type]!.length === 0) delete merged[type];
+  }
+  return merged;
+}
+
 /** A single user request; system source expansion belongs exclusively to the server. */
 export function useSearch() {
   const initial = (): SearchState => ({ loading: false, deepLoading: false, paused: false,
@@ -37,6 +64,11 @@ export function useSearch() {
     controller?.abort();
     controller = undefined;
   }
+  function applyResponse(data: SearchResponse | undefined, replace: boolean) {
+    const incoming = extractMergedFromResponse(data);
+    state.value.merged = replace ? incoming : mergeIncremental(state.value.merged, incoming);
+    state.value.total = Object.values(state.value.merged).reduce((sum, list) => sum + list.length, 0);
+  }
   async function run(options: SearchOptions) {
     const mySeq = ++seq;
     const ac = new AbortController();
@@ -45,6 +77,7 @@ export function useSearch() {
     state.value.loading = true;
     state.value.paused = false;
     state.value.error = "";
+    let completed = false;
     try {
       const body: Record<string, unknown> = { kw: options.keyword.trim() };
       // 本站搜索使用服务端默认来源，不注入空 channels 或 append 模式。
@@ -53,18 +86,45 @@ export function useSearch() {
         body.channels = options.userTgChannels ?? [];
         body.channels_mode = "only";
       }
-      const response = await $fetch<GenericResponse<SearchResponse> & { warnings?: unknown[] }>(
-        `${options.apiBase}/search`, {
-          method: "POST", credentials: "include", signal: ac.signal, retry: 0,
-          body,
-        },
-      );
-      if (mySeq !== seq) return;
-      if (response.code !== 0) throw new Error(response.message || "搜索失败");
-      state.value.merged = extractMergedFromResponse(response.data);
-      state.value.total = Object.values(state.value.merged).reduce((sum, list) => sum + list.length, 0);
-      state.value.warning = response.warnings?.length
-        ? `部分来源未完成（${response.warnings.length} 项告警），已展示成功来源的结果。` : "";
+      const response = await fetch(`${options.apiBase}/search`, {
+        method: "POST",
+        credentials: "include",
+        signal: ac.signal,
+        headers: { "Accept": "text/event-stream", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => undefined) as { statusMessage?: string; message?: string } | undefined;
+        const error = new Error(data?.statusMessage || data?.message || `搜索请求失败 (${response.status})`) as Error & {
+          status?: number;
+          data?: unknown;
+        };
+        error.status = response.status;
+        error.data = data;
+        throw error;
+      }
+      if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new Error("搜索接口未返回 SSE 数据流");
+      }
+      await consumeSearchEventStream(response, async (event) => {
+        if (mySeq !== seq || ac.signal.aborted) return;
+        const payload = JSON.parse(event.data) as GenericResponse<unknown> & { warnings?: unknown[] };
+        if (event.event === "result") {
+          const update = (payload.data as SearchStreamResultData | undefined)?.update;
+          if (update) applyResponse({ total: update.results.length, results: update.results }, false);
+        } else if (event.event === "complete") {
+          if (payload.code !== 0) throw new Error(payload.message || "搜索失败");
+          applyResponse(payload.data as SearchResponse | undefined, true);
+          state.value.warning = payload.warnings?.length
+            ? `部分来源未完成（${payload.warnings.length} 项告警），已展示成功来源的结果。` : "";
+          completed = true;
+        } else if (event.event === "error") {
+          throw new Error(payload.message || "搜索请求失败，请重试。");
+        }
+      });
+      if (!completed && mySeq === seq && !ac.signal.aborted) {
+        throw new Error("搜索流在完成事件前中断");
+      }
     } catch (error: any) {
       if (mySeq !== seq || ac.signal.aborted) return;
       const status = error?.statusCode ?? error?.status ?? error?.response?.status;
@@ -106,7 +166,7 @@ export function useSearch() {
     state.value.deepLoading = false;
   }
   async function continueSearch(_options?: SearchOptions) {
-    // Non-streaming API has no server checkpoint: retry the original scope, never changed UI settings.
+    // SSE streams have no resume checkpoint; restart the captured request scope.
     if (!state.value.paused || !snapshot) return;
     await run(snapshot);
   }

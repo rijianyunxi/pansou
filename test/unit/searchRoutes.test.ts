@@ -31,7 +31,9 @@ it.each(["GET", "POST"])("%s defaults merge user/system TG and include system pl
   const response = method === "GET" ? await fetch(`${base}/get?kw=test&channels=%40OwnChan`)
     : await fetch(`${base}/post`, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ kw: "test", channels: ["@OwnChan"] }) });
   expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toContain("text/event-stream");
   expect(response.headers.get("cache-control")).toContain("no-store");
+  expect(await response.text()).toContain("event: complete");
   expect(search.mock.calls[0]![1]).toEqual(["systemchan", "ownchan"]);
   expect(search.mock.calls[0]![5]).toBe("all");
   expect(search.mock.calls[0]![6]).toEqual(["nyaa"]);
@@ -44,6 +46,31 @@ it.each(["GET", "POST"])("%s only mode cannot be broadened by src or plugin argu
   expect(search.mock.calls[0]![5]).toBe("tg");
   expect(search.mock.calls[0]![6]).toEqual([]);
 });
+it("streams successful sources before the final complete event", async () => {
+  search.mockImplementationOnce((...args) => {
+    const onSourceSuccess = args[9].onSourceSuccess;
+    onSourceSuccess({
+      source: { kind: "telegram", id: "firstchan" },
+      request: { keyword: "test", phase: "shallow" },
+      results: [],
+    });
+    return new Promise((resolve) => setTimeout(() => {
+      onSourceSuccess({
+        source: { kind: "plugin", id: "plugin-one", version: "1.0.0" },
+        request: { keyword: "test", phase: "variant" },
+        results: [],
+      });
+      resolve({ response: { total: 0, results: [] }, warnings: [] });
+    }, 10));
+  });
+  const response = await fetch(`${base}/get?kw=test`);
+  const text = await response.text();
+  const eventNames = [...text.matchAll(/^event: (.+)$/gm)].map((match) => match[1]);
+  expect(eventNames).toEqual(["start", "result", "result", "complete"]);
+  expect(text).toContain('"id":"firstchan"');
+  expect(text).toContain('"id":"plugin-one"');
+});
+
 it.each(["GET", "POST"])("%s only mode with no channels fails before scheduling", async (method) => {
   const response = method === "GET" ? await fetch(`${base}/get?kw=test&channels_mode=only`)
     : await fetch(`${base}/post`, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ kw: "test", channels_mode: "only", channels: [] }) });
@@ -69,8 +96,10 @@ it.each(["GET", "POST"])("%s forwards client disconnect to the search signal", a
     method, signal: controller.signal,
     ...(method === "POST" ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ kw: "test" }) } : {}),
   });
-  const assertion = expect(request).rejects.toMatchObject({ name: "AbortError" });
   await ready;
+  const response = await request;
+  const body = response.text();
   controller.abort();
-  await assertion; await aborted;
+  await expect(body).rejects.toMatchObject({ name: "AbortError" });
+  await aborted;
 });

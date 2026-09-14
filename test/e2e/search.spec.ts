@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 test.use({ reducedMotion: "reduce" });
 
+function searchSse(payload: unknown): { contentType: string; body: string } {
+  return {
+    contentType: "text/event-stream; charset=utf-8",
+    body: `event: complete\ndata: ${JSON.stringify(payload)}\n\n`,
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/tg/validate-channel", (route) => route.fulfill({
     json: { ok: true, channel: "ownchan", kind: "available", message: "ok", route: "telegram" },
@@ -16,7 +23,7 @@ test("本站搜索使用最小请求；自定义频道只搜索用户频道；�
   await page.route("**/api/search", async (route) => {
     requests.push(route.request().postDataJSON());
     expect(route.request().method()).toBe("POST");
-    await route.fulfill({ json: { code: 0, message: "success", data: { total: 0, results: [] } } });
+    await route.fulfill(searchSse({ code: 0, message: "success", data: { total: 0, results: [] } }));
   });
   await page.goto("/");
   await expect(page.getByRole("link", { name: "接口文档", exact: true })).toHaveCount(0);
@@ -96,7 +103,7 @@ test("失败不是空结果；部分成功可见", async ({ page }) => {
   await page.route("**/api/search", async (route) => {
     requests.push(route.request().postDataJSON()); call++;
     if (call === 1) return route.fulfill({ status: 503, json: { statusMessage: "upstream unavailable" } });
-    return route.fulfill({ json: { code: 0, warnings: [{ message: "partial failure" }], data: { total: 0, results: [] } } });
+    return route.fulfill(searchSse({ code: 0, warnings: [{ message: "partial failure" }], data: { total: 0, results: [] } }));
   });
   await page.goto("/");
   await page.getByLabel("搜索关键词").fill("test");
@@ -113,7 +120,7 @@ test("暂停后继续使用原始搜索快照而不是修改后的设置", async
   await page.route("**/api/hot-searches**", (route) => route.fulfill({ json: { data: [] } }));
   await page.route("**/api/search", async (route) => {
     bodies.push(route.request().postDataJSON());
-    const complete = () => route.fulfill({ json: { code: 0, data: { total: 0 } } });
+    const complete = () => route.fulfill(searchSse({ code: 0, data: { total: 0 } }));
     if (bodies.length === 1) { finishFirst = complete; return; }
     await complete();
   });
@@ -148,7 +155,7 @@ test("存储失败可见，个人频道仍保留在内存；切换页面不丢�
   await page.route("**/api/hot-searches**", (route) => route.fulfill({ json: { data: [] } }));
   await page.route("**/api/search", (route) => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ json: { code: 0, data: { total: 0, results: [] } } });
+    return route.fulfill(searchSse({ code: 0, data: { total: 0, results: [] } }));
   });
   await page.goto("/");
   await page.locator(".manage-channels").click();
@@ -181,7 +188,7 @@ test("自定义频道空状态就近引导；删除最后一个频道禁用，�
   await page.route("**/api/auth/status", (route) => route.fulfill({ json: { enabled: false, locked: false } }));
   await page.route("**/api/search", (route) => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ json: { code: 0, data: { total: 0, results: [] } } });
+    return route.fulfill(searchSse({ code: 0, data: { total: 0, results: [] } }));
   });
   await page.goto("/");
   await page.getByRole("button", { name: /^自定义频道/ }).click();
@@ -232,7 +239,7 @@ test("个人搜索暂停后移除最后一个频道，仍可按原始快照继�
   await page.route("**/api/auth/status", (route) => route.fulfill({ json: { enabled: false, locked: false } }));
   await page.route("**/api/search", async (route) => {
     bodies.push(route.request().postDataJSON());
-    const complete = () => route.fulfill({ json: { code: 0, data: { total: 0 } } });
+    const complete = () => route.fulfill(searchSse({ code: 0, data: { total: 0 } }));
     if (bodies.length === 1) { finishFirst = complete; return; }
     await complete();
   });

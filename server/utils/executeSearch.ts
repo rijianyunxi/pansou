@@ -1,18 +1,44 @@
 import { getOrCreateSearchService } from "../core/services";
+import type { SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest } from "./searchRequest";
 
-/** Both routes must resolve scope identically; never let an empty list broaden scope. */
-export async function executeSearch(raw: unknown, signal?: AbortSignal) {
-  const req = parseSearchRequest(raw);
-  const effective = applySearchDefaults({ ...req, channelsMode: req.channels_mode });
+export interface PreparedSearch {
+  request: ReturnType<typeof parseSearchRequest>;
+  effective: ReturnType<typeof applySearchDefaults>;
+}
+
+export function prepareSearch(raw: unknown): PreparedSearch {
+  const request = parseSearchRequest(raw);
+  return {
+    request,
+    effective: applySearchDefaults({ ...request, channelsMode: request.channels_mode }),
+  };
+}
+
+export async function executePreparedSearch(
+  prepared: PreparedSearch,
+  signal?: AbortSignal,
+  onSourceSuccess?: (update: SearchSourceUpdate) => void,
+) {
+  const { request, effective } = prepared;
   const service = getOrCreateSearchService(useRuntimeConfig());
   const { response, warnings } = await service.searchWithWarnings(
-    req.kw, effective.channels, effective.conc, !!req.refresh, req.res,
-    effective.src, effective.plugins, req.cloud_types, effective.ext, { signal },
+    request.kw,
+    effective.channels,
+    effective.conc,
+    !!request.refresh,
+    request.res,
+    effective.src,
+    effective.plugins,
+    request.cloud_types,
+    effective.ext,
+    { signal, onSourceSuccess },
   );
   return {
-    code: 0, message: warnings.length ? "partial_success" : "success", data: response,
+    code: 0,
+    message: warnings.length ? "partial_success" : "success",
+    data: response,
     ...(warnings.length ? { warnings } : {}),
   };
 }

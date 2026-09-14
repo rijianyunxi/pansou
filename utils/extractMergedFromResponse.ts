@@ -2,26 +2,15 @@ import type { MergedLinks, SearchResponse } from "~/server/core/types/models";
 
 /** 将扁平 API 结果或 SearchResult[] 转为前端按平台分组的展示模型。 */
 export function extractMergedFromResponse(
-  data: SearchResponse | Record<string, any> | undefined
+  data: SearchResponse | undefined
 ): MergedLinks {
   if (!data) return {};
 
-  const record = data as Record<string, any>;
-
-  // 兼容旧版响应：按平台分组的 merged_by_type 仍可由历史接口返回。
-  const mergedByType = record.merged_by_type;
-  if (mergedByType && typeof mergedByType === "object" && !Array.isArray(mergedByType)) {
-    const keys = Object.keys(mergedByType);
-    if (keys.length > 0) return mergedByType as MergedLinks;
-  }
-
-  // 默认 /api/search 返回扁平的 MergedLink[]，每条记录自带 type/source。
-  // res=results 时仍可能返回 SearchResult[]，这里将其展开为相同的前端分组模型。
-  const arr = Array.isArray(data)
-    ? data
-    : (Array.isArray(record.results) && record.results.length > 0
-      ? record.results
-      : (record.items ?? record.list ?? record.data));
+  // complete 事件默认携带扁平 MergedLink[]；res=results 时为 SearchResult[]。
+  // res=all 的链接数组放在 items 中。
+  const arr = Array.isArray(data.results) && data.results.length > 0
+    ? data.results
+    : data.items;
   if (!Array.isArray(arr) || arr.length === 0) return {};
 
   const out: MergedLinks = {};

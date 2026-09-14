@@ -16,6 +16,7 @@ describe("extractMergedFromResponse", () => {
 
   it("应正确解析扁平结果数组", () => {
     const data = {
+      total: 2,
       results: [
         { type: "aliyun", url: "https://a.com", password: "", note: "测试", datetime: "2025-01-01", source: "tg:a" },
         { type: "quark", url: "https://q.com", password: "123", note: "夸克", datetime: "2025-01-02", source: "plugin:p@1" },
@@ -30,9 +31,13 @@ describe("extractMergedFromResponse", () => {
 
   it("应正确解析 results 中的 SearchResult 格式（带 links）", () => {
     const data = {
+      total: 1,
       results: [
         {
+          message_id: "1",
+          unique_id: "test_channel-1",
           title: "标题",
+          content: "内容",
           datetime: "2025-01-01",
           channel: "test_channel",
           links: [
@@ -50,6 +55,7 @@ describe("extractMergedFromResponse", () => {
 
   it("应正确解析 results 中的扁平 MergedLink 格式", () => {
     const data = {
+      total: 1,
       results: [
         { url: "https://x.com", password: "", note: "扁平", datetime: "", type: "others" },
       ],
@@ -62,6 +68,7 @@ describe("extractMergedFromResponse", () => {
 
   it("应正确解析 data.items 数组", () => {
     const data = {
+      total: 1,
       items: [
         { url: "https://i.com", password: "", note: "item", datetime: "" },
       ],
@@ -71,16 +78,8 @@ describe("extractMergedFromResponse", () => {
     expect(result.others![0]!.url).toBe("https://i.com");
   });
 
-  it("应正确解析 data 本身为数组", () => {
-    const data = [
-      { url: "https://arr.com", password: "", note: "arr", datetime: "" },
-    ];
-    const result = extractMergedFromResponse(data as any);
-    expect(result.others).toHaveLength(1);
-    expect(result.others![0]!.url).toBe("https://arr.com");
-  });
 
   it("空结果数组应返回空对象", () => {
-    expect(extractMergedFromResponse({ results: [] })).toEqual({});
+    expect(extractMergedFromResponse({ total: 0, results: [] })).toEqual({});
   });
 });

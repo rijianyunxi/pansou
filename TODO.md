@@ -38,7 +38,7 @@
 ### 1.2 明确边界
 
 - 当前运行目标是 **Node.js + SQLite**；部署说明只维护 Node.js 进程运行方式，不再维护 Docker、Oracle Cloud、Vercel 或 Cloudflare 平台配置。
-- `/api/search` 默认是一次性响应，不是 SSE/流式响应；客户端暂停会取消当前请求，继续时重新发起原始参数快照。
+- `/api/search` 只使用 SSE：成功后端调用逐个增量推送，最小推送间隔 300ms；客户端暂停会取消当前流，继续时重新发起原始参数快照。
 - Telegram、Code Plugin 和 Instructions Plugin 共享每次搜索的来源任务并发槽；插件内部的多个 HTTP 请求可能继续受插件自身预算约束。
 - 运行时 Parser Plugin 只允许同步转换，代码在 `node:vm` 中执行，不提供 `require`、`process`、文件系统或网络能力。
 - `components/admin/ParserPluginMarket.vue` 和 Parser Plugin API 已存在，但当前 `pages/admin/index.vue` 没有挂载独立的 `parsers` 视图；不能把 `?view=parsers` 当作现成的管理台入口。
@@ -70,7 +70,7 @@
 - [ ] 将同一资源的多个来源聚合展示，而不是只保留一条。
 - [ ] 增加相关性评分（标题命中、关键词覆盖、时间和来源质量）。
 - [ ] 将失效链接检测做成异步任务，不阻塞首屏结果。
-- [ ] 评估 SSE/流式响应；若实施，需重新定义暂停、缓存和部分结果协议。
+- [x] `/api/search` 改为纯 SSE；定义 `start/result/complete/error` 事件、300ms FIFO 队列节流、缓存来源标记和部分结果协议。
 - [ ] 评估 Telegram、Code Plugin、Instructions Plugin 独立并发池的收益与复杂度。
 - [ ] 暴露缓存命中率、来源耗时、结果数、解析失败率和取消率等指标；现有健康数据不等同于完整指标系统。
 - [ ] 增加 10/50/100 并发压测，记录 CPU、内存、P95/P99 和实例级限流行为。
@@ -102,7 +102,7 @@
 ```
 
 1. `composables/useSearch.ts` 保存请求序号、AbortController、暂停状态和原始搜索快照，旧请求不能覆盖新请求。
-2. `server/utils/searchRequest.ts` 统一 GET/POST 校验；`server/utils/executeSearch.ts` 统一调用搜索服务并返回 warning。
+2. `server/utils/searchRequest.ts` 统一 GET/POST 校验；`server/utils/sendSearchStream.ts` 统一发送 SSE，`executeSearch.ts` 负责搜索参数与服务调用。
 3. `server/core/services/searchService.ts` 获取 Registry 快照，调度 Telegram 和插件，合并并按时间降序排序，失败来源进入 warning。
 4. 插件只通过只读 `PluginSearchContext` 获取关键词、超时、取消信号和扩展参数，不在实例上保存请求状态。
 5. 动态上游配置变化通过目录版本和 Registry 检查在下一次搜索前刷新；刷新失败时保留最后一个有效快照。
@@ -133,7 +133,7 @@
 ### 4.2 主要 API
 
 - 认证：`GET /api/auth/admin-status`、`POST /api/auth/admin-unlock`、`POST /api/auth/admin-lock`。
-- 搜索：`GET/POST /api/search`。
+- 搜索：`GET/POST /api/search`，响应固定为 SSE。
 - 上游目录：`GET/PUT /api/settings/upstreams`，以及 `/api/settings/upstreams/:id` 的删除、启停、导入导出接口。
 - 搜索设置：`GET/PUT /api/settings/search`。
 - TG 设置和诊断：`GET/PUT /api/settings/telegram`、`GET/PUT /api/settings/tg-source`、`POST /api/tg/probe`、`POST /api/tg/validate-channel`、`/api/tg/channels/**`、`/api/tg/accounts/**`、`/api/tg/mtproto/**`。
@@ -307,7 +307,7 @@ pnpm exec playwright install chromium
 
 在本次审计中执行并确认：
 
-- `pnpm test`：59 个测试文件、552 个用例通过。
+- `pnpm test`：61 个测试文件、560 个用例通过。
 - `pnpm exec playwright test --list`：7 个 spec 文件、18 个交互用例。
 - `pnpm typecheck`：通过。
 - `git status --short`：存在大量既有未提交代码改动；本次只编辑 README/TODO，未重置或覆盖这些代码改动。
