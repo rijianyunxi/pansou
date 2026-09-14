@@ -20,7 +20,7 @@
         v-if="view !== 'render'"
         tabindex="0"
         class="tg-raw-pre"
-        :aria-label="view === 'pretty' ? '格式化后的上游正文' : '上游正文源码'"
+        :aria-label="view === 'pretty' ? '格式化后的来源正文' : '来源正文源码'"
         v-html="highlighted"
       ></pre>
       <iframe
@@ -56,7 +56,7 @@ const props = withDefaults(
     frameTitle?: string;
     emptyText?: string;
   }>(),
-  { keyword: "", bodyLength: null, truncated: false, baseUrl: "", frameTitle: "上游响应渲染", emptyText: "" },
+  { keyword: "", bodyLength: null, truncated: false, baseUrl: "", frameTitle: "来源响应渲染", emptyText: "" },
 );
 
 const view = ref<"pretty" | "source" | "render">("pretty");

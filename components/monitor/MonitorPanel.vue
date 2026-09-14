@@ -4,38 +4,38 @@
       <ConsoleIcon name="info" />{{ loadError }}
     </div>
 
-    <section class="metric-grid" aria-label="监控概览">
+    <section class="metric-grid" aria-label="运行状态概览">
       <article class="metric-card">
-        <div class="metric-label">纳入监控<ConsoleIcon name="grid" /></div>
+        <div class="metric-label">管理来源<ConsoleIcon name="grid" /></div>
         <div class="metric-value">
           {{ summary.total }}<span>个</span>
-          <small class="metric-pill">上游 {{ summary.upstreams.total }} · 频道 {{ summary.channels.total }}</small>
+          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.total }} · Telegram 频道 {{ summary.channels.total }}</small>
         </div>
-        <p>已配置的上游与 TG 频道</p>
+        <p>已纳入管理的来源</p>
       </article>
       <article class="metric-card">
-        <div class="metric-label">健康<ConsoleIcon name="check" /></div>
+        <div class="metric-label">正常<ConsoleIcon name="check" /></div>
         <div class="metric-value green">
           {{ summary.healthy }}<span>个</span>
-          <small class="metric-pill">上游 {{ summary.upstreams.healthy }} · 频道 {{ summary.channels.healthy }}</small>
+          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.healthy }} · Telegram 频道 {{ summary.channels.healthy }}</small>
         </div>
-        <p><span class="status-dot warning"></span>另有待关注 {{ summary.warning }} 个</p>
+        <p><span class="status-dot warning"></span>另有需关注 {{ summary.warning }} 个</p>
       </article>
       <article class="metric-card">
         <div class="metric-label">异常<ConsoleIcon name="activity" /></div>
         <div class="metric-value">
           {{ summary.error }}<span>个</span>
-          <small class="metric-pill">上游 {{ summary.upstreams.error }} · 频道 {{ summary.channels.error }}</small>
+          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.error }} · Telegram 频道 {{ summary.channels.error }}</small>
         </div>
-        <p><span class="status-dot error"></span>最近检查有失败记录</p>
+        <p><span class="status-dot error"></span>最近检查存在失败</p>
       </article>
       <article class="metric-card">
-        <div class="metric-label">已停用<ConsoleIcon name="sliders" /></div>
+        <div class="metric-label">已关闭<ConsoleIcon name="sliders" /></div>
         <div class="metric-value">
           {{ summary.inactive }}<span>个</span>
-          <small class="metric-pill">上游 {{ summary.upstreams.inactive }} · 频道 {{ summary.channels.inactive }}</small>
+          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.inactive }} · Telegram 频道 {{ summary.channels.inactive }}</small>
         </div>
-        <p><span class="status-dot warning"></span>已删除 {{ summary.trashed }} 个，可在垃圾箱 / 重新启用恢复</p>
+        <p><span class="status-dot warning"></span>已移除 {{ summary.trashed }} 个，可在回收站恢复</p>
       </article>
     </section>
 
@@ -43,12 +43,12 @@
       <header class="monitor-header">
         <div class="monitor-heading-copy">
           <div class="monitor-title-row">
-            <h2>监控清单 <span>{{ filteredRows.length }}<small v-if="filteredRows.length !== rows.length"> / {{ rows.length }}</small></span></h2>
+            <h2>运行状态 <span>{{ filteredRows.length }}<small v-if="filteredRows.length !== rows.length"> / {{ rows.length }}</small></span></h2>
             <span v-if="generatedAtLabel" class="monitor-last-sync">
               <span class="status-dot available"></span>最近同步 {{ generatedAtLabel }}
             </span>
           </div>
-          <p>查看上游和 TG 频道的当前状态，支持按类型、状态和关键词筛选</p>
+          <p>查看各来源的运行状态，可按类型、状态和关键词筛选</p>
         </div>
       </header>
       <div class="source-toolbar">
@@ -68,7 +68,7 @@
             v-model="search"
             type="search"
             aria-label="搜索名称、ID 或错误信息"
-            placeholder="搜索监控对象..."
+            placeholder="搜索名称、ID 或错误信息…"
           />
         </label>
         <div class="monitor-heading-actions">
@@ -90,6 +90,107 @@
               @click="autoRefresh = !autoRefresh"
             ><span></span></button>
           </div>
+          <div class="monitor-settings-control">
+          <button
+            class="button secondary monitor-settings-button"
+            type="button"
+            :aria-expanded="searchSettingsOpen"
+            @click="searchSettingsOpen = !searchSettingsOpen"
+          >
+            <ConsoleIcon name="sliders" :size="15" />
+            <span>{{ searchSettingsOpen ? "收起设置" : "来源设置" }}</span>
+          </button>
+      <section
+        v-if="searchSettingsOpen"
+        class="monitor-search-settings"
+        aria-labelledby="monitor-search-settings-title"
+      >
+        <header class="monitor-settings-header">
+          <div>
+            <h3 id="monitor-search-settings-title">来源与性能</h3>
+            <p>管理默认来源和运行参数；来源与频道的开启状态会和运行状态保持一致。</p>
+          </div>
+          <span v-if="settingsLoading" class="tiny-muted">正在读取…</span>
+        </header>
+        <div class="monitor-settings-content">
+          <div class="section-label">
+            开启范围 <span class="tiny-muted">来源统一管理</span>
+          </div>
+          <label class="settings-plugin-item">
+            <input v-model="useAllPlugins" type="checkbox" :disabled="settingsSaving || settingsLoading" />
+            使用全部已开启来源
+          </label>
+          <div v-if="!useAllPlugins" class="settings-plugin-grid">
+            <label v-for="name in pluginOptions" :key="name" class="settings-plugin-item">
+              <input
+                type="checkbox"
+                :value="name"
+                v-model="settingsDraft.plugins"
+                :disabled="settingsSaving || settingsLoading" />
+              <span>{{ name }}</span>
+            </label>
+            <p v-if="!pluginOptions.length" class="field-hint">暂无可用来源。</p>
+          </div>
+          <p class="field-hint">关闭后仅使用勾选的来源；运行状态中的开启/关闭会同步更新这里的选择。</p>
+
+          <p class="field-hint monitor-channel-hint">Telegram 频道同样由下方开关控制，修改后立即同步到运行状态。</p>
+          <div v-if="channelRows.length" class="monitor-channel-settings">
+            <div v-for="row in channelRows" :key="row.key" class="monitor-channel-setting">
+              <span class="monitor-channel-setting-name">@{{ row.id }}</span>
+              <button
+                class="toggle"
+                :class="{ on: row.enabled && !row.trashed }"
+                type="button"
+                role="switch"
+                :aria-checked="row.enabled && !row.trashed"
+                :aria-label="`${row.enabled && !row.trashed ? '关闭' : '开启'} @${row.id}`"
+                :disabled="settingsSaving || busyKey === row.key || deleteBusy"
+                @click="toggleChannel(row)"
+              ><span></span></button>
+            </div>
+          </div>
+          <p v-else class="field-hint">暂无纳管频道。</p>
+
+          <div class="section-label settings-section-gap">
+            运行参数 <span class="tiny-muted">留空使用服务端默认值</span>
+          </div>
+          <div class="editor-grid">
+            <label class="settings-field">
+              并发请求数
+              <input
+                v-model="settingsDraft.concurrency"
+                type="number"
+                min="1"
+                max="16"
+                placeholder="默认 10"
+                :disabled="settingsSaving || settingsLoading" />
+            </label>
+            <label class="settings-field">
+              单个来源超时 (ms)
+              <input
+                v-model="settingsDraft.pluginTimeoutMs"
+                type="number"
+                min="1000"
+                step="500"
+                placeholder="默认 15000"
+                :disabled="settingsSaving || settingsLoading" />
+            </label>
+          </div>
+          <div class="mapping-actions">
+            <button
+              class="button primary"
+              :disabled="settingsSaving || settingsLoading"
+              type="button"
+              @click="saveSearchSettingsUi"
+            >
+              <span v-if="settingsSaving" class="spinner"></span>
+              <ConsoleIcon v-else name="check" :size="15" />保存配置
+            </button>
+            <span v-if="settingsError" class="form-error">{{ settingsError }}</span>
+          </div>
+        </div>
+      </section>
+          </div>
           <button class="button primary monitor-refresh-button" :disabled="loading" @click="loadMonitor()">
             <span v-if="loading" class="spinner"></span>
             <ConsoleIcon v-else name="refresh" :size="15" />
@@ -97,7 +198,8 @@
           </button>
         </div>
       </div>
-      <div class="monitor-card-grid" role="list" aria-label="健康状态列表">
+
+      <div class="monitor-card-grid" role="list" aria-label="正常状态列表">
         <article
           v-for="row in filteredRows"
           :key="row.key"
@@ -108,12 +210,12 @@
           <header class="monitor-card-header">
             <div class="monitor-card-identity">
               <span class="card-checkbox" aria-hidden="true"></span>
-              <span class="source-avatar monitor-avatar monitor-card-avatar" :data-kind="row.kind">
+              <!-- <span class="source-avatar monitor-avatar monitor-card-avatar" :data-kind="row.kind">
                 {{ row.kind === "channel" ? "T" : row.name.charAt(0).toUpperCase() }}
-              </span>
+              </span> -->
               <div class="source-text">
                 <div class="monitor-card-name">
-                  <span class="monitor-kind-tag">{{ row.kind === "channel" ? "TG" : "CODEX" }}</span>
+                  <span class="monitor-kind-tag">{{ row.kind === "channel" ? "Telegram" : "HTTP" }}</span>
                   <strong>{{ row.name }}</strong>
                 </div>
                 <div class="monitor-card-id" :title="row.id">{{ row.detail || row.id }}</div>
@@ -124,9 +226,9 @@
             </span>
           </header>
 
-          <section class="monitor-health-block" aria-label="最近 100 次健康统计">
+          <section class="monitor-health-block" aria-label="最近 100 次正常统计">
             <div class="monitor-health-heading">
-              <span>健康状态</span>
+              <span>正常状态</span>
               <span class="monitor-health-counts">
                 <strong class="success-text">成功 {{ row.health.successCount }}</strong>
                 <strong class="failure-text">失败 {{ row.health.failureCount }}</strong>
@@ -162,7 +264,7 @@
               class="monitor-action-label"
               type="button"
               @click="row.kind === 'channel' ? emit('debug-channel', row.id) : emit('focus-upstream', row.id)"
-            ><ConsoleIcon name="grid" :size="16" />{{ row.kind === "channel" ? "调试" : "详情" }}</button>
+            ><ConsoleIcon name="grid" :size="16" />{{ row.kind === "channel" ? "测试" : "详情" }}</button>
             <button class="monitor-icon-action" type="button" :aria-label="`刷新 ${row.name}`" title="刷新" :disabled="loading" @click="loadMonitor()">
               <ConsoleIcon name="refresh" :size="18" />
             </button>
@@ -175,22 +277,14 @@
               :disabled="busyKey === row.key || deleteBusy"
               @click="row.kind === 'channel' ? requestDeleteChannel(row) : requestDeleteUpstream(row)"
             ><ConsoleIcon name="trash" :size="17" /></button>
-            <button
-              v-else
-              class="monitor-icon-action"
-              type="button"
-              aria-label="打开上游目录"
-              title="打开上游目录"
-              @click="emit('focus-upstream', row.id)"
-            ><ConsoleIcon name="sliders" :size="17" /></button>
-            <span class="monitor-enable-label">启用</span>
+            <span class="monitor-enable-label">开启</span>
             <button
               class="toggle monitor-card-toggle"
               :class="{ on: row.enabled && !row.trashed }"
               type="button"
               role="switch"
               :aria-checked="row.enabled && !row.trashed"
-              :aria-label="`${row.enabled && !row.trashed ? '停用' : '启用'} ${row.name}`"
+              :aria-label="`${row.enabled && !row.trashed ? '关闭' : '开启'} ${row.name}`"
               :disabled="busyKey === row.key || deleteBusy"
               @click="row.kind === 'channel' ? toggleChannel(row) : toggleUpstream(row)"
             ><span></span></button>
@@ -199,7 +293,7 @@
       </div>
       <footer class="table-footer">
         <span><span class="status-dot neutral"></span>{{ filteredRows.length }} / {{ rows.length }} 个对象</span>
-        <span>数据来自服务端健康快照；操作会立即同步配置状态</span>
+        <span>数据来自服务端正常快照；操作会立即同步配置状态</span>
       </footer>
     </section>
 
@@ -213,7 +307,7 @@
       >
         <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
         <h2 id="monitor-delete-upstream-title">
-          {{ needsIdConfirmation ? "永久删除此上游？" : "配置来源不可删除" }}
+          {{ needsIdConfirmation ? "永久删除此来源？" : "配置来源不可删除" }}
         </h2>
         <p v-if="needsIdConfirmation">
           <strong>{{ upstreamDeleteTarget.name }}</strong>
@@ -221,10 +315,10 @@
         </p>
         <p v-else>
           <strong>{{ upstreamDeleteTarget.name }}</strong>
-          由配置目录管理；如需修改请前往上游接口目录。
+          由来源目录管理；如需修改请前往来源管理。
         </p>
         <template v-if="needsIdConfirmation">
-          <label for="monitor-delete-confirmation">输入插件 ID <code>{{ upstreamDeleteTarget.id }}</code> 以确认</label>
+          <label for="monitor-delete-confirmation">输入来源 ID <code>{{ upstreamDeleteTarget.id }}</code> 以确认</label>
           <input
             id="monitor-delete-confirmation"
             v-model="upstreamDeleteConfirm"
@@ -256,11 +350,11 @@
         @submit.prevent="confirmDeleteChannel"
       >
         <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
-        <h2 id="monitor-delete-channel-title">删除频道 @{{ channelDeleteTarget.id }}？</h2>
+        <h2 id="monitor-delete-channel-title">移除频道 @{{ channelDeleteTarget.id }}？</h2>
         <p v-if="channelDeleteTarget.origin === 'builtin'">
-          频道将从生效清单中移除；之后可随时重新启用恢复。
+          频道将从生效清单中移除，之后可以重新开启。
         </p>
-        <p v-else>该自定义频道将从清单中彻底移除。</p>
+        <p v-else>该自定义频道将从清单中永久移除。</p>
         <div class="confirm-actions">
           <button class="button secondary" type="button" @click="channelDeleteTarget = null">取消</button>
           <button class="button destructive" type="submit" :disabled="deleteBusy">
@@ -302,13 +396,21 @@ const emit = defineEmits<{
 
 const FILTERS: Array<{ label: string; value: MonitorFilter }> = [
   { label: "全部", value: "all" },
-  { label: "上游", value: "upstream" },
-  { label: "TG 频道", value: "channel" },
+  { label: "来源", value: "upstream" },
+  { label: "频道", value: "channel" },
   { label: "异常", value: "error" },
-  { label: "已停用", value: "inactive" },
+  { label: "已关闭", value: "inactive" },
 ];
 const AUTO_REFRESH_MS = 30_000;
 const AUTO_REFRESH_SECONDS = AUTO_REFRESH_MS / 1_000;
+
+interface SearchSettingsState {
+  plugins: string[] | null;
+  channels: string[] | null;
+  concurrency: number | null;
+  pluginTimeoutMs: number | null;
+  trashedPlugins: string[];
+}
 
 const rows = ref<MonitorRow[]>([]);
 const generatedAt = ref("");
@@ -337,9 +439,38 @@ const channelDeleteTarget = ref<MonitorRow | null>(null);
 const needsIdConfirmation = computed(() => upstreamDeleteTarget.value?.upstreamKind === "instructions");
 
 const autoRefresh = ref(true);
+const searchSettingsOpen = ref(false);
 const nextRefreshIn = ref(AUTO_REFRESH_SECONDS);
 let autoTimer: ReturnType<typeof setInterval> | undefined;
 let countdownTimer: ReturnType<typeof setInterval> | undefined;
+
+const searchSettings = ref<SearchSettingsState>({
+  plugins: null,
+  channels: null,
+  concurrency: null,
+  pluginTimeoutMs: null,
+  trashedPlugins: [],
+});
+const settingsLoading = ref(false);
+const settingsSaving = ref(false);
+const settingsError = ref("");
+const settingsDraft = ref<{
+  plugins: string[];
+  concurrency: number | "";
+  pluginTimeoutMs: number | "";
+}>({ plugins: [], concurrency: "", pluginTimeoutMs: "" });
+const useAllPlugins = ref(true);
+const pluginOptions = computed(() =>
+  rows.value
+    .filter((row) => row.kind === "upstream" && !row.trashed)
+    .map((row) => row.id)
+    .sort(),
+);
+const channelRows = computed(() =>
+  rows.value
+    .filter((row) => row.kind === "channel")
+    .sort((a, b) => a.id.localeCompare(b.id)),
+);
 
 function apiErrorMessage(error: any): string {
   const code = error?.statusCode || error?.response?.status;
@@ -392,6 +523,112 @@ async function loadMonitor(options: { silent?: boolean } = {}) {
   }
 }
 
+async function loadSearchSettings() {
+  settingsLoading.value = true;
+  try {
+    const response = await $fetch<{ data?: SearchSettingsState }>(
+      "/api/settings/search",
+      { cache: "no-store" },
+    );
+    const data: Partial<SearchSettingsState> = response.data || {};
+    searchSettings.value = {
+      plugins: data.plugins ?? null,
+      channels: data.channels ?? null,
+      concurrency: data.concurrency ?? null,
+      pluginTimeoutMs: data.pluginTimeoutMs ?? null,
+      trashedPlugins: data.trashedPlugins ?? [],
+    };
+    useAllPlugins.value = searchSettings.value.plugins === null;
+    settingsDraft.value = {
+      plugins: searchSettings.value.plugins
+        ? [...searchSettings.value.plugins]
+        : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id),
+      concurrency: searchSettings.value.concurrency ?? "",
+      pluginTimeoutMs: searchSettings.value.pluginTimeoutMs ?? "",
+    };
+    settingsError.value = "";
+  } catch (error: any) {
+    settingsError.value = apiErrorMessage(error);
+    if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
+  } finally {
+    settingsLoading.value = false;
+  }
+}
+
+async function setUpstreamEnabled(row: MonitorRow, enabled: boolean) {
+  const response = await $fetch<{ code?: number; message?: string }>(
+    row.upstreamKind === "code"
+      ? `/api/settings/upstreams/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`
+      : `/api/plugins/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+  if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
+}
+
+async function saveSearchSettingsUi() {
+  if (settingsSaving.value || settingsLoading.value) return;
+  settingsSaving.value = true;
+  settingsError.value = "";
+  try {
+    const desiredPlugins = new Set(
+      settingsDraft.value.plugins.filter((id) => pluginOptions.value.includes(id)),
+    );
+    if (!useAllPlugins.value) {
+      for (const row of rows.value.filter((item) => item.kind === "upstream" && !item.trashed)) {
+        const currentlyEnabled = row.enabled;
+        const shouldBeEnabled = desiredPlugins.has(row.id);
+        if (currentlyEnabled !== shouldBeEnabled) {
+          await setUpstreamEnabled(row, shouldBeEnabled);
+        }
+      }
+    }
+
+    const concurrency = Number(settingsDraft.value.concurrency);
+    const pluginTimeoutMs = Number(settingsDraft.value.pluginTimeoutMs);
+    const response = await $fetch<{ data?: SearchSettingsState }>(
+      "/api/settings/search",
+      {
+        method: "PUT",
+        body: {
+          plugins: useAllPlugins.value ? null : [...desiredPlugins],
+          concurrency:
+            settingsDraft.value.concurrency !== "" &&
+            Number.isFinite(concurrency) &&
+            concurrency > 0
+              ? concurrency
+              : null,
+          pluginTimeoutMs:
+            settingsDraft.value.pluginTimeoutMs !== "" &&
+            Number.isFinite(pluginTimeoutMs) &&
+            pluginTimeoutMs > 0
+              ? pluginTimeoutMs
+              : null,
+        },
+      },
+    );
+    const data: Partial<SearchSettingsState> = response.data || {};
+    searchSettings.value = {
+      plugins: data.plugins ?? null,
+      channels: data.channels ?? null,
+      concurrency: data.concurrency ?? null,
+      pluginTimeoutMs: data.pluginTimeoutMs ?? null,
+      trashedPlugins: data.trashedPlugins ?? [],
+    };
+    useAllPlugins.value = searchSettings.value.plugins === null;
+    settingsDraft.value.plugins = searchSettings.value.plugins
+      ? [...searchSettings.value.plugins]
+      : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id);
+    await loadMonitor({ silent: true });
+    notify("来源设置已保存，来源开启状态已与运行状态统一。");
+  } catch (error: any) {
+    settingsError.value = apiErrorMessage(error);
+    if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
+    else notify(`保存失败：${apiErrorMessage(error)}`);
+  } finally {
+    settingsSaving.value = false;
+  }
+}
+
 function stopAutoRefresh() {
   if (autoTimer) {
     clearInterval(autoTimer);
@@ -423,7 +660,7 @@ function syncAutoRefresh() {
 watch(autoRefresh, () => syncAutoRefresh());
 
 
-/** 上游启停：乐观更新 → 调用端点 → 重新拉取；失败回滚。 */
+/** 来源启停：乐观更新 → 调用端点 → 重新拉取；失败回滚。 */
 async function toggleUpstream(row: MonitorRow) {
   if (busyKey.value || deleteBusy.value) return;
   const next = !row.enabled;
@@ -431,14 +668,15 @@ async function toggleUpstream(row: MonitorRow) {
   busyKey.value = row.key;
   rows.value = withUpstreamEnabled(rows.value, row.id, next);
   try {
-    const response = await $fetch<{ code?: number; message?: string }>(
-      row.upstreamKind === "code"
-        ? `/api/settings/upstreams/${encodeURIComponent(row.id)}/${next ? "enable" : "disable"}`
-        : `/api/plugins/${encodeURIComponent(row.id)}/${next ? "enable" : "disable"}`,
-      { method: "POST" },
-    );
-    if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
-    notify(`${row.name} 已${next ? "启用" : "停用"}。`);
+    await setUpstreamEnabled(row, next);
+    if (!useAllPlugins.value) {
+      const plugins = new Set(settingsDraft.value.plugins);
+      if (next) plugins.add(row.id);
+      else plugins.delete(row.id);
+      settingsDraft.value.plugins = [...plugins];
+      searchSettings.value.plugins = [...plugins];
+    }
+    notify(`${row.name} 已${next ? "开启" : "关闭"}，来源设置已同步。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
     rows.value = snapshot;
@@ -449,7 +687,7 @@ async function toggleUpstream(row: MonitorRow) {
   }
 }
 
-/** 频道启停（已删除频道走启用即恢复）；乐观更新，失败回滚。 */
+/** 频道开关（已移除频道通过开启恢复）；乐观更新，失败回滚。 */
 async function toggleChannel(row: MonitorRow) {
   if (busyKey.value || deleteBusy.value) return;
   const next = !(row.enabled && !row.trashed);
@@ -464,7 +702,7 @@ async function toggleChannel(row: MonitorRow) {
       { method: "POST" },
     );
     if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
-    notify(`@${row.id} 已${next ? (row.trashed ? "恢复" : "启用") : "停用"}。`);
+    notify(`@${row.id} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
     rows.value = snapshot;
@@ -504,7 +742,7 @@ async function confirmDeleteUpstream() {
     } else {
       // 配置来源不会进入删除流程；保留防御分支，避免旧页面调用造成误操作。
       rows.value = snapshot;
-      notify("配置来源不可删除，请前往上游接口目录修改或停用。");
+      notify("配置来源不可删除，请前往来源管理修改或关闭。");
       return;
     }
     upstreamDeleteTarget.value = null;
@@ -544,7 +782,7 @@ async function confirmDeleteChannel() {
     channelDeleteTarget.value = null;
     notify(
       target.origin === "builtin"
-        ? `@${target.id} 已从生效清单移除，可重新启用恢复。`
+        ? `@${target.id} 已从生效清单移除，可重新开启恢复。`
         : `@${target.id} 已删除。`,
     );
     await loadMonitor({ silent: true });
@@ -570,6 +808,7 @@ function healthSampleTitle(sample: MonitorRow["health"]["samples"][number], inde
 
 onMounted(async () => {
   if (!loaded.value) await loadMonitor();
+  await loadSearchSettings();
   syncAutoRefresh();
 });
 
@@ -609,6 +848,70 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 10px;
   flex-shrink: 0;
+}
+.monitor-settings-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+.monitor-search-settings {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(72vh, 680px);
+  overflow: auto;
+  border: 1px solid #dfe7f1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(30, 64, 110, .16);
+}
+.monitor-settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 10px;
+  border-bottom: 1px solid #edf1f6;
+}
+.monitor-settings-header h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 700;
+}
+.monitor-settings-header p {
+  margin: 5px 0 0;
+  color: #7b8790;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.monitor-settings-content {
+  padding: 16px 20px 20px;
+}
+.monitor-channel-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.monitor-channel-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid #e5eaf1;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.monitor-channel-setting-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #475569;
+  font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .refresh-control {
   display: flex;
@@ -724,6 +1027,13 @@ onBeforeUnmount(() => {
 .monitor-enable-label { margin-left: auto; color: #aaa9a3; font-size: 13px; }
 .monitor-card-toggle { flex: 0 0 auto; }
 @media (max-width: 980px) { .monitor-card-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .monitor-search-settings {
+    right: -8px;
+    width: min(520px, calc(100vw - 28px));
+  }
+  .monitor-channel-settings { grid-template-columns: 1fr; }
+}
 @media (max-width: 560px) {
   .monitor-card-grid { padding: 16px 14px 20px; }
   .monitor-card { padding: 18px 15px 15px; }

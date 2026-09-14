@@ -26,6 +26,12 @@ describe("search scope contract", () => {
     expect(resolve({ kw: "test", channels: "@OwnChan,shared_chan", channels_mode: "only", conc: "2", refresh: "false" }))
       .toEqual(resolve({ kw: "test", channels: ["@OwnChan", "shared_chan"], channels_mode: "only", conc: 2, refresh: false }));
   });
+  it("enables response diagnostics only for debug=1", () => {
+    expect(parseSearchRequest({ kw: "test" }).debug).toBe(false);
+    expect(parseSearchRequest({ kw: "test", debug: "1" }).debug).toBe(true);
+    expect(parseSearchRequest({ kw: "test", debug: 1 }).debug).toBe(true);
+    expect(parseSearchRequest({ kw: "test", debug: true }).debug).toBe(false);
+  });
   it("honors explicit admin empty arrays and plugin-only API requests", () => {
     expect(resolve({ kw: "test" }, { ...defaults, channels: [], plugins: [] })).toMatchObject({ channels: [], plugins: [] });
     expect(resolve({ kw: "test", src: "plugin", channels: ["ownchan"] }).channels).toEqual([]);

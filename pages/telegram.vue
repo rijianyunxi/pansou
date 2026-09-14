@@ -7,7 +7,7 @@
     :ready="clientReady"
     :error="authError"
     title="Telegram 管理员验证"
-    description="频道清单、诊断请求和上游原始响应属于敏感运维数据。验证成功后会建立 8 小时的独立管理会话。"
+    description="频道清单、诊断请求和来源原始响应属于敏感运维数据。验证成功后会建立 8 小时的独立管理会话。"
     @submit="unlockAdmin"
     @clear-error="authError = ''"
   />
@@ -25,8 +25,8 @@
         <button class="tg-back tg-logout" type="button" @click="lockAdmin">
           <ConsoleIcon name="logout" :size="14" />退出管理
         </button>
-        <NuxtLink to="/admin?view=telegram" class="tg-back">返回 TG 频道管理</NuxtLink>
-        <NuxtLink to="/admin?view=monitor" class="tg-back">健康监控</NuxtLink>
+        <NuxtLink to="/admin?view=telegram" class="tg-back">返回 Telegram 频道管理</NuxtLink>
+        <NuxtLink to="/admin?view=monitor" class="tg-back">运行监控</NuxtLink>
       </div>
     </header>
 
@@ -67,7 +67,7 @@
       <div>
         <strong>测试其他公开频道</strong>
         <p>
-          支持公开频道用户名和 <code>t.me</code> 链接，仅用于临时调试，不会修改已保存配置。
+          支持公开频道用户名和 <code>t.me</code> 链接，仅用于临时测试，不会修改已保存配置。
         </p>
       </div>
       <input
@@ -108,7 +108,7 @@
         <div class="tg-card-head">
           <div>
             <h2>已配置频道</h2>
-            <p>来自已生效的服务端配置；临时调试频道不会自动加入已保存清单</p>
+            <p>来自已生效的服务端配置；临时测试频道不会自动加入已保存清单</p>
           </div>
           <span>{{ channels.length }} CHANNELS</span>
         </div>
@@ -163,9 +163,9 @@
               class="tg-button secondary tg-debug-button"
               :disabled="runningCount > 0 || !keyword.trim()"
               @click="testChannel(selectedChannel)"
-              title="只调试当前选中的频道"
+              title="只测试当前选中的频道"
             >
-              {{ running[selectedChannel] ? "调试中…" : "单个调试" }}
+              {{ running[selectedChannel] ? "测试中…" : "单个测试" }}
             </button>
           </div>
           <div class="tg-detail-body">
@@ -206,15 +206,15 @@
               </p>
             </div>
             <div v-else class="tg-placeholder">
-              还没有测试记录。点击右上角“单个调试”，或使用上方“测试全部频道”。
+              还没有测试记录。点击右上角“单个测试”，或使用上方“测试全部频道”。
             </div>
             <section v-if="selectedReport" class="tg-debug-panel">
               <div class="tg-debug-panel-head">
                 <div>
-                  <h3>单个调试报文</h3>
-                  <p>展示本次诊断接口入参、出参，以及实际访问上游的原始请求和响应。</p>
+                  <h3>单个测试报文</h3>
+                  <p>展示本次诊断接口入参、出参，以及实际访问来源的原始请求和响应。</p>
                 </div>
-                <span>{{ selectedReport.attempts.length }} 次上游请求</span>
+                <span>{{ selectedReport.attempts.length }} 次来源请求</span>
               </div>
               <div class="tg-debug-grid">
                 <div class="tg-debug-block">
@@ -235,13 +235,13 @@
               <div class="tg-debug-grid">
                 <div class="tg-debug-block">
                   <div class="tg-debug-block-head">
-                    <strong>上游原始请求</strong><span>{{ selectedReport.upstreamRequest?.method || "—" }}</span>
+                    <strong>来源原始请求</strong><span>{{ selectedReport.upstreamRequest?.method || "—" }}</span>
                   </div>
                   <pre>{{ formatJson(selectedReport.upstreamRequest) }}</pre>
                 </div>
                 <div class="tg-debug-block">
                   <div class="tg-debug-block-head">
-                    <strong>上游原始响应</strong><span>HTTP {{ selectedReport.upstreamResponse?.status ?? "—" }}</span>
+                    <strong>来源原始响应</strong><span>HTTP {{ selectedReport.upstreamResponse?.status ?? "—" }}</span>
                   </div>
                   <div class="tg-raw-view-slot">
                     <TelegramRawBodyView
@@ -250,7 +250,7 @@
                       :body-length="selectedReport.upstreamResponse?.bodyLength ?? null"
                       :truncated="!!selectedReport.upstreamResponse?.bodyTruncated"
                       :base-url="selectedReport.upstreamRequest?.url || ''"
-                      frame-title="上游响应渲染"
+                      frame-title="来源响应渲染"
                     />
                   </div>
                 </div>
@@ -263,7 +263,7 @@
                 />
               </div>
               <details v-if="selectedReport.attempts.length > 1" class="tg-attempts">
-                <summary>查看全部上游尝试（{{ selectedReport.attempts.length }}）</summary>
+                <summary>查看全部来源尝试（{{ selectedReport.attempts.length }}）</summary>
                 <div v-for="(attempt, index) in selectedReport.attempts" :key="`${attempt.route}-${index}`" class="tg-attempt">
                   <div class="tg-attempt-head">
                     <strong>#{{ index + 1 }} {{ attempt.route === "telegram" ? "Telegram web" : "Jina fallback" }}</strong>
@@ -537,7 +537,7 @@ async function testCustom() {
   customChannel.value = "";
   await testChannel(channel);
 }
-/** 已停用/已删除的频道不参与批量测试；监控接口不可用时不跳过任何频道（兜底）。 */
+/** 已关闭/已删除的频道不参与批量测试；监控接口不可用时不跳过任何频道（兜底）。 */
 async function inactiveChannelSet(): Promise<Set<string>> {
   try {
     const response = await $fetch<{
@@ -560,7 +560,7 @@ async function testAll() {
   for (const channel of pending) await testChannel(channel);
   const skipped = filteredChannels.value.length - pending.length;
   showNotice(
-    `已完成 ${pending.length} 个频道测试${skipped > 0 ? `（跳过 ${skipped} 个已停用/已删除频道）` : ""}`,
+    `已完成 ${pending.length} 个频道测试${skipped > 0 ? `（跳过 ${skipped} 个已关闭/已删除频道）` : ""}`,
   );
 }
 function clearReports() {

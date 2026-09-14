@@ -1,7 +1,7 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
 import { PluginManager } from "../plugins/manager";
 import { InstructionsPlugin } from "../instructions/plugin";
-import { createConfiguredUpstreamPlugin, isCoreCompatibleConfiguration } from "./configuredUpstreamPlugin";
+import { createConfiguredUpstreamPlugin } from "./configuredUpstreamPlugin";
 import {
   getPluginRepository,
   resolvePublishedDefinition,
@@ -10,39 +10,15 @@ import {
 import { getPluginSecretStore } from "../plugins/secretStore";
 import { getPluginHealthStore } from "../plugins/healthStore";
 import { getSystemSettings } from "./systemSettingsService";
-import { HunhepanPlugin } from "../plugins/example/hunhepan";
-import { DuoduoPlugin } from "../plugins/duoduo";
-import { PansearchPlugin } from "../plugins/pansearch";
-import { NyaaPlugin } from "../plugins/nyaa";
 import { getConfiguredUpstreamVersion, listConfiguredUpstreams } from "./upstreamCatalog";
 import type { SearchPlugin } from "../plugins/manager";
 
 const SERVICE_CONTEXT_KEY = "__panhub_search_service__";
 
-/**
- * 创建插件管理器并注册所有可用插件
- */
-function createConfiguredCorePlugin(handler: string): SearchPlugin | undefined {
-  switch (handler) {
-    case "hunhepan": return new HunhepanPlugin();
-    case "duoduo": return new DuoduoPlugin();
-    case "pansearch": return new PansearchPlugin();
-    case "nyaa": return new NyaaPlugin();
-    default: return undefined;
-  }
-}
-
 function createConfiguredPlugin(
   source: ReturnType<typeof listConfiguredUpstreams>[number],
-): SearchPlugin | undefined {
-  const handler = source.runtime?.kind === "core" ? source.runtime.handler : undefined;
-  const core = handler && createConfiguredCorePlugin(handler);
-  // Core is retained only as a capability for an untouched seed definition.
-  // Once an executable field is edited, the declarative configuration becomes
-  // authoritative and the generic executor handles the source.
-  if (core && core.manifest.id === source.id && isCoreCompatibleConfiguration(source)) return core;
-  // No core capability is required for a declarative source. The same
-  // instructions executor handles its request and response mapping.
+): SearchPlugin {
+  // 所有来源都从数据库定义创建，运行时不再根据 id 选择内置处理器。
   return createConfiguredUpstreamPlugin(
     source,
     (pluginId, names) => getPluginSecretStore().getMany(pluginId, names),
@@ -57,8 +33,6 @@ function loadConfiguredPlugins(): SearchPlugin[] {
 
 function createPluginManager(): PluginManager {
   const pm = new PluginManager();
-  // Core contains capabilities only. The catalog decides which source exists,
-  // whether it is declarative or core-backed, and all endpoint settings.
   for (const plugin of loadConfiguredPlugins()) pm.register(plugin);
   return pm;
 }

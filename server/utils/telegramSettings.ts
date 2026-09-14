@@ -28,7 +28,7 @@ export type TgChannelPolicyMap = Record<string, TgChannelPolicy>;
 
 /**
  * 每频道覆盖状态（M7 频道启停/删除）：管理员对频道清单的 additive 覆盖。
- * - enabled: false 表示已停用（不参与正式搜索）；
+ * - enabled: false 表示已关闭（不参与正式搜索）；
  * - deleted: true 表示已删除（内置默认频道以覆盖方式标记，自定义频道从清单移除）。
  * 两个字段始终成对出现；没有任何覆盖信息（enabled && !deleted）的条目会被丢弃。
  */

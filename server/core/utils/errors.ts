@@ -50,7 +50,7 @@ export interface WarningInfo {
 export function classifyError(error: any, source?: string): ErrorDetail {
   const timestamp = Date.now();
 
-  // TG 频道抓取的五种失败（TgChannelError.tgKind）：网络失败 / 结构变化 /
+  // Telegram 频道抓取的五种失败（TgChannelError.tgKind）：网络失败 / 结构变化 /
   // 频道不存在 / 频道私有，用现有 ErrorType 承载并用 code 细分。
   if (typeof error?.tgKind === "string" && error.tgKind) {
     const typeByKind: Record<string, ErrorType> = {

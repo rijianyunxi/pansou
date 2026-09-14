@@ -58,10 +58,10 @@ export class SqliteTgAccountStore {
     records[id] = record; write(records); return view(record);
   }
   updateEnabled(id: string, enabled: boolean): TgAccountView {
-    const records = read(); const record = records[id]; if (!record) throw new Error("TG 账户不存在");
+    const records = read(); const record = records[id]; if (!record) throw new Error("Telegram 账户不存在");
     record.enabled = enabled; record.updatedAt = new Date().toISOString(); records[id] = record; write(records); return view(record);
   }
-  delete(id: string): void { const records = read(); if (!records[id]) throw new Error("TG 账户不存在"); delete records[id]; write(records); }
+  delete(id: string): void { const records = read(); if (!records[id]) throw new Error("Telegram 账户不存在"); delete records[id]; write(records); }
 }
 let store: SqliteTgAccountStore | undefined;
 export function getTgAccountStore(): SqliteTgAccountStore { return store || (store = new SqliteTgAccountStore()); }

@@ -1,4 +1,4 @@
-import { BUILTIN_UPSTREAMS, type UpstreamDefinition } from "../../../config/upstreams";
+import type { UpstreamDefinition } from "../../../types/source";
 import { TG_CHANNEL_PATTERN, normalizeTelegramChannels } from "../../../utils/telegramChannels";
 import { getSearchSettings, getSearchSettingsVersion, saveSearchSettings } from "./searchSettingsService";
 import { getSystemSettings } from "./systemSettingsService";
@@ -34,24 +34,28 @@ function stringList(raw: unknown, maxItems: number, maxLength: number): string[]
     .filter(Boolean))].slice(0, maxItems);
 }
 
-function validateUrlList(raw: unknown): string[] {
-  return stringList(raw, 3, 2_000).filter((url) => {
-    try {
-      const sample = url
-        .replaceAll("{{channel}}", "panhub_channel")
-        .replaceAll("{{keyword}}", encodeURIComponent("demo"))
-        .replaceAll("{{page}}", "1");
-      validateOutboundUrl(sample, { allowHttp: false });
-      return true;
-    } catch { return false; }
-  });
-}
 
 function validateSourceUrl(url: string, sourceKind: "http" | "telegram"): void {
   const sample = sourceKind === "telegram"
     ? url.replaceAll("{{channel}}", "panhub_channel").replaceAll("{{keyword}}", encodeURIComponent("demo"))
     : url;
   validateOutboundUrl(sample, { allowHttp: false });
+}
+
+const REQUEST_FIELDS = [
+  "query", "headers", "bodyType", "body", "timeoutMs",
+  "maxResponseBytes", "redirect", "allowedDomains", "maxRequestBodyBytes",
+  "secrets", "stages",
+] as const;
+
+function sanitizeSourceRequest(raw: unknown): NonNullable<UpstreamDefinition["request"]> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const request = raw as Record<string, unknown>;
+  return Object.fromEntries(
+    REQUEST_FIELDS
+      .filter((field) => Object.prototype.hasOwnProperty.call(request, field))
+      .map((field) => [field, structuredClone(request[field])]),
+  ) as NonNullable<UpstreamDefinition["request"]>;
 }
 
 function telegramUrl(route: "direct" | "jina", channel: string): string {
@@ -99,13 +103,6 @@ function sanitize(raw: unknown): StoredCatalog {
       name: String(source.name || id).trim().slice(0, 100),
       description: String(source.description || "").trim().slice(0, 500),
       url,
-      ...(source.fallbackUrls !== undefined ? { fallbackUrls: validateUrlList(source.fallbackUrls) } : {}),
-      ...(source.retry && typeof source.retry === "object" && !Array.isArray(source.retry)
-        ? { retry: {
-            ...(Number.isInteger(source.retry.maxRetries) ? { maxRetries: Math.min(3, Math.max(0, Number(source.retry.maxRetries))) } : {}),
-            ...(Number.isInteger(source.retry.delayMs) ? { delayMs: Math.min(5_000, Math.max(0, Number(source.retry.delayMs))) } : {}),
-          } }
-        : {}),
       tags: stringList(source.tags, MAX_TAGS, MAX_TAG_LENGTH),
       driveType: typeof source.driveType === "string" ? source.driveType.trim().slice(0, MAX_TAG_LENGTH) : "",
       resourceTypes: stringList(source.resourceTypes, MAX_RESOURCE_TYPES, MAX_RESOURCE_TYPE_LENGTH),
@@ -125,14 +122,8 @@ function sanitize(raw: unknown): StoredCatalog {
         datetime: String((mapping as any).datetime || "").slice(0, 200),
         ...((mapping as any).linkArray ? { linkArray: String((mapping as any).linkArray).slice(0, 200) } : {}),
       },
-      ...(source.runtime && typeof source.runtime === "object" && (source.runtime as any).kind === "core" && typeof (source.runtime as any).handler === "string"
-        ? { runtime: { kind: "core" as const, handler: String((source.runtime as any).handler).slice(0, 64), urls: Array.isArray((source.runtime as any).urls) ? (source.runtime as any).urls.map(String).slice(0, 8) : undefined } }
-        : {}),
-      ...(source.retry && typeof source.retry === "object" && !Array.isArray(source.retry)
-        ? { retry: { maxRetries: Number.isInteger((source.retry as any).maxRetries) ? Math.max(0, Math.min(3, (source.retry as any).maxRetries)) : undefined, delayMs: Number.isInteger((source.retry as any).delayMs) ? Math.max(0, Math.min(5_000, (source.retry as any).delayMs)) : undefined } }
-        : {}),
       ...(source.request && typeof source.request === "object" && !Array.isArray(source.request)
-        ? { request: structuredClone(source.request) }
+        ? { request: sanitizeSourceRequest(source.request) }
         : {}),
       ...(typeof source.transform === "string" && source.transform.trim()
         ? { transform: source.transform.slice(0, 100_000) }
@@ -141,8 +132,6 @@ function sanitize(raw: unknown): StoredCatalog {
         ? { response: structuredClone(source.response) }
         : {}),
       enabled: source.enabled !== false,
-      // Compatibility field for older clients; sourceKind is authoritative.
-      builtin: source.builtin !== false,
     };
   }
   return out;
@@ -193,31 +182,11 @@ function read(): StoredCatalog {
   const db = getSqliteDatabase();
   const deleted = readDeletedIds(db);
   const existing = readPersistedCatalog(db);
-  // Built-ins are bootstrap definitions. Persisted rows remain authoritative,
-  // including deliberate removal of optional executable fields.
-  const seed = sanitize(Object.fromEntries(BUILTIN_UPSTREAMS.map((source) => [source.id, clone(source)])));
-  const merged = Object.fromEntries(Object.keys(seed)
-    .filter((id) => !deleted.has(id))
-    .map((id) => {
-      const persisted = existing[id];
-      if (!persisted) return [id, seed[id]!];
-      const next = { ...seed[id]!, ...persisted } as UpstreamDefinition;
-      for (const key of ["runtime", "request", "response", "transform"] as const) {
-        if (!Object.prototype.hasOwnProperty.call(persisted, key)) delete next[key];
-      }
-      return [id, next];
-    })) as StoredCatalog;
-
-  // Preserve user-created rows, but never resurrect an explicitly deleted row.
-  for (const [id, source] of Object.entries(existing)) {
-    if (!deleted.has(id) && !merged[id]) merged[id] = source;
-  }
-
-  const missingSeed = Object.keys(seed).some((id) => !deleted.has(id) && !existing[id]);
-  if (!Object.keys(existing).length || missingSeed) {
-    db.transaction(() => writeCatalog(db, merged));
-  }
-  return merged;
+  // 数据源目录完全由 SQLite 配置决定。deleted_upstreams 只记录已删除来源，
+  // 绝不能触发任何内置来源的恢复或注入。
+  return Object.fromEntries(
+    Object.entries(existing).filter(([id]) => !deleted.has(id)),
+  );
 }
 
 export function listConfiguredUpstreams(): UpstreamDefinition[] {
@@ -237,18 +206,14 @@ function buildTelegramDefinition(channel: string, stored?: UpstreamDefinition): 
   const settings = getTgSourceSettings();
   const id = telegramId(channel);
   const state = getTgChannelState(channel);
-  const fallbackUrls = stored && Object.prototype.hasOwnProperty.call(stored, "fallbackUrls")
-    ? stored.fallbackUrls
-    : [telegramUrl("jina", channel)];
   const source = {
     id,
     sourceKind: "telegram" as const,
     channel,
     name: stored?.name || `@${channel}`,
-    description: stored?.description || "Telegram 频道上游",
+    description: stored?.description || "Telegram 频道来源",
     url: stored?.url || telegramUrl("direct", channel),
-    fallbackUrls,
-    tags: stored?.tags?.length ? stored.tags : ["telegram"],
+    tags: stored?.tags || [],
     driveType: stored?.driveType || "",
     resourceTypes: stored?.resourceTypes || [],
     method: "GET" as const,
@@ -258,11 +223,8 @@ function buildTelegramDefinition(channel: string, stored?: UpstreamDefinition): 
     color: stored?.color || "#4c8ed9",
     initials: stored?.initials || "T",
     mapping: stored?.mapping || { items: "", title: "", url: "", type: "", password: "" },
-    builtin: stored?.builtin !== false,
     enabled: state ? state.enabled && !state.deleted : stored?.enabled !== false,
-    retry: stored?.retry || { maxRetries: 1, delayMs: 250 },
     request: stored?.request || {
-      fallbackUrls,
       query: { q: "{{keyword}}" },
       headers: settings.headers,
       timeoutMs: 10_000,
@@ -306,32 +268,39 @@ export function getUnifiedUpstream(id: string): UpstreamDefinition | undefined {
   return undefined;
 }
 
+/** Validate and normalize an unsaved source for the admin online debugger without persisting it. */
+export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition {
+  const value = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? structuredClone(raw as Partial<UpstreamDefinition>)
+    : {};
+  const telegram = isTelegramSource(value);
+  const channel = telegram
+    ? String(value.channel || "").trim().replace(/^@/, "").toLowerCase()
+    : "";
+  if (telegram && !TG_CHANNEL_PATTERN.test(channel)) {
+    throw new Error("Telegram 来源必须填写有效的公开频道用户名");
+  }
+  const id = String(value.id || (telegram ? telegramId(channel) : "debug-draft"))
+    .trim()
+    .toLowerCase();
+  const input = telegram
+    ? { ...buildTelegramDefinition(channel), ...value, id, sourceKind: "telegram" as const, channel }
+    : { ...value, id, sourceKind: "http" as const };
+  const next = sanitize({ [id]: input })[id];
+  if (!next) throw new Error("来源配置无效：请检查 HTTPS 地址、请求方式和响应格式");
+  if (next.transform?.trim()) validateParserCode(next.transform);
+  validateInstructionDefinition(upstreamToInstructionDefinition(next));
+  return clone(next);
+}
+
 export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
   const value = raw && typeof raw === "object" ? raw as Partial<UpstreamDefinition> : {};
   const id = String(value.id || "").trim().toLowerCase();
   const catalog = read();
   const current = catalog[id];
-  const merged = { ...current, ...value, id, builtin: true } as Partial<UpstreamDefinition>;
-  // Older rows may still carry a generated transform alongside field mapping.
-  // If only the request/mapping is edited and the transform was not changed,
-  // drop that stale generated code so the edited configuration is executable.
-  const executableChanged = !!current && (
-    value.url !== undefined && value.url !== current.url ||
-    value.method !== undefined && value.method !== current.method ||
-    value.format !== undefined && value.format !== current.format ||
-    value.mapping !== undefined && JSON.stringify(value.mapping) !== JSON.stringify(current.mapping) ||
-    value.request !== undefined && JSON.stringify(value.request) !== JSON.stringify(current.request) ||
-    value.response !== undefined && JSON.stringify(value.response) !== JSON.stringify(current.response)
-  );
-  if (executableChanged && typeof value.transform === "string" && value.transform.trim() === (current.transform || "").trim()) {
-    delete merged.transform;
-  }
+  const merged = { ...current, ...value, id } as Partial<UpstreamDefinition>;
   const next = sanitize({ [id]: merged })[id];
-  if (!next) throw new Error("上游配置无效：请检查 ID、HTTPS 地址、请求方式和响应格式");
-  // Validate the complete declarative shape before committing. Core-backed
-  // sources use the same adapter defaults, so malformed request/mapping JSON
-  // can never become the runtime truth. Transform code is validated with the
-  // same syntax/keyword policy as published parser plugins.
+  if (!next) throw new Error("来源配置无效：请检查 ID、HTTPS 地址、请求方式和响应格式");
   if (next.transform?.trim()) validateParserCode(next.transform);
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
@@ -352,7 +321,7 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
   const value = raw && typeof raw === "object" ? raw as Partial<UpstreamDefinition> : {};
   const rawChannel = String(value.channel || (String(value.id || "").toLowerCase().startsWith("tg-") ? String(value.id).slice(3) : ""));
   const channel = rawChannel.trim().replace(/^@/, "").toLowerCase();
-  if (!TG_CHANNEL_PATTERN.test(channel)) throw new Error("Telegram 上游必须填写有效的公开频道用户名");
+  if (!TG_CHANNEL_PATTERN.test(channel)) throw new Error("Telegram 来源必须填写有效的公开频道用户名");
   const catalog = read();
   const id = telegramId(channel);
   const current = catalog[id];
@@ -365,13 +334,11 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
     method: value.method || "GET",
     format: value.format || "html",
     url: value.url || current?.url || telegramUrl("direct", channel),
-    fallbackUrls: value.fallbackUrls !== undefined ? value.fallbackUrls : current?.fallbackUrls || [telegramUrl("jina", channel)],
-    retry: value.retry !== undefined ? value.retry : current?.retry || { maxRetries: 1, delayMs: 250 },
-    request: value.request !== undefined ? value.request : current?.request || { fallbackUrls: [telegramUrl("jina", channel)], headers: getTgSourceSettings().headers, query: { q: "{{keyword}}" }, timeoutMs: 10_000 },
+    request: value.request !== undefined ? value.request : current?.request || { headers: getTgSourceSettings().headers, query: { q: "{{keyword}}" }, timeoutMs: 10_000 },
     transform: value.transform !== undefined ? value.transform : current?.transform || getTgSourceSettings().transform,
   };
   const next = sanitize({ [id]: nextInput })[id];
-  if (!next) throw new Error("Telegram 上游配置无效：请检查频道、HTTPS 地址、请求配置和响应格式");
+  if (!next) throw new Error("Telegram 来源配置无效：请检查频道、HTTPS 地址、请求配置和响应格式");
   if (next.transform?.trim()) validateParserCode(next.transform);
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
@@ -502,7 +469,7 @@ export function parseUpstreamConfigExport(raw: unknown): unknown {
   try {
     return JSON.parse(json);
   } catch {
-    throw new Error("上游配置文件必须是 JSON 或由系统导出的 JS 文件");
+    throw new Error("来源配置文件必须是 JSON 或由系统导出的 JS 文件");
   }
 }
 
@@ -527,8 +494,8 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
       imported.push(saved);
       continue;
     }
-    const next = sanitize({ [id]: { ...catalog[id], ...value, id, builtin: true } })[id];
-    if (!next) throw new Error(`上游配置无效: ${id || "缺少 id"}`);
+    const next = sanitize({ [id]: { ...catalog[id], ...value, id } })[id];
+    if (!next) throw new Error(`来源配置无效: ${id || "缺少 id"}`);
     if (next.transform?.trim()) validateParserCode(next.transform);
     validateInstructionDefinition(upstreamToInstructionDefinition(next));
     nextCatalog[id] = next;

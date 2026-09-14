@@ -260,7 +260,7 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async validate(id: string, actor = "system", input: PluginValidationInput = {}): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     const errors = [...(input.errors || [])];
     try { validateInstructionDefinition(record.definition); }
     catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
@@ -292,7 +292,7 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async publish(id: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     validateInstructionDefinition(record.definition);
     const version = record.definition.manifest.version;
     if (!record.validation?.valid || !record.validation.sampleParsed || record.validation.version !== version) {
@@ -311,7 +311,7 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async disable(id: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     record.status = "disabled";
     record.updatedAt = new Date().toISOString();
     record.updatedBy = actor;
@@ -324,8 +324,8 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async enable(id: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
-    if (!record.publishedVersion) throw new Error("插件从未发布过，无法启用");
+    if (!record) throw new Error(`解析器不存在: ${id}`);
+    if (!record.publishedVersion) throw new Error("解析器从未发布过，无法开启");
     record.status = "published";
     record.updatedAt = new Date().toISOString();
     record.updatedBy = actor;
@@ -338,9 +338,9 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async rollback(id: string, version: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     const target = record.versions.find((item) => item.version === version);
-    if (!target) throw new Error(`找不到插件版本: ${version}`);
+    if (!target) throw new Error(`找不到解析器版本: ${version}`);
     validateInstructionDefinition(target.definition);
     record.definition = clone(target.definition);
     record.status = "published";
@@ -357,7 +357,7 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async archive(id: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     record.status = "archived";
     record.updatedAt = new Date().toISOString();
     record.updatedBy = actor;
@@ -370,8 +370,8 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async restore(id: string, actor = "system"): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
-    if (record.status !== "archived") throw new Error("只有已归档插件可以恢复");
+    if (!record) throw new Error(`解析器不存在: ${id}`);
+    if (record.status !== "archived") throw new Error("只有已归档解析器可以恢复");
     record.status = record.publishedVersion ? "disabled" : "draft";
     record.updatedAt = new Date().toISOString();
     record.updatedBy = actor;
@@ -384,8 +384,8 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async purge(id: string, _actor = "system"): Promise<void> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
-    if (record.status !== "archived") throw new Error("永久删除前必须先归档插件");
+    if (!record) throw new Error(`解析器不存在: ${id}`);
+    if (record.status !== "archived") throw new Error("永久删除前必须先归档解析器");
     delete state.records[id];
     this.write(state);
   }
@@ -393,7 +393,7 @@ export class SqlitePluginRepository implements PluginRepository, RepositoryVersi
   async audit(id: string, action: PluginAuditAction, actor = "system", metadata?: PluginAuditEntry["metadata"]): Promise<PluginRecord> {
     const state = this.read();
     const record = state.records[id];
-    if (!record) throw new Error(`插件不存在: ${id}`);
+    if (!record) throw new Error(`解析器不存在: ${id}`);
     this.appendAudit(record, action, actor, metadata);
     state.records[id] = record;
     this.write(state);

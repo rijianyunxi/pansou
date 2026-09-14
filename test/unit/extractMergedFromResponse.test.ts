@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractMergedFromResponse } from "../../utils/extractMergedFromResponse";
+import { extractLinksFromResponse, extractMergedFromResponse } from "../../utils/extractMergedFromResponse";
 
 describe("extractMergedFromResponse", () => {
   it("应返回空对象当 data 为 undefined", () => {
@@ -27,6 +27,23 @@ describe("extractMergedFromResponse", () => {
     expect(result.aliyun![0]!.url).toBe("https://a.com");
     expect(result.quark).toHaveLength(1);
     expect(result.quark![0]!.password).toBe("123");
+  });
+
+  it("扁平结果保留接口返回顺序，不按网盘类型重排", () => {
+    const data = {
+      total: 3,
+      results: [
+        { type: "quark", url: "https://q1.com", password: "", note: "夸克 1", datetime: "" },
+        { type: "baidu", url: "https://b1.com", password: "", note: "百度 1", datetime: "" },
+        { type: "quark", url: "https://q2.com", password: "", note: "夸克 2", datetime: "" },
+      ],
+    };
+
+    expect(extractLinksFromResponse(data).map((item) => item.url)).toEqual([
+      "https://q1.com",
+      "https://b1.com",
+      "https://q2.com",
+    ]);
   });
 
   it("应正确解析 results 中的 SearchResult 格式（带 links）", () => {

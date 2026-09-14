@@ -34,10 +34,20 @@ describe("configured upstream probe", () => {
   });
 
   it("uses the edited catalog request and mapping instead of the legacy Core request", async () => {
-    const source = catalog.getConfiguredUpstream("hunhepan");
-    expect(source).toBeTruthy();
+    const source = await catalog.saveConfiguredUpstream({
+      id: "edited-source",
+      name: "Edited source",
+      description: "",
+      url: "https://example.com/legacy",
+      method: "GET",
+      format: "json",
+      plugin: "edited-source",
+      adapter: "json-mapping",
+      mapping: { items: "items", title: "title", url: "url", type: "type", password: "password" },
+      transform: "function transform(payload, $, context) { return payload.items || []; }",
+    });
     await catalog.saveConfiguredUpstream({
-      ...source!,
+      ...source,
       url: "https://example.com/api/search",
       method: "POST",
       format: "json",
@@ -60,7 +70,7 @@ describe("configured upstream probe", () => {
     }), { headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await probe.probeConfiguredUpstream("hunhepan", "三体");
+    const result = await probe.probeConfiguredUpstream("edited-source", "三体");
     expect(result.state).toBe("available");
     expect(result.results[0]?.title).toBe("configured");
     expect(fetchMock).toHaveBeenCalledTimes(1);

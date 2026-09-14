@@ -108,16 +108,16 @@
     <section v-if="hasResults" class="results-section">
       <div class="results-grid">
         <ResultGroup
-          v-for="group in groupedResults"
-          :key="group.type"
-          :title="platformName(group.type)"
-          :color="platformColor(group.type)"
-          :icon="platformIcon(group.type)"
-          :items="visibleSorted(group.items)"
-          :expanded="filterPlatform !== 'all' || isExpanded(group.type)"
-          :initial-visible="initialVisible"
-          :can-toggle-collapse="false"
-          @toggle="handleExpand(group.type)"
+          title="搜索结果"
+          color="#9ca3af"
+          icon="📦"
+          :items="filteredResults"
+          :expanded="true"
+          :initial-visible="0"
+          :show-header="false"
+          :active-platform="filterPlatform"
+          :platform-label="platformName"
+          @filter-platform="handlePlatformFilter"
           @copy="copyLink" />
       </div>
     </section>
@@ -127,7 +127,7 @@
       <div class="empty-card">
         <div class="empty-icon">🔍</div>
         <h3>未找到相关资源</h3>
-        <p>试试其他关键词，或检查设置中的搜索来源是否已启用</p>
+        <p>试试其他关键词，或检查设置中的搜索来源是否已开启</p>
       </div>
     </section>
 
@@ -141,7 +141,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from "vue";
-import { PLATFORM_INFO } from "~/config/plugins";
+import type { MergedLink } from "~/server/core/types/models";
 
 const config = useRuntimeConfig();
 const apiBase = (config.public?.apiBase as string) || "/api";
@@ -211,8 +211,6 @@ const placeholder =
 // 排序和过滤
 const sortType = ref<"default" | "date-desc" | "date-asc" | "name-asc" | "name-desc">("default");
 const filterPlatform = ref<string>("all");
-const initialVisible = 3;
-const expandedSet = ref<Set<string>>(new Set());
 
 // 使用搜索 composable
 const {
@@ -254,9 +252,8 @@ async function recordHotSearch(keyword: string) {
 async function doSearch() {
   if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
-  // 新搜索从全量结果视图开始，避免沿用上一次平台筛选/展开状态。
+  // 新搜索从全量结果视图开始，避免沿用上一次平台筛选状态。
   filterPlatform.value = "all";
-  expandedSet.value = new Set();
   if (!onlyUserTg.value) recordHotSearch(keyword);
   await performSearch({
     ...getSearchOptions(),
@@ -303,50 +300,34 @@ async function fullReset() {
   kw.value = "";
   sortType.value = "default";
   filterPlatform.value = "all";
-  expandedSet.value = new Set();
   resetSearch();
   await nextTick();
   if (hotSearchRef.value) await hotSearchRef.value.refresh();
 }
 
-// 平台信息
-const platformIcon = (t: string): string => PLATFORM_INFO[t]?.icon || "📦";
-const platformName = (t: string): string => PLATFORM_INFO[t]?.name || t;
-const platformColor = (t: string): string => PLATFORM_INFO[t]?.color || "#9ca3af";
+// 平台展示完全使用上游返回的类型值，不维护内置平台字典。
+const platformName = (type?: string): string => type || "其他";
 
-// 获取所有有结果的平台类型
+// 网盘类型只作为前端筛选标签，不再拆分成多个结果分组。
 const platforms = computed(() => {
-  const m = searchState.value?.merged ?? {};
-  return Object.keys(m).filter((type) => (m[type]?.length ?? 0) > 0);
+  const seen = new Set<string>();
+  for (const item of searchState.value.items) seen.add(item.type || "others");
+  return [...seen];
 });
 
-const groupedResults = computed(() => {
-  const list: Array<{ type: string; items: any[] }> = [];
-  const source =
-    filterPlatform.value === "all"
-      ? searchState.value.merged
-      : { [filterPlatform.value]: searchState.value.merged[filterPlatform.value] || [] };
-  for (const type of Object.keys(source)) {
-    if (!source[type]?.length) continue;
-    list.push({ type, items: source[type] || [] });
-  }
-  return list;
+function handlePlatformFilter(type: string) {
+  filterPlatform.value = filterPlatform.value === type ? "all" : type;
+}
+
+// 先筛选再进行全局排序，保证结果始终以单一列表平铺展示。
+const filteredResults = computed(() => {
+  const items = filterPlatform.value === "all"
+    ? searchState.value.items
+    : searchState.value.items.filter((item) => (item.type || "others") === filterPlatform.value);
+  return sortItems(items);
 });
 
-// 展开/收起
-function isExpanded(type: string) {
-  return expandedSet.value.has(type);
-}
-
-function handleExpand(type: string) {
-  const next = new Set(expandedSet.value);
-  if (next.has(type)) next.delete(type);
-  else next.add(type);
-  expandedSet.value = next;
-}
-
-// 排序
-function sortItems(items: any[]) {
+function sortItems(items: MergedLink[]) {
   const arr = [...items];
   switch (sortType.value) {
     case "date-desc":
@@ -370,12 +351,8 @@ function sortItems(items: any[]) {
         String(b.note || "").localeCompare(String(a.note || ""), "zh-CN")
       );
     default:
-      return items;
+      return arr;
   }
-}
-
-function visibleSorted(items: any[]) {
-  return sortItems(items);
 }
 </script>
 

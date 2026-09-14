@@ -118,7 +118,7 @@ export function getTgChannelPoliciesVersion(): number {
 }
 
 /**
- * Persistent cache token for every TG setting, including parser bindings.
+ * Persistent cache token for every Telegram setting, including parser bindings.
  * The numeric counter is a process-local monotonic signal; search caches must
  * use this persistent token so a restart or another
  * process cannot serve results parsed with an older binding.
@@ -245,6 +245,69 @@ export function clearTgChannelState(channel: string): void {
   const result = getSqliteDatabase().run("DELETE FROM tg_channel_states WHERE channel=?", name);
   if (result.changes) bumpVersion();
 }
+
+export interface PurgedTgChannel {
+  channel: string;
+  removedSystemEntries: number;
+  removedSearchEntries: number;
+  removedPolicy: boolean;
+  removedParserBindings: number;
+  removedHealthRecords: number;
+  removedUpstreamDefinitions: number;
+}
+
+/**
+ * Permanently remove an archived Telegram channel and all of its local configuration/history.
+ * A channel must already be in the recycle bin (`deleted=true`) before it can be purged.
+ */
+export function purgeTgChannel(channel: string): PurgedTgChannel {
+  const name = (channel || "").trim().replace(/^@/, "").toLowerCase();
+  if (!TG_CHANNEL_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(channel).slice(0, 64)}`);
+  const db = getSqliteDatabase();
+  const archived = db.getRow<{ deleted: number }>("SELECT deleted FROM tg_channel_states WHERE channel=?", name);
+  if (!archived?.deleted) throw new Error("Telegram channel must be archived before permanent deletion");
+
+  const result = db.transaction(() => {
+    const now = Date.now();
+    const removedSystemEntries = db.run("DELETE FROM system_channels WHERE name=?", name).changes;
+    const removedSearchEntries = db.run("DELETE FROM search_setting_channels WHERE channel=?", name).changes;
+    const removedPolicy = db.run("DELETE FROM tg_channel_policies WHERE channel=?", name).changes > 0;
+    const removedParserBindings =
+      db.run("DELETE FROM parser_bindings WHERE scope='telegram' AND source_id=?", name).changes +
+      db.run("DELETE FROM parser_bindings WHERE scope='upstream' AND source_id=?", `tg-${name}`).changes;
+    const removedHealthRecords = db.run("DELETE FROM tg_channel_health WHERE channel=?", name).changes;
+    const removedUpstreamDefinitions = db.run(
+      "DELETE FROM upstream_definitions WHERE source_kind='telegram' AND (channel=? OR id=?)",
+      name,
+      `tg-${name}`,
+    ).changes;
+    db.run("DELETE FROM deleted_upstreams WHERE id=?", `tg-${name}`);
+    db.run("DELETE FROM tg_channel_states WHERE channel=?", name);
+
+    for (const kind of ["priority", "default"]) {
+      const rows = db.allRows<{ name: string }>("SELECT name FROM system_channels WHERE kind=? ORDER BY position,name", kind);
+      rows.forEach((row, position) => db.run("UPDATE system_channels SET position=? WHERE kind=? AND name=?", position, kind, row.name));
+    }
+    const searchRows = db.allRows<{ channel: string }>("SELECT channel FROM search_setting_channels ORDER BY position,channel");
+    searchRows.forEach((row, position) => db.run("UPDATE search_setting_channels SET position=? WHERE channel=?", position, row.channel));
+
+    if (removedSystemEntries) db.run("UPDATE system_settings SET updated_at=? WHERE id=1", now);
+    if (removedSearchEntries) db.run("UPDATE search_settings SET updated_at=? WHERE id=1", now);
+
+    return {
+      channel: name,
+      removedSystemEntries,
+      removedSearchEntries,
+      removedPolicy,
+      removedParserBindings,
+      removedHealthRecords,
+      removedUpstreamDefinitions,
+    };
+  });
+  bumpVersion();
+  return result;
+}
+
 
 export function filterEffectiveTgChannels(channels: string[]): string[] {
   const normalized = normalizeTelegramChannels(Array.isArray(channels) ? channels : []).filter((name) => TG_CHANNEL_PATTERN.test(name));

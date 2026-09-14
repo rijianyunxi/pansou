@@ -1,7 +1,7 @@
 <template>
-  <div class="result-card">
+  <div :class="['result-card', { 'flat-results': !showHeader }]">
     <!-- 卡片头部 -->
-    <div class="card-header">
+    <div v-if="showHeader" class="card-header">
       <div class="platform-badge" :style="{ background: color }">
         <span class="platform-icon">{{ icon }}</span>
       </div>
@@ -22,7 +22,7 @@
 
     <!-- 资源列表 -->
     <ul class="resource-list">
-      <li v-for="(r, idx) in visibleItems" :key="idx" class="resource-item">
+      <li v-for="r in visibleItems" :key="[r.type, r.url, r.password, r.source, r.note].join('|')" class="resource-item">
         <div class="resource-content">
           <a
             class="resource-link"
@@ -40,6 +40,19 @@
 
           <div class="resource-meta">
             <div class="meta-tags">
+              <button
+                v-if="r.type"
+                type="button"
+                :class="['meta-tag', 'platform', { active: activePlatform === r.type }]"
+                :aria-pressed="activePlatform === r.type"
+                :title="`${platformLabel(r.type)}：点击筛选`"
+                @click="$emit('filter-platform', r.type)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 13l-7 7-9-9V4h7l9 9z"></path>
+                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                </svg>
+                {{ platformLabel(r.type) }}
+              </button>
               <span v-if="r.source" class="meta-tag source" :title="r.source">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="9"></circle>
@@ -92,7 +105,7 @@
 </template>
 
 <script setup lang="ts">
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   title: string;
   color: string;
   icon: string;
@@ -100,8 +113,16 @@ const props = defineProps<{
   expanded: boolean;
   initialVisible: number;
   canToggleCollapse?: boolean;
-}>();
-defineEmits(["toggle", "copy"]);
+  showHeader?: boolean;
+  activePlatform?: string;
+  platformLabel?: (type: string) => string;
+}>(), {
+  canToggleCollapse: false,
+  showHeader: true,
+  activePlatform: "all",
+  platformLabel: (type: string) => type || "其他",
+});
+defineEmits(["toggle", "copy", "filter-platform"]);
 
 const visibleItems = computed(() =>
   props.expanded ? props.items : props.items.slice(0, props.initialVisible)
@@ -109,8 +130,8 @@ const visibleItems = computed(() =>
 
 function formatSource(source?: string) {
   if (!source) return "";
-  if (source.startsWith("tg:")) return `TG @${source.slice(3)}`;
-  if (source.startsWith("plugin:")) return `插件 ${source.slice(7)}`;
+  if (source.startsWith("tg:")) return `Telegram @${source.slice(3)}`;
+  if (source.startsWith("plugin:")) return `解析器 ${source.slice(7)}`;
   return source;
 }
 
@@ -136,6 +157,15 @@ function formatDate(d?: string) {
 
 .result-card:hover {
   box-shadow: var(--shadow-md);
+}
+
+.result-card.flat-results {
+  border-radius: 16px;
+}
+
+.flat-results .resource-list {
+  max-height: none;
+  overflow: visible;
 }
 
 /* 卡片头部 */
@@ -340,6 +370,33 @@ function formatDate(d?: string) {
 .meta-tag svg {
   stroke: currentColor;
   opacity: 0.7;
+}
+
+button.meta-tag.platform {
+  appearance: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast), transform var(--transition-fast);
+}
+
+button.meta-tag.platform:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+button.meta-tag.platform.active {
+  color: var(--primary);
+  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
+  border-color: transparent;
+  font-weight: 600;
+}
+
+button.meta-tag.platform:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .meta-tag.date {

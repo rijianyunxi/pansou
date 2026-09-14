@@ -114,7 +114,7 @@ describe("buildMonitorRows", () => {
     const rows = buildMonitorRows(data());
     expect(rows).toHaveLength(2);
     expect(rowByKey(rows, "upstream:hunhepan").kind).toBe("upstream");
-    expect(rowByKey(rows, "upstream:hunhepan").typeLabel).toBe("代码插件");
+    expect(rowByKey(rows, "upstream:hunhepan").typeLabel).toBe("代码来源");
     expect(rowByKey(rows, "channel:panhub_share").name).toBe("@panhub_share");
     expect(rowByKey(rows, "channel:panhub_share").origin).toBe("builtin");
   });

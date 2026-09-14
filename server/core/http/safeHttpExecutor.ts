@@ -5,6 +5,7 @@ import {
 } from "../security/outboundUrl";
 import { resolveSafeHostAddresses } from "../security/dnsGuard";
 import { loadPinnedHttpTransport } from "../utils/fetch";
+import { logUpstreamRequest } from "../utils/upstreamDebug";
 
 export const FORBIDDEN_OUTBOUND_HEADERS = new Set([
   "cookie",
@@ -154,6 +155,7 @@ export async function executeSafeHttp(
     controller.abort(error);
   }, request.timeoutMs);
   const started = Date.now();
+  logUpstreamRequest("start", { method: request.method, url: requestUrl.toString(), body: request.body });
 
   try {
     // Node 专属：能把 socket 钉在已校验 IP 上的传输。Cloudflare Workers
@@ -203,12 +205,12 @@ export async function executeSafeHttp(
       redirects++;
     }
 
-    if (!response) throw new Error("未收到上游响应");
+    if (!response) throw new Error("未收到来源响应");
     const finalResponse = response as Response;
     if (!finalResponse.ok) {
       // 释放 socket（钉住传输为独立连接），避免悬空连接。
       await finalResponse.body?.cancel();
-      throw new Error(`上游 HTTP 错误: ${finalResponse.status}`);
+      throw new Error(`来源 HTTP 错误: ${finalResponse.status}`);
     }
     const rawContentType = finalResponse.headers.get("content-type") ?? "";
     const contentType = (rawContentType.split(";", 1)[0] ?? "")
@@ -219,6 +221,15 @@ export async function executeSafeHttp(
       throw new Error(`不允许的响应 Content-Type: ${contentType || "missing"}`);
     }
     const payload = await readResponseBody(response, request.maxResponseBytes);
+    logUpstreamRequest("success", {
+      method: request.method,
+      url: requestUrl.toString(),
+      status: finalResponse.status,
+      elapsedMs: Date.now() - started,
+      bytes: payload.bytes,
+      contentType,
+      responsePreview: payload.body,
+    });
     return {
       response: finalResponse,
       url: requestUrl,
@@ -228,6 +239,14 @@ export async function executeSafeHttp(
       redirects,
       elapsedMs: Date.now() - started,
     };
+  } catch (error) {
+    logUpstreamRequest("error", {
+      method: request.method,
+      url: requestUrl.toString(),
+      elapsedMs: Date.now() - started,
+      error,
+    });
+    throw error;
   } finally {
     clearTimeout(timeout);
     request.signal?.removeEventListener("abort", onAbort);

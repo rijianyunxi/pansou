@@ -2,6 +2,10 @@ import { getOrCreateSearchService } from "../core/services";
 import type { SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest } from "./searchRequest";
+import {
+  hideSearchResponseDebugFields,
+  hideSearchUpdateDebugFields,
+} from "./searchResponseVisibility";
 
 export interface PreparedSearch {
   request: ReturnType<typeof parseSearchRequest>;
@@ -23,6 +27,9 @@ export async function executePreparedSearch(
 ) {
   const { request, effective } = prepared;
   const service = getOrCreateSearchService(useRuntimeConfig());
+  const sourceCallback = onSourceSuccess
+    ? (update: SearchSourceUpdate) => onSourceSuccess(request.debug ? update : hideSearchUpdateDebugFields(update))
+    : undefined;
   const { response, warnings } = await service.searchWithWarnings(
     request.kw,
     effective.channels,
@@ -33,12 +40,12 @@ export async function executePreparedSearch(
     effective.plugins,
     request.cloud_types,
     effective.ext,
-    { signal, onSourceSuccess },
+    { signal, onSourceSuccess: sourceCallback },
   );
   return {
     code: 0,
     message: warnings.length ? "partial_success" : "success",
-    data: response,
-    ...(warnings.length ? { warnings } : {}),
+    data: request.debug ? response : hideSearchResponseDebugFields(response),
+    ...(request.debug && warnings.length ? { warnings } : {}),
   };
 }

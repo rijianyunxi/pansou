@@ -1,6 +1,7 @@
 import { onMounted, type Ref } from "vue";
 import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../utils/telegramChannels";
-import { STORAGE_KEYS } from "../config/plugins";
+
+const USER_SETTINGS_STORAGE_KEY = "panhub.settings";
 
 export interface UserSettings {
   /** 用户添加的 Telegram 频道：仅在首页选择“自定义频道”时使用 */
@@ -35,7 +36,7 @@ export function useSettings(): UseSettingsReturn {
     if (typeof window === "undefined" || settingsReady.value) return;
 
     try {
-      const raw = localStorage.getItem(STORAGE_KEYS.settings);
+      const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
       if (!raw) return;
 
       const parsed = JSON.parse(raw);
@@ -55,7 +56,7 @@ export function useSettings(): UseSettingsReturn {
   function saveSettings(): boolean {
     if (typeof window === "undefined" || !settingsReady.value) return false;
     try {
-      localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify({ userTgChannels: settings.value.userTgChannels }));
+      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({ userTgChannels: settings.value.userTgChannels }));
       storageError.value = "";
       return true;
     } catch {

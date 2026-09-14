@@ -9,7 +9,7 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event);
   const record = await repository.get(id);
   if (!record) throw createError({ statusCode: 404, statusMessage: "plugin not found" });
-  if (record.status === "archived") throw createError({ statusCode: 409, statusMessage: "请先恢复已删除的上游。" });
+  if (record.status === "archived") throw createError({ statusCode: 409, statusMessage: "请先恢复已删除的来源。" });
   if (body?.baseVersion !== record.definition.manifest.version) throw createError({ statusCode: 409, statusMessage: "草稿版本已更新，请刷新后重新编辑。" });
   try {
     const definition = updateResponseAdapter(record.definition, body?.response);

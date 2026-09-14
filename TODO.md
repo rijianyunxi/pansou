@@ -42,7 +42,6 @@
 - Telegram、Code Plugin 和 Instructions Plugin 共享每次搜索的来源任务并发槽；插件内部的多个 HTTP 请求可能继续受插件自身预算约束。
 - 运行时 Parser Plugin 只允许同步转换，代码在 `node:vm` 中执行，不提供 `require`、`process`、文件系统或网络能力。
 - `components/admin/ParserPluginMarket.vue` 和 Parser Plugin API 已存在，但当前 `pages/admin/index.vue` 没有挂载独立的 `parsers` 视图；不能把 `?view=parsers` 当作现成的管理台入口。
-- 混合盘配置虽有 `fallbackUrls` 和 `runtime.urls` 字段，当前 `HunhepanPlugin` 正式执行仍只使用目录中的主 `source.url`；镜像池相关待办见第 2 节。
 - 健康快照目前是本地实例级持久化；多副本之间没有共享健康状态或主动变更通知。
 
 ---
@@ -55,7 +54,6 @@
 
 ### P1：核心来源和管理能力
 
-- [ ] **混合盘等价上游池**：让 `config/upstreams.ts` 中的 `fallbackUrls`/镜像配置真正参与正式搜索；补齐每个候选的健康、优先级/权重、失败切换、取消和统一去重。当前 `HunhepanPlugin` 只请求 `source.url`。
 - [ ] **等价上游最低延时策略**：在现有加权轮询和失败切换上增加可选的最低延时优先，并以健康窗口数据为依据，避免单次偶然慢请求造成抖动。
 - [ ] **PanSearch 失效恢复**：完善 buildId 缓存/刷新、阶段请求失败恢复和结构变更诊断；现有代码已能执行阶段请求，但还没有稳定的 buildId 生命周期策略。
 - [ ] **多多完整搜索**：从当前搜索页/入口级能力补齐结果列表、详情或链接提取，并增加脱敏 fixture 和失败分类测试。
@@ -236,7 +234,7 @@ function transform(payload, $, context) {
 - `components/`：通用、admin、monitor、telegram、upstreams 组件。
 - `server/api/`：Nitro/H3 API 路由。
 - `server/core/`：搜索、插件、Instructions、Parser Plugin、健康、Telegram、缓存、安全和 SQLite。
-- `config/`：内置频道、插件和上游种子配置。
+- `utils/`：系统默认值、平台信息和上游类型/种子。
 - `data/`：运行时 SQLite 与 Telegram Session；不要提交运行数据。
 - `test/unit/`：隔离单测；`test/live/`：显式公网测试；`test/e2e/`：Playwright 测试。
 
@@ -298,7 +296,6 @@ pnpm exec playwright install chromium
 本次文档更新以当前工作树为准，重点核对：
 
 - `package.json`：实际可用脚本与依赖。
-- `config/channels.json`、`config/plugins.ts`、`config/upstreams.ts`：系统频道数量、内置插件和上游配置。
 - `pages/admin/index.vue`、`pages/monitor.vue`、`pages/upstreams/index.vue`、`pages/tg-accounts.vue`、`pages/telegram.vue`：真实页面和重定向关系。
 - `server/api/**`、`server/core/**`、`composables/useSearch.ts`：请求协议、管理 API、SQLite、插件、取消和安全边界。
 - `test/unit/**`、`test/e2e/**`：测试覆盖范围与实际数量。

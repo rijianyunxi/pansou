@@ -91,6 +91,8 @@ export interface SearchRequest {
   channels?: string[];
   conc?: number;
   refresh?: boolean;
+  /** Include warnings, response metadata, and result provenance fields. */
+  debug?: boolean;
   /** links（默认）返回扁平链接；results 返回原始消息；all 返回两者。 */
   res?: "links" | "all" | "results";
   src?: "all" | "tg" | "plugin";

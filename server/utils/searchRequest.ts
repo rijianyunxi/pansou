@@ -53,6 +53,7 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
     kw: value.kw.trim(), channels, channels_mode: mode as "append" | "only",
     src: src as SearchRequest["src"], res: res as SearchRequest["res"],
     plugins: list(value.plugins, "plugins"), cloud_types: list(value.cloud_types, "cloud_types"),
-    conc: integer(value.conc, 1, 16, "conc"), refresh: value.refresh === true || value.refresh === "true", ext: extra,
+    conc: integer(value.conc, 1, 16, "conc"), refresh: value.refresh === true || value.refresh === "true",
+    debug: value.debug === 1 || value.debug === "1", ext: extra,
   };
 }

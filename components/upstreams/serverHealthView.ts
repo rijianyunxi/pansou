@@ -35,7 +35,7 @@ export const FAILURE_CATEGORY_LABELS: Record<string, string> = {
   parse_error: "解析失败",
   validation_error: "业务校验失败",
   business_error: "业务状态异常",
-  plugin_error: "插件内部错误",
+  plugin_error: "解析器内部错误",
   unknown_error: "未知错误",
   other: "其他",
 };

@@ -152,8 +152,8 @@ afterAll(async () => {
   vi.unstubAllGlobals();
 });
 
-async function getMonitor(headers: Record<string, string> = {}) {
-  const response = await fetch(`${base}/api/monitor`, { headers });
+async function getMonitor(headers: Record<string, string> = {}, query = "") {
+  const response = await fetch(`${base}/api/monitor${query}`, { headers });
   return { response, body: await response.json() };
 }
 
@@ -174,7 +174,7 @@ describe("GET /api/monitor", () => {
     const upstreams = body.data.upstreams;
     const byId = Object.fromEntries(upstreams.map((item: any) => [item.id, item]));
     expect(Object.keys(byId).sort()).toEqual([
-      "archivedplugin", "disabledplugin", "hunhepan", "nyaacode", "ruleplugin",
+      "disabledplugin", "hunhepan", "ruleplugin",
     ]);
 
     // 逐字段形状（upstream）
@@ -207,10 +207,10 @@ describe("GET /api/monitor", () => {
     expect(health.history.buckets[0]).toMatchObject({ n: 2, s: 1, f: 1 });
     expect(health.history.buckets[0].e).toEqual({ timeout_error: 1 });
 
-    // 垃圾箱 / 停用 / 仓库记录推导
-    expect(byId.nyaacode).toMatchObject({ enabled: false, trashed: true, version: "0.9.0" });
+    // 回收站来源不进入运行监控；停用来源仍保留，便于重新开启。
+    expect(byId.nyaacode).toBeUndefined();
+    expect(byId.archivedplugin).toBeUndefined();
     expect(byId.disabledplugin).toMatchObject({ enabled: false, trashed: false, version: "1.0.0", health: null });
-    expect(byId.archivedplugin).toMatchObject({ enabled: false, trashed: true, version: "1.5.0" });
     expect(byId.ruleplugin).toMatchObject({
       kind: "instructions", enabled: true, trashed: false, version: "2.0.0", name: "规则插件",
     });
@@ -218,7 +218,7 @@ describe("GET /api/monitor", () => {
     // 逐字段形状（channel）
     const channels = body.data.channels;
     const byChannel = Object.fromEntries(channels.map((item: any) => [item.channel, item]));
-    expect(Object.keys(byChannel).sort()).toEqual(["builtinone", "customone", "gonechan"]);
+    expect(Object.keys(byChannel).sort()).toEqual(["builtinone", "customone"]);
     for (const entry of channels) {
       expect(Object.keys(entry).sort()).toEqual(["channel", "deleted", "enabled", "health", "origin", "policy"]);
       expect(["builtin", "custom"]).toContain(entry.origin);
@@ -245,7 +245,11 @@ describe("GET /api/monitor", () => {
     expect(byChannel.customone).toMatchObject({
       origin: "custom", enabled: false, deleted: false, policy: null, health: null,
     });
-    expect(byChannel.gonechan).toMatchObject({ origin: "custom", enabled: true, deleted: true });
+    expect(byChannel.gonechan).toBeUndefined();
+
+    const archived = await getMonitor({ cookie: adminCookie }, "?includeDeleted=true");
+    const archivedByChannel = Object.fromEntries(archived.body.data.channels.map((item: any) => [item.channel, item]));
+    expect(archivedByChannel.gonechan).toMatchObject({ origin: "custom", enabled: true, deleted: true });
   });
 
   it("聚合失败时返回非 0 code 与 message", async () => {

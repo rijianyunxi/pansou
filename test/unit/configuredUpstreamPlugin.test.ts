@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConfiguredUpstreamPlugin, upstreamToInstructionDefinition } from "../../server/core/services/configuredUpstreamPlugin";
-import type { UpstreamDefinition } from "../../config/upstreams";
+import type { UpstreamDefinition } from "../../types/source";
 
 const source: UpstreamDefinition = {
   id: "configured-demo",
@@ -14,7 +14,6 @@ const source: UpstreamDefinition = {
   color: "#697fbd",
   initials: "C",
   mapping: { items: "", title: "name", url: "share", type: "kind", password: "pwd" },
-  builtin: true,
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -44,6 +43,18 @@ describe("configured upstream runtime", () => {
     const first = upstreamToInstructionDefinition(source);
     const second = upstreamToInstructionDefinition({ ...source, url: "https://example.com/other" });
     expect(first.manifest.version).not.toBe(second.manifest.version);
+  });
+
+  it("uses source.url as the only request endpoint", () => {
+    const definition = upstreamToInstructionDefinition({
+      ...source,
+      url: "https://example.com/search?q={{keyword}}",
+      request: { query: { q: "{{keyword}}" } },
+    });
+
+    expect(definition.request.url).toBe("https://example.com/search?q={{keyword}}");
+    expect(definition.request).not.toHaveProperty("fallbackUrls");
+    expect(definition.request.allowedDomains).toEqual(["example.com"]);
   });
 
   it("runs a configured transform(payload, $, context) after the response", async () => {

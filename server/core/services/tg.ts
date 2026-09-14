@@ -63,7 +63,7 @@ export interface TgProbeStage {
   error?: string;
 }
 
-/** 携带机器可读失败类别（tgKind）的 TG 频道抓取错误，搜索 warning 通过它区分五种失败。 */
+/** 携带机器可读失败类别（tgKind）的 Telegram 频道抓取错误，搜索 warning 通过它区分五种失败。 */
 export class TgChannelError extends Error {
   readonly tgKind: TgFailureKind;
 
@@ -122,8 +122,8 @@ export function detectTgPageFormat(body: string): TgPageFormat | null {
 }
 
 /**
- * 统一构造 Telegram 公开搜索页地址。关键词必须进入上游 q 参数；
- * 本地 matchesSearchKeyword 仍会作为第二道过滤，避免上游搜索行为变化导致脏结果。
+ * 统一构造 Telegram 公开搜索页地址。关键词必须进入来源 q 参数；
+ * 本地 matchesSearchKeyword 仍会作为第二道过滤，避免来源搜索行为变化导致脏结果。
  */
 export function buildTelegramPageUrl(
   channel: string,
@@ -258,15 +258,19 @@ function resolveChannelDefaults(
   const policy = getTgChannelPolicy(channel);
   const source = getTgSourceSettings();
   const configured = getUnifiedUpstream(`tg-${channel}`);
+  const configuredAddress = options.primaryUrl || configured?.url;
   return {
     timeoutMs: policy?.timeoutMs ?? options.timeoutMs ?? 10_000,
     limitPerChannel: policy?.maxResults ?? options.limitPerChannel,
     maxPages: policy?.maxPages ?? options.maxPages,
-    fallback: policy?.fallback ?? options.fallback,
-    fallbackUrls: policy?.fallbackUrls ?? options.fallbackUrls ?? source.fallbackUrls,
-    maxRetries: policy?.maxRetries ?? options.maxRetries ?? configured?.retry?.maxRetries ?? configured?.request?.retry?.maxRetries ?? source.retry.maxRetries,
-    retryDelayMs: policy?.retryDelayMs ?? options.retryDelayMs ?? configured?.retry?.delayMs ?? configured?.request?.retry?.delayMs ?? source.retry.delayMs,
-    primaryUrl: options.primaryUrl || configured?.url,
+    // A managed Telegram source follows the same single-address contract as
+    // HTTP sources. Legacy Telegram fallback policy remains available only for
+    // channel validation before the source exists in the catalog.
+    fallback: configuredAddress ? "direct" : policy?.fallback ?? options.fallback,
+    fallbackUrls: configuredAddress ? undefined : policy?.fallbackUrls ?? options.fallbackUrls ?? source.fallbackUrls,
+    maxRetries: policy?.maxRetries ?? options.maxRetries ?? source.retry.maxRetries,
+    retryDelayMs: policy?.retryDelayMs ?? options.retryDelayMs ?? source.retry.delayMs,
+    primaryUrl: configuredAddress,
     headers: options.headers || configured?.request?.headers,
     transform: options.transform || configured?.transform,
   };
@@ -307,7 +311,10 @@ function buildCandidates(
   fallback: "direct" | "jina" | undefined,
   fallbackUrls: string[] | undefined = undefined,
 ): Array<{ url: string; mirror: boolean }> {
-  const primary = { url: pageUrl, mirror: false };
+  const primary = {
+    url: pageUrl,
+    mirror: /(^|\.)r\.jina\.ai$/i.test(new URL(pageUrl).hostname),
+  };
   if (fallback === "direct") return [primary];
   if (fallback === "jina")
     return [{ url: buildMirrorPageUrl(pageUrl, channel), mirror: true }];
@@ -376,7 +383,7 @@ function buildChannelFailure(
     if (!classification.ok) {
       return new TgChannelError(
         classification.kind,
-        `TG 频道 ${channel} ${classification.reason}`,
+        `Telegram 频道 ${channel} ${classification.reason}`,
       );
     }
   }
@@ -384,13 +391,13 @@ function buildChannelFailure(
   if (lastError instanceof Error) {
     return new TgChannelError(
       "network_error",
-      `TG 频道 ${channel} 请求失败：${lastError.message}`,
+      `Telegram 频道 ${channel} 请求失败：${lastError.message}`,
       { cause: lastError },
     );
   }
   return (
     lastError ??
-    new TgChannelError("network_error", `TG 频道 ${channel} 请求失败`)
+    new TgChannelError("network_error", `Telegram 频道 ${channel} 请求失败`)
   );
 }
 
@@ -414,7 +421,7 @@ export async function fetchTgChannelPosts(
   const resolved = resolveChannelDefaults(channel, options);
   const scope = createAbortScope(
     resolved.timeoutMs,
-    `TG 频道 ${channel} 请求超时 (${resolved.timeoutMs}ms)`,
+    `Telegram 频道 ${channel} 请求超时 (${resolved.timeoutMs}ms)`,
     options.signal,
   );
   try {
@@ -454,7 +461,7 @@ export async function validateTgChannel(
   const resolved = resolveChannelDefaults(normalized, options);
   const scope = createAbortScope(
     Math.min(10_000, Math.max(1_000, resolved.timeoutMs)),
-    `验证 TG 频道 ${normalized} 超时`,
+    `验证 Telegram 频道 ${normalized} 超时`,
     options.signal,
   );
   const sourceSettings = getTgSourceSettings();
@@ -551,7 +558,7 @@ export async function validateTgChannel(
           });
           lastError = new TgChannelError(
             "channel_not_found",
-            `TG 频道 ${normalized} 返回 404`,
+            `Telegram 频道 ${normalized} 返回 404`,
             { cause: error },
           );
         } else {
@@ -644,7 +651,7 @@ async function parseTelegramPayload(
   ) {
     throw new TgChannelError(
       "structure_changed",
-      `解析插件 ${parser.id} 需要 ${parser.manifest.format}，当前响应是 ${parserFormat}`,
+      `解析器 ${parser.id} 需要 ${parser.manifest.format}，当前响应是 ${parserFormat}`,
     );
   }
   try {
@@ -732,7 +739,7 @@ async function fetchChannelPages(
         lastBody = typeof body === "string" ? body : "";
         lastError = new TgChannelError(
           "structure_changed",
-          `TG 频道 ${channel} ${STRUCTURE_REASON}`,
+          `Telegram 频道 ${channel} ${STRUCTURE_REASON}`,
         );
       } catch (error) {
         signal.throwIfAborted(); // Never start the mirror after cancellation.

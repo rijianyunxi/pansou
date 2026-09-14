@@ -10,6 +10,7 @@ import type {
 import { executePreparedSearch, type PreparedSearch } from "./executeSearch";
 import { withRequestSignal } from "./requestSignal";
 import { SEARCH_SSE_INTERVAL_MS, SearchSseQueue } from "./searchSseQueue";
+import { logSearchStreamEvent } from "../core/utils/upstreamDebug";
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -49,11 +50,14 @@ export function sendSearchStream(
 
   const stream = createEventStream(event, { autoclose: false });
   let eventId = 0;
-  const push = (name: string, payload: unknown) => stream.push({
-    id: String(++eventId),
-    event: name,
-    data: JSON.stringify(payload),
-  });
+  const push = (name: string, payload: unknown) => {
+    logSearchStreamEvent(name, payload);
+    return stream.push({
+      id: String(++eventId),
+      event: name,
+      data: JSON.stringify(payload),
+    });
+  };
   const filterDelta = createDeltaFilter();
   const queue = new SearchSseQueue((update) => push("result", {
     code: 0,

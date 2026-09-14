@@ -1,20 +1,23 @@
-import type { MergedLinks, SearchResponse } from "~/server/core/types/models";
+import type { MergedLink, MergedLinks, SearchResponse } from "~/server/core/types/models";
 
-/** 将扁平 API 结果或 SearchResult[] 转为前端按平台分组的展示模型。 */
-export function extractMergedFromResponse(
-  data: SearchResponse | undefined
-): MergedLinks {
-  if (!data) return {};
+function responseItems(data: SearchResponse | undefined): unknown[] {
+  if (!data) return [];
 
   // complete 事件默认携带扁平 MergedLink[]；res=results 时为 SearchResult[]。
   // res=all 的链接数组放在 items 中。
   const arr = Array.isArray(data.results) && data.results.length > 0
     ? data.results
     : data.items;
-  if (!Array.isArray(arr) || arr.length === 0) return {};
+  return Array.isArray(arr) ? arr : [];
+}
 
-  const out: MergedLinks = {};
-  for (const raw of arr) {
+/** 将 API 响应规范化为保留原始返回顺序的扁平链接列表。 */
+export function extractLinksFromResponse(
+  data: SearchResponse | undefined
+): MergedLink[] {
+  const out: MergedLink[] = [];
+
+  for (const raw of responseItems(data)) {
     if (!raw || typeof raw !== "object") continue;
     const rAny = raw as any;
     const links = rAny.links;
@@ -24,8 +27,7 @@ export function extractMergedFromResponse(
       for (const link of links) {
         if (!link?.url) continue;
         const type = String(link.type || "others").toLowerCase();
-        if (!out[type]) out[type] = [];
-        out[type].push({
+        out.push({
           type,
           url: link.url,
           password: link.password || "",
@@ -48,10 +50,8 @@ export function extractMergedFromResponse(
 
     // 扁平 MergedLink：接口直接返回的主要格式。
     if (!rAny.url) continue;
-    const type = String(rAny.type || "others").toLowerCase();
-    if (!out[type]) out[type] = [];
-    out[type].push({
-      type,
+    out.push({
+      type: String(rAny.type || "others").toLowerCase(),
       url: rAny.url,
       password: rAny.password || "",
       note: rAny.note || "",
@@ -63,5 +63,24 @@ export function extractMergedFromResponse(
       images: rAny.images,
     });
   }
+
   return out;
+}
+
+/** 兼容仍需要按平台索引结果的调用方。 */
+export function groupLinksByType(items: MergedLink[]): MergedLinks {
+  const out: MergedLinks = {};
+  for (const item of items) {
+    const type = String(item.type || "others").toLowerCase();
+    if (!out[type]) out[type] = [];
+    out[type]!.push(item);
+  }
+  return out;
+}
+
+/** 将 API 结果转为前端按平台索引的兼容模型。 */
+export function extractMergedFromResponse(
+  data: SearchResponse | undefined
+): MergedLinks {
+  return groupLinksByType(extractLinksFromResponse(data));
 }

@@ -1,4 +1,4 @@
-import { defineEventHandler, setResponseHeader } from "h3";
+import { defineEventHandler, getQuery, setResponseHeader } from "h3";
 import { requireAdminAuth } from "../utils/requireAdminAuth";
 import { getOrCreateSearchService } from "../core/services";
 import { getSystemSettings } from "../core/services/systemSettingsService";
@@ -20,14 +20,14 @@ import {
 import { tgChannelOrigin, type TgChannelPolicy } from "../utils/telegramSettings";
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
 
-/** /api/monitor 上游行：插件仓库 ∪ Registry，附五维健康快照。 */
+/** /api/monitor 来源行：解析器仓库 ∪ Registry，附五维健康快照。 */
 export interface MonitorUpstreamEntry {
   id: string;
   name: string;
   kind: "code" | "instructions";
-  /** 未停用（published 且未被放入垃圾箱）。 */
+  /** 未关闭（published 且未被放入回收站）。 */
   enabled: boolean;
-  /** 已删除/归档（垃圾箱内）。 */
+  /** 已删除/归档（回收站内）。 */
   trashed: boolean;
   version: string;
   health: MonitorUpstreamHealth | null;
@@ -145,7 +145,7 @@ function mapChannelHealth(summary: TgChannelHealthSummary): MonitorChannelHealth
   };
 }
 
-/** Registry 插件与插件仓库记录按 id 归并（仓库记录是 instructions 插件的生命周期事实来源）。 */
+/** Registry 解析器与解析器仓库记录按 id 归并（仓库记录是 instructions 解析器的生命周期事实来源）。 */
 function buildUpstreams(
   manager: PluginManager,
   records: PluginRecord[],
@@ -194,10 +194,13 @@ function buildUpstreams(
     });
   }
 
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // 回收站中的来源只保留在回收站管理，不再作为运行监控对象展示。
+  return [...byId.values()]
+    .filter((entry) => !entry.trashed)
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function buildChannels(config: { defaultChannels?: string[] }): MonitorChannelEntry[] {
+function buildChannels(config: { defaultChannels?: string[] }, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
   const settings = getSearchSettings();
   const system = getSystemSettings(config);
   const builtinDefaults = normalizeTelegramChannels(system.defaultChannels);
@@ -208,6 +211,7 @@ function buildChannels(config: { defaultChannels?: string[] }): MonitorChannelEn
   // 频道清单以“当前配置 + 显式覆盖/策略”为准，健康记录只负责给已纳管频道叠加状态。
   // 不能把 healthSummaries 反向当成频道清单：健康数据是历史缓存，频道被删除/移除后
   // 仍可能保留一段时间；否则一次测试或旧配置留下的历史记录会把监控对象膨胀成几百个。
+  // 默认不返回回收站频道，只有后台回收站通过 includeDeleted=true 查询它们。
   const names = new Set<string>([
     ...normalizeTelegramChannels(settings.channels ?? []),
     ...builtinDefaults,
@@ -216,7 +220,7 @@ function buildChannels(config: { defaultChannels?: string[] }): MonitorChannelEn
   ]);
 
   return [...names]
-    .filter((name) => TG_CHANNEL_PATTERN.test(name))
+    .filter((name) => TG_CHANNEL_PATTERN.test(name) && (options.includeDeleted === true || !states[name]?.deleted))
     .sort()
     .map((channel) => {
       const state = states[channel];
@@ -232,14 +236,15 @@ function buildChannels(config: { defaultChannels?: string[] }): MonitorChannelEn
 }
 
 /**
- * GET /api/monitor —— 统一监控聚合（上游插件 + TG 频道）。
- * 管理员接口：requireAdminAuth；响应 no-store；出错时 { code: 非0, message }。
+ * GET /api/monitor —— 统一监控聚合（来源解析器 + Telegram 频道）。
+ * 管理员接口：requireAdminAuth；响应 no-store；默认排除回收站频道；includeDeleted=true 仅供回收站读取。
  */
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
   setResponseHeader(event, "Cache-Control", "no-store");
   try {
     const config = useRuntimeConfig();
+    const includeDeleted = String(getQuery(event).includeDeleted || "") === "true";
     const service = getOrCreateSearchService(config);
     const records = await getPluginRepository().list({ includeArchived: true });
     const healthById = Object.fromEntries(
@@ -255,7 +260,7 @@ export default defineEventHandler(async (event) => {
       data: {
         generatedAt: new Date().toISOString(),
         upstreams: buildUpstreams(service.getPluginManager(), records, healthById, trashedSet),
-        channels: buildChannels(config),
+        channels: buildChannels(config, { includeDeleted }),
       },
     };
   } catch {

@@ -7,8 +7,8 @@ import { normalizeTgChannelParam, tgChannelOrigin } from "../../../../utils/tele
 import { TG_CHANNEL_PATTERN } from "../../../../../utils/telegramChannels";
 
 /**
- * POST /api/tg/channels/:channel/enable —— 启用（恢复）单个 TG 频道。
- * 清除 enabled=false 与 deleted=true 覆盖（"启用 = 恢复"），下一次搜索立即生效。
+ * POST /api/tg/channels/:channel/enable —— 开启（恢复）单个 Telegram 频道。
+ * 清除 enabled=false 与 deleted=true 覆盖（"开启 = 恢复"），下一次搜索立即生效。
  */
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);

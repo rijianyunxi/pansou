@@ -7,7 +7,7 @@ import { normalizeTgChannelParam, tgChannelOrigin } from "../../../../utils/tele
 import { TG_CHANNEL_PATTERN } from "../../../../../utils/telegramChannels";
 
 /**
- * POST /api/tg/channels/:channel/disable —— 停用单个 TG 频道（覆盖状态）。
+ * POST /api/tg/channels/:channel/disable —— 关闭单个 Telegram 频道（覆盖状态）。
  * 生效清单由搜索侧按覆盖状态过滤，下一次搜索立即生效。
  */
 export default defineEventHandler(async (event) => {

@@ -1,5 +1,5 @@
 /**
- * /monitor 健康监控页的纯视图模型。
+ * /monitor 运行监控页的纯视图模型。
  *
  * 后端契约（GET /api/monitor）尚未完全落地：这里对每个字段都做缺省兜底，
  * 任何 null / undefined / 类型不符的输入都不应抛错，而是回退为"未知"状态。
@@ -8,7 +8,7 @@
 
 export type MonitorKind = "upstream" | "channel";
 
-/** 行的归并状态：健康 / 待关注 / 异常 / 已停用 / 已删除 / 未知。 */
+/** 行的归并状态：健康 / 待关注 / 异常 / 已关闭 / 已删除 / 未知。 */
 export type MonitorRowState =
   | "healthy"
   | "warning"
@@ -17,7 +17,7 @@ export type MonitorRowState =
   | "trashed"
   | "unknown";
 
-/** 类型筛选：全部 / 上游 / TG 频道 / 异常 / 已停用（含已删除）。 */
+/** 类型筛选：全部 / 来源 / Telegram 频道 / 异常 / 已关闭（含已删除）。 */
 export type MonitorFilter = "all" | "upstream" | "channel" | "error" | "inactive";
 
 export interface MonitorHistoryBucket {
@@ -121,7 +121,7 @@ export interface MonitorRow {
   /** upstream:<id> / channel:<name>，用于乐观更新的定位。 */
   key: string;
   kind: MonitorKind;
-  /** 上游 id 或频道名（不含 @）。 */
+  /** 来源 id 或频道名（不含 @）。 */
   id: string;
   name: string;
   typeLabel: string;
@@ -129,7 +129,7 @@ export interface MonitorRow {
   enabled: boolean;
   trashed: boolean;
   origin: "builtin" | "custom" | "";
-  /** 上游插件类型：code=Core 配置来源，instructions=页面发布的规则插件。决定删除语义。 */
+  /** 来源解析器类型：code=Core 配置来源，instructions=页面发布的规则解析器。决定删除语义。 */
   upstreamKind: "code" | "instructions" | "";
   version: string;
   metrics: string[];
@@ -138,7 +138,7 @@ export interface MonitorRow {
   checkedAtLabel: string;
   /** 乐观启停时用于重算状态：health.healthy 原始值。 */
   healthHealthy: boolean | null;
-  /** 乐观启停时用于重算状态：上游存在未通过的五维检查。 */
+  /** 乐观启停时用于重算状态：来源存在未通过的五维检查。 */
   failingDimension: boolean;
   /** 乐观启停时用于重算状态：频道 health.state 原始值。 */
   healthState: string;
@@ -169,7 +169,7 @@ export const STATE_LABELS: Record<MonitorRowState, string> = {
   healthy: "健康",
   warning: "待关注",
   error: "异常",
-  disabled: "已停用",
+  disabled: "已关闭",
   trashed: "已删除",
   unknown: "未知",
 };
@@ -438,7 +438,7 @@ function buildUpstreamRow(entry: MonitorUpstreamEntry): MonitorRow | null {
     kind: "upstream",
     id,
     name: text(entry.name).trim() || id,
-    typeLabel: text(entry.kind) === "instructions" ? "规则插件" : "代码插件",
+    typeLabel: text(entry.kind) === "instructions" ? "规则解析器" : "代码来源",
     state,
     enabled: bool(entry.enabled) !== false,
     trashed: bool(entry.trashed) === true,
@@ -484,7 +484,7 @@ function buildChannelRow(entry: MonitorChannelEntry): MonitorRow | null {
   };
 }
 
-/** 合并上游与频道为统一行列表；非法条目（缺 id）被忽略。 */
+/** 合并来源与频道为统一行列表；非法条目（缺 id）被忽略。 */
 export function buildMonitorRows(data: MonitorData | null | undefined): MonitorRow[] {
   const rows: MonitorRow[] = [];
   for (const entry of data?.upstreams ?? []) {
@@ -511,7 +511,7 @@ function accumulate(kind: MonitorKindSummary, state: MonitorRowState) {
   else if (state === "trashed") kind.trashed += 1;
 }
 
-/** 汇总卡片：总数 / 健康 / 待关注 / 异常 / 已停用，上游与频道分开计数。 */
+/** 汇总卡片：总数 / 健康 / 待关注 / 异常 / 已关闭，来源与频道分开计数。 */
 export function summarizeRows(rows: MonitorRow[]): MonitorSummary {
   const summary: MonitorSummary = {
     total: 0,
@@ -572,7 +572,7 @@ function patchRow(rows: MonitorRow[], key: string, patch: Partial<MonitorRow>): 
   });
 }
 
-/** 乐观更新：切换上游启停后重算行状态；失败时页面用快照回滚。 */
+/** 乐观更新：切换来源启停后重算行状态；失败时页面用快照回滚。 */
 export function withUpstreamEnabled(rows: MonitorRow[], id: string, enabled: boolean): MonitorRow[] {
   return patchRow(rows, `upstream:${id}`, { enabled });
 }
@@ -582,12 +582,12 @@ export function withChannelEnabled(rows: MonitorRow[], channel: string, enabled:
   return patchRow(rows, `channel:${channel}`, { enabled });
 }
 
-/** 乐观更新：标记对象已删除（上游进入垃圾箱语义 / 频道移出生效清单）。 */
+/** 乐观更新：标记对象已删除（来源进入垃圾箱语义 / 频道移出生效清单）。 */
 export function withRowRemoved(rows: MonitorRow[], key: string): MonitorRow[] {
   return patchRow(rows, key, { trashed: true });
 }
 
-/** 乐观更新：恢复对象（垃圾箱恢复 / 已删除频道重新启用参与搜索）。 */
+/** 乐观更新：恢复对象（垃圾箱恢复 / 已删除频道重新开启参与搜索）。 */
 export function withRowRestored(rows: MonitorRow[], key: string): MonitorRow[] {
   return patchRow(rows, key, { trashed: false, enabled: true });
 }

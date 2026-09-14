@@ -9,6 +9,7 @@ import { abortableDelay, createAbortScope, runWithSignal } from "./abort";
 import type { DnsLookupRecord } from "../security/dnsGuard";
 import type { IncomingMessage } from "node:http";
 import type { Readable as NodeReadable } from "node:stream";
+import { logUpstreamRequest } from "./upstreamDebug";
 
 function normalizeError(error: unknown): Error {
   if (error instanceof Error) return error;
@@ -82,12 +83,29 @@ export async function fetchWithRetry<T = any>(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const scope = createAbortScope(timeout, `请求超时 (${timeout}ms)`, signal);
+    const attemptStarted = Date.now();
+    logUpstreamRequest("start", { method: String(options.method || "GET"), url, body: options.body, attempt: attempt + 1 });
     try {
       signal?.throwIfAborted();
       const result = await runWithSignal(() => fetcher<T>(url, { signal: scope.signal }), scope.signal);
+      logUpstreamRequest("success", {
+        method: String(options.method || "GET"),
+        url,
+        attempt: attempt + 1,
+        elapsedMs: Date.now() - attemptStarted,
+        bytes: typeof result === "string" ? Buffer.byteLength(result) : 0,
+        responsePreview: result,
+      });
       return result;
     } catch (error) {
       lastError = normalizeError(error);
+      logUpstreamRequest("error", {
+        method: String(options.method || "GET"),
+        url,
+        attempt: attempt + 1,
+        elapsedMs: Date.now() - attemptStarted,
+        error,
+      });
       scope.dispose();
       if (signal?.aborted) throw signal.reason || lastError;
 

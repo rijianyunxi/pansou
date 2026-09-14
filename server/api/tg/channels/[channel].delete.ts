@@ -11,7 +11,7 @@ import { normalizeTgChannelParam, tgChannelOrigin } from "../../../utils/telegra
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../../utils/telegramChannels";
 
 /**
- * DELETE /api/tg/channels/:channel —— 删除 TG 频道（对齐上游插件删除体验）。
+ * DELETE /api/tg/channels/:channel —— 删除 Telegram 频道（对齐来源解析器删除体验）。
  * - 自定义频道（searchSettings.channels）：从清单移除，并清除其覆盖状态；
  * - 内置默认频道：置 deleted=true 覆盖（可用 enable 恢复）；
  * - 不在两个清单中的频道：404。

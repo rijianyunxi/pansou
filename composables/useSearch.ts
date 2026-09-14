@@ -2,11 +2,10 @@ import { computed, nextTick, ref } from "vue";
 import type {
   GenericResponse,
   MergedLink,
-  MergedLinks,
   SearchResponse,
   SearchStreamResultData,
 } from "../server/core/types/models";
-import { extractMergedFromResponse } from "../utils/extractMergedFromResponse";
+import { extractLinksFromResponse } from "../utils/extractMergedFromResponse";
 import { consumeSearchEventStream } from "../utils/searchEventStream";
 
 export interface SearchOptions {
@@ -25,25 +24,21 @@ export interface SearchState {
   searched: boolean;
   elapsedMs: number;
   total: number;
-  merged: MergedLinks;
+  items: MergedLink[];
 }
 
 function mergedLinkKey(link: MergedLink): string {
-  return [link.url, link.password, link.source, link.note].join("\u0000");
+  return [link.type, link.url, link.password, link.source, link.note].join("\u0000");
 }
 
-function mergeIncremental(current: MergedLinks, incoming: MergedLinks): MergedLinks {
-  const merged: MergedLinks = {};
-  for (const type of new Set([...Object.keys(current), ...Object.keys(incoming)])) {
-    const seen = new Set<string>();
-    merged[type] = [];
-    for (const link of [...(current[type] || []), ...(incoming[type] || [])]) {
-      const key = mergedLinkKey(link);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged[type]!.push(link);
-    }
-    if (merged[type]!.length === 0) delete merged[type];
+function mergeIncremental(current: MergedLink[], incoming: MergedLink[]): MergedLink[] {
+  const merged: MergedLink[] = [];
+  const seen = new Set<string>();
+  for (const link of [...current, ...incoming]) {
+    const key = mergedLinkKey(link);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(link);
   }
   return merged;
 }
@@ -51,7 +46,7 @@ function mergeIncremental(current: MergedLinks, incoming: MergedLinks): MergedLi
 /** A single user request; system source expansion belongs exclusively to the server. */
 export function useSearch() {
   const initial = (): SearchState => ({ loading: false, deepLoading: false, paused: false,
-    error: "", warning: "", searched: false, elapsedMs: 0, total: 0, merged: {} });
+    error: "", warning: "", searched: false, elapsedMs: 0, total: 0, items: [] });
   const state = ref<SearchState>(initial());
   let seq = 0;
   let controller: AbortController | undefined;
@@ -65,9 +60,9 @@ export function useSearch() {
     controller = undefined;
   }
   function applyResponse(data: SearchResponse | undefined, replace: boolean) {
-    const incoming = extractMergedFromResponse(data);
-    state.value.merged = replace ? incoming : mergeIncremental(state.value.merged, incoming);
-    state.value.total = Object.values(state.value.merged).reduce((sum, list) => sum + list.length, 0);
+    const incoming = extractLinksFromResponse(data);
+    state.value.items = replace ? incoming : mergeIncremental(state.value.items, incoming);
+    state.value.total = state.value.items.length;
   }
   async function run(options: SearchOptions) {
     const mySeq = ++seq;
@@ -187,8 +182,8 @@ export function useSearch() {
     state, loading: computed(() => state.value.loading), deepLoading: computed(() => state.value.deepLoading),
     paused: computed(() => state.value.paused), error: computed(() => state.value.error),
     searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs),
-    total: computed(() => state.value.total), merged: computed(() => state.value.merged),
-    hasResults: computed(() => Object.values(state.value.merged).some((items) => items.length > 0)),
+    total: computed(() => state.value.total), items: computed(() => state.value.items),
+    hasResults: computed(() => state.value.items.length > 0),
     performSearch, resetSearch, copyLink, cancelActiveRequests, pauseSearch, continueSearch,
   };
 }

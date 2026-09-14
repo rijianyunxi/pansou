@@ -11,7 +11,7 @@ export default defineEventHandler(async (event) => {
   const record = await getParserPluginRepository().get(id);
   if (!record) throw createError({ statusCode: 404, statusMessage: "parser plugin not found" });
   const target = record.versions.find((item) => item.version === version);
-  if (!target) throw createError({ statusCode: 400, statusMessage: `找不到插件版本: ${version}` });
+  if (!target) throw createError({ statusCode: 400, statusMessage: `找不到解析器版本: ${version}` });
   try {
     // Rollback is a hot operation: the selected immutable version becomes the
     // published version immediately and no service restart is required.

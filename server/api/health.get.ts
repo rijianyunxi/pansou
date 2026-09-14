@@ -1,9 +1,11 @@
 import { defineEventHandler } from "h3";
 import { getOrCreateSearchService } from "../core/services";
+import { getSystemSettings } from "../core/services/systemSettingsService";
 
 export default defineEventHandler(() => {
   const config = useRuntimeConfig();
   const service = getOrCreateSearchService(config);
+  const system = getSystemSettings(config);
   const registry = service.getPluginManager().snapshot();
   const healthStatus = service.getPluginHealthStatus();
   const healthByPlugin = new Map(
@@ -16,7 +18,7 @@ export default defineEventHandler(() => {
     kind: plugin.manifest.kind,
     health: healthByPlugin.get(plugin.manifest.id),
   }));
-  // 搜索实际来源：健康快照中有真实搜索流量的插件（探测/调试不记入健康统计）。
+  // 搜索实际来源：健康快照中有真实搜索流量的解析器（探测/测试不记入健康统计）。
   const searchSources = healthStatus
     .filter((status) => status.requestCount > 0)
     .map((status) => ({
@@ -36,14 +38,14 @@ export default defineEventHandler(() => {
     registry_version: registry.version,
     plugin_count: plugins.length,
     plugins,
-    channels: config.defaultChannels,
+    channels: system.defaultChannels,
     // —— 语义分层：存活 / 管理员有效来源 / 搜索实际来源 ——
     liveness: {
       status: "ok",
       checked_at: new Date().toISOString(),
     },
     admin_sources: {
-      // Registry 快照即管理员生效配置：已启用插件（停用/归档的已被剔除）。
+      // Registry 快照即管理员生效配置：已开启解析器（关闭/归档的已被剔除）。
       count: plugins.length,
       ids: plugins.map((plugin) => plugin.id),
       registry_version: registry.version,

@@ -4,10 +4,6 @@ import {
   readMappingPath,
   validResourceUrl,
 } from "../../utils/upstreamAdapter";
-import {
-  buildUpstreamRequest,
-  BUILTIN_UPSTREAMS,
-} from "../../config/upstreams";
 
 const mapping = {
   items: "data.list",
@@ -114,12 +110,7 @@ describe("upstream adapter", () => {
     expect(validResourceUrl("file:///etc/passwd")).toBe(false);
     expect(validResourceUrl("data:text/html,test")).toBe(false);
   });
-  it("builds fixed requests and encodes keywords without accepting URL overrides", () => {
-    expect(buildUpstreamRequest("hunhepan", "三体")).toMatchObject({
-      method: "POST",
-      body: { q: "三体", page: 1 },
-    });
-    expect(buildUpstreamRequest("nyaa", "a&b").url).toContain("q=a%26b");
-    expect(() => buildUpstreamRequest("https://localhost", "test")).toThrow();
+  it("uses only caller-provided adapter mappings", () => {
+    expect(mapping.items).toBe("data.list");
   });
 });

@@ -2,7 +2,7 @@ import { getSqliteDatabase } from "../storage/sqlite";
 import { TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
 
 /**
- * TG 频道健康存储（仿照 searchSettingsService / tgChannelSettings 的同步持久化模式）。
+ * Telegram 频道健康存储（仿照 searchSettingsService / tgChannelSettings 的同步持久化模式）。
  *
  * 记录每个频道的最近检查结果（来源：诊断探针 probe / 正式搜索 search），
  * 供 /api/monitor 聚合展示与频道启停决策参考：

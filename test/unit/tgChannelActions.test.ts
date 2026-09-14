@@ -35,6 +35,7 @@ vi.mock("../../server/core/services/searchSettingsService", () => ({
 }));
 
 import deleteRoute from "../../server/api/tg/channels/[channel].delete";
+import purgeRoute from "../../server/api/tg/channels/[channel]/purge.delete";
 import disableRoute from "../../server/api/tg/channels/[channel]/disable.post";
 import enableRoute from "../../server/api/tg/channels/[channel]/enable.post";
 import {
@@ -53,6 +54,7 @@ beforeAll(async () => {
   vi.stubGlobal("useRuntimeConfig", () => ADMIN);
   const app = createApp();
   const router = createRouter();
+  router.use("/api/tg/channels/:channel/purge", purgeRoute);
   router.use("/api/tg/channels/:channel", deleteRoute);
   router.use("/api/tg/channels/:channel/disable", disableRoute);
   router.use("/api/tg/channels/:channel/enable", enableRoute);
@@ -85,10 +87,13 @@ function cookieHeader(): string {
   return `panhub_admin=${createAuthToken(ADMIN.adminPassword)}`;
 }
 
-async function call(method: string, path: string, options: { auth?: boolean } = { auth: true }) {
+async function call(method: string, path: string, options: { auth?: boolean; body?: unknown } = { auth: true }) {
+  const headers: Record<string, string> = options.auth === false ? {} : { cookie: cookieHeader() };
+  if (options.body !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(`${base}${path}`, {
     method,
-    headers: options.auth === false ? {} : { cookie: cookieHeader() },
+    headers,
+    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   });
   const body = await response.json().catch(() => null);
   return { response, body };
@@ -191,6 +196,29 @@ describe("频道启停/删除端点", () => {
   it("delete 不在两个清单中的频道 404", async () => {
     const { response } = await call("DELETE", "/api/tg/channels/unknownch");
     expect(response.status).toBe(404);
+  });
+
+  it("purge：仅允许永久删除回收站频道，并要求频道名确认", async () => {
+    const db = getSqliteDatabase();
+    db.run("INSERT OR IGNORE INTO system_channels(kind,name,position) VALUES(?,?,?)", "default", "purgechan", 99);
+    db.run("INSERT OR IGNORE INTO system_channels(kind,name,position) VALUES(?,?,?)", "priority", "purgechan", 99);
+    db.run("INSERT INTO tg_channel_policies(channel,max_pages,updated_at) VALUES(?,?,?)", "purgechan", 2, Date.now());
+    db.run("INSERT INTO tg_channel_health(channel,checked_at,ok,elapsed_ms,results_count,source) VALUES(?,?,?,?,?,?)", "purgechan", 1, 1, 10, 2, "probe");
+    const store = await import("../../server/core/services/tgChannelSettings");
+    store.setTgChannelState("purgechan", { deleted: true });
+
+    expect((await call("DELETE", "/api/tg/channels/purgechan/purge")).response.status).toBe(400);
+    const { response, body } = await call("DELETE", "/api/tg/channels/purgechan/purge", {
+      body: { confirmation: "@PurgeChan" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(body).toMatchObject({ code: 0, message: "purged", data: { channel: "purgechan" } });
+    expect(store.getTgChannelState("purgechan")).toBeUndefined();
+    expect(db.getRow("SELECT name FROM system_channels WHERE name=?", "purgechan")).toBeUndefined();
+    expect(db.getRow("SELECT channel FROM tg_channel_policies WHERE channel=?", "purgechan")).toBeUndefined();
+    expect(db.getRow("SELECT channel FROM tg_channel_health WHERE channel=?", "purgechan")).toBeUndefined();
+    expect((await call("DELETE", "/api/tg/channels/builtinone/purge", { body: { confirmation: "builtinone" } })).response.status).toBe(409);
   });
 
   it("持久化失败时返回非 0 code 与 message", async () => {

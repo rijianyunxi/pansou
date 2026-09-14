@@ -2,7 +2,7 @@
   <section class="admin-access-gate" :aria-busy="checking">
     <div v-if="checking" class="admin-access-card admin-access-loading" aria-live="polite">
       <span class="admin-access-icon"><span class="admin-access-spinner"></span></span>
-      <p>正在验证管理员会话…</p>
+      <p>正在验证管理会话…</p>
     </div>
     <form v-else class="admin-access-card" @submit.prevent="submit">
       <NuxtLink to="/" class="admin-access-brand">
@@ -15,12 +15,12 @@
         <h1>{{ title }}</h1>
         <p v-if="configured">{{ description }}</p>
         <p v-else>
-          当前服务尚未配置管理员凭据。请先在部署环境设置
+          当前服务尚未配置管理密码。请先在部署环境设置
           <code>ADMIN_PASSWORD</code>，然后重新加载页面。
         </p>
       </div>
       <template v-if="configured">
-        <label for="shared-admin-password">管理员密码</label>
+        <label for="shared-admin-password">管理密码</label>
         <span class="admin-access-input">
           <ConsoleIcon name="key" :size="17" />
           <input
@@ -29,7 +29,7 @@
             v-model="password"
             type="password"
             autocomplete="current-password"
-            placeholder="输入管理员密码"
+            placeholder="输入管理密码"
             :disabled="busy || !ready"
             @input="$emit('clear-error')"
           />
@@ -44,7 +44,7 @@
         >
           <span v-if="busy" class="admin-access-spinner light"></span>
           <ConsoleIcon v-else name="unlock" :size="17" />
-          {{ busy ? "正在验证…" : "进入管理控制台" }}
+          {{ busy ? "验证中…" : "进入后台" }}
         </button>
       </template>
       <div class="admin-access-security">
@@ -52,7 +52,7 @@
         HttpOnly Cookie · SameSite=Strict · 同源校验 · 登录限流
       </div>
       <NuxtLink to="/" class="admin-access-back">
-        <ConsoleIcon name="back" :size="15" />返回搜索首页
+        <ConsoleIcon name="back" :size="15" />返回搜索
       </NuxtLink>
     </form>
   </section>
@@ -77,8 +77,8 @@ const props = withDefaults(
     busy: false,
     ready: false,
     error: "",
-    title: "管理员身份验证",
-    description: "管理配置和诊断数据属于敏感运维信息。验证成功后会建立 8 小时的独立管理会话。",
+    title: "管理后台验证",
+    description: "管理配置和诊断数据属于敏感信息。验证成功后将建立 8 小时管理会话。",
   },
 );
 

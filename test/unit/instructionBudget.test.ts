@@ -75,7 +75,7 @@ describe("instruction execution budgets", () => {
     await expect(executeInstructions(definition, "hello", { budget: { maxTotalRequests: 3 } }))
       .rejects.toMatchObject({ name: "ExecutionBudgetError", path: "budget.maxTotalRequests" });
     await expect(executeInstructions(definition, "hello", { budget: { maxTotalRequests: 3 } }))
-      .rejects.toThrow(/插件请求预算超限: budget\.maxTotalRequests=3/);
+      .rejects.toThrow(/解析器请求预算超限: budget\.maxTotalRequests=3/);
   });
 
   it("surfaces budget exhaustion instead of degrading pagination results", async () => {
@@ -118,7 +118,7 @@ describe("instruction execution budgets", () => {
     await expect(executeInstructions(jsonDefinition, "hello", { budget: { maxTotalBytes: 49 } }))
       .rejects.toMatchObject({ name: "ExecutionBudgetError", path: "budget.maxTotalBytes" });
     await expect(executeInstructions(jsonDefinition, "hello", { budget: { maxTotalBytes: 49 } }))
-      .rejects.toThrow(/插件传输预算超限: budget\.maxTotalBytes=49/);
+      .rejects.toThrow(/解析器传输预算超限: budget\.maxTotalBytes=49/);
     const result = await executeInstructions(jsonDefinition, "hello", { budget: { maxTotalBytes: 50 } });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(result.results).toEqual([]);

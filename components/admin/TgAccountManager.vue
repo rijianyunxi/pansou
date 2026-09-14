@@ -5,55 +5,55 @@
         <span class="account-avatar"><ConsoleIcon name="user" :size="22" /></span>
         <div>
           <h2>{{ authorized ? userName : "Telegram 账户" }}</h2>
-          <p>{{ authorized ? (user?.username ? `@${user.username}` : user?.phone || "已登录") : "尚未登录" }}</p>
+          <p>{{ authorized ? (user?.username ? `@${user.username}` : user?.phone || "已连接") : "未连接" }}</p>
         </div>
       </div>
       <div class="account-summary__actions">
-        <span class="state-badge" :class="authorized ? 'available' : 'untested'"><span class="status-dot" :class="authorized ? 'available' : 'untested'"></span>{{ authorized ? "已登录" : "未登录" }}</span>
-        <button v-if="authorized" class="button secondary small" type="button" :disabled="busy" @click="logout">退出登录</button>
+        <span class="state-badge" :class="authorized ? 'available' : 'untested'"><span class="status-dot" :class="authorized ? 'available' : 'untested'"></span>{{ authorized ? "已连接" : "未登录" }}</span>
+        <button v-if="authorized" class="button secondary small" type="button" :disabled="busy" @click="logout">退出账户</button>
       </div>
     </section>
 
     <section v-if="!authorized" class="sources-panel login-panel">
-      <div v-if="!configConfigured" class="setup-callout"><ConsoleIcon name="info" :size="17" /><div><strong>Telegram 账户登录暂不可用</strong><p>请在 PanHub 服务端配置 Telegram 应用凭据。该配置由管理员维护，用户不需要填写。</p></div></div>
+      <div v-if="!configConfigured" class="setup-callout"><ConsoleIcon name="info" :size="17" /><div><strong>Telegram 账户登录暂不可用</strong><p>请先在 PanHub 服务端配置 Telegram 应用凭据。该配置由管理员维护，无需在此填写。</p></div></div>
       <template v-else>
-        <div class="login-tabs" role="tablist" aria-label="登录方式"><button type="button" role="tab" :aria-selected="loginMode === 'qr'" :class="{ active: loginMode === 'qr' }" @click="switchMode('qr')"><ConsoleIcon name="grid" :size="16" />扫码登录</button><button type="button" role="tab" :aria-selected="loginMode === 'phone'" :class="{ active: loginMode === 'phone' }" @click="switchMode('phone')"><ConsoleIcon name="key" :size="16" />手机号登录</button></div>
+        <div class="login-tabs" role="tablist" aria-label="连接方式"><button type="button" role="tab" :aria-selected="loginMode === 'qr'" :class="{ active: loginMode === 'qr' }" @click="switchMode('qr')"><ConsoleIcon name="grid" :size="16" />扫码连接</button><button type="button" role="tab" :aria-selected="loginMode === 'phone'" :class="{ active: loginMode === 'phone' }" @click="switchMode('phone')"><ConsoleIcon name="key" :size="16" />手机号连接</button></div>
         <div v-if="loginMode === 'qr'" class="qr-flow">
-          <div class="qr-card"><div v-if="qrDataUrl" class="qr-image-wrap"><img :src="qrDataUrl" alt="Telegram 登录二维码" /><span class="qr-expiry">二维码有效期约 {{ qrRemainingSeconds }} 秒</span></div><div v-else class="qr-placeholder"><span class="qr-placeholder__mark"><ConsoleIcon name="grid" :size="26" /></span><strong>{{ qrRunning ? "正在生成二维码" : "点击下方按钮生成二维码" }}</strong><span>请使用已登录 Telegram 的手机确认登录</span></div></div>
-          <div class="flow-copy"><h3>扫码登录</h3><p>打开 Telegram，进入「设置 → 设备 → 连接桌面设备」，扫描二维码并确认。</p><button class="button primary" type="button" :disabled="busy" @click="qrRunning ? cancelQr() : startQr()"><span v-if="busy" class="spinner"></span>{{ qrRunning ? "取消登录" : "生成二维码" }}</button></div>
+          <div class="qr-card"><div v-if="qrDataUrl" class="qr-image-wrap"><img :src="qrDataUrl" alt="Telegram 连接二维码" /><span class="qr-expiry">二维码有效期约 {{ qrRemainingSeconds }} 秒</span></div><div v-else class="qr-placeholder"><span class="qr-placeholder__mark"><ConsoleIcon name="grid" :size="26" /></span><strong>{{ qrRunning ? "正在生成连接二维码" : "点击下方按钮生成连接二维码" }}</strong><span>请使用已连接 Telegram 的手机确认登录</span></div></div>
+          <div class="flow-copy"><h3>扫码连接</h3><p>打开 Telegram，进入「设置 → 设备 → 连接桌面设备」，扫描二维码确认连接。</p><button class="button primary" type="button" :disabled="busy" @click="qrRunning ? cancelQr() : startQr()"><span v-if="busy" class="spinner"></span>{{ qrRunning ? "取消连接" : "生成连接二维码" }}</button></div>
         </div>
-        <div v-else class="phone-flow"><div v-if="phoneStep === 'phone'" class="step-card"><span class="step-index">第一步</span><h3>输入手机号</h3><p>请输入带国家区号的手机号，例如 +8613800138000。</p><label>手机号<input v-model.trim="phoneForm.phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+8613800138000" @keydown.enter="sendCode" /></label><button class="button primary" type="button" :disabled="busy || !phoneForm.phone" @click="sendCode">{{ busy ? "发送中…" : "发送验证码" }}</button></div><div v-else class="step-card"><span class="step-index">第二步</span><h3>输入验证码</h3><p>验证码已发送至 {{ phoneForm.phone }}{{ codeViaApp ? "（Telegram App）" : "" }}。</p><label>验证码<input v-model.trim="phoneForm.code" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入验证码" @keydown.enter="verifyCode" /></label><div class="step-actions"><button class="button primary" type="button" :disabled="busy || !phoneForm.code" @click="verifyCode">{{ busy ? "验证中…" : "继续" }}</button><button class="button secondary" type="button" :disabled="busy" @click="phoneStep = 'phone'">修改手机号</button></div></div></div>
+        <div v-else class="phone-flow"><div v-if="phoneStep === 'phone'" class="step-card"><span class="step-index">第一步</span><h3>输入手机号</h3><p>请输入带国家区号的手机号，例如 +8613800138000。</p><label>手机号<input v-model.trim="phoneForm.phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+8613800138000" @keydown.enter="sendCode" /></label><button class="button primary" type="button" :disabled="busy || !phoneForm.phone" @click="sendCode">{{ busy ? "发送中…" : "获取验证码" }}</button></div><div v-else class="step-card"><span class="step-index">第二步</span><h3>输入验证码</h3><p>验证码已发送至 {{ phoneForm.phone }}{{ codeViaApp ? "（Telegram App）" : "" }}。</p><label>验证码<input v-model.trim="phoneForm.code" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入验证码" @keydown.enter="verifyCode" /></label><div class="step-actions"><button class="button primary" type="button" :disabled="busy || !phoneForm.code" @click="verifyCode">{{ busy ? "验证中…" : "下一步" }}</button><button class="button secondary" type="button" :disabled="busy" @click="phoneStep = 'phone'">返回修改</button></div></div></div>
       </template>
-      <div v-if="passwordNeeded" class="password-callout"><div class="password-callout__title"><ConsoleIcon name="lock" :size="17" /><strong>需要两步验证密码</strong></div><p>{{ passwordHint ? `Telegram 提示：${passwordHint}` : "该账户已开启两步验证，请输入密码继续。" }}</p><div class="password-row"><input v-model="password" type="password" autocomplete="current-password" placeholder="两步验证密码" @keydown.enter="submitPassword" /><button class="button primary" type="button" :disabled="busy || !password" @click="submitPassword">{{ busy ? "验证中…" : "确认" }}</button></div><p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p></div>
+      <div v-if="passwordNeeded" class="password-callout"><div class="password-callout__title"><ConsoleIcon name="lock" :size="17" /><strong>需要二次验证</strong></div><p>{{ passwordHint ? `Telegram 提示：${passwordHint}` : "该账户已开启两步验证，请输入密码下一步。" }}</p><div class="password-row"><input v-model="password" type="password" autocomplete="current-password" placeholder="二次验证密码" @keydown.enter="submitPassword" /><button class="button primary" type="button" :disabled="busy || !password" @click="submitPassword">{{ busy ? "验证中…" : "确认" }}</button></div><p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p></div>
       <p v-if="loginError" class="login-error" role="alert"><ConsoleIcon name="info" :size="15" />{{ loginError }}</p>
     </section>
 
     <template v-else>
-      <section class="content-tabs" role="tablist" aria-label="Telegram 数据"><button type="button" role="tab" :aria-selected="contentTab === 'channels'" :class="{ active: contentTab === 'channels' }" @click="contentTab = 'channels'"><ConsoleIcon name="channel" :size="16" />我的频道</button><button type="button" role="tab" :aria-selected="contentTab === 'search'" :class="{ active: contentTab === 'search' }" @click="contentTab = 'search'"><ConsoleIcon name="search" :size="16" />搜索频道消息</button></section>
+      <section class="content-tabs" role="tablist" aria-label="Telegram 数据管理"><button type="button" role="tab" :aria-selected="contentTab === 'channels'" :class="{ active: contentTab === 'channels' }" @click="contentTab = 'channels'"><ConsoleIcon name="channel" :size="16" />频道列表</button><button type="button" role="tab" :aria-selected="contentTab === 'search'" :class="{ active: contentTab === 'search' }" @click="contentTab = 'search'"><ConsoleIcon name="search" :size="16" />消息搜索</button></section>
       <section v-if="contentTab === 'channels'" class="sources-panel data-panel">
         <header class="data-panel-heading data-panel-heading--plain">
-          <h2>我的频道</h2>
-          <p>读取当前 Telegram 账户已加入的频道和群组。</p>
+          <h2>频道列表</h2>
+          <p>读取当前 Telegram 账号已加入的频道和群组。</p>
         </header>
         <div class="data-panel-toolbar" aria-label="频道查询与操作">
-          <span>当前账户已加入的频道和群组</span>
+          <span>当前账号已加入的频道和群组</span>
           <button class="button secondary small" type="button" :disabled="channelsLoading" @click="loadChannels">{{ channelsLoading ? "读取中…" : "刷新" }}</button>
         </div>
         <p v-if="channelsError" class="form-error" role="alert">{{ channelsError }}</p>
-        <div v-if="channelsLoading" class="data-state" role="status"><span class="spinner"></span>正在读取频道…</div>
-        <div v-else-if="!channels.length" class="data-state"><span class="empty-icon"><ConsoleIcon name="channel" :size="20" /></span><strong>没有找到频道</strong><span>请确认当前账户已加入频道或群组。</span></div>
+        <div v-if="channelsLoading" class="data-state" role="status"><span class="spinner"></span>正在加载频道…</div>
+        <div v-else-if="!channels.length" class="data-state"><span class="empty-icon"><ConsoleIcon name="channel" :size="20" /></span><strong>暂无频道</strong><span>请确认当前账号已加入频道或群组。</span></div>
         <div v-else class="channel-grid"><button v-for="channel in channels" :key="channel.id" type="button" class="channel-card" :class="{ selected: selectedChannel === channel.ref }" @click="selectChannel(channel.ref)"><span class="channel-avatar">{{ channel.title.slice(0, 1) }}</span><span class="channel-card__body"><strong>{{ channel.title }}</strong><small>{{ channel.username ? `@${channel.username}` : `频道 ID：${channel.id}` }}</small></span><ConsoleIcon name="chevron" :size="15" /></button></div>
       </section>
       <section v-else class="sources-panel data-panel">
         <header class="data-panel-heading data-panel-heading--plain">
-          <h2>搜索频道消息</h2>
-          <p>选择我的频道，输入关键词搜索历史消息。</p>
+          <h2>消息搜索</h2>
+          <p>选择频道列表，输入关键词搜索历史消息。</p>
         </header>
-        <div class="search-form"><label>频道<select v-model="selectedChannel" @change="resetSearchResults"><option value="" disabled>请选择频道</option><option v-for="channel in channels" :key="channel.id" :value="channel.ref">{{ channel.title }}{{ channel.username ? ` · @${channel.username}` : "" }}</option></select></label><label class="search-keyword">关键词<input v-model.trim="searchKeyword" placeholder="输入要搜索的内容" @keydown.enter="searchMessages()" /></label><button class="button primary" type="button" :disabled="searchLoading || !selectedChannel || !searchKeyword" @click="searchMessages()">{{ searchLoading ? "搜索中…" : "搜索" }}</button></div>
+        <div class="search-form"><label>频道<select v-model="selectedChannel" @change="resetSearchResults"><option value="" disabled>选择频道</option><option v-for="channel in channels" :key="channel.id" :value="channel.ref">{{ channel.title }}{{ channel.username ? ` · @${channel.username}` : "" }}</option></select></label><label class="search-keyword">关键词<input v-model.trim="searchKeyword" placeholder="输入关键词" @keydown.enter="searchMessages()" /></label><button class="button primary" type="button" :disabled="searchLoading || !selectedChannel || !searchKeyword" @click="searchMessages()">{{ searchLoading ? "查询中…" : "搜索" }}</button></div>
         <p v-if="searchError" class="form-error" role="alert">{{ searchError }}</p>
         <div v-if="searchLoading" class="data-state" role="status"><span class="spinner"></span>正在搜索消息…</div>
-        <div v-else-if="searched && !messages.length" class="data-state"><span class="empty-icon"><ConsoleIcon name="search" :size="20" /></span><strong>没有找到匹配消息</strong><span>换个关键词再试试。</span></div>
-        <div v-else-if="messages.length" class="message-results"><div class="message-results__meta">已显示 {{ messages.length }} 条消息</div><div class="message-list"><article v-for="message in messages" :key="message.id" class="message-item"><time>{{ formatDate(message.date) }}</time><p>{{ message.text }}</p></article></div><button v-if="nextOffsetId !== null" class="button secondary load-more" type="button" :disabled="searchLoading" @click="searchMessages(true)">{{ searchLoading ? "加载中…" : "加载更多" }}</button></div>
+        <div v-else-if="searched && !messages.length" class="data-state"><span class="empty-icon"><ConsoleIcon name="search" :size="20" /></span><strong>暂无匹配消息</strong><span>换个关键词再试。</span></div>
+        <div v-else-if="messages.length" class="message-results"><div class="message-results__meta">已显示 {{ messages.length }} 条</div><div class="message-list"><article v-for="message in messages" :key="message.id" class="message-item"><time>{{ formatDate(message.date) }}</time><p>{{ message.text }}</p></article></div><button v-if="nextOffsetId !== null" class="button secondary load-more" type="button" :disabled="searchLoading" @click="searchMessages(true)">{{ searchLoading ? "加载中…" : "继续加载" }}</button></div>
       </section>
     </template>
   </div>
@@ -69,9 +69,30 @@ const configConfigured = ref(false); const authorized = ref(false); const user =
 const loginMode = ref<"qr" | "phone">("qr"); const qrRunning = ref(false); const qrDataUrl = ref<string | null>(null); const qrExpiresAt = ref<number | null>(null); const now = ref(Date.now()); const passwordNeeded = ref(false); const passwordHint = ref<string | null>(null); const password = ref(""); const passwordError = ref("");
 const phoneStep = ref<"phone" | "code">("phone"); const phoneForm = reactive({ phone: "", code: "" }); const codeViaApp = ref(false); let pollTimer: ReturnType<typeof setInterval> | null = null; let clockTimer: ReturnType<typeof setInterval> | null = null;
 const contentTab = ref<"channels" | "search">("channels"); const channels = ref<Channel[]>([]); const channelsLoading = ref(false); const channelsError = ref(""); const selectedChannel = ref(""); const searchKeyword = ref(""); const messages = ref<Message[]>([]); const nextOffsetId = ref<number | null>(null); const searchLoading = ref(false); const searched = ref(false); const searchError = ref("");
-const userName = computed(() => user.value ? ([user.value.firstName, user.value.lastName].filter(Boolean).join(" ") || "Telegram 用户") : "Telegram 账户"); const qrRemainingSeconds = computed(() => qrExpiresAt.value ? Math.max(0, Math.ceil((qrExpiresAt.value - now.value) / 1000)) : 0);
+const userName = computed(() => user.value ? ([user.value.firstName, user.value.lastName].filter(Boolean).join(" ") || "Telegram 用户") : "Telegram 账号"); const qrRemainingSeconds = computed(() => qrExpiresAt.value ? Math.max(0, Math.ceil((qrExpiresAt.value - now.value) / 1000)) : 0);
 function messageOf(reason: any) { const status = reason?.statusCode || reason?.response?.status; if (status === 401) { emit("unauthorized"); return "管理员会话已过期，请重新验证。"; } return reason?.data?.statusMessage || reason?.data?.message || reason?.message || "操作失败，请重试。"; }
-async function load() { try { const [config, me] = await Promise.all([$fetch<{ configured: boolean }>("/api/tg/mtproto/config"), $fetch<{ authorized: boolean; user: User | null }>("/api/tg/mtproto/me")]); configConfigured.value = config.configured; authorized.value = me.authorized; user.value = me.user; if (authorized.value) await loadChannels(); } catch (reason: any) { loginError.value = messageOf(reason); } }
+async function load() {
+  loginError.value = "";
+  // 先单独确认服务端凭据，避免 /me 连接 Telegram 失败时 Promise.all
+  // 直接进入 catch，导致已经配置好的凭据被误显示为“未配置”。
+  try {
+    const config = await $fetch<{ configured: boolean }>("/api/tg/mtproto/config");
+    configConfigured.value = config.configured;
+    if (!config.configured) return;
+  } catch (reason: any) {
+    loginError.value = messageOf(reason);
+    return;
+  }
+  try {
+    const me = await $fetch<{ authorized: boolean; user: User | null; error?: string }>('/api/tg/mtproto/me');
+    authorized.value = me.authorized;
+    user.value = me.user;
+    if (me.error) loginError.value = me.error;
+    if (authorized.value) await loadChannels();
+  } catch (reason: any) {
+    loginError.value = messageOf(reason);
+  }
+}
 async function refreshLoginState() { try { const state = await $fetch<any>("/api/tg/mtproto/qr/status"); qrRunning.value = state.qrRunning; qrDataUrl.value = state.qrDataUrl || null; qrExpiresAt.value = state.qrExpiresAt || null; passwordNeeded.value = state.passwordNeeded; passwordHint.value = state.passwordHint || null; passwordError.value = state.passwordError || ""; if (state.error) loginError.value = state.error; if (state.user) { authorized.value = true; user.value = state.user; stopPolling(); await loadChannels(); } } catch (reason: any) { loginError.value = messageOf(reason); } }
 function startPolling() { stopPolling(); pollTimer = setInterval(() => void refreshLoginState(), 1500); } function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
 function switchMode(mode: "qr" | "phone") { loginMode.value = mode; loginError.value = ""; passwordError.value = ""; if (mode === "phone") void cancelQr(); }

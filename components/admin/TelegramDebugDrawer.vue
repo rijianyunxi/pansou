@@ -2,22 +2,22 @@
   <Teleport to="body">
     <dialog ref="dialog" class="tg-debug-dialog" aria-labelledby="tg-debug-title" @close="$emit('close')" @click="closeOnBackdrop">
       <header class="debug-header">
-        <div><p class="eyebrow">TELEGRAM / DEBUG</p><h2 id="tg-debug-title">调试报文 · @{{ channel }}</h2><p>本页单频道诊断，不保存或改变频道配置。</p></div>
-        <button class="close-button" type="button" aria-label="关闭频道调试" @click="dialog?.close()">关闭</button>
+        <div><p class="eyebrow">TELEGRAM / DEBUG</p><h2 id="tg-debug-title">测试报文 · @{{ channel }}</h2><p>本页只测试当前频道，不会保存或修改频道配置。</p></div>
+        <button class="close-button" type="button" aria-label="关闭频道测试" @click="dialog?.close()">关闭</button>
       </header>
       <div class="debug-body">
         <form class="debug-form" @submit.prevent="submit">
-          <label>调试关键词<input v-model="keyword" maxlength="100" required :disabled="busy" placeholder="输入关键词" /></label>
+          <label>测试关键词<input v-model="keyword" maxlength="100" required :disabled="busy" placeholder="输入关键词" /></label>
           <label>最多结果<select v-model.number="limit" aria-label="最多结果" :disabled="busy"><option :value="10">10 条</option><option :value="20">20 条</option><option :value="50">50 条</option></select></label>
           <div class="form-actions">
-            <button class="run-button" type="submit" :disabled="busy || !keyword.trim()">{{ running ? '调试中…' : '发送调试请求' }}</button>
-            <button class="open-tab-button" type="button" title="在浏览器新标签页通过 Jina 镜像打开该频道的公开页面，不经过本站服务端，也不依赖调试请求" @click="openChannelInNewTab">新标签打开</button>
+            <button class="run-button" type="submit" :disabled="busy || !keyword.trim()">{{ running ? '测试中…' : '发送测试请求' }}</button>
+            <button class="open-tab-button" type="button" title="在浏览器新标签页通过 Jina 镜像打开该频道的公开页面，不经过本站服务端，也不依赖测试请求" @click="openChannelInNewTab">新标签打开</button>
           </div>
         </form>
         <p v-if="running" class="notice" role="status">正在请求 @{{ channel }}。关闭抽屉不会取消已提交的检测，结果会保留在本页。</p>
         <p v-else-if="busy" class="notice" role="status">其他频道正在检测，请稍后重试。</p>
         <p v-if="error" class="notice failure" role="alert">本次请求失败：{{ error }}</p>
-        <section v-if="report" class="summary" aria-label="频道调试结果">
+        <section v-if="report" class="summary" aria-label="频道测试结果">
           <div class="metrics"><strong>{{ stateLabel }}</strong><span>HTTP {{ report.httpStatus ?? '未取得' }}</span><span>{{ report.elapsedMs }} ms</span><span>{{ report.results.length }} 条结果</span></div>
           <p>{{ report.message }}</p><small>关键词：{{ report.keyword }} · {{ report.checkedAt }} · {{ report.route === 'jina' ? 'Jina 备用线路' : report.route === 'telegram' ? 'Telegram 直连' : '无成功线路' }}</small>
         </section>
@@ -32,33 +32,33 @@
         </div>
         <section v-if="tab === 'input'" class="payload-section">
           <div class="section-head">
-            <h3>接口入参 <span>POST /api/tg/probe</span></h3>
+            <h3>请求参数 <span>POST /api/tg/probe</span></h3>
             <TelegramCopyButton compact :text="json(request || { channel, keyword: keyword.trim(), limit })" label="复制入参" />
           </div>
           <p>{{ request ? '最近一次已发送参数的快照。编辑上方表单不会改变此报文。' : '待发送参数预览，尚未发起请求。' }}</p>
-          <pre tabindex="0" aria-label="接口入参报文">{{ json(request || { channel, keyword: keyword.trim(), limit }) }}</pre>
+          <pre tabindex="0" aria-label="请求参数报文">{{ json(request || { channel, keyword: keyword.trim(), limit }) }}</pre>
         </section>
         <section v-else-if="tab === 'output'" class="payload-section">
           <div class="section-head">
-            <h3>接口出参 <span>JSON · 与诊断接口返回一致</span></h3>
+            <h3>响应数据 <span>JSON · 与诊断接口返回一致</span></h3>
             <TelegramCopyButton v-if="report" compact :text="json(report)" label="复制出参 JSON" />
           </div>
-          <pre v-if="report" tabindex="0" aria-label="接口出参报文">{{ json(report) }}</pre>
-          <p v-else class="empty">{{ running ? '等待本次接口响应…' : error ? '本次请求失败，未取得诊断结果。' : '尚无响应。点击「发送调试请求」开始检测。' }}</p>
+          <pre v-if="report" tabindex="0" aria-label="响应数据报文">{{ json(report) }}</pre>
+          <p v-else class="empty">{{ running ? '等待本次接口响应…' : error ? '本次请求失败，未取得诊断结果。' : '尚无响应。点击「发送测试请求」开始检测。' }}</p>
         </section>
         <section v-else-if="tab === 'results'" class="payload-section">
-          <h3>统一结果 <span>SearchResult[]</span></h3>
-          <pre v-if="report" tabindex="0" aria-label="统一结果报文">{{ json(report.results) }}</pre>
+          <h3>标准化结果 <span>SearchResult[]</span></h3>
+          <pre v-if="report" tabindex="0" aria-label="标准化结果报文">{{ json(report.results) }}</pre>
           <p v-else class="empty">{{ running ? '等待解析结果…' : '尚无本次解析结果。' }}</p>
         </section>
         <section v-else class="payload-section">
-          <h3>上游原始报文 <span>包含直连和备用线路尝试</span></h3>
-          <p v-if="!report" class="empty">{{ running ? '等待上游报文…' : '发送请求后，可查看每次尝试的请求头、响应头和原始正文。' }}</p>
+          <h3>来源原始报文 <span>包含直连和备用线路尝试</span></h3>
+          <p v-if="!report" class="empty">{{ running ? '等待来源报文…' : '发送请求后，可查看每次尝试的请求头、响应头和原始正文。' }}</p>
           <template v-else>
-            <label v-if="report.attempts.length" class="attempt-selector">上游请求<select v-model.number="attemptIndex" aria-label="上游请求"><option v-for="(attempt, index) in report.attempts" :key="index" :value="index">{{ index + 1 }} · {{ attempt.route === 'telegram' ? 'Telegram 直连' : 'Jina 备用' }} · HTTP {{ attempt.response?.status ?? 'ERR' }} · {{ attempt.elapsedMs }} ms</option></select></label>
+            <label v-if="report.attempts.length" class="attempt-selector">来源请求<select v-model.number="attemptIndex" aria-label="来源请求"><option v-for="(attempt, index) in report.attempts" :key="index" :value="index">{{ index + 1 }} · {{ attempt.route === 'telegram' ? 'Telegram 直连' : 'Jina 备用' }} · HTTP {{ attempt.response?.status ?? 'ERR' }} · {{ attempt.elapsedMs }} ms</option></select></label>
             <p v-if="attempt?.error" class="notice failure">{{ attempt.error }}</p>
-            <h4>原始请求</h4><pre tabindex="0" aria-label="上游原始请求">{{ json(attempt?.request || report.upstreamRequest) }}</pre>
-            <h4>响应状态与响应头</h4><pre tabindex="0" aria-label="上游响应头">{{ json(response ? { status: response.status, headers: response.headers, bodyLength: response.bodyLength, bodyTruncated: response.bodyTruncated } : null) }}</pre>
+            <h4>原始请求</h4><pre tabindex="0" aria-label="来源原始请求">{{ json(attempt?.request || report.upstreamRequest) }}</pre>
+            <h4>响应状态与响应头</h4><pre tabindex="0" aria-label="来源响应头">{{ json(response ? { status: response.status, headers: response.headers, bodyLength: response.bodyLength, bodyTruncated: response.bodyTruncated } : null) }}</pre>
             <h4>原始正文 <span>格式化 / 源码 / 沙箱渲染，均不执行脚本</span></h4>
             <TelegramRawBodyView
               :body="response?.body || ''"
@@ -66,7 +66,7 @@
               :body-length="response?.bodyLength ?? null"
               :truncated="!!response?.bodyTruncated"
               :base-url="baseUrl"
-              :frame-title="`@${channel} 上游响应渲染`"
+              :frame-title="`@${channel} 来源响应渲染`"
             />
           </template>
         </section>
@@ -95,8 +95,8 @@ const dialog = ref<HTMLDialogElement | null>(null);
 const keyword = ref(props.request?.keyword ?? props.initialKeyword);
 const limit = ref(props.request?.limit ?? 10);
 const tabs = [
-  { key: "input", label: "接口入参" }, { key: "output", label: "接口出参" },
-  { key: "raw", label: "原始报文" }, { key: "results", label: "统一结果" },
+  { key: "input", label: "请求参数" }, { key: "output", label: "响应数据" },
+  { key: "raw", label: "原始报文" }, { key: "results", label: "标准化结果" },
 ] as const;
 const tab = ref<(typeof tabs)[number]["key"]>(props.report ? "raw" : "input");
 const attemptIndex = ref(0);
@@ -107,7 +107,7 @@ function openChannelInNewTab() {
   const url = buildTgSourceUrl("jina", props.channel, keyword.value, undefined, props.sourceSettings);
   window.open(url, "_blank", "noopener");
 }
-const stateLabel = computed(() => ({ available: "可提取结果", warning: "需确认", error: "上游异常" })[props.report?.state || "warning"]);
+const stateLabel = computed(() => ({ available: "可提取结果", warning: "需确认", error: "来源异常" })[props.report?.state || "warning"]);
 watch(() => props.report, (value) => { if (value) attemptIndex.value = 0; });
 function json(value: unknown) { return JSON.stringify(value, null, 2) ?? "null"; }
 function submit() {

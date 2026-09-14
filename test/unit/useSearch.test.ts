@@ -53,7 +53,7 @@ describe("frontend search lifecycle", () => {
       data: { update: { source: { kind: "plugin", id: "one" }, request: { keyword: "test", phase: "variant" }, results: [{ title: "first", datetime: "", links: [{ type: "quark", url: "https://first", password: "" }] }] } },
     })}\n\n`));
     await vi.waitFor(() => expect(search.total.value).toBe(1));
-    expect(search.merged.value).toEqual({ quark: [expect.objectContaining({ url: "https://first" })] });
+    expect(search.items.value).toEqual([expect.objectContaining({ type: "quark", url: "https://first" })]);
     expect(search.loading.value).toBe(true);
     streamController.enqueue(encoder.encode(`event: complete\ndata: ${JSON.stringify({
       code: 0,
@@ -63,7 +63,7 @@ describe("frontend search lifecycle", () => {
     })}\n\n`));
     streamController.close();
     await pending;
-    expect(search.merged.value).toEqual({ quark: [expect.objectContaining({ url: "https://first" })] });
+    expect(search.items.value).toEqual([expect.objectContaining({ type: "quark", url: "https://first" })]);
     expect(search.state.value.warning).toContain("部分来源");
   });
 

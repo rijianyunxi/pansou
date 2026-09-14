@@ -385,18 +385,26 @@ export async function checkPhoneLoginPassword(password: string): Promise<{ ok: t
   }
 }
 
-export async function getCurrentUser(): Promise<{ authorized: boolean; user: TgUser | null }> {
+export async function getCurrentUser(): Promise<{ authorized: boolean; user: TgUser | null; error?: string }> {
   if (!hasCredentials()) return { authorized: false, user: null };
   try {
     const c = await getTelegramClient();
     if (!(await c.isUserAuthorized())) return { authorized: false, user: null };
     if (!state.user) state.user = mapUser(await c.getMe());
     return { authorized: true, user: state.user };
-  } catch {
-    return { authorized: false, user: null };
+  } catch (error) {
+    // 网络不可达时不能等同于“会话已失效”，否则用户会被误导去重新登录。
+    const code = rpcMessage(error);
+    if (code === "AUTH_KEY_UNREGISTERED") {
+      return { authorized: false, user: null, error: ERROR_MESSAGES.AUTH_KEY_UNREGISTERED };
+    }
+    return {
+      authorized: false,
+      user: null,
+      error: "暂时无法连接 Telegram，请检查服务器网络或代理配置；当前不一定需要重新登录。",
+    };
   }
 }
-
 async function requireAuthorizedClient(): Promise<TelegramClientType> {
   const c = await getTelegramClient();
   if (!(await c.isUserAuthorized())) throw new HttpError(401, "请先登录");

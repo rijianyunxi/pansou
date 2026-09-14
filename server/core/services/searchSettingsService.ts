@@ -36,6 +36,22 @@ export function getSearchSettingsVersion(): string | null {
   const counts = db.getRow<{ updated_at: number }>("SELECT MAX(updated_at) AS updated_at FROM (SELECT updated_at FROM search_settings UNION ALL SELECT 0 AS updated_at)");
   return `${row?.updated_at ?? counts?.updated_at ?? 0}:${getSearchSettings().plugins?.join(",") || "*"}:${getSearchSettings().channels?.join(",") || "*"}`;
 }
+/**
+ * Keep the monitor's source enabled state and an explicit plugin selection in
+ * sync. When plugins is null, the selection means "all enabled sources" and
+ * the source catalog remains the single source of truth.
+ */
+export function setSearchPluginEnabled(id: string, enabled: boolean): SearchSettings {
+  const normalizedId = String(id || "").trim();
+  if (!normalizedId) return getSearchSettings();
+  const current = getSearchSettings();
+  if (current.plugins === null) return current;
+  const plugins = new Set(current.plugins);
+  if (enabled) plugins.add(normalizedId);
+  else plugins.delete(normalizedId);
+  return saveSearchSettings({ plugins: [...plugins] });
+}
+
 export function saveSearchSettings(patch: unknown): SearchSettings {
   const next = sanitize({ ...getSearchSettings(), ...((patch && typeof patch === "object") ? patch as Record<string, unknown> : {}) });
   const db = getSqliteDatabase(); const now = Date.now();

@@ -71,6 +71,15 @@ it("falls back on a direct failure and reports success when the mirror is usable
   expect(await fetchTgChannelPosts("channel", "test")).toHaveLength(1);
   expect(fetcher.mock.calls[1]?.[0]).toBe("https://r.jina.ai/https://t.me/s/channel?q=test");
 });
+it("does not switch to a backup route for a managed source address", async () => {
+  fetcher.mockRejectedValue(new Error("network"));
+  await expect(fetchTgChannelPosts("channel", "test", {
+    primaryUrl: "https://proxy.example.com/{{channel}}?q={{keyword}}",
+    maxRetries: 0,
+  })).rejects.toThrow("network");
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0]?.[0]).toBe("https://proxy.example.com/channel?q=test");
+});
 it("surfaces failure and distinguishes it from a valid zero-match response", async () => {
   fetcher.mockResolvedValue("<html>blocked</html>");
   await expect(fetchTgChannelPosts("channel", "test")).rejects.toThrow("解析失败");

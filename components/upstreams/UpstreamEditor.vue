@@ -9,105 +9,103 @@
   >
     <form class="editor-form" @submit.prevent="handleSubmit">
       <header class="editor-header">
-        <div>
-          <span class="editor-kicker">UPSTREAM</span>
+        <div class="editor-title-wrap">
+          <div class="editor-title-line">
+            <span class="editor-kicker">SOURCE CONFIGURATION</span>
+            <span class="editor-mode-badge" :class="{ readonly }">{{ readonly ? "只读" : "可编辑" }}</span>
+          </div>
           <h2 id="editor-title">
-            {{ readonly ? "上游详情" : source ? "编辑上游" : "新增上游" }}
+            {{ readonly ? "来源详情" : source ? "编辑来源" : "新增来源" }}
           </h2>
+          <p>{{ readonly ? "查看来源连接、请求参数与结果解析配置。" : "配置来源连接与解析规则，保存后将同步到来源目录。" }}</p>
         </div>
         <button
           type="button"
-          class="icon-button"
-          aria-label="关闭配置"
+          class="icon-button editor-close-button"
+          aria-label="关闭窗口"
           @click="dialog?.close()"
         >
           <ConsoleIcon name="close" />
         </button>
       </header>
 
-      <label>
-        上游名称 <span class="required-marker">*</span>
-        <input
-          v-model="form.name"
-          required
-          maxlength="40"
-          placeholder="例如：我的资源接口"
-          :autofocus="!readonly"
-          :readonly="readonly"
-        />
-      </label>
+      <div class="editor-content">
+        <section class="editor-section editor-overview-section">
+          <div class="editor-section-heading">
+            <div>
+              <strong>基础信息</strong>
+              <p>定义来源身份、接入方式和主要请求地址。</p>
+            </div>
+            <span class="editor-section-index">01</span>
+          </div>
 
-      <label>
-        描述
-        <input
-          v-model="form.description"
-          maxlength="100"
-          :readonly="readonly"
-          placeholder="描述这个接口的用途或资源类型"
-        />
-      </label>
-
-      <div class="editor-grid source-kind-grid">
-        <label>
-          来源类型
-          <select v-model="form.sourceKind" :disabled="readonly">
-            <option value="http">HTTP 上游</option>
-            <option value="telegram">TG 频道</option>
-          </select>
-        </label>
-        <label v-if="form.sourceKind === 'telegram'">
-          TG 频道
-          <input v-model="form.channel" placeholder="@channel_username" pattern="@?[A-Za-z0-9_]{5,64}" :readonly="readonly" />
-        </label>
-      </div>
-
-      <label>
-        接口地址 <span class="required-marker">*</span>
-        <input
-          v-model="form.url"
-          required
-          type="url"
-          placeholder="https://api.example.com/search"
-          maxlength="500"
-          :readonly="readonly"
-        />
-      </label>
-
-      <div class="editor-grid">
-        <label>
-          请求方式
-          <select v-model="form.method" :disabled="readonly">
-            <option>GET</option>
-            <option>POST</option>
-          </select>
-        </label>
-        <label>
-          响应格式
-          <select v-model="form.format" :disabled="readonly">
-            <option value="json">JSON</option>
-            <option value="html">HTML</option>
-          </select>
-        </label>
-      </div>
-
-      <details class="editor-advanced" open>
-        <summary>请求配置</summary>
-        <div class="editor-grid reliability-grid">
-          <label>
-            备用 URL
-            <textarea v-model="fallbackUrlsText" class="code-input" rows="3" spellcheck="false" placeholder="每行一个 HTTPS 地址；主地址失败后按顺序尝试" :readonly="readonly" />
-          </label>
-          <div class="editor-grid retry-grid">
+          <div class="editor-grid editor-primary-grid">
             <label>
-              单地址重试
-              <input v-model.number="retryMaxRetries" type="number" min="0" max="3" :readonly="readonly" />
+              <span class="editor-field-label">来源名称 <span class="required-marker">*</span></span>
+              <input
+                v-model="form.name"
+                required
+                maxlength="40"
+                placeholder="例如：我的资源来源"
+                :autofocus="!readonly"
+                :readonly="readonly"
+              />
             </label>
+
             <label>
-              重试间隔 (ms)
-              <input v-model.number="retryDelayMs" type="number" min="0" max="5000" step="100" :readonly="readonly" />
+              描述
+              <input
+                v-model="form.description"
+                maxlength="100"
+                :readonly="readonly"
+                placeholder="描述来源用途或资源类型"
+              />
             </label>
           </div>
-        </div>
+
+          <div class="editor-grid editor-connection-grid">
+            <label>
+              来源类型
+              <select v-model="form.sourceKind" :disabled="readonly">
+                <option value="http">HTTP 来源</option>
+                <option value="telegram">Telegram 频道</option>
+              </select>
+            </label>
+            <label v-if="form.sourceKind === 'telegram'">
+              Telegram 频道
+              <input v-model="form.channel" placeholder="@channel_username" pattern="@?[A-Za-z0-9_]{5,64}" :readonly="readonly" />
+            </label>
+            <label>
+              请求方式
+              <select v-model="form.method" :disabled="readonly">
+                <option>GET</option>
+                <option>POST</option>
+              </select>
+            </label>
+            <label>
+              响应格式
+              <select v-model="form.format" :disabled="readonly">
+                <option value="json">JSON</option>
+                <option value="html">HTML</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="editor-url-field">
+            <span class="editor-field-label">请求地址 <span class="required-marker">*</span></span>
+            <input
+              v-model="form.url"
+              required
+              type="url"
+              placeholder="https://api.example.com/search"
+              maxlength="500"
+              :readonly="readonly"
+            />
+          </label>
+        </section>
+
+      <details class="editor-advanced" open>
+        <summary>请求参数</summary>
         <div class="editor-grid request-config-grid">
           <label>
             Query JSON
@@ -153,7 +151,7 @@
       </details>
 
       <details class="editor-meta">
-        <summary>标签与分类</summary>
+        <summary>分类信息</summary>
         <div class="editor-grid">
           <label>管理标签 <input v-model="tagsText" placeholder="例如：稳定, 免费, 推荐" :readonly="readonly" /></label>
           <label>网盘类型 <input v-model="form.driveType" placeholder="例如：阿里云盘 / 夸克 / 磁力" :readonly="readonly" /></label>
@@ -162,7 +160,7 @@
       </details>
 
       <details class="editor-function" open>
-        <summary>解析函数</summary>
+        <summary>结果解析</summary>
         <div class="function-field">
           <p id="transform-help" class="editor-help transform-help">
             <code>payload</code> 是接口响应内容；<code>$</code> 是 HTML 查询工具；<code>context</code> 提供 <code>keyword</code>、分页等请求上下文。
@@ -170,7 +168,7 @@
           </p>
           <div class="function-toolbar">
             <span class="function-label">transform(payload, $, context)</span>
-            <div class="function-file-actions" aria-label="解析函数文件操作">
+            <div class="function-file-actions" aria-label="结果解析文件操作">
               <button
                 type="button"
                 class="function-action-button"
@@ -214,23 +212,40 @@
         </div>
       </details>
 
-      <slot name="readonly-extra" />
+      <details v-if="!readonly" class="editor-debugger" open>
+        <summary>在线调试</summary>
+        <p class="editor-help debugger-help">直接使用当前未保存的 URL、Query、Body、Headers 和 transform 运行测试。</p>
+        <UpstreamDebugPanel
+          :source="debugDraft.source"
+          :report="debugReport"
+          :keyword="debugKeyword"
+          :running="debugRunning"
+          :error="debugError"
+          :disabled-reason="debugDraft.error"
+          embedded
+          @send="testDraftSource"
+          @update:keyword="debugKeyword = $event"
+        />
+      </details>
 
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+        <slot name="readonly-extra" />
 
-      <footer>
+        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+      </div>
+
+      <footer class="editor-footer">
         <template v-if="readonly">
           <button type="button" class="button secondary" @click="dialog?.close()">
             关闭
           </button>
           <button type="button" class="button secondary" @click="$emit('edit')">
-            <ConsoleIcon name="edit" :size="15" />修改配置
+            <ConsoleIcon name="edit" :size="15" />编辑来源
           </button>
           <button type="button" class="button secondary" :disabled="running" @click="$emit('debug')">
-            <ConsoleIcon name="play" :size="15" />打开调试
+            <ConsoleIcon name="play" :size="15" />测试来源
           </button>
           <button type="button" class="button danger-button" @click="$emit('delete')">
-            <ConsoleIcon name="trash" :size="15" />删除上游
+            <ConsoleIcon name="trash" :size="15" />删除来源
           </button>
         </template>
         <template v-else>
@@ -239,7 +254,7 @@
           </button>
           <button type="submit" class="button primary">
             <ConsoleIcon name="check" />
-            {{ source ? "保存配置" : "创建上游" }}
+            {{ source ? "保存来源" : "创建来源" }}
           </button>
         </template>
       </footer>
@@ -249,11 +264,8 @@
 
 <script setup lang="ts">
 import ConsoleIcon from "./ConsoleIcon.vue";
-import {
-  BUILTIN_UPSTREAMS,
-  getDefaultUpstreamTransform,
-  type UpstreamDefinition,
-} from "../../config/upstreams";
+import UpstreamDebugPanel from "./UpstreamDebugPanel.vue";
+import type { UpstreamDefinition, UpstreamProbe } from "../../types/source";
 
 const props = defineProps<{
   source?: UpstreamDefinition | null;
@@ -271,10 +283,13 @@ const emit = defineEmits<{
   delete: [];
 }>();
 
-const EMPTY_TRANSFORM = "function transform(payload, $, context) {\n  return [];\n}";
 const dialog = ref<HTMLDialogElement>();
 const transformImportInput = ref<HTMLInputElement | null>(null);
 const error = ref("");
+const debugKeyword = ref("三体");
+const debugReport = ref<UpstreamProbe>();
+const debugRunning = ref(false);
+const debugError = ref("");
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -300,25 +315,16 @@ function createBlankSource(): EditableUpstreamDefinition {
       password: "",
       type: "",
     },
-    builtin: true,
-    transform: EMPTY_TRANSFORM,
+    tags: [],
+    driveType: "",
+    resourceTypes: [],
+    transform: "",
   };
 }
 
 function cloneSource(source: UpstreamDefinition): EditableUpstreamDefinition {
   const cloned = cloneJson(source) as EditableUpstreamDefinition;
-  const configuredDefaults = BUILTIN_UPSTREAMS.find((item) => item.id === cloned.id);
-  if (!cloned.request && configuredDefaults?.request) {
-    cloned.request = cloneJson(configuredDefaults.request);
-  }
-  const persistedTransform = cloned.transform?.trim();
-  if (!persistedTransform) {
-    // Older custom rows may still rely on their legacy core fallback. Only
-    // hydrate the shipped defaults here; do not overwrite those rows with an
-    // empty function just because they have no transform field yet.
-    const defaultTransform = getDefaultUpstreamTransform(cloned.id);
-    if (defaultTransform) cloned.transform = defaultTransform;
-  }
+  // 编辑时只展示数据库中已保存的配置，不从任何内置来源回填请求或解析脚本。
   return cloned;
 }
 
@@ -340,11 +346,77 @@ const requestBodyText = ref(
 const requestHeadersText = ref(
   stringifyRequestValue(form.request?.headers),
 );
-const fallbackUrlsText = ref((form.fallbackUrls || []).join("\n"));
 const tagsText = ref((form.tags || []).join(", "));
 const resourceTypesText = ref((form.resourceTypes || []).join(", "));
-const retryMaxRetries = ref(form.retry?.maxRetries ?? form.request?.retry?.maxRetries ?? 1);
-const retryDelayMs = ref(form.retry?.delayMs ?? form.request?.retry?.delayMs ?? 300);
+
+function parseEditorJson(text: string, label: string): unknown {
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${label}必须是有效 JSON。`);
+  }
+}
+
+function splitEditorList(text: string): string[] {
+  return [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
+}
+
+const debugDraft = computed<{ source: EditableUpstreamDefinition; error: string }>(() => {
+  const draft = cloneJson(form);
+  try {
+    if (!draft.url.trim()) throw new Error("请先填写请求地址。");
+    const query = parseEditorJson(requestQueryText.value, "Query");
+    const body = parseEditorJson(requestBodyText.value, "Body");
+    const headers = parseEditorJson(requestHeadersText.value, "Headers");
+    if (headers !== undefined && (
+      !headers || typeof headers !== "object" || Array.isArray(headers)
+      || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string")
+    )) throw new Error("Headers 必须是字符串键值 JSON。");
+    draft.id ||= draft.sourceKind === "telegram" && draft.channel
+      ? `tg-${draft.channel.replace(/^@/, "").toLowerCase()}`
+      : "debug-draft";
+    draft.name ||= "未保存来源";
+    draft.initials ||= draft.name.charAt(0).toUpperCase();
+    draft.tags = splitEditorList(tagsText.value);
+    draft.resourceTypes = splitEditorList(resourceTypesText.value);
+    draft.request = {
+      ...(draft.request || {}),
+      query: query as Record<string, unknown> | undefined,
+      body,
+      headers: headers as Record<string, string> | undefined,
+    };
+    if (draft.method === "GET" && draft.request) delete draft.request.body;
+    return { source: draft, error: "" };
+  } catch (reason) {
+    return {
+      source: draft,
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+});
+
+async function testDraftSource() {
+  if (debugRunning.value || debugDraft.value.error) return;
+  debugRunning.value = true;
+  debugError.value = "";
+  debugReport.value = undefined;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 16_000);
+  try {
+    debugReport.value = await $fetch<UpstreamProbe>("/api/upstreams/probe", {
+      method: "POST",
+      body: { source: debugDraft.value.source, keyword: debugKeyword.value.trim() },
+      signal: controller.signal,
+      retry: 0,
+    });
+  } catch (reason: any) {
+    debugError.value = reason?.data?.statusMessage || reason?.message || "来源测试失败";
+  } finally {
+    clearTimeout(timer);
+    debugRunning.value = false;
+  }
+}
 
 function syncEditor(source?: UpstreamDefinition | null) {
   const next = source ? cloneSource(source) : createBlankSource();
@@ -355,12 +427,11 @@ function syncEditor(source?: UpstreamDefinition | null) {
   requestQueryText.value = stringifyRequestValue(form.request?.query);
   requestBodyText.value = stringifyRequestValue(form.request?.body);
   requestHeadersText.value = stringifyRequestValue(form.request?.headers);
-  fallbackUrlsText.value = (form.fallbackUrls || []).join("\n");
   tagsText.value = (form.tags || []).join(", ");
   resourceTypesText.value = (form.resourceTypes || []).join(", ");
-  retryMaxRetries.value = form.retry?.maxRetries ?? form.request?.retry?.maxRetries ?? 1;
-  retryDelayMs.value = form.retry?.delayMs ?? form.request?.retry?.delayMs ?? 300;
   error.value = "";
+  debugError.value = "";
+  debugReport.value = undefined;
 }
 
 watch(() => props.source, syncEditor);
@@ -422,12 +493,12 @@ function save() {
       throw new Error();
     }
   } catch {
-    error.value = "请输入不含账户凭据的 HTTPS 地址。";
+    error.value = "请输入不含账号凭据的 HTTPS 地址。";
     return;
   }
 
   if (!form.name.trim()) {
-    error.value = "请填写上游名称。";
+    error.value = "请填写来源名称。";
     return;
   }
 
@@ -456,17 +527,10 @@ function save() {
       throw new Error("Headers 必须是字符串键值 JSON。");
     }
     const splitList = (text: string) => [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
-    const fallbackUrls = splitList(fallbackUrlsText.value);
-    form.fallbackUrls = fallbackUrls;
     form.tags = splitList(tagsText.value);
     form.resourceTypes = splitList(resourceTypesText.value);
-    const maxRetries = Math.min(3, Math.max(0, Number(retryMaxRetries.value) || 0));
-    const delayMs = Math.min(5000, Math.max(0, Number(retryDelayMs.value) || 0));
-    form.retry = { maxRetries, delayMs };
     form.request = {
       ...(form.request || {}),
-      fallbackUrls,
-      retry: { maxRetries, delayMs },
       query: query as Record<string, unknown> | undefined,
       body,
       headers: headers as Record<string, string> | undefined,
@@ -487,71 +551,166 @@ function save() {
 
 <style scoped>
 .source-dialog {
+  width: min(1120px, calc(100vw - 48px));
+  max-width: none;
+  max-height: min(92dvh, 980px);
   overflow: hidden;
+  border-radius: 18px;
+}
+
+.source-dialog-readonly {
+  width: min(1180px, calc(100vw - 48px));
 }
 
 .editor-form {
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
-  max-height: min(88vh, 900px);
-  overflow-y: auto;
-  padding: 27px;
+  max-height: min(92dvh, 980px);
+  overflow: hidden;
+  padding: 0;
 }
 
 .editor-header {
-  position: sticky;
-  top: -27px;
-  z-index: 2;
-  margin: -27px -27px 22px;
-  padding: 27px 27px 17px;
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 0;
+  padding: 25px 30px 22px;
+  border-bottom: 1px solid #e7edf5;
+  background:
+    radial-gradient(circle at 88% 0%, rgba(219, 234, 254, 0.62), transparent 36%),
+    linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+}
+
+.editor-title-wrap {
+  min-width: 0;
+}
+
+.editor-title-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.editor-title-wrap h2 {
+  margin: 7px 0 0;
+}
+
+.editor-title-wrap p {
+  margin: 7px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.editor-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.editor-mode-badge.readonly {
+  border-color: #d9e2ec;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.editor-close-button {
+  margin-top: 1px;
+}
+
+.editor-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 30px 30px;
+  scrollbar-gutter: stable;
+}
+
+.editor-section {
+  padding: 20px;
+  border: 1px solid #e1e8f1;
+  border-radius: 13px;
   background: #fff;
+}
+
+.editor-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.editor-section-heading strong {
+  display: block;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.editor-section-heading p {
+  margin: 4px 0 0;
+  color: #7b899b;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.editor-section-index {
+  color: #bfdbfe;
+  font: 700 18px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .editor-form label {
   position: relative;
 }
 
-.source-kind-grid {
+.editor-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.editor-primary-grid {
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+}
+
+.editor-connection-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;
 }
 
-.reliability-grid {
-  align-items: start;
-  margin-bottom: 14px;
-}
-
-.reliability-grid > label {
-  margin-bottom: 0;
-}
-
-.retry-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: end;
+.editor-url-field {
+  margin-bottom: 0 !important;
 }
 
 .editor-meta,
 .editor-advanced,
-.editor-function {
-  border: 1px solid #dbe7f5;
-  border-radius: 10px;
-  background: #f8fbff;
-}
-
-.editor-meta {
-  margin-top: 14px;
-  padding: 13px 14px 14px;
-  border: 1px solid #dbe7f5;
-  border-radius: 10px;
-  background: #f8fbff;
-}
-
-.editor-advanced {
-  margin-top: 19px;
-  padding: 13px 14px 14px;
+.editor-function,
+.editor-debugger {
+  margin-top: 16px;
+  padding: 17px 18px 18px;
+  border: 1px solid #e1e8f1;
+  border-radius: 13px;
+  background: #f8fafc;
 }
 
 .editor-meta summary,
 .editor-advanced summary,
-.editor-function summary {
+.editor-function summary,
+.editor-debugger summary {
   color: #334155;
   cursor: pointer;
   font-size: 12px;
@@ -561,11 +720,13 @@ function save() {
 
 .editor-meta[open] summary,
 .editor-advanced[open] summary,
-.editor-function[open] summary {
+.editor-function[open] summary,
+.editor-debugger[open] summary {
   margin-bottom: 13px;
 }
 
 .request-config-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
 }
 
@@ -593,6 +754,10 @@ function save() {
   color: #7c8aa5;
   opacity: 1;
 }
+
+.debugger-help { margin-bottom: 14px !important; }
+
+.editor-debugger { background: #f5f8ff; }
 
 .editor-help {
   margin: 0;
@@ -707,15 +872,79 @@ function save() {
   display: none;
 }
 
+.editor-form .editor-footer {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 9px;
+  margin: 0;
+  padding: 16px 30px;
+  border-top: 1px solid #e7edf5;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 -10px 28px rgba(30, 64, 110, 0.045);
+  backdrop-filter: blur(10px);
+}
+
+@media (max-width: 980px) {
+  .source-dialog,
+  .source-dialog-readonly {
+    width: calc(100vw - 32px);
+  }
+
+  .editor-primary-grid,
+  .request-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .editor-connection-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .request-config-grid label:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 600px) {
+  .source-dialog,
+  .source-dialog-readonly {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
   .editor-form {
-    padding: 22px;
+    max-height: 100dvh;
   }
 
   .editor-header {
-    top: -22px;
-    margin: -22px -22px 18px;
-    padding: 22px 22px 14px;
+    padding: 20px 18px 17px;
+  }
+
+  .editor-content {
+    padding: 18px;
+  }
+
+  .editor-section {
+    padding: 16px;
+  }
+
+  .editor-primary-grid,
+  .editor-connection-grid,
+  .request-config-grid,
+
+  .request-config-grid label:last-child {
+    grid-column: auto;
+  }
+
+  .editor-form .editor-footer {
+    flex-wrap: wrap;
+    padding: 13px 18px;
   }
 
   .function-toolbar {

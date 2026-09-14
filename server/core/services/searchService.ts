@@ -27,6 +27,7 @@ import {
   type WarningInfo,
 } from "../utils/errors";
 import { buildSearchKeywordVariants } from "../utils/searchKeyword";
+import { logSearchSource } from "../utils/upstreamDebug";
 
 interface PluginSearchExecution {
   results: SearchResult[];
@@ -79,13 +80,13 @@ function createSearchId(): string {
   }
 }
 
-/** TG 频道失败的机器可读分类：抓取错误自带 tgKind，其余按网络失败归类。 */
+/** Telegram 频道失败的机器可读分类：抓取错误自带 tgKind，其余按网络失败归类。 */
 function tgChannelFailureKind(error: unknown): string {
   const kind = (error as { tgKind?: unknown } | null)?.tgKind;
   return typeof kind === "string" && kind ? kind : "network_error";
 }
 
-/** TG 频道失败的面向人原因短语（有界）。 */
+/** Telegram 频道失败的面向人原因短语（有界）。 */
 function tgChannelFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return message.slice(0, 300);
@@ -141,7 +142,7 @@ export class SearchService {
     if (typeof setInterval !== "function") return;
     this.healthSaveTimer = setInterval(() => {
       this.flushHealthSnapshot(store).catch(() => undefined);
-      // TG 频道健康与插件健康共用同一次落盘节奏（store 内只标脏，这里尽力写盘）。
+      // Telegram 频道健康与解析器健康共用同一次落盘节奏（store 内只标脏，这里尽力写盘）。
       flushTgChannelHealth();
     }, interval);
     // Health snapshots must not keep the process alive on shutdown.
@@ -354,7 +355,7 @@ export class SearchService {
     execution?: SearchExecution
   ): Promise<SearchResult[]> {
     if (execution?.signal.aborted) return [];
-    // 频道生效清单过滤：已停用（enabled=false）或已删除（deleted=true）的频道
+    // 频道生效清单过滤：已关闭（enabled=false）或已删除（deleted=true）的频道
     // 不参与正式搜索；入参同时做归一与非法用户名过滤。
     const chList = filterEffectiveTgChannels(Array.isArray(channels) ? channels : []);
     // 频道配置热更新：每频道策略/启停状态版本参与缓存 key，保存后下一次搜索立即重算。
@@ -409,7 +410,7 @@ export class SearchService {
       (channel: string, limitPerChannel: number, phase: "shallow" | "deep") => async () => {
         // 每频道超时策略：显式配置时覆盖全局默认（外层 searchTimeoutMs 预算仍然生效）。
         const channelTimeoutMs = getTgChannelPolicy(channel)?.timeoutMs ?? timeoutMs;
-        const scope = createAbortScope(channelTimeoutMs, `TG 频道 ${channel} 请求超时 (${channelTimeoutMs}ms)`, execution?.signal);
+        const scope = createAbortScope(channelTimeoutMs, `Telegram 频道 ${channel} 请求超时 (${channelTimeoutMs}ms)`, execution?.signal);
         const startedAt = Date.now();
         // 页面级告警（前几页成功、后续页失败）：任务仍会带部分结果返回，
         // 但频道健康要按失败记录，避免"整页抓不到"的频道显示为可用。
@@ -521,7 +522,7 @@ export class SearchService {
     const wanted = new Set(
       (plugins ?? []).map((value) => value?.toLowerCase()).filter(Boolean)
     );
-    // 已删除（垃圾箱）的上游不参与正式搜索
+    // 已删除（回收站）的来源不参与正式搜索
     const configuredIds = new Set(listConfiguredUpstreams().map((source) => source.id.toLowerCase()));
     const trashed = new Set(
       getSearchSettings().trashedPlugins
@@ -673,7 +674,7 @@ export class SearchService {
     run.execution.signal.throwIfAborted();
     // Reserve half-open probes only when the task actually gets a slot.
     if (!this.healthChecker.canExecute(name)) {
-      const error = new Error(`插件 ${name} 熔断中或正在恢复探测，暂不可用`);
+      const error = new Error(`解析器 ${name} 熔断中或正在恢复探测，暂不可用`);
       run.errorCollector.record(classifyError(error, name), "plugin_search");
       throw error;
     }
@@ -682,7 +683,8 @@ export class SearchService {
       Number(plugin.manifest.timeoutMs) || run.defaultTimeout
     );
     const startedAt = Date.now();
-    const scope = createAbortScope(timeoutMs, `插件 ${name} 请求超时 (${timeoutMs}ms)`, run.execution.signal);
+    logSearchSource("start", { source: name, keyword: run.keyword });
+    const scope = createAbortScope(timeoutMs, `解析器 ${name} 请求超时 (${timeoutMs}ms)`, run.execution.signal);
     let results: SearchResult[] = [];
     try {
       for (const [index, query] of run.variants.entries()) {
@@ -712,9 +714,11 @@ export class SearchService {
         ) break;
       }
       const limitedResults = results.slice(0, plugin.manifest.maxResults);
-      this.healthChecker.recordSuccess(name, Date.now() - startedAt, {
+      const elapsedMs = Date.now() - startedAt;
+      this.healthChecker.recordSuccess(name, elapsedMs, {
         resultCount: limitedResults.length,
       });
+      logSearchSource("success", { source: name, keyword: run.keyword, elapsedMs, resultCount: limitedResults.length });
       return limitedResults;
     } catch (error) {
       // A caller/global deadline is not an upstream outage; do not trip its circuit.
@@ -729,6 +733,7 @@ export class SearchService {
         });
         run.errorCollector.record(detail, "plugin_search");
       }
+      logSearchSource("error", { source: name, keyword: run.keyword, elapsedMs: Date.now() - startedAt, error });
       if (results.length) return results.slice(0, plugin.manifest.maxResults);
       throw error;
     } finally {

@@ -75,10 +75,10 @@ export function parseWithParserPlugin(
 ): SearchResult[] {
   validateParserCode(record.code);
   if (record.status !== "published" && !(options.allowUnpublished && record.status !== "archived")) {
-    throw new Error(`解析插件 ${record.id} 当前未发布或已停用`);
+    throw new Error(`解析器 ${record.id} 当前未发布或已关闭`);
   }
   if (record.manifest.format !== "auto" && record.manifest.format !== context.format) {
-    throw new Error(`解析插件 ${record.id} 需要 ${record.manifest.format}，当前响应是 ${context.format}`);
+    throw new Error(`解析器 ${record.id} 需要 ${record.manifest.format}，当前响应是 ${context.format}`);
   }
   // auto lets one TG/channel plugin handle both Telegram HTML and Jina
   // Markdown. The transform still receives the actual format in context.
@@ -91,10 +91,10 @@ export function parseWithParserPlugin(
   const sandbox = createContext({ payload, $, context: safeContext });
   const createScript = new Script(createTransformSource(record.code), { filename: `parser-plugin:${record.id}` });
   const transform = createScript.runInContext(sandbox, { timeout: record.manifest.timeoutMs });
-  if (typeof transform !== "function") throw new Error("解析插件必须返回一个函数");
+  if (typeof transform !== "function") throw new Error("解析器必须返回一个函数");
   (sandbox as Record<string, unknown>).transform = transform;
   const result = new Script("transform(payload, $, context)", { filename: `parser-plugin:${record.id}:invoke` })
     .runInContext(sandbox, { timeout: record.manifest.timeoutMs });
-  if (result && typeof result.then === "function") throw new Error("解析插件必须是同步函数，不允许异步网络请求");
+  if (result && typeof result.then === "function") throw new Error("解析器必须是同步函数，不允许异步网络请求");
   return normalizeResults(result, record, context);
 }

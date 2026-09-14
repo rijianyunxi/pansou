@@ -188,18 +188,26 @@ function normalizeResult(
   };
 }
 
+export interface InstructionExecutionTrace {
+  stage: string;
+  url: string;
+  method: string;
+  status: number | null;
+  elapsedMs: number;
+  bytes: number;
+  contentType?: string;
+  request?: {
+    url: string;
+    query: Record<string, string | string[]>;
+    headers: Record<string, string>;
+    body?: unknown;
+  };
+  error?: string;
+}
+
 export interface InstructionExecutionResult {
   results: SearchResult[];
-  traces: Array<{
-    stage: string;
-    url: string;
-    method: string;
-    status: number | null;
-    elapsedMs: number;
-    bytes: number;
-    contentType?: string;
-    error?: string;
-  }>;
+  traces: InstructionExecutionTrace[];
   /** Admin-only debug payload preview. */
   raw: string;
   rawTruncated: boolean;
@@ -235,6 +243,58 @@ interface RenderedRequest {
   method: "GET" | "POST";
 }
 
+const DEBUG_SENSITIVE_KEY = /(?:authorization|cookie|token|api[-_]?key|secret|password|passwd|credential|signature)/i;
+
+function redactDebugValue(value: unknown, secretValues: ReadonlySet<string>): unknown {
+  if (typeof value === "string" && secretValues.has(value)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((item) => redactDebugValue(item, secretValues));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+    key,
+    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactDebugValue(child, secretValues),
+  ]));
+}
+
+function requestDebugSnapshot(
+  rawUrl: string,
+  rendered: RenderedRequest,
+  secretValues: ReadonlySet<string>,
+) {
+  const url = new URL(rawUrl);
+  const query: Record<string, string | string[]> = {};
+  for (const key of new Set(url.searchParams.keys())) {
+    const values = url.searchParams.getAll(key).map((value) => (
+      DEBUG_SENSITIVE_KEY.test(key) || secretValues.has(value) ? "[REDACTED]" : value
+    ));
+    query[key] = values.length > 1 ? values : values[0] || "";
+    if (DEBUG_SENSITIVE_KEY.test(key)) url.searchParams.set(key, "[REDACTED]");
+  }
+  const headers = Object.fromEntries(Object.entries(rendered.headers).map(([key, value]) => [
+    key,
+    DEBUG_SENSITIVE_KEY.test(key) || secretValues.has(value) ? "[REDACTED]" : value,
+  ]));
+  let body: unknown = undefined;
+  if (rendered.body !== undefined) {
+    const contentType = rendered.headers["content-type"] || "";
+    try {
+      body = contentType.includes("application/json")
+        ? JSON.parse(rendered.body)
+        : contentType.includes("application/x-www-form-urlencoded")
+          ? Object.fromEntries(new URLSearchParams(rendered.body))
+          : rendered.body;
+    } catch {
+      body = rendered.body;
+    }
+    body = redactDebugValue(body, secretValues);
+  }
+  return {
+    url: url.toString(),
+    query,
+    headers,
+    ...(body !== undefined ? { body } : {}),
+  };
+}
+
 /** Stage-extracted values must be safe to interpolate into URLs and headers. */
 function sanitizeStageVar(value: unknown, path: string): string {
   const textValue = text(value).trim();
@@ -265,6 +325,8 @@ export async function executeInstructions(
     budget?: ExecutionBudgetOptions;
     /** Optional admin-published parser plugin for the final response. */
     parser?: InstructionParserOverride;
+    /** Receives each completed request attempt, including failures. */
+    onTrace?: (trace: InstructionExecutionTrace) => void;
   } = {}
 ): Promise<InstructionExecutionResult> {
   const definition = validateInstructionDefinition(rawDefinition);
@@ -304,6 +366,7 @@ export async function executeInstructions(
     limit: options.limit ?? definition.manifest.maxResults,
   };
   const secretValues = options.secrets ?? {};
+  const debugSecretValues = new Set(Object.values(secretValues).filter(Boolean));
 
   const runtimeVariables = (
     stageVars: Record<string, string>,
@@ -370,7 +433,11 @@ export async function executeInstructions(
     return { url: requestUrl, fallbackUrls: requestUrls.slice(1), headers, body, method: spec.method };
   };
 
-  const traces: InstructionExecutionResult["traces"] = [];
+  const traces: InstructionExecutionTrace[] = [];
+  const recordTrace = (trace: InstructionExecutionTrace): void => {
+    traces.push(trace);
+    options.onTrace?.(trace);
+  };
   const results: SearchResult[] = [];
   const visited = new Set<string>();
 
@@ -388,7 +455,7 @@ export async function executeInstructions(
   const assertRequestBudget = (): void => {
     if (requestsUsed >= maxRequests) {
       throw new ExecutionBudgetError(
-        `插件请求预算超限: budget.maxTotalRequests=${maxRequests}，本次调用已发起 ${requestsUsed} 个请求`,
+        `解析器请求预算超限: budget.maxTotalRequests=${maxRequests}，本次调用已发起 ${requestsUsed} 个请求`,
         "budget.maxTotalRequests"
       );
     }
@@ -397,7 +464,7 @@ export async function executeInstructions(
     bytesUsed += responseBytes + (requestBody ? Buffer.byteLength(requestBody) : 0);
     if (bytesUsed > maxBytes) {
       throw new ExecutionBudgetError(
-        `插件传输预算超限: budget.maxTotalBytes=${maxBytes}，本次调用已传输 ${bytesUsed} 字节`,
+        `解析器传输预算超限: budget.maxTotalBytes=${maxBytes}，本次调用已传输 ${bytesUsed} 字节`,
         "budget.maxTotalBytes"
       );
     }
@@ -439,7 +506,7 @@ export async function executeInstructions(
               allowHttp: request.allowInsecureHttp,
             });
             recordTransfer(payload.bytes, rendered.body);
-            traces.push({
+            recordTrace({
               stage,
               url: payload.url.toString(),
               method: rendered.method,
@@ -447,16 +514,18 @@ export async function executeInstructions(
               elapsedMs: payload.elapsedMs,
               bytes: payload.bytes,
               contentType: payload.contentType,
+              request: requestDebugSnapshot(url, rendered, debugSecretValues),
             });
             return payload;
           } catch (error) {
-            traces.push({
+            recordTrace({
               stage,
               url,
               method: rendered.method,
               status: null,
               elapsedMs: Date.now() - attemptStarted,
               bytes: 0,
+              request: requestDebugSnapshot(url, rendered, debugSecretValues),
               error: error instanceof Error ? error.message : String(error),
             });
             throw error;
@@ -471,13 +540,14 @@ export async function executeInstructions(
     } catch (error) {
       // Preserve the original stage timing for callers that display diagnostics.
       if (!traces.some((trace) => trace.stage === stage)) {
-        traces.push({
+        recordTrace({
           stage,
           url: rendered.url.toString(),
           method: rendered.method,
           status: null,
           elapsedMs: Date.now() - started,
           bytes: 0,
+          request: requestDebugSnapshot(rendered.url.toString(), rendered, debugSecretValues),
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -819,7 +889,7 @@ export async function executeInstructions(
       const appended = appendPayloadResults(pagePayload, page);
       if (response.format === "json" && appended === 0) break;
     } catch (error) {
-      traces.push({
+      recordTrace({
         stage: `page:${page}`,
         url: pagePayload.url.toString(),
         method: next.method,

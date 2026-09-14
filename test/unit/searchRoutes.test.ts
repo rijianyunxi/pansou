@@ -89,6 +89,9 @@ it("sends only unseen result deltas and a summary-only complete event", async ()
     title: id,
     content: "",
     links: [{ type: "quark", url, password: "" }],
+    source: "plugin" as const,
+    pluginId: "plugin-one",
+    pluginVersion: "1.0.0",
   });
   search.mockImplementationOnce((...args) => {
     const onSourceSuccess = args[9].onSourceSuccess;
@@ -132,14 +135,60 @@ it("sends only unseen result deltas and a summary-only complete event", async ()
   expect(resultEvents[0]!.data.data.update.results.map((item: any) => item.unique_id)).toEqual(["first", "second"]);
   expect(resultEvents[1]!.data.data.update.results).toEqual([]);
   expect(resultEvents[2]!.data.data.update.results.map((item: any) => item.unique_id)).toEqual(["third"]);
+  for (const event of resultEvents) {
+    for (const item of event.data.data.update.results) {
+      expect(item).not.toHaveProperty("source");
+      expect(item).not.toHaveProperty("pluginId");
+      expect(item).not.toHaveProperty("pluginVersion");
+    }
+  }
 
   const completeEvent = blocks.find((item) => item.event === "complete")!;
-  expect(completeEvent.data.data).toEqual({
-    total: 3,
-    meta: { registryVersion: 7, pluginVersions: {} },
-  });
+  expect(completeEvent.data.data).toEqual({ total: 3 });
   expect(completeEvent.data.data).not.toHaveProperty("results");
   expect(completeEvent.data.data).not.toHaveProperty("items");
+});
+
+
+it("returns SSE diagnostics when debug=1", async () => {
+  const debugResult = {
+    message_id: "debug",
+    unique_id: "debug",
+    channel: "source",
+    datetime: "2026-09-14T00:00:00.000Z",
+    title: "debug",
+    content: "",
+    links: [{ type: "quark", url: "https://debug", password: "" }],
+    source: "plugin",
+    pluginId: "plugin-one",
+    pluginVersion: "1.0.0",
+  };
+  search.mockImplementationOnce((...args) => {
+    args[9].onSourceSuccess({
+      source: { kind: "plugin", id: "plugin-one", version: "1.0.0" },
+      request: { keyword: "test", phase: "shallow" },
+      results: [debugResult],
+    });
+    return Promise.resolve({
+      response: { total: 1, meta: { registryVersion: 7, pluginVersions: { "plugin-one": "1.0.0" } } },
+      warnings: [{ source: "plugin:other", message: "timeout" }],
+    });
+  });
+
+  const text = await (await fetch(`${base}/get?kw=test&debug=1`)).text();
+  const blocks = text.split(/\r?\n\r?\n/).filter(Boolean).map((block) => ({
+    event: block.match(/^event: (.+)$/m)?.[1],
+    data: JSON.parse(block.match(/^data: (.+)$/m)?.[1] || "null"),
+  }));
+  const resultEvent = blocks.find((item) => item.event === "result")!;
+  expect(resultEvent.data.data.update.results[0]).toMatchObject({
+    source: "plugin",
+    pluginId: "plugin-one",
+    pluginVersion: "1.0.0",
+  });
+  const completeEvent = blocks.find((item) => item.event === "complete")!;
+  expect(completeEvent.data.data.meta).toEqual({ registryVersion: 7, pluginVersions: { "plugin-one": "1.0.0" } });
+  expect(completeEvent.data.warnings).toEqual([{ source: "plugin:other", message: "timeout" }]);
 });
 
 it.each(["GET", "POST"])("%s only mode with no channels fails before scheduling", async (method) => {

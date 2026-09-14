@@ -1,20 +1,20 @@
 <template>
-  <section class="sources-panel parser-market" aria-label="解析插件市场">
+  <section class="sources-panel parser-market" aria-label="解析器管理">
     <header class="market-header">
       <div class="market-title">
-        <span class="section-kicker">PLUGIN REGISTRY</span>
+        <span class="section-kicker">SOURCE PARSERS</span>
         <div class="market-title-line">
-          <h2>解析插件市场</h2>
-          <span class="market-live"><span class="market-live-dot"></span>SQLite 实时配置</span>
+          <h2>解析器管理</h2>
+          <span class="market-live"><span class="market-live-dot"></span>实时配置</span>
         </div>
-        <p>统一管理请求配置与解析函数。</p>
+        <p>集中管理来源请求配置与解析规则。</p>
       </div>
 
     </header>
 
-    <div class="market-stats" aria-label="插件统计">
+    <div class="market-stats" aria-label="解析器统计">
       <div class="market-stat">
-        <span class="market-stat-label">全部来源</span>
+        <span class="market-stat-label">全部解析器</span>
         <strong>{{ marketItems.length }}</strong>
       </div>
       <div class="market-stat">
@@ -27,11 +27,11 @@
       </div>
     </div>
 
-    <form class="market-query-panel" aria-label="插件查询条件" @submit.prevent="applyQuery">
+    <form class="market-query-panel" aria-label="解析器查询条件" @submit.prevent="applyQuery">
       <div class="query-panel-heading">
         <div>
           <span class="section-kicker">FILTERS</span>
-          <strong>筛选插件</strong>
+          <strong>筛选解析器</strong>
         </div>
         <span class="query-result">当前显示 {{ filteredItems.length }} / {{ marketItems.length }}</span>
       </div>
@@ -40,7 +40,7 @@
           <span>关键词</span>
           <span class="input-with-icon">
             <ConsoleIcon name="search" :size="16" />
-            <input v-model="queryForm.keyword" type="search" placeholder="搜索名称、ID 或说明" aria-label="搜索插件名称、ID 或说明" />
+            <input v-model="queryForm.keyword" type="search" placeholder="搜索名称、ID 或描述" aria-label="搜索解析器名称、ID 或说明" />
           </span>
         </label>
         <label>
@@ -49,7 +49,7 @@
             <option value="">全部状态</option>
             <option value="draft">草稿</option>
             <option value="published">已发布</option>
-            <option value="disabled">已停用</option>
+            <option value="disabled">已关闭</option>
             <option value="archived">已删除</option>
           </select>
         </label>
@@ -65,11 +65,11 @@
         </label>
         <label>
           <span>目标</span>
-          <select v-model="queryForm.target" aria-label="按目标筛选">
+          <select v-model="queryForm.target" aria-label="按适用范围筛选">
             <option value="">全部目标</option>
-            <option value="upstream">上游</option>
-            <option value="telegram">TG 频道</option>
-            <option value="both">上游 + TG</option>
+            <option value="upstream">来源</option>
+            <option value="telegram">Telegram 频道</option>
+            <option value="both">来源 + 频道</option>
           </select>
         </label>
       </div>
@@ -93,10 +93,10 @@
       </div>
     </form>
 
-    <div class="market-actions" aria-label="插件批量操作">
+    <div class="market-actions" aria-label="解析器批量操作">
       <div class="selection-summary">
-        <span class="action-label">列表操作</span>
-        <span class="selection-count">{{ selectedIds.length ? `已选 ${selectedIds.length} 个` : "未选择插件" }}</span>
+        <span class="action-label">批量操作</span>
+        <span class="selection-count">{{ selectedIds.length ? `已选 ${selectedIds.length} 个` : "未选择解析器" }}</span>
         <span v-if="boundSelected.length" class="selection-warning">{{ boundSelected.length }} 个已绑定，不能删除</span>
       </div>
       <div class="market-action-buttons">
@@ -107,7 +107,7 @@
           class="button danger-button"
           type="button"
           :disabled="bulkRunning || !deletableSelected.length"
-          :title="boundSelected.length ? '已绑定插件不能删除，请先解除绑定' : '删除后会移入垃圾箱，可在垃圾箱中恢复'"
+          :title="boundSelected.length ? '已绑定解析器不能删除，请先解除绑定' : '删除后会移入回收站，可在回收站中恢复'"
           @click="deleteSelected"
         >
           <ConsoleIcon name="trash" :size="15" />{{ bulkRunning ? "删除中…" : "删除" }}
@@ -134,12 +134,12 @@
 
       <div v-if="loading" class="archive-empty plugin-empty">
         <span class="spinner"></span>
-        <span>正在加载插件列表…</span>
+        <span>正在加载解析器列表…</span>
       </div>
       <div v-else-if="!filteredItems.length" class="archive-empty plugin-empty">
         <ConsoleIcon name="search" :size="28" />
         <strong>{{ marketItems.length ? "没有匹配的来源" : "还没有配置来源" }}</strong>
-        <span>{{ marketItems.length ? "换一个关键词，或调整筛选条件。" : "先在上游接口中配置来源。" }}</span>
+        <span>{{ marketItems.length ? "换一个关键词，或调整筛选条件。" : "先在来源管理中配置来源。" }}</span>
         <button v-if="hasFilters" class="button secondary small" type="button" @click="clearFilters">清空查询条件</button>
       </div>
 
@@ -152,12 +152,12 @@
                   type="checkbox"
                   :checked="allVisibleSelected"
                   :indeterminate="someVisibleSelected && !allVisibleSelected"
-                  aria-label="选择当前显示的插件"
+                  aria-label="选择当前显示的解析器"
                   @change="toggleAllVisible"
                 />
               </th>
-              <th>插件 / 来源</th>
-              <th class="binding-column">已绑定对象</th>
+              <th>解析器 / 来源</th>
+              <th class="binding-column">已绑定来源</th>
               <th>请求配置</th>
               <th>transform</th>
               <th>状态</th>
@@ -175,19 +175,19 @@
                   :aria-label="`选择 ${item.manifest.name}`"
                   @change="toggleSelection(item.id)"
                 />
-                <span v-else class="source-type-mark" aria-label="配置插件">↳</span>
+                <span v-else class="source-type-mark" aria-label="配置解析器">↳</span>
               </td>
               <template v-if="item.kind === 'configured-upstream'">
                 <td>
                   <div class="plugin-identity">
-                    <strong>{{ item.source.name }} <span class="configured-tag">上游插件</span></strong>
+                    <strong>{{ item.source.name }} <span class="configured-tag">来源解析器</span></strong>
                     <code>{{ item.source.id }}</code>
                     <span class="plugin-description" :title="item.source.url">{{ item.source.description || item.source.url }}</span>
                   </div>
                 </td>
                 <td class="binding-cell">
-                  <div class="plugin-binding-tags" aria-label="插件绑定">
-                    <span class="binding-tag upstream"><span class="binding-tag-kind">上游</span>{{ item.source.id }}</span>
+                  <div class="plugin-binding-tags" aria-label="来源绑定">
+                    <span class="binding-tag upstream"><span class="binding-tag-kind">来源</span>{{ item.source.id }}</span>
                   </div>
                 </td>
                 <td>
@@ -199,15 +199,15 @@
                 <td>
                   <div class="transform-cell">
                     <code>transform(payload, $, context)</code>
-                    <span>{{ item.source.transform ? '可编辑函数' : '兼容旧函数' }}</span>
+                    <span>{{ item.source.transform ? '可编辑解析规则' : '兼容旧函数' }}</span>
                   </div>
                 </td>
-                <td><span class="status-badge" :class="item.status">{{ item.status === 'disabled' ? '已停用' : '已启用' }}</span></td>
+                <td><span class="status-badge" :class="item.status">{{ item.status === 'disabled' ? '已关闭' : '已开启' }}</span></td>
                 <td><span class="updated-time">实时</span></td>
                 <td class="action-column">
                   <div class="plugin-actions">
                     <button class="button secondary small" type="button" @click="emit('edit-upstream', item.source.id)">
-                      <ConsoleIcon name="edit" :size="14" />编辑函数
+                      <ConsoleIcon name="edit" :size="14" />编辑解析规则
                     </button>
                   </div>
                 </td>
@@ -215,14 +215,14 @@
               <template v-else-if="item.kind === 'configured-telegram'">
                 <td>
                   <div class="plugin-identity">
-                    <strong>@{{ item.channel }} <span class="configured-tag">TG 插件</span></strong>
+                    <strong>@{{ item.channel }} <span class="configured-tag">Telegram 解析器</span></strong>
                     <code>{{ item.id }}</code>
                     <span class="plugin-description">Telegram 频道请求与解析函数</span>
                   </div>
                 </td>
                 <td class="binding-cell">
-                  <div class="plugin-binding-tags" aria-label="插件绑定">
-                    <span class="binding-tag telegram"><span class="binding-tag-kind">TG</span>@{{ item.channel }}</span>
+                  <div class="plugin-binding-tags" aria-label="来源绑定">
+                    <span class="binding-tag telegram"><span class="binding-tag-kind">Telegram</span>@{{ item.channel }}</span>
                     <span v-if="item.parserId" class="binding-tag upstream"><span class="binding-tag-kind">函数</span>{{ item.parserId }}</span>
                   </div>
                 </td>
@@ -238,12 +238,12 @@
                     <span>{{ item.parserId ? `已绑定 ${item.parserId}` : '使用配置默认函数' }}</span>
                   </div>
                 </td>
-                <td><span class="status-badge published">已启用</span></td>
+                <td><span class="status-badge published">已开启</span></td>
                 <td><span class="updated-time">实时</span></td>
                 <td class="action-column">
                   <div class="plugin-actions">
                     <button class="button secondary small" type="button" @click="emit('edit-telegram', item.channel)">
-                      <ConsoleIcon name="edit" :size="14" />编辑函数
+                      <ConsoleIcon name="edit" :size="14" />编辑解析规则
                     </button>
                   </div>
                 </td>
@@ -257,13 +257,13 @@
                   </div>
                 </td>
                 <td class="binding-cell">
-                  <div v-if="bindingsFor(item.id).length" class="plugin-binding-tags" aria-label="已绑定对象">
+                  <div v-if="bindingsFor(item.id).length" class="plugin-binding-tags" aria-label="已绑定来源">
                     <span v-for="binding in bindingsFor(item.id)" :key="`${binding.scope}:${binding.id}`" class="binding-tag" :class="binding.scope">
-                      <span class="binding-tag-kind">{{ binding.scope === 'telegram' ? 'TG' : '上游' }}</span>
+                      <span class="binding-tag-kind">{{ binding.scope === 'telegram' ? 'Telegram' : '来源' }}</span>
                       {{ binding.scope === 'telegram' ? `@${binding.id}` : binding.id }}
                     </span>
                   </div>
-                  <span v-else class="no-binding">未绑定</span>
+                  <span v-else class="no-binding">未绑定来源</span>
                 </td>
                 <td>
                   <div class="version-cell">
@@ -288,11 +288,11 @@
                     <button class="button secondary small" type="button" :disabled="!!busyAction" @click="edit(item)">
                       <ConsoleIcon name="edit" :size="14" />编辑
                     </button>
-                    <button v-if="item.status === 'disabled'" class="button primary small" type="button" :disabled="!!busyAction" @click="action(item, 'enable')">启用</button>
+                    <button v-if="item.status === 'disabled'" class="button primary small" type="button" :disabled="!!busyAction" @click="action(item, 'enable')">开启</button>
                     <button v-else-if="item.status === 'archived'" class="button primary small" type="button" :disabled="!!busyAction" @click="action(item, 'restore')">恢复</button>
                     <button v-else-if="item.status !== 'published' || item.publishedVersion !== item.manifest.version" class="button primary small" type="button" :disabled="!!busyAction" @click="action(item, 'publish')">{{ item.status === 'published' ? '发布新版本' : '发布' }}</button>
-                    <button v-else class="button secondary small" type="button" :disabled="!!busyAction" @click="action(item, 'disable')">停用</button>
-                    <button v-if="item.status !== 'archived'" class="button danger-button small" type="button" :disabled="!!busyAction || isBound(item.id)" :title="isBound(item.id) ? '已绑定到上游或 TG 频道，解除绑定后才能删除' : '删除并移入垃圾箱'" @click="action(item, 'archive')">删除</button>
+                    <button v-else class="button secondary small" type="button" :disabled="!!busyAction" @click="action(item, 'disable')">关闭</button>
+                    <button v-if="item.status !== 'archived'" class="button danger-button small" type="button" :disabled="!!busyAction || isBound(item.id)" :title="isBound(item.id) ? '已绑定到来源或 Telegram 频道，解除绑定后才能删除' : '删除并移入回收站'" @click="action(item, 'archive')">删除</button>
                   </div>
                 </td>
               </template>
@@ -308,11 +308,11 @@
       <form class="plugin-editor-form" @submit.prevent="save">
         <header class="plugin-editor-header">
           <div>
-            <span class="editor-kicker">PARSER PLUGIN</span>
-            <h2 id="plugin-editor-title">{{ editing ? "编辑解析插件" : "新增解析插件" }}</h2>
-            <p>{{ editing ? "修改当前草稿并保存为新的可发布版本。" : "创建一个解析器草稿，保存后再进行样本测试与发布。" }}</p>
+            <span class="editor-kicker">SOURCE PARSER</span>
+            <h2 id="plugin-editor-title">{{ editing ? "编辑解析器" : "新增解析器" }}</h2>
+            <p>{{ editing ? "修改草稿并保存为新的可发布版本。" : "创建解析器草稿，保存后进行样本测试并发布。" }}</p>
           </div>
-          <button class="icon-button" type="button" aria-label="关闭插件编辑" @click="closeEditor">
+          <button class="icon-button" type="button" aria-label="关闭解析器编辑" @click="closeEditor">
             <ConsoleIcon name="close" :size="18" />
           </button>
         </header>
@@ -343,9 +343,9 @@
             <label>
               目标
               <select v-model="draft.manifest.target">
-                <option value="upstream">上游</option>
-                <option value="telegram">TG 频道</option>
-                <option value="both">上游 + TG</option>
+                <option value="upstream">来源</option>
+                <option value="telegram">Telegram 频道</option>
+                <option value="both">来源 + 频道</option>
               </select>
             </label>
             <label>
@@ -374,11 +374,11 @@
                 <option value="text">纯文本 / Markdown</option>
               </select>
             </label>
-            <span class="field-hint">auto 插件必须选择本次样本的实际格式。</span>
+            <span class="field-hint">自动格式必须选择本次样本的实际格式。</span>
           </div>
           <label>
             样本原文（可选，用于发布前测试）
-            <textarea v-model="sampleRawBody" rows="5" spellcheck="false" placeholder="粘贴上游 HTML / JSON / Markdown 原文" />
+            <textarea v-model="sampleRawBody" rows="5" spellcheck="false" placeholder="粘贴来源 HTML / JSON / Markdown 原文" />
           </label>
           <p v-if="testMessage" class="field-hint test-message">{{ testMessage }}</p>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
@@ -408,7 +408,7 @@ import type {
   ParserPluginStatus,
   ParserPluginTarget,
 } from "../../server/core/parsers/types";
-import type { UpstreamDefinition } from "../../config/upstreams";
+import type { UpstreamDefinition } from "../../types/source";
 
 type PluginFilter = "" | ParserPluginStatus;
 type PluginAction = "enable" | "restore" | "publish" | "disable" | "archive";
@@ -629,7 +629,7 @@ function toggleAllVisible(event: Event) {
 }
 
 function statusLabel(status: string) {
-  return ({ draft: "草稿", published: "已发布", disabled: "已停用", archived: "已删除" } as Record<string, string>)[status] || status;
+  return ({ draft: "草稿", published: "已发布", disabled: "已关闭", archived: "已删除" } as Record<string, string>)[status] || status;
 }
 
 function formatLabel(format: string) {
@@ -637,7 +637,7 @@ function formatLabel(format: string) {
 }
 
 function targetLabel(target: string) {
-  return ({ upstream: "上游", telegram: "TG 频道", both: "上游 + TG" } as Record<string, string>)[target] || target;
+  return ({ upstream: "来源", telegram: "Telegram 频道", both: "来源 + 频道" } as Record<string, string>)[target] || target;
 }
 
 function compactUrl(value: string) {
@@ -681,7 +681,7 @@ async function load() {
     };
     selectedIds.value = selectedIds.value.filter((id) => plugins.value.some((plugin) => plugin.id === id));
   } catch (reason: any) {
-    error.value = reason?.data?.statusMessage || reason?.message || "加载插件失败";
+    error.value = reason?.data?.statusMessage || reason?.message || "加载解析器失败";
   } finally {
     loading.value = false;
   }
@@ -733,10 +733,10 @@ async function save() {
 
 async function action(plugin: ParserPluginRecord, name: PluginAction) {
   if (name === "archive" && isBound(plugin.id)) {
-    error.value = `插件「${plugin.manifest.name}」已绑定到上游或 TG 频道，解除绑定后才能删除。`;
+    error.value = `解析器「${plugin.manifest.name}」已绑定到来源或 Telegram 频道，解除绑定后才能删除。`;
     return;
   }
-  if (name === "archive" && !window.confirm(`确定删除「${plugin.manifest.name}」吗？删除后可在垃圾箱中恢复。`)) return;
+  if (name === "archive" && !window.confirm(`确定删除「${plugin.manifest.name}」吗？删除后可在回收站中恢复。`)) return;
   busyAction.value = `${plugin.id}:${name}`;
   error.value = "";
   try {
@@ -753,7 +753,7 @@ async function action(plugin: ParserPluginRecord, name: PluginAction) {
 async function deleteSelected() {
   if (bulkRunning.value || !deletableSelected.value.length) return;
   const targets = [...deletableSelected.value];
-  if (!window.confirm(`确定删除选中的 ${targets.length} 个解析插件吗？删除后可在垃圾箱中恢复。`)) return;
+  if (!window.confirm(`确定删除选中的 ${targets.length} 个解析器吗？删除后可在回收站中恢复。`)) return;
   bulkRunning.value = true;
   error.value = "";
   try {
@@ -807,7 +807,7 @@ function parseExportedJson(text: string): any {
   try {
     return JSON.parse(moduleMatch ? moduleMatch[1]!.trim() : trimmed);
   } catch {
-    throw new Error("仅支持 JSON 或本页面导出的 JS 配置文件，不会执行任意 JavaScript。");
+    throw new Error("仅支持 JSON 或本页导出的 JS 配置文件，不会执行任意 JavaScript。");
   }
 }
 async function importPlugins(event: Event) {
@@ -818,7 +818,7 @@ async function importPlugins(event: Event) {
   try {
     const parsed = parseExportedJson(await file.text());
     const pluginsToImport = Array.isArray(parsed) ? parsed : parsed?.plugins;
-    if (!Array.isArray(pluginsToImport) || !pluginsToImport.length) throw new Error("插件包必须包含 plugins 数组");
+    if (!Array.isArray(pluginsToImport) || !pluginsToImport.length) throw new Error("解析器包必须包含 plugins 数组");
     await $fetch("/api/parser-plugins/import", { method: "POST", body: { plugins: pluginsToImport } });
     await load();
     error.value = "";

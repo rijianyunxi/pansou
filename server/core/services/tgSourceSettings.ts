@@ -73,7 +73,7 @@ export interface TgSourceSettings {
   transform: string;
   /** Additional TG-compatible URL templates tried after directTemplate. */
   fallbackUrls: string[];
-  /** Bounded retry policy applied independently to every TG endpoint. */
+  /** Bounded retry policy applied independently to every Telegram endpoint. */
   retry: { maxRetries: number; delayMs: number };
   /** Configuration version exposed to parser results and diagnostics. */
   parserVersion: string;

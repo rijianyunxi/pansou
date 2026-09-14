@@ -62,7 +62,7 @@ export async function runWithFallbackRetry<T>(
   } = {},
 ): Promise<T> {
   const candidates = [...new Set(urls.map((url) => url.trim()).filter(Boolean))];
-  if (!candidates.length) throw new Error("至少需要一个上游 URL");
+  if (!candidates.length) throw new Error("至少需要一个来源 URL");
   const maxRetries = boundedInteger(options.maxRetries, 0, MAX_RETRIES);
   const delayMs = boundedInteger(options.delayMs, 0, MAX_DELAY_MS);
   const attempts: FallbackAttempt[] = [];
@@ -106,7 +106,7 @@ export async function runWithFallbackRetry<T>(
   }
 
   throw new FallbackExhaustedError(
-    `上游主地址及 ${Math.max(0, candidates.length - 1)} 个备用地址均失败：${errorText(lastError)}`,
+    `来源主地址及 ${Math.max(0, candidates.length - 1)} 个备用地址均失败：${errorText(lastError)}`,
     attempts,
     lastError,
   );

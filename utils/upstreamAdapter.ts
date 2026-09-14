@@ -1,4 +1,4 @@
-import type { AdapterMapping } from "../config/upstreams";
+import type { AdapterMapping } from "../types/source";
 import type { SearchResult } from "../server/core/types/models";
 
 /** Deliberately restricted dot paths; never evaluates expressions or follows prototypes. */

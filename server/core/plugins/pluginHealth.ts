@@ -4,7 +4,7 @@ export interface PluginSuccessOptions {
   resultCount?: number;
   /**
    * 五维扩展（全部可选，缺省等价于 "该层通过"）：
-   * - businessOk: 上游业务状态码是否正常；显式 false 时业务维度记为失败。
+   * - businessOk: 来源业务状态码是否正常；显式 false 时业务维度记为失败。
    * - parseOk: 响应结构是否可解析；显式 false 时解析维度记为失败。
    * - httpStatus: 已知的 HTTP 状态码（信息性记录）。
    */
@@ -97,7 +97,7 @@ export const MAX_HISTORY_BUCKETS = 24;
 export const MAX_DIMENSION_SAMPLES = 50;
 /** 每个小时桶内最多区分的失败分类数。 */
 export const MAX_BUCKET_CATEGORIES = 6;
-/** 每个插件最多保留的错误分类数（累计 errorCounts）。 */
+/** 每个解析器最多保留的错误分类数（累计 errorCounts）。 */
 export const MAX_ERROR_CATEGORIES = 16;
 /** 单条错误消息在维度/状态中保留的最大长度。 */
 export const MAX_ERROR_MESSAGE_LENGTH = 300;

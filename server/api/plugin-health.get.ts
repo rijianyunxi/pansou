@@ -10,7 +10,7 @@ import {
   type PluginHealthStatus,
 } from "../core/plugins/pluginHealth";
 
-/** 跨插件聚合的每小时趋势：复用有界归并逻辑，桶数与分类数不会超出上限。 */
+/** 跨解析器聚合的每小时趋势：复用有界归并逻辑，桶数与分类数不会超出上限。 */
 function aggregateTrend(plugins: PluginHealthStatus[]): {
   windowHours: number;
   buckets: PluginHealthHourlyBucket[];
@@ -23,7 +23,7 @@ function aggregateTrend(plugins: PluginHealthStatus[]): {
   };
 }
 
-/** 各维度处于每种状态的插件数，供概览快速定位薄弱层。 */
+/** 各维度处于每种状态的解析器数，供概览快速定位薄弱层。 */
 function dimensionSummary(plugins: PluginHealthStatus[]): Record<
   PluginDimensionKey,
   Record<PluginDimensionState, number>
@@ -64,7 +64,7 @@ export default defineEventHandler(() => {
   } catch {
     return {
       code: -1,
-      message: "获取插件健康状态失败",
+      message: "获取解析器健康状态失败",
       data: null,
     };
   }

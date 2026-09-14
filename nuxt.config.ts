@@ -1,6 +1,4 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
-import channelsConfig from "./config/channels.json";
-
 const requestedSearchTimeout = Number(process.env.NUXT_SEARCH_TIMEOUT_MS);
 const searchTimeoutMs = Number.isFinite(requestedSearchTimeout) && requestedSearchTimeout >= 1_000
   ? Math.min(120_000, Math.round(requestedSearchTimeout))
@@ -10,6 +8,8 @@ export default defineNuxtConfig({
   // Allow dev, typecheck, and build commands to run without replacing each other's
   // generated Nuxt runtime in the same checkout.
   buildDir: process.env.PANHUB_BUILD_DIR || ".nuxt",
+  // 工作区中的临时截图/替换文件不是应用页面，避免被 Nuxt typecheck 扫描。
+  ignore: ["**/admin-index.vue替换_*.vue"],
   compatibilityDate: "2025-07-15",
   devtools: { enabled: false },
   app: {
@@ -86,13 +86,8 @@ export default defineNuxtConfig({
     // server-only 配置
     searchPassword: process.env.SEARCH_PASSWORD || "",
     adminPassword: process.env.ADMIN_PASSWORD || "",
-    priorityChannels: channelsConfig.priorityChannels,
-    defaultChannels: channelsConfig.defaultChannels,
-    defaultConcurrency: channelsConfig.defaultConcurrency,
-    pluginTimeoutMs: channelsConfig.pluginTimeoutMs,
     searchTimeoutMs,
     cacheEnabled: true,
-    cacheTtlMinutes: channelsConfig.cacheTtlMinutes,
     public: {
       apiBase: "/api",
       siteUrl: "https://panhub.shenzjd.com",

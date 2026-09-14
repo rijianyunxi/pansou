@@ -1,71 +1,71 @@
 <template>
-  <section class="sources-panel tg-manager" aria-label="TG 频道管理">
+  <section class="sources-panel tg-manager" aria-label="Telegram 频道来源">
     <header class="tg-manager-header">
       <div>
-        <h2>Telegram 插件</h2>
-        <p>每个频道都是一个请求 + transform 插件。</p>
+        <h2>Telegram 频道来源</h2>
+        <p>每个 Telegram 频道都可以单独配置请求参数和解析规则。</p>
       </div>
-      <span class="field-hint">请求配置与 transform 可在频道行展开</span>
+      <span class="field-hint">请求与解析配置可在频道行展开</span>
     </header>
     <div class="manager-body">
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-      <p v-if="loading" role="status">正在读取服务端频道配置…</p>
+      <p v-if="loading" role="status">正在加载频道配置…</p>
       <template v-else-if="loaded">
         <div class="tg-master">
           <label class="tg-master-switch">
-            <button class="toggle" :class="{ on: systemEnabled }" type="button" role="switch" :aria-checked="systemEnabled" :disabled="saving" aria-label="TG 参与本站搜索" @click="toggleSystem"><span></span></button>
-            <div><strong>TG 参与本站搜索</strong><small>关闭后本站搜索不再追加已配置频道；不影响用户搜索个人频道。</small></div>
+            <button class="toggle" :class="{ on: systemEnabled }" type="button" role="switch" :aria-checked="systemEnabled" :disabled="saving" aria-label="Telegram 频道参与默认搜索" @click="toggleSystem"><span></span></button>
+            <div><strong>Telegram 频道参与默认搜索</strong><small>关闭后默认搜索不再追加已配置频道；不影响用户搜索个人频道。</small></div>
           </label>
         </div>
         <div class="tg-stat-strip" aria-label="频道概览">
           <div class="tg-stat-card">
-            <span>频道总数</span>
+            <span>频道数量</span>
             <strong>{{ displayed.length }}</strong>
-            <small>配置目录</small>
+            <small>来源管理</small>
           </div>
           <div class="tg-stat-card is-green">
-            <span>健康可用</span>
+            <span>当前可用</span>
             <strong>{{ healthyCount }}</strong>
-            <small>最近一次监控</small>
+            <small>最近检查</small>
           </div>
           <div class="tg-stat-card is-amber">
-            <span>待确认</span>
+            <span>需要关注</span>
             <strong>{{ warningCount }}</strong>
-            <small>需要人工复核</small>
+            <small>建议人工复核</small>
           </div>
           <div class="tg-stat-card is-muted">
-            <span>未检测</span>
+            <span>未检查</span>
             <strong>{{ untestedCount }}</strong>
-            <small>等待首次检测</small>
+            <small>等待首次检查</small>
           </div>
         </div>
-        <p class="field-hint tg-effective-hint">当前已生效 {{ effectiveCountText }} 个 · 修改立即生效。</p>
+        <p class="field-hint tg-effective-hint">当前开启 {{ effectiveCountText }} 个 · 修改后立即生效。</p>
         <details class="tg-source-settings">
-          <summary>请求配置</summary>
+          <summary>请求参数</summary>
           <div class="editor-grid">
             <label>直连地址模板<input v-model="sourceDraft.directTemplate" placeholder="https://t.me/s/{{channel}}" /></label>
             <label>Jina 地址模板<input v-model="sourceDraft.jinaTemplate" placeholder="https://r.jina.ai/https://t.me/s/{{channel}}" /></label>
-            <label>请求 User-Agent<input v-model="sourceDraft.userAgent" maxlength="300" /></label>
+            <label>请求标识<input v-model="sourceDraft.userAgent" maxlength="300" /></label>
             <label class="tg-headers-field">请求 Headers（JSON）<textarea v-model="sourceHeadersText" rows="3" spellcheck="false" placeholder='{"user-agent":"Mozilla/5.0"}' /></label>
           </div>
-          <div class="mapping-actions"><button class="button secondary small" type="button" :disabled="sourceSaving" @click="saveSourceSettings">{{ sourceSaving ? '保存中…' : '保存抓取来源' }}</button><span class="field-hint">模板、Headers 和全局 transform 保存后下一次请求立即生效。</span></div>
+          <div class="mapping-actions"><button class="button secondary small" type="button" :disabled="sourceSaving" @click="saveSourceSettings">{{ sourceSaving ? '保存中…' : '保存来源配置' }}</button><span class="field-hint">模板、Headers 和全局解析方式保存后，下一次请求立即生效。</span></div>
         </details>
         <form class="tg-add" @submit.prevent="addChannel">
-          <label for="system-channel">新增公开频道</label>
-          <div><input id="system-channel" v-model="newChannel" :disabled="saving" placeholder="@用户名 或 t.me/s/公开频道链接" autocomplete="off" /><button class="button secondary" :disabled="saving || !newChannel.trim()">添加频道</button></div>
-          <p class="field-hint">最多 200 个。</p>
+          <label for="system-channel">添加公开频道</label>
+          <div><input id="system-channel" v-model="newChannel" :disabled="saving" placeholder="@用户名 或 t.me/s/公开频道链接" autocomplete="off" /><button class="button secondary" :disabled="saving || !newChannel.trim()">添加</button></div>
+          <p class="field-hint">最多添加 200 个频道。</p>
         </form>
         <div class="tg-list-toolbar">
           <div class="tg-list-title">
-            <strong>频道目录</strong>
+            <strong>频道列表</strong>
             <span>{{ visibleChannels.length }} / {{ displayed.length }}</span>
           </div>
           <div class="tg-toolbar-right">
             <label class="tg-search-field"><span>筛选</span> <input v-model="channelSearch" aria-label="筛选频道" maxlength="100" placeholder="搜索频道…" /></label>
-            <label><span>检测关键词</span> <input v-model="keyword" aria-label="频道检测关键词" maxlength="100" placeholder="三体" /></label>
-            <button class="button secondary" type="button" :disabled="saving || !systemListExplicit" @click="restoreDefaults">恢复默认配置</button>
-            <button class="button secondary" type="button" :disabled="batchRunning || !!running || !keyword.trim()" aria-label="批量检测频道" @click="batchProbe">{{ batchRunning ? `检测中 ${batchProgress}/${batchTotal}` : '批量检测' }}</button>
-            <button class="text-button" type="button" :disabled="monitorLoading" aria-label="刷新频道健康摘要" @click="loadMonitorSummary">{{ monitorLoading ? '刷新中…' : '刷新监控' }}</button>
+            <label><span>测试关键词</span> <input v-model="keyword" aria-label="频道测试关键词" maxlength="100" placeholder="三体" /></label>
+            <button class="button secondary" type="button" :disabled="saving || !systemListExplicit" @click="restoreDefaults">恢复默认</button>
+            <button class="button secondary" type="button" :disabled="batchRunning || !!running || !keyword.trim()" aria-label="批量测试频道" @click="batchProbe">{{ batchRunning ? `测试中 ${batchProgress}/${batchTotal}` : '批量测试' }}</button>
+            <button class="text-button" type="button" :disabled="monitorLoading" aria-label="刷新频道健康摘要" @click="loadMonitorSummary">{{ monitorLoading ? '刷新中…' : '刷新状态' }}</button>
           </div>
         </div>
         <div class="tg-rows">
@@ -74,12 +74,12 @@
               <div class="tg-channel">
                 <div class="tg-channel-name">
                   <strong>@{{ channel }}</strong>
-                  <span class="tg-origin" :class="originOf(channel) === 'custom' ? 'custom' : ''">{{ originOf(channel) === 'custom' ? '手动添加' : '默认配置' }}</span>
+                  <span class="tg-origin" :class="originOf(channel) === 'custom' ? 'custom' : ''">{{ originOf(channel) === 'custom' ? '手动添加' : '系统默认' }}</span>
                   <span v-if="overrideLabel(channel)" class="tg-flag" :class="overrideLabel(channel) === '已删除' ? 'off' : 'warn'">{{ overrideLabel(channel) }}</span>
                 </div>
                 <small class="tg-health"><span class="status-dot" :class="healthTone(channel)"></span>{{ rowSummary(channel) }}</small>
               </div>
-              <div class="tg-row-actions"><label class="tg-parser-inline"><span>解析函数</span><select :value="parserBindings[channel] || ''" :disabled="parserSaving === channel || saving || batchRunning" :aria-label="`选择 ${channel} 的解析函数`" @change="onParserChange(channel, $event)"><option value="">使用默认函数</option><option v-for="plugin in telegramParsers" :key="plugin.id" :value="plugin.id">{{ plugin.name }} · {{ plugin.manifest.version }}</option></select></label><span v-if="parserSaving === channel" class="field-hint">保存中…</span><button type="button" class="button secondary small" :disabled="!!running || batchRunning || !keyword.trim()" :aria-label="`检测 ${channel}`" @click="probe(channel)">{{ running === channel ? '检测中…' : '检测' }}</button><button type="button" class="button secondary small" :disabled="batchRunning" :aria-label="`调试报文 ${channel}`" @click="debugChannel = channel">调试报文</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`抓取策略 ${channel}`" @click="togglePolicy(channel)">策略{{ hasPolicyDraft(channel) ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`编辑 transform ${channel}`" @click="toggleFunction(channel)">函数{{ functionEditorFor === channel ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`${overrideActionLabel(channel)}频道 ${channel}`" @click="toggleOverride(channel)">{{ monitorBusy === channel ? '处理中…' : overrideActionLabel(channel) }}</button><button type="button" class="button danger-button small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`删除频道 ${channel}`" @click="deleteChannelRow(channel)">删除</button></div>
+              <div class="tg-row-actions"><label class="tg-parser-inline"><span>解析方式</span><select :value="parserBindings[channel] || ''" :disabled="parserSaving === channel || saving || batchRunning" :aria-label="`选择 ${channel} 的解析方式`" @change="onParserChange(channel, $event)"><option value="">使用默认解析</option><option v-for="plugin in telegramParsers" :key="plugin.id" :value="plugin.id">{{ plugin.name }} · {{ plugin.manifest.version }}</option></select></label><span v-if="parserSaving === channel" class="field-hint">保存中…</span><button type="button" class="button secondary small" :disabled="!!running || batchRunning || !keyword.trim()" :aria-label="`测试 ${channel}`" @click="probe(channel)">{{ running === channel ? '测试中…' : '测试' }}</button><button type="button" class="button secondary small" :disabled="batchRunning" :aria-label="`查看报文 ${channel}`" @click="debugChannel = channel">查看报文</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`抓取策略 ${channel}`" @click="togglePolicy(channel)">策略{{ hasPolicyDraft(channel) ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`编辑解析 ${channel}`" @click="toggleFunction(channel)">解析{{ functionEditorFor === channel ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`${overrideActionLabel(channel)}频道 ${channel}`" @click="toggleOverride(channel)">{{ monitorBusy === channel ? '处理中…' : overrideActionLabel(channel) }}</button><button type="button" class="button danger-button small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`移除频道 ${channel}`" @click="deleteChannelRow(channel)">删除</button></div>
             </div>
             <div v-if="policyEditorFor === channel" class="tg-policy">
               <label><span>超时 ms</span><input v-model="policyDraft[channel]!.timeoutMs" inputmode="numeric" placeholder="默认" /></label>
@@ -94,25 +94,25 @@
             </div>
             <div v-if="functionEditorFor === channel" class="tg-function-editor">
               <div class="tg-function-request">
-                <strong>请求配置</strong>
+                <strong>请求参数</strong>
                 <span>GET · HTML</span>
                 <code>{{ directUrlFor(channel) }}</code>
                 <code>Headers: {{ Object.keys(sourceDraft.headers || {}).length ? JSON.stringify(sourceDraft.headers) : "默认" }}</code>
               </div>
               <label class="tg-transform-field">
                 <span class="function-label-line"><span>transform(payload, $, context)</span><span class="function-file-actions"><button type="button" class="text-button" :disabled="functionSaving" @click="openTransformImport">导入 JS</button><button type="button" class="text-button" :disabled="!functionDraft.transform.trim()" @click="exportTransform(channel)">导出 JS</button></span></span>
-                <textarea v-model="functionDraft.transform" rows="9" spellcheck="false" :disabled="functionSaving" placeholder="编辑 transform(payload, $, context)" />
+                <textarea v-model="functionDraft.transform" rows="9" spellcheck="false" :disabled="functionSaving" placeholder="编辑解析(payload, $, context)" />
                 <input ref="transformImportInput" class="transform-file" type="file" accept=".js,.mjs,text/javascript" @change="importTransform" />
               </label>
               <div class="tg-function-actions">
-                <span class="field-hint">{{ parserBindings[channel] ? `当前绑定：${parserBindings[channel]}；保存会生成新版本并发布。` : "当前使用全局 TG transform；保存会更新所有未绑定频道。" }}</span>
-                <button class="button secondary small" type="button" :disabled="functionSaving || !functionDraft.transform.trim()" @click="saveFunction(channel)">{{ functionSaving ? "保存中…" : "保存函数" }}</button>
+                <span class="field-hint">{{ parserBindings[channel] ? `当前绑定：${parserBindings[channel]}；保存会生成新版本并发布。` : "当前使用全局 Telegram 解析规则；保存会更新所有未绑定频道。" }}</span>
+                <button class="button secondary small" type="button" :disabled="functionSaving || !functionDraft.transform.trim()" @click="saveFunction(channel)">{{ functionSaving ? "保存中…" : "保存解析规则" }}</button>
               </div>
             </div>
           </div>
-          <p v-if="!visibleChannels.length" class="tg-empty">{{ displayed.length ? '没有匹配的频道，请换一个筛选词。' : '还没有配置频道。可新增公开频道，或恢复默认配置。' }}</p>
+          <p v-if="!visibleChannels.length" class="tg-empty">{{ displayed.length ? '没有匹配的频道，请换一个筛选词。' : '还没有配置频道。可添加公开频道，或恢复默认。' }}</p>
         </div>
-        <div class="tg-io" aria-label="频道批量导入导出">
+        <div class="tg-io" aria-label="频道配置批量导入导出">
           <div class="tg-io-actions">
             <button class="button secondary" type="button" :disabled="ioBusy" @click="exportChannels">{{ ioBusy && ioAction === 'export' ? '导出中…' : '导出配置 JSON' }}</button>
             <button class="button secondary" type="button" :disabled="ioBusy" @click="fileInput?.click()">{{ ioBusy && ioAction === 'file' ? '导入中…' : '从文件导入' }}</button>
@@ -212,12 +212,12 @@ function overrideOf(channel: string): ChannelOverride {
 function overrideLabel(channel: string): string {
   const override = overrideOf(channel);
   if (override.deleted) return "已删除";
-  if (!override.enabled) return "已停用";
+  if (!override.enabled) return "已关闭";
   return "";
 }
 function overrideActionLabel(channel: string): string {
   const override = overrideOf(channel);
-  return override.deleted || !override.enabled ? "启用" : "停用";
+  return override.deleted || !override.enabled ? "开启" : "关闭";
 }
 function originOf(channel: string): "builtin" | "custom" {
   return saved.value.defaultChannels.includes(channel) ? "builtin" : "custom";
@@ -225,7 +225,7 @@ function originOf(channel: string): "builtin" | "custom" {
 function rowSummary(channel: string): string {
   const report = reports.value[channel];
   if (report) return `${stateText(report.state)} · ${report.elapsedMs} ms · ${report.results.length} 条`;
-  if (probeErrors.value[channel]) return "最近请求失败 · 打开调试查看详情";
+  if (probeErrors.value[channel]) return "最近请求失败 · 打开测试查看详情";
   const health = channelHealth.value[channel];
   if (health && health.state !== "unknown") {
     const label = ({ available: "可用", warning: "需确认", error: "异常" } as Record<string, string>)[health.state] || health.state;
@@ -235,7 +235,7 @@ function rowSummary(channel: string): string {
     if (health.failureKind && health.state !== "available") parts.push(health.failureKind);
     return parts.join(" · ");
   }
-  return "未检测 · 添加不代表可访问";
+  return "未检查 · 添加不代表可用";
 }
 function healthTone(channel: string): string {
   const state = channelHealth.value[channel]?.state;
@@ -244,11 +244,11 @@ function healthTone(channel: string): string {
   if (state === "error") return "error";
   return "neutral";
 }
-/** 批量检测：顺序执行（探测接口限 2 并发），跳过已停用/已删除频道。 */
+/** 批量测试：顺序执行（探测接口限 2 并发），跳过已关闭/已移除频道。 */
 async function batchProbe() {
   if (batchRunning.value || running.value || !keyword.value.trim()) return;
   const targets = displayed.value.filter((channel) => !overrideLabel(channel));
-  if (!targets.length) { message.value = "没有可检测的频道（已停用/已删除的会被跳过）。"; return; }
+  if (!targets.length) { message.value = "没有可测试的频道（已关闭/已删除的会被跳过）。"; return; }
   batchRunning.value = true; error.value = ""; batchTotal.value = targets.length; batchProgress.value = 0;
   let responded = 0;
   try {
@@ -258,7 +258,7 @@ async function batchProbe() {
       batchProgress.value += 1;
       if (reports.value[channel]) responded += 1;
     }
-    message.value = `批量检测完成：${responded}/${targets.length} 个频道可访问。`;
+    message.value = `批量测试完成：${responded}/${targets.length} 个频道可用。`;
   } finally { if (!disposed) batchRunning.value = false; }
 }
 async function loadParserSettings() {
@@ -280,7 +280,7 @@ async function onParserChange(channel: string, event: Event) {
     const next = { ...parserBindings.value };
     if (pluginId) next[channel] = pluginId; else delete next[channel];
     parserBindings.value = next;
-    message.value = `@${channel} 的解析函数已更新，下一次请求立即生效。`;
+    message.value = `@${channel} 的解析方式已更新，下一次请求立即生效。`;
   } catch (reason: any) { fail(reason); }
   finally { parserSaving.value = ""; }
 }
@@ -351,7 +351,7 @@ async function saveFunction(channel: string) {
         body: { transform: functionDraft.transform },
       });
       Object.assign(sourceDraft, response.data);
-      message.value = `TG 全局 transform 已保存，@${channel} 等未绑定频道下一次请求立即生效。`;
+      message.value = `Telegram 全局 transform 已保存，@${channel} 等未绑定频道下一次请求立即生效。`;
     }
   } catch (reason: any) {
     fail(reason);
@@ -382,7 +382,7 @@ async function loadMonitorSummary() {
     }
     overrides.value = nextOverrides;
     channelHealth.value = nextHealth;
-  } catch { /* 静默降级：无监控数据时行内显示"未检测" */ }
+  } catch { /* 静默降级：无监控数据时行内显示"未检查" */ }
   finally { if (!disposed) monitorLoading.value = false; }
 }
 async function toggleOverride(channel: string) {
@@ -397,7 +397,7 @@ async function toggleOverride(channel: string) {
     );
     if ((response.code ?? 0) !== 0) { error.value = response.message || "操作未被接受。"; return; }
     overrides.value = { ...overrides.value, [channel]: { enabled: response.data?.enabled !== false, deleted: response.data?.deleted === true } };
-    message.value = `@${channel} 已${enable ? "启用" : "停用"}，下一次本站搜索生效。`;
+    message.value = `@${channel} 已${enable ? "开启" : "关闭"}，下一次本站搜索生效。`;
   } catch (reason: any) {
     if ((reason?.statusCode || reason?.response?.status) === 401) emit("unauthorized");
     error.value = reason?.data?.statusMessage || reason?.message || "操作失败，请重试。";
@@ -408,7 +408,7 @@ async function deleteChannelRow(channel: string) {
   const isCustom = originOf(channel) === "custom";
   const tip = isCustom
     ? `彻底移除自定义频道 @${channel}？该操作立即生效并保存。`
-    : `将频道 @${channel} 从生效清单移除？之后可随时启用恢复。`;
+    : `将频道 @${channel} 从生效清单移除？之后可随时开启恢复。`;
   if (!window.confirm(tip)) return;
   monitorBusy.value = channel; error.value = ""; message.value = "";
   try {
@@ -422,7 +422,7 @@ async function deleteChannelRow(channel: string) {
       message.value = `@${channel} 已移除并保存，下一次本站搜索生效。`;
     } else {
       overrides.value = { ...overrides.value, [channel]: { enabled: overrideOf(channel).enabled, deleted: true } };
-      message.value = `@${channel} 已从生效清单移除，可通过「启用」恢复。`;
+      message.value = `@${channel} 已从生效清单移除，可通过「开启」恢复。`;
     }
   } catch (reason: any) {
     if ((reason?.statusCode || reason?.response?.status) === 401) emit("unauthorized");
@@ -474,12 +474,12 @@ async function saveSourceSettings() {
     const response = await $fetch<{ data: TgSourceSettings }>("/api/settings/tg-source", { method: "PUT", body: { ...sourceDraft, headers } });
     Object.assign(sourceDraft, response.data);
     sourceHeadersText.value = JSON.stringify(response.data.headers || {}, null, 2);
-    message.value = "TG 抓取来源已保存，下一次请求立即生效。";
+    message.value = "Telegram 抓取来源已保存，下一次请求立即生效。";
   } catch (reason) { fail(reason); }
   finally { sourceSaving.value = false; }
 }
 async function load() { loading.value = true; error.value = ""; try { saved.value = (await $fetch<{ data: Settings }>("/api/settings/telegram")).data; loaded.value = true; policyDraft.value = draftFromPolicies(saved.value.policies); policyEditorFor.value = ""; error.value = ""; message.value = ""; await loadSourceSettings(); syncFocusedFunction(); } catch (reason) { fail(reason); } finally { loading.value = false; } }
-/** 统一保存入口：写入频道清单（null = 默认配置）；可选同时写入策略映射。 */
+/** 统一保存入口：写入频道清单（null = 系统默认）；可选同时写入策略映射。 */
 async function saveChannels(channels: string[] | null, policies?: Record<string, ChannelPolicy>, successMessage = "已保存，下一次本站搜索生效。") {
   saving.value = true; error.value = "";
   try {
@@ -505,9 +505,9 @@ async function addChannel() {
 }
 async function toggleSystem() {
   if (systemEnabled.value) {
-    if (await saveChannels([])) message.value = "TG 已关闭，下一次本站搜索不再追加已配置频道。";
+    if (await saveChannels([])) message.value = "Telegram 已关闭，下一次本站搜索不再追加已配置频道。";
   } else if (await saveChannels([...saved.value.defaultChannels])) {
-    message.value = "TG 已开启（默认配置），下一次本站搜索生效。";
+    message.value = "Telegram 已开启（系统默认），下一次本站搜索生效。";
   }
 }
 async function restoreDefaults() {
@@ -542,7 +542,7 @@ async function probe(channel: string, options = { keyword: keyword.value.trim(),
     const result = await $fetch<TgProbeResult>("/api/tg/probe", { method: "POST", body: payload, retry: 0, signal: probeController.signal });
     if (!disposed) {
       reports.value[channel] = result;
-      // 检测成功后同步行内健康摘要，避免依赖整体刷新。
+      // 测试成功后同步行内健康摘要，避免依赖整体刷新。
       channelHealth.value = {
         ...channelHealth.value,
         [channel]: {
@@ -557,7 +557,7 @@ async function probe(channel: string, options = { keyword: keyword.value.trim(),
   } catch (reason: any) {
     if (disposed) return;
     if ((reason?.statusCode || reason?.response?.status) === 401) emit("unauthorized");
-    probeErrors.value[channel] = reason?.data?.statusMessage || reason?.message || "调试请求失败，请重试。";
+    probeErrors.value[channel] = reason?.data?.statusMessage || reason?.message || "测试请求失败，请重试。";
   } finally { if (!disposed) running.value = ""; }
 }
 watch(() => props.focusChannel, () => { if (loaded.value) syncFocusedFunction(); });
