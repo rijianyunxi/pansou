@@ -213,7 +213,12 @@ function sanitizeHtmlFallback(html: string): string {
 </script>
 
 <style scoped>
-.upstream-debug-panel { display: grid; gap: 16px; }
+/* Let long URLs and preformatted payloads scroll inside their own code window,
+   rather than setting the grid track's intrinsic minimum width. */
+.upstream-debug-panel { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 16px; }
+.upstream-debug-panel > section { min-width: 0; overflow-wrap: anywhere; }
+.debug-controls > input { flex: 1; min-width: 0; }
+.debug-controls > button { flex: 0 0 auto; }
 .debug-request-card,
 .debug-request-inspector,
 .debug-response-section { border: 1px solid var(--line, #e4e6eb); border-radius: 16px; padding: 16px; background: color-mix(in srgb, var(--panel, #fff) 94%, #f4f6fb); }
@@ -225,17 +230,18 @@ function sanitizeHtmlFallback(html: string): string {
 .debug-section-heading strong { font-size: 15px; }
 .debug-limit, .response-chip, .request-origin { color: #8a8f99; font-size: 11px; white-space: nowrap; }
 .request-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.request-line code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.request-line .method-tag, .request-origin { flex: 0 0 auto; white-space: nowrap; }
+.request-line code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .request-origin { margin-left: auto; padding: 3px 7px; border-radius: 999px; background: #eef2f7; }
-.debug-tabs { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; }
-.debug-tabs > button:not(.icon-button) { border: 0; border-radius: 8px; padding: 7px 10px; color: #6b7280; background: transparent; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.debug-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; margin-bottom: 8px; }
+.debug-tabs > button:not(.icon-button) { border: 0; border-radius: 8px; padding: 7px 10px; color: #6b7280; background: transparent; font: inherit; font-size: 12px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
 .debug-tabs > button.active { color: #315edb; background: #eef3ff; font-weight: 700; }
 .debug-tabs > button span { margin-left: 3px; color: #94a3b8; }
 .debug-tabs .icon-button { margin-left: auto; flex: 0 0 auto; }
 .code-window pre { min-height: 128px; max-height: 320px; overflow: auto; }
 .response-code-window pre { min-height: 280px; }
 .response-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.response-chip { border: 1px solid #e1e4ea; border-radius: 999px; padding: 4px 8px; background: #fff; }
+.response-chip { min-width: 0; max-width: 100%; white-space: normal; border: 1px solid #e1e4ea; border-radius: 999px; padding: 4px 8px; background: #fff; }
 .response-chip.success { color: #168a5b; border-color: #b9e5d0; background: #f1fbf6; }
 .response-chip.error { color: #c84b43; border-color: #f1c4c0; background: #fff5f4; }
 .response-chip.warning { color: #a16b14; border-color: #ecd9aa; background: #fffaf0; }
@@ -253,6 +259,8 @@ function sanitizeHtmlFallback(html: string): string {
 .probe-warning { color: #a16b14; }
 .probe-error { color: #c84b43; }
 @media (max-width: 560px) {
+  .debug-controls { flex-wrap: wrap; }
+  .debug-controls > input { flex-basis: 100%; }
   .debug-section-heading { display: block; }
   .debug-limit, .response-meta { display: flex; margin-top: 8px; justify-content: flex-start; }
   .raw-view-toolbar { align-items: flex-start; flex-direction: column; }
