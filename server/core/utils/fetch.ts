@@ -437,20 +437,9 @@ export function createNodePinnedHttpTransport(
   };
 }
 
-let pinnedTransportOverride: PinnedHttpTransport | null | undefined;
 let cachedNodeTransport: PinnedHttpTransport | null | undefined;
 
-/**
- * 测试/管理钩子：固定或禁用（null）钉住传输；undefined 恢复自动探测。
- */
-export function setPinnedHttpTransport(
-  transport: PinnedHttpTransport | null | undefined
-): void {
-  pinnedTransportOverride = transport;
-}
-
 export async function loadPinnedHttpTransport(): Promise<PinnedHttpTransport | null> {
-  if (pinnedTransportOverride !== undefined) return pinnedTransportOverride;
   if (cachedNodeTransport !== undefined) return cachedNodeTransport;
   cachedNodeTransport = null;
   try {

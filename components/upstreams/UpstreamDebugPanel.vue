@@ -1,7 +1,7 @@
 <template>
   <div class="upstream-debug-panel" :class="{ embedded }">
     <section class="debug-request-card" aria-label="测试请求">
-      <div class="debug-section-heading">
+      <div v-if="showRequestDetails" class="debug-section-heading">
         <div>
           <span class="eyebrow">REQUEST</span>
           <strong>发起测试请求</strong>
@@ -26,14 +26,14 @@
         </button>
       </div>
       <p v-if="disabledReason" class="debug-inline-error">{{ disabledReason }}</p>
-      <div class="request-line">
+      <div v-if="showRequestDetails" class="request-line">
         <span class="method-tag" :class="source.method.toLowerCase()">{{ source.method }}</span>
         <code :title="requestDetails.url">{{ requestDetails.url }}</code>
         <span class="request-origin">{{ exactRequest ? "实际请求" : "配置预览" }}</span>
       </div>
     </section>
 
-    <section class="debug-request-inspector" aria-label="实际请求参数">
+    <section v-if="showRequestDetails" class="debug-request-inspector" aria-label="实际请求参数">
       <div class="debug-section-heading request-inspector-heading">
         <div>
           <span class="eyebrow">REQUEST DETAILS</span>
@@ -119,12 +119,15 @@ const props = withDefaults(defineProps<{
   running?: boolean;
   error?: string;
   disabledReason?: string;
+  /** Hide URL and request payload details when the panel is embedded in the editor. */
+  showRequestDetails?: boolean;
   embedded?: boolean;
 }>(), {
   report: undefined,
   running: false,
   error: "",
   disabledReason: "",
+  showRequestDetails: true,
   embedded: false,
 });
 
@@ -139,6 +142,7 @@ const requestTab = ref<"query" | "body" | "headers" | "transform">("query");
 const responseTab = ref<"unified" | "raw">("unified");
 const rawView = ref<"preview" | "source">("preview");
 
+const showRequestDetails = computed(() => props.showRequestDetails);
 const canSend = computed(() => !props.running && !!props.keyword.trim() && !props.disabledReason);
 const exactRequest = computed<ProbeRequestDetails | undefined>(() => {
   const traces = props.report?.traces || [];

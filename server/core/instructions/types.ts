@@ -40,7 +40,7 @@ export interface InstructionLinks {
 }
 
 export interface InstructionRetryConfig {
-  /** Retries after the first request for each URL (0-3). */
+  /** Retries after the first request to the same URL (0-3). */
   maxRetries?: number;
   /** Delay before retrying the same URL (0-5000ms). */
   delayMs?: number;
@@ -49,8 +49,6 @@ export interface InstructionRetryConfig {
 export interface InstructionRequest {
   method: "GET" | "POST";
   url: string;
-  /** Explicit fallback endpoints tried after the primary URL is exhausted. */
-  fallbackUrls?: string[];
   /** Bounded retry policy applied independently to every endpoint. */
   retry?: InstructionRetryConfig;
   query?: Record<string, InstructionValue>;
@@ -64,8 +62,6 @@ export interface InstructionRequest {
   /** HTTP is disabled by default; enable only for an audited legacy upstream. */
   allowInsecureHttp?: boolean;
   maxRequestBodyBytes?: number;
-  /** Secret variable names (referenced as {{secret.name}}); values live in a separate store. */
-  secrets?: string[];
   /** Pre-main stages (max 2) that extract token/buildId style variables. */
   stages?: InstructionStageRequest[];
 }
@@ -79,8 +75,6 @@ export interface InstructionStageResponse {
 export interface InstructionStageRequest {
   method?: "GET" | "POST";
   url: string;
-  /** Explicit fallback endpoints tried after the primary URL is exhausted. */
-  fallbackUrls?: string[];
   /** Bounded retry policy applied independently to every endpoint. */
   retry?: InstructionRetryConfig;
   query?: Record<string, InstructionValue>;

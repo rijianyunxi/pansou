@@ -30,6 +30,7 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   if (typeof value.kw !== "string" || !value.kw.trim() || value.kw.trim().length > 100) {
     return invalid("kw must contain 1 to 100 characters");
   }
+  if (Object.prototype.hasOwnProperty.call(value, "res")) return invalid("res is no longer supported; search APIs always return normalized results");
   const src = value.src ?? "all";
   if (!["all", "tg", "plugin"].includes(src as string)) return invalid("Invalid src");
   const mode = value.channels_mode ?? "append";
@@ -37,8 +38,6 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   const channels = normalizeTelegramChannels(list(value.channels, "channels") ?? []);
   if (channels.some((name) => !TG_CHANNEL_PATTERN.test(name))) return invalid("channels must contain public Telegram usernames, not URLs");
   if (mode !== "append" && !channels.length) return invalid("channels are required when channels_mode=only");
-  const res = value.res ?? "links";
-  if (!["links", "all", "results"].includes(res as string)) return invalid("Invalid res (links, results or all)");
   if (value.refresh !== undefined && ![true, false, "true", "false"].includes(value.refresh as any)) return invalid("refresh must be a boolean");
   let ext = value.ext;
   if (typeof ext === "string") {
@@ -51,7 +50,7 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   }
   return {
     kw: value.kw.trim(), channels, channels_mode: mode as "append" | "only",
-    src: src as SearchRequest["src"], res: res as SearchRequest["res"],
+    src: src as SearchRequest["src"],
     plugins: list(value.plugins, "plugins"), cloud_types: list(value.cloud_types, "cloud_types"),
     conc: integer(value.conc, 1, 16, "conc"), refresh: value.refresh === true || value.refresh === "true",
     debug: value.debug === 1 || value.debug === "1", ext: extra,

@@ -2,8 +2,7 @@ import { createEventStream, setHeader, type H3Event } from "h3";
 import type { SearchLease } from "../core/security/concurrency";
 import type {
   GenericResponse,
-  SearchResult,
-  SearchSourceUpdate,
+  NormalizedSearchSourceUpdate,
   SearchStreamCompleteData,
   SearchStreamResultData,
 } from "../core/types/models";
@@ -17,22 +16,30 @@ function errorMessage(error: unknown): string {
   return "搜索过程中发生未知错误";
 }
 
-function searchResultKey(result: SearchResult): string {
-  return result.unique_id
-    || result.message_id
-    || result.links?.[0]?.url
-    || `${result.title}|${result.channel}|${result.datetime}`;
+function searchResultKey(result: NormalizedSearchSourceUpdate["results"][number]): string {
+  return result.id;
 }
 
-function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate {
-  const sent = new Set<string>();
+function createDeltaFilter(): (update: NormalizedSearchSourceUpdate) => NormalizedSearchSourceUpdate {
+  const sentLinks = new Map<string, Set<string>>();
   return (update) => ({
     ...update,
-    results: update.results.filter((result) => {
+    results: update.results.flatMap((result) => {
       const key = searchResultKey(result);
-      if (sent.has(key)) return false;
-      sent.add(key);
-      return true;
+      const seen = sentLinks.get(key) ?? new Set<string>();
+      const freshLinks = result.links.filter((link) => {
+        const linkKey = `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`;
+        if (seen.has(linkKey)) return false;
+        seen.add(linkKey);
+        return true;
+      });
+      sentLinks.set(key, seen);
+      if (!freshLinks.length) return [];
+      return [{
+        ...result,
+        links: freshLinks,
+        cloud_types: [...new Set(freshLinks.map((link) => link.type))],
+      }];
     }),
   });
 }

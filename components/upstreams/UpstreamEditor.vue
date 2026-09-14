@@ -58,7 +58,7 @@
                 v-model="form.description"
                 maxlength="100"
                 :readonly="readonly"
-                placeholder="描述来源用途或资源类型"
+                placeholder="描述来源用途或补充说明"
               />
             </label>
           </div>
@@ -150,21 +150,12 @@
         </p>
       </details>
 
-      <details class="editor-meta">
-        <summary>分类信息</summary>
-        <div class="editor-grid">
-          <label>管理标签 <input v-model="tagsText" placeholder="例如：稳定, 免费, 推荐" :readonly="readonly" /></label>
-          <label>网盘类型 <input v-model="form.driveType" placeholder="例如：阿里云盘 / 夸克 / 磁力" :readonly="readonly" /></label>
-          <label>资源类型 <input v-model="resourceTypesText" placeholder="例如：电影, 动漫, 小说, 音乐, 资料" :readonly="readonly" /></label>
-        </div>
-      </details>
-
       <details class="editor-function" open>
         <summary>结果解析</summary>
         <div class="function-field">
           <p id="transform-help" class="editor-help transform-help">
             <code>payload</code> 是接口响应内容；<code>$</code> 是 HTML 查询工具；<code>context</code> 提供 <code>keyword</code>、分页等请求上下文。
-            函数必须返回标准结果 JSON 数组，例如 <code>[{ title, links: [{ url }] }]</code>。
+            函数必须返回标准结果 JSON 数组，例如 <code>[{ title, links: [{ url }] }]</code>。请粘贴纯 JavaScript，不要包含 Markdown 链接标记。
           </p>
           <div class="function-toolbar">
             <span class="function-label">transform(payload, $, context)</span>
@@ -214,7 +205,7 @@
 
       <details v-if="!readonly" class="editor-debugger" open>
         <summary>在线调试</summary>
-        <p class="editor-help debugger-help">直接使用当前未保存的 URL、Query、Body、Headers 和 transform 运行测试。</p>
+        <p class="editor-help debugger-help">输入关键词后发送测试，查看来源返回的统一结果或原始响应。</p>
         <UpstreamDebugPanel
           :source="debugDraft.source"
           :report="debugReport"
@@ -222,6 +213,7 @@
           :running="debugRunning"
           :error="debugError"
           :disabled-reason="debugDraft.error"
+          :show-request-details="false"
           embedded
           @send="testDraftSource"
           @update:keyword="debugKeyword = $event"
@@ -273,7 +265,7 @@ const props = defineProps<{
   running?: boolean;
 }>();
 
-type EditableUpstreamDefinition = UpstreamDefinition & { transform?: string };
+type EditableUpstreamDefinition = UpstreamDefinition;
 
 const emit = defineEmits<{
   close: [];
@@ -304,20 +296,6 @@ function createBlankSource(): EditableUpstreamDefinition {
     description: "",
     method: "GET",
     format: "json",
-    plugin: "custom",
-    adapter: "",
-    color: "#697fbd",
-    initials: "C",
-    mapping: {
-      items: "",
-      title: "",
-      url: "",
-      password: "",
-      type: "",
-    },
-    tags: [],
-    driveType: "",
-    resourceTypes: [],
     transform: "",
   };
 }
@@ -346,8 +324,6 @@ const requestBodyText = ref(
 const requestHeadersText = ref(
   stringifyRequestValue(form.request?.headers),
 );
-const tagsText = ref((form.tags || []).join(", "));
-const resourceTypesText = ref((form.resourceTypes || []).join(", "));
 
 function parseEditorJson(text: string, label: string): unknown {
   if (!text.trim()) return undefined;
@@ -356,10 +332,6 @@ function parseEditorJson(text: string, label: string): unknown {
   } catch {
     throw new Error(`${label}必须是有效 JSON。`);
   }
-}
-
-function splitEditorList(text: string): string[] {
-  return [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
 }
 
 const debugDraft = computed<{ source: EditableUpstreamDefinition; error: string }>(() => {
@@ -377,9 +349,6 @@ const debugDraft = computed<{ source: EditableUpstreamDefinition; error: string 
       ? `tg-${draft.channel.replace(/^@/, "").toLowerCase()}`
       : "debug-draft";
     draft.name ||= "未保存来源";
-    draft.initials ||= draft.name.charAt(0).toUpperCase();
-    draft.tags = splitEditorList(tagsText.value);
-    draft.resourceTypes = splitEditorList(resourceTypesText.value);
     draft.request = {
       ...(draft.request || {}),
       query: query as Record<string, unknown> | undefined,
@@ -427,8 +396,6 @@ function syncEditor(source?: UpstreamDefinition | null) {
   requestQueryText.value = stringifyRequestValue(form.request?.query);
   requestBodyText.value = stringifyRequestValue(form.request?.body);
   requestHeadersText.value = stringifyRequestValue(form.request?.headers);
-  tagsText.value = (form.tags || []).join(", ");
-  resourceTypesText.value = (form.resourceTypes || []).join(", ");
   error.value = "";
   debugError.value = "";
   debugReport.value = undefined;
@@ -526,9 +493,6 @@ function save() {
     ) {
       throw new Error("Headers 必须是字符串键值 JSON。");
     }
-    const splitList = (text: string) => [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
-    form.tags = splitList(tagsText.value);
-    form.resourceTypes = splitList(resourceTypesText.value);
     form.request = {
       ...(form.request || {}),
       query: query as Record<string, unknown> | undefined,
@@ -543,7 +507,6 @@ function save() {
 
   if (!form.id) form.id = `custom-${crypto.randomUUID()}`;
   form.name = form.name.trim();
-  form.initials = form.name.charAt(0).toUpperCase();
   emit("save", JSON.parse(JSON.stringify(form)));
   dialog.value?.close();
 }
@@ -696,7 +659,6 @@ function save() {
   margin-bottom: 0 !important;
 }
 
-.editor-meta,
 .editor-advanced,
 .editor-function,
 .editor-debugger {
@@ -707,7 +669,6 @@ function save() {
   background: #f8fafc;
 }
 
-.editor-meta summary,
 .editor-advanced summary,
 .editor-function summary,
 .editor-debugger summary {
@@ -718,7 +679,6 @@ function save() {
   list-style-position: inside;
 }
 
-.editor-meta[open] summary,
 .editor-advanced[open] summary,
 .editor-function[open] summary,
 .editor-debugger[open] summary {

@@ -78,7 +78,6 @@
                       <th>来源</th>
                       <th>接入方式</th>
                       <th>请求地址</th>
-                      <th>分类标签</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -87,7 +86,7 @@
                       <td class="source-index-cell" data-label="序号">{{ sourceIndex + 1 }}</td>
                       <td class="source-summary-cell" data-label="来源">
                         <div class="source-identity">
-                          <span class="source-avatar" :style="{ '--source-color': source.color }">{{ source.initials
+                          <span class="source-avatar" :style="{ '--source-color': sourceColor(source) }">{{ sourceInitials(source)
                             }}</span>
                           <div class="source-text">
                             <div class="source-name">{{ source.name }}</div>
@@ -110,15 +109,6 @@
                             }}</span>
                           <ConsoleIcon name="external" :size="13" />
                         </a>
-                      </td>
-                      <td class="source-tags-cell" data-label="分类标签">
-                        <div v-if="sourceDirectoryTags(source).length" class="source-tags compact-tags">
-                          <span v-for="tag in sourceDirectoryTags(source).slice(0, 3)" :key="`${source.id}-${tag}`"
-                            class="draft-tag">{{ tag }}</span>
-                          <span v-if="sourceDirectoryTags(source).length > 3" class="draft-tag more-tag">+{{
-                            sourceDirectoryTags(source).length - 3 }}</span>
-                        </div>
-                        <span v-else class="source-empty-meta">未分类</span>
                       </td>
                       <td class="action-column" data-label="操作">
                         <div class="row-actions">
@@ -160,8 +150,8 @@
     <UpstreamDetailDrawer v-if="detailDrawerOpen && selected" :source="selected" :running="!!runningId"
       @close="detailDrawerOpen = false" @edit="openEditor(selected)"
       @debug="openDebug(selected)" @delete="requestDeleteSource(selected)" />
-    <UpstreamDebugDrawer v-if="debugDrawerOpen && selected" :source="selected" :report="selectedReport"
-      :keyword="keyword" :running="!!runningId" @close="debugDrawerOpen = false" @send="testSource(selected)"
+    <UpstreamDebugDialog v-if="debugDialogOpen && selected" :source="selected" :report="selectedReport"
+      :keyword="keyword" :running="!!runningId" @close="debugDialogOpen = false" @send="testSource(selected)"
       @update:keyword="keyword = $event" />
     <UpstreamEditor v-if="!adminLocked && editorOpen" :source="editingSource" @close="editorOpen = false"
       @save="saveSource" />
@@ -245,7 +235,7 @@ import TgAccountManager from "../../components/admin/TgAccountManager.vue";
 import MonitorPanel from "../../components/monitor/MonitorPanel.vue";
 import UpstreamEditor from "../../components/upstreams/UpstreamEditor.vue";
 import UpstreamDetailDrawer from "../../components/upstreams/UpstreamDetailDrawer.vue";
-import UpstreamDebugDrawer from "../../components/upstreams/UpstreamDebugDrawer.vue";
+import UpstreamDebugDialog from "../../components/upstreams/UpstreamDebugDialog.vue";
 import type { UpstreamDefinition, UpstreamProbe } from "../../types/source";
 import { buildSourceDebugUrl } from "../../utils/upstreamDebugUrl";
 import { shallowRef } from "vue";
@@ -289,15 +279,8 @@ const defaultUnifiedSource: UpstreamDefinition = {
   url: "https://example.invalid",
   method: "GET",
   format: "json",
-  plugin: "custom",
-  adapter: "",
-  color: "#697fbd",
-  initials: "C",
-  mapping: { items: "", title: "", url: "", type: "", password: "" },
+  transform: "",
   enabled: false,
-  tags: [],
-  driveType: "",
-  resourceTypes: [],
 };
 const selected = computed<UpstreamDefinition>(
   () =>
@@ -325,7 +308,7 @@ const keyword = ref("三体");
 const editorOpen = ref(false);
 const editingSource = ref<UpstreamDefinition | null>(null);
 const detailDrawerOpen = ref(false);
-const debugDrawerOpen = ref(false);
+const debugDialogOpen = ref(false);
 const storageError = ref("");
 const initialAuthStatus = authStatus.data.value;
 const adminChecking = ref(!initialAuthStatus && !authStatus.error.value);
@@ -343,17 +326,21 @@ const canConfirmPurge = computed(() =>
 );
 const notice = ref("");
 let noticeTimer: ReturnType<typeof setTimeout>;
-function sourceDirectoryTags(source: UpstreamDefinition): string[] {
-  return [...new Set([
-    ...(source.driveType ? [source.driveType] : []),
-    ...(source.tags || []),
-    ...(source.resourceTypes || []),
-  ].map((tag) => tag.trim()).filter(Boolean))];
+const SOURCE_COLORS = ["#4085b8", "#5b67c7", "#0f766e", "#b45309", "#9d174d", "#6d28d9"];
+function sourceInitials(source: UpstreamDefinition): string {
+  const name = source.name.trim();
+  return name ? Array.from(name)[0]!.toUpperCase() : "S";
 }
+function sourceColor(source: UpstreamDefinition): string {
+  let hash = 0;
+  for (const char of source.id || source.name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return SOURCE_COLORS[hash % SOURCE_COLORS.length]!;
+}
+
 const filteredSources = computed(() =>
   sources.value.filter((s) => {
     const matchesType = sourceTypeFilter.value === "all" || s.sourceKind === sourceTypeFilter.value;
-    const haystack = `${s.name} ${s.url} ${s.sourceKind} ${s.channel || ""} ${(s.tags || []).join(" ")} ${s.driveType || ""} ${(s.resourceTypes || []).join(" ")}`.toLowerCase();
+    const haystack = `${s.name} ${s.url} ${s.sourceKind} ${s.channel || ""}`.toLowerCase();
     return matchesType && haystack.includes(search.value.trim().toLowerCase());
   }),
 );
@@ -377,7 +364,7 @@ async function loadUpstreamCatalog() {
     if ((error?.statusCode || error?.response?.status) === 401) {
       adminLocked.value = true;
       detailDrawerOpen.value = false;
-      debugDrawerOpen.value = false;
+      debugDialogOpen.value = false;
     }
     storageError.value = apiErrorMessage(error);
   }
@@ -446,7 +433,7 @@ async function lockAdmin() {
     reports.value = {};
     editorOpen.value = false;
     detailDrawerOpen.value = false;
-    debugDrawerOpen.value = false;
+    debugDialogOpen.value = false;
     archiveOpen.value = false;
     adminLocked.value = true;
     authError.value = "";
@@ -494,13 +481,13 @@ onMounted(async () => {
 });
 function openDetail(source: UpstreamDefinition) {
   selectedId.value = source.id;
-  debugDrawerOpen.value = false;
+  debugDialogOpen.value = false;
   detailDrawerOpen.value = true;
 }
 function openDebug(source: UpstreamDefinition) {
   selectedId.value = source.id;
   detailDrawerOpen.value = false;
-  debugDrawerOpen.value = true;
+  debugDialogOpen.value = true;
 }
 function focusTelegramUpstream(channel: string) {
   const normalized = String(channel || "").replace(/^@/, "").toLowerCase();
@@ -595,7 +582,7 @@ async function requestDeleteSource(source: UpstreamDefinition) {
     });
     delete reports.value[source.id];
     detailDrawerOpen.value = false;
-    debugDrawerOpen.value = false;
+    debugDialogOpen.value = false;
     await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
     notify("来源已删除，下一次请求立即生效。");
   } catch (error: any) {
@@ -668,12 +655,12 @@ async function copy(text: string) {
 function closeTopmostOverlay(event: KeyboardEvent) {
   if (event.key !== "Escape" || archiveBusyId.value) return;
   if (purgeTarget.value) cancelPurgeArchivedChannel();
-  else if (debugDrawerOpen.value) debugDrawerOpen.value = false;
+  else if (debugDialogOpen.value) debugDialogOpen.value = false;
   else if (detailDrawerOpen.value) detailDrawerOpen.value = false;
   else if (archiveOpen.value) archiveOpen.value = false;
 }
 watch(
-  () => archiveOpen.value || !!purgeTarget.value || detailDrawerOpen.value || debugDrawerOpen.value,
+  () => archiveOpen.value || !!purgeTarget.value || detailDrawerOpen.value || debugDialogOpen.value,
   (open) => {
     if (import.meta.client) document.body.style.overflow = open ? "hidden" : "";
   },

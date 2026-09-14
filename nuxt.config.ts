@@ -60,7 +60,6 @@ export default defineNuxtConfig({
     "/monitor": { swr: false, cache: false },
     "/api/monitor": { swr: false, cache: false },
     "/api/upstreams/**": { swr: false, cache: false },
-    "/api/plugins": { swr: false, cache: false },
     "/api/plugins/**": { swr: false, cache: false },
     "/api/parser-plugins": { swr: false, cache: false },
     "/api/parser-plugins/**": { swr: false, cache: false },

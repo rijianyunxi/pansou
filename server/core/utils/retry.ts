@@ -1,6 +1,6 @@
 import { abortableDelay } from "./abort";
 
-export interface FallbackRetryPolicy {
+export interface RetryPolicy {
   /** Retries after the first attempt for each endpoint. */
   maxRetries?: number;
   /** Base delay before retrying the same endpoint. */
@@ -46,16 +46,45 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "请求失败");
 }
 
+/** Execute one URL with a bounded retry policy. There is no fallback endpoint. */
+export async function runWithRetry<T>(
+  url: string,
+  operation: (url: string) => Promise<T>,
+  options: RetryPolicy & { signal?: AbortSignal } = {},
+): Promise<T> {
+  const candidate = url.trim();
+  if (!candidate) throw new Error("至少需要一个来源 URL");
+  const maxRetries = boundedInteger(options.maxRetries, 0, MAX_RETRIES);
+  const delayMs = boundedInteger(options.delayMs, 0, MAX_DELAY_MS);
+  let lastError: unknown;
+
+  for (let retryIndex = 0; retryIndex <= maxRetries; retryIndex++) {
+    options.signal?.throwIfAborted();
+    try {
+      return await operation(candidate);
+    } catch (error) {
+      lastError = error;
+      if (options.signal?.aborted || (error instanceof Error && error.name === "ExecutionBudgetError")) {
+        throw error;
+      }
+      if (retryIndex < maxRetries && delayMs > 0) {
+        await abortableDelay(Math.min(MAX_DELAY_MS, delayMs * 2 ** retryIndex), options.signal);
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(errorText(lastError));
+}
+
 /**
- * Execute a primary URL followed by fallback URLs. Each endpoint receives a
- * bounded number of retries before the next endpoint is attempted. The
- * operation owns the transport/security boundary; this helper only controls
- * ordering, cancellation and backoff.
+ * Execute a primary URL followed by fallback URLs. This helper is retained
+ * only for the Telegram direct/Jina channel paths; HTTP upstreams use
+ * runWithRetry and never accept fallbackUrls.
  */
 export async function runWithFallbackRetry<T>(
   urls: readonly string[],
   operation: (url: string) => Promise<T>,
-  options: FallbackRetryPolicy & {
+  options: RetryPolicy & {
     signal?: AbortSignal;
     onAttemptStart?: (attempt: FallbackAttempt) => void;
     onAttempt?: (attempt: FallbackAttempt) => void;
@@ -105,9 +134,8 @@ export async function runWithFallbackRetry<T>(
     }
   }
 
-  throw new FallbackExhaustedError(
-    `来源主地址及 ${Math.max(0, candidates.length - 1)} 个备用地址均失败：${errorText(lastError)}`,
-    attempts,
-    lastError,
-  );
+  // Never expose the old "主地址/备用地址" wording. HTTP upstreams do not
+  // have fallback endpoints; Telegram diagnostics may still record multiple
+  // transport routes internally, but the public error is one source failure.
+  throw new FallbackExhaustedError(`来源请求失败：${errorText(lastError)}`, attempts, lastError);
 }

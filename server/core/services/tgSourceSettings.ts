@@ -7,12 +7,21 @@ import { validateParserCode } from "../parsers/repository";
 export const DEFAULT_TG_TRANSFORM = String.raw`function transform(payload, $, context) {
   const keyword = String(context.keyword || "").trim().toLowerCase();
   const normalize = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const matches = (value) => !keyword || normalize(value).includes(normalize(keyword));
+  const needle = normalize(keyword);
+  const matches = (value) => !needle || normalize(value).includes(needle);
+  const cloudTypeOf = (value) => {
+    const url = String(value || "").toLowerCase();
+    if (/^magnet:/.test(url)) return "magnet";
+    const host = url.replace(/^https?:\/\//, "").split(/[/?#]/)[0].replace(/^www\./, "");
+    const pairs = [["pan.baidu.com", "baidu"], ["pan.quark.cn", "quark"], ["aliyundrive.com", "aliyun"], ["alipan.com", "aliyun"], ["yun.139.com", "mobile"], ["cloud.189.cn", "tianyi"], ["115.com", "115"], ["123pan.com", "123"], ["jianguoyun.com", "jianguoyun"], ["pan.xunlei.com", "xunlei"]];
+    const pair = pairs.find((entry) => host === entry[0] || host.endsWith("." + entry[0]));
+    return pair ? pair[1] : /(^|\.)lanzou[a-z0-9-]*\.com$/.test(host) ? "lanzou" : "others";
+  };
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const passwordOf = (value) => String(value || "").match(/(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,8})/i)?.[1] || "";
   const isResource = (value) => {
     const url = String(value || "").trim();
-    return /^https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?!r\.jina\.ai(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.com|115\.com|pan\.xunlei\.com|drive\.uc\.cn|(?:yun|caiyun)\.139\.com|mypikpak\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+$/i.test(url);
+    return /^(?:magnet:\?[^\s<>"')\]]+|https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?!r\.jina\.ai(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.com|115\.com|jianguoyun\.com|yun\.139\.com|pan\.xunlei\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+)$/i.test(url);
   };
   const linksOf = (value, hrefs) => {
     const links = [];
@@ -21,9 +30,9 @@ export const DEFAULT_TG_TRANSFORM = String.raw`function transform(payload, $, co
       const url = String(raw || "").trim().replace(/[#\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").replace(/[，。！？；：、）》】]+$/u, "");
       if (!isResource(url) || seen.has(url)) return;
       seen.add(url);
-      links.push({ url, password: passwordOf(value) });
+      links.push({ type: cloudTypeOf(url), url, password: passwordOf(value) || null });
     };
-    for (const url of String(value || "").match(/https?:\/\/[^\s<>"')\]]+/gi) || []) add(url);
+    for (const url of String(value || "").match(/(?:https?:\/\/|magnet:\?)[^\s<>"')\]]+/gi) || []) add(url);
     for (const url of hrefs || []) add(url);
     return links;
   };
@@ -38,7 +47,7 @@ export const DEFAULT_TG_TRANSFORM = String.raw`function transform(payload, $, co
       const links = linksOf(text, hrefs);
       const postId = root.find(".tgme_widget_message").attr("data-post") || "";
       const datetime = root.find("time").attr("datetime") || "";
-      if (matches(text) && links.length) output.push({ message_id: postId, unique_id: "tg-" + (context.channel || "channel") + "-" + (postId || index), channel: context.channel, datetime, title, content, links });
+      if (matches(text) && links.length) output.push({ id: "tg-" + (context.channel || "channel") + "-" + (postId || index), name: title, description: content, datetime, cloud_types: [...new Set(links.map((link) => link.type))], links });
     });
   } else {
     const source = String(payload || "");
@@ -54,7 +63,7 @@ export const DEFAULT_TG_TRANSFORM = String.raw`function transform(payload, $, co
       const hrefs = [...block.matchAll(/\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi)].map((item) => item[1]);
       const links = linksOf(block, hrefs);
       const postId = marker[2] || "";
-      if (matches(block) && links.length) output.push({ message_id: postId, unique_id: "tg-" + (context.channel || "channel") + "-" + postId, channel: context.channel, title, content: clean(block), links });
+      if (matches(block) && links.length) output.push({ id: "tg-" + (context.channel || "channel") + "-" + postId, name: title, description: clean(block), datetime: "", cloud_types: [...new Set(links.map((link) => link.type))], links });
     });
   }
   return output;

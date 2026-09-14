@@ -141,7 +141,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from "vue";
-import type { MergedLink } from "~/server/core/types/models";
+import type { NormalizedSearchResult } from "~/server/core/types/models";
 
 const config = useRuntimeConfig();
 const apiBase = (config.public?.apiBase as string) || "/api";
@@ -305,13 +305,26 @@ async function fullReset() {
   if (hotSearchRef.value) await hotSearchRef.value.refresh();
 }
 
-// 平台展示完全使用上游返回的类型值，不维护内置平台字典。
-const platformName = (type?: string): string => type || "其他";
+const CLOUD_TYPE_LABELS: Record<string, string> = {
+  baidu: "百度网盘",
+  quark: "夸克网盘",
+  aliyun: "阿里云盘",
+  mobile: "中国移动云盘",
+  tianyi: "天翼云盘",
+  "115": "115网盘",
+  "123": "123云盘",
+  jianguoyun: "坚果云",
+  lanzou: "蓝奏云",
+  xunlei: "迅雷云盘",
+  magnet: "磁力链接",
+  others: "其他",
+};
+const platformName = (type?: string): string => CLOUD_TYPE_LABELS[type || "others"] || type || "其他";
 
 // 网盘类型只作为前端筛选标签，不再拆分成多个结果分组。
 const platforms = computed(() => {
   const seen = new Set<string>();
-  for (const item of searchState.value.items) seen.add(item.type || "others");
+  for (const item of searchState.value.results) for (const type of item.cloud_types) seen.add(type);
   return [...seen];
 });
 
@@ -322,12 +335,12 @@ function handlePlatformFilter(type: string) {
 // 先筛选再进行全局排序，保证结果始终以单一列表平铺展示。
 const filteredResults = computed(() => {
   const items = filterPlatform.value === "all"
-    ? searchState.value.items
-    : searchState.value.items.filter((item) => (item.type || "others") === filterPlatform.value);
+    ? searchState.value.results
+    : searchState.value.results.filter((item) => item.cloud_types.includes(filterPlatform.value as any));
   return sortItems(items);
 });
 
-function sortItems(items: MergedLink[]) {
+function sortItems(items: NormalizedSearchResult[]) {
   const arr = [...items];
   switch (sortType.value) {
     case "date-desc":
@@ -344,11 +357,11 @@ function sortItems(items: MergedLink[]) {
       );
     case "name-asc":
       return arr.sort((a, b) =>
-        String(a.note || "").localeCompare(String(b.note || ""), "zh-CN")
+        String(a.name || "").localeCompare(String(b.name || ""), "zh-CN")
       );
     case "name-desc":
       return arr.sort((a, b) =>
-        String(b.note || "").localeCompare(String(a.note || ""), "zh-CN")
+        String(b.name || "").localeCompare(String(a.name || ""), "zh-CN")
       );
     default:
       return arr;

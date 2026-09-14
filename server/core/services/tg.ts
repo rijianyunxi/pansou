@@ -1,6 +1,7 @@
 import { load, type CheerioAPI } from "cheerio";
 import { ofetch } from "ofetch";
-import type { SearchResult } from "../types/models";
+import type { CloudType, SearchResult } from "../types/models";
+import { inferDriveType } from "../../../utils/upstreamAdapter";
 import { matchesSearchKeyword } from "../utils/searchKeyword";
 import {
   abortableDelay,
@@ -340,7 +341,7 @@ async function fetchTgText(
     responseType: "text",
     timeout: timeoutMs,
     signal,
-  });
+  } as any);
   return runWithFallbackRetry(
     [url],
     () => (signal ? runWithSignal(request, signal) : request()),
@@ -795,6 +796,7 @@ async function fetchChannelPages(
 }
 
 const HTTP_URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi;
+const MAGNET_URL_RE = /magnet:\?[^\s<>"'`)\]]+/gi;
 const MARKDOWN_LINK_RE = /\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi;
 const PASSWORD_RE = /(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,6})/i;
 
@@ -813,22 +815,9 @@ function deproxyUrl(raw: string): string {
   }
 }
 
-function classifyCloudHostname(hostname: string): string {
-  const host = hostname.toLowerCase();
-  if (host === "t.me" || host.endsWith(".t.me")) return "";
-  if (host === "r.jina.ai") return "";
-  const isDomain = (domain: string) =>
-    host === domain || host.endsWith(`.${domain}`);
-  if (isDomain("alipan.com") || isDomain("aliyundrive.com")) return "aliyun";
-  if (host === "pan.baidu.com") return "baidu";
-  if (host === "pan.quark.cn") return "quark";
-  if (host === "pan.xunlei.com") return "xunlei";
-  if (isDomain("123pan.com")) return "123";
-  if (host === "cloud.189.cn") return "tianyi";
-  if (host === "115.com" || host.endsWith(".115.com")) return "115";
-  if (host === "drive.uc.cn") return "uc";
-  if (host === "yun.139.com") return "mobile";
-  return "";
+function classifyCloudHostname(hostname: string): "" | CloudType {
+  const type = inferDriveType(`https://${hostname}/`);
+  return type === "others" ? "" : type;
 }
 
 function cleanUrlCandidate(raw: string): string {
@@ -845,27 +834,33 @@ function cleanUrlCandidate(raw: string): string {
 function extractResourceLinks(
   text: string,
   hrefs: string[] = [],
-): { type: string; url: string; password: string }[] {
-  const links: { type: string; url: string; password: string }[] = [];
+): { type: CloudType; url: string; password: string }[] {
+  const links: { type: CloudType; url: string; password: string }[] = [];
   const seenUrls = new Set<string>();
   const password = text.match(PASSWORD_RE)?.[1] || "";
-  const candidates = [...(text.match(HTTP_URL_RE) || []), ...hrefs];
+  const candidates = [
+    ...(text.match(HTTP_URL_RE) || []),
+    ...(text.match(MAGNET_URL_RE) || []),
+    ...hrefs,
+  ];
 
   for (const raw of candidates) {
     const deproxied = deproxyUrl(cleanUrlCandidate(raw));
+    if (/^magnet:/i.test(deproxied)) {
+      const key = deproxied.toLowerCase();
+      if (seenUrls.has(key)) continue;
+      seenUrls.add(key);
+      links.push({ type: "magnet", url: deproxied, password });
+      continue;
+    }
+
     let url: URL;
     try {
       url = new URL(deproxied);
     } catch {
       continue;
     }
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      url.username ||
-      url.password
-    ) {
-      continue;
-    }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) continue;
     const type = classifyCloudHostname(url.hostname);
     if (!type) continue;
     const key = url.href;
@@ -881,6 +876,7 @@ function plainMarkdownText(input: string): string {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]*)\]\((?:https?:\/\/[^)\s]+)\)/g, "$1")
     .replace(HTTP_URL_RE, "")
+    .replace(MAGNET_URL_RE, "")
     .replace(/[\\*_~`]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -1178,7 +1174,7 @@ export async function probeTgChannel(
           retry: 0,
           timeout: resolved.timeoutMs,
           signal: options.signal,
-        }),
+              } as any),
         {
           signal: options.signal,
           maxRetries: resolved.maxRetries,

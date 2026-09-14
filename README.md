@@ -15,7 +15,7 @@
 - **服务端统一调度与流式返回**：Telegram 与插件来源共享每次搜索的来源任务并发槽，插件按 `priority` 分批调度；`/api/search` 只返回 SSE，每次成功的后端调用各生成一次增量，连续成功不足 300ms 时进入 FIFO 队列并逐个推送。
 - **搜索范围选择**：本站搜索使用服务端默认来源；“已选频道”只搜索浏览器当前保存的自定义 Telegram 频道。
 - **暂停/继续与重置**：暂停或重新搜索会取消旧请求；继续搜索使用暂停时保存的关键词和范围快照。
-- **结果处理**：服务端按时间降序合并结果并去重，客户端支持按日期、名称等方式再次排序和按平台分组展示。
+- **结果处理**：服务端按时间降序合并结果并去重，客户端支持按日期、名称等方式再次排序和按平台筛选展示。
 - **自动重试与取消**：网络重试使用可取消的退避；请求断开或超时后停止后续分页、关键词变体和故障转移。
 - **缓存**：内存 LRU 缓存带 TTL、清理和内存上限；缓存键包含来源配置、插件版本、Registry 版本和 Telegram 策略版本。
 
@@ -67,9 +67,29 @@ pnpm dev
 `GET /api/search` 和 `POST /api/search` 均只返回 `text/event-stream`，不再提供一次性 JSON 响应。POST 客户端应使用 `fetch` 读取响应流。事件顺序如下：
 
 - `start`：搜索已接纳，包含服务端推送间隔 `intervalMs: 300`。
-- `result`：一次成功后端调用的增量；`data.update` 包含来源、执行阶段、实际关键词和本次新出现的标准化 `SearchResult[]`。流内已发送结果会被剔除；即使本次没有新增结果，也仍会为该次成功调用发送一个空增量事件。第一次成功立即推送，后续成功调用进入 FIFO 队列，相邻 `result` 事件间隔不小于 300ms。
-- `complete`：只包含最终 `total`、可选 `meta` 和 warnings，不重复发送完整结果；客户端应保留并展示此前收到的增量。
+- `result`：一次成功后端调用的增量；`data.update.results` 为资源级归一化结果，每条资源包含 `cloud_types[]` 和带 `type`、`url`、`password` 的 `links[]`。来源和插件诊断字段仅在 `debug=1` 时出现在 `data.update.source` 与结果记录中。流内已发送结果会被剔除；即使本次没有新增结果，也仍会为该次成功调用发送一个空增量事件。第一次成功立即推送，后续成功调用进入 FIFO 队列，相邻 `result` 事件间隔不小于 300ms。
+- `complete`：只包含最终 `total`、可选 `meta` 和 warnings，不重复发送完整结果；客户端应保留并展示此前收到的增量。`datetime` 统一为 `YYYY/MM/DD HH:mm:ss`（Asia/Shanghai），插件来源字段仅在 `debug=1` 时返回。
 - `error`：流建立后的搜索错误。认证、参数校验和并发治理在建流前仍使用对应 HTTP 状态码。
+
+`/api/searchHttp` 返回同样的资源级归一化 `results[]`。搜索接口不再提供 `res` 参数，也不返回扁平链接或 `items[]`。
+
+每条 `results[]` 资源固定使用以下结构：
+
+```json
+{
+  "id": "稳定资源标识",
+  "name": "资源名称",
+  "description": "资源描述或 null",
+  "datetime": "2026/09/14 23:10:05",
+  "cloud_types": ["baidu", "quark"],
+  "links": [
+    { "type": "baidu", "url": "https://pan.baidu.com/s/...", "password": "abcd" },
+    { "type": "quark", "url": "https://pan.quark.cn/s/...", "password": null }
+  ]
+}
+```
+
+`links[]` 是资源的多地址集合，密码与地址一一对应；`datetime` 固定为中国时区的 `YYYY/MM/DD HH:mm:ss`。`source`、`channel`、`pluginId`、`pluginVersion`、`registryVersion` 以及响应 `meta` 只在显式传入 `debug=1` 时返回。
 
 ### 管理控制台 `/admin`
 
@@ -98,7 +118,7 @@ pnpm dev
 
 解析插件与 Instructions 上游是两套不同能力：
 
-- **Instructions**：JSON/HTML 的声明式请求和字段映射，不执行第三方 JavaScript；通过 `/api/plugins` API 管理，发布后热更新。
+- **Instructions**：统一来源的声明式请求和解析执行器；通过 `/api/settings/upstreams` 管理配置，保存后生效。旧 `/api/plugins` 生命周期接口已删除。
 - **Parser Plugin**：管理员提供同步 JavaScript 转换函数，运行在受限 `node:vm` 环境中，将已取得的 HTML/JSON/文本转换为统一结果；通过 `/api/parser-plugins` API 管理，并可绑定到上游或 Telegram 频道。
 
 当前仓库包含 `components/admin/ParserPluginMarket.vue` 和对应 API，但该组件尚未接入 `/admin` 的可见导航；不要把 `?view=parsers` 当作当前可用的管理台路由。需要操作时使用 API 或先完成管理台接入，待办见 `TODO.md`。
@@ -160,7 +180,7 @@ git diff --check
 
 ## 📦 支持的网盘类型
 
-搜索结果目前按以下类型展示（具体是否有结果取决于上游）：阿里云盘、夸克、百度网盘、115、迅雷、UC、天翼、123 及其他网盘/磁力链接。
+搜索结果中的 `cloud_types` 只使用统一标识：`baidu`、`quark`、`aliyun`、`mobile`、`tianyi`、`115`、`123`、`jianguoyun`、`lanzou`、`xunlei`、`magnet`、`others`。类型由链接域名判断，`pan.xunlei.com` 归为 `xunlei`，`magnet:` 归为 `magnet`，未知地址和 ED2K 归为 `others`。
 
 ## ⚠️ 免责声明
 

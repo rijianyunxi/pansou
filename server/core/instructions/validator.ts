@@ -9,7 +9,6 @@ const VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]{0,31}$/;
 export const MAX_STAGES = 2;
 export const MAX_TOTAL_REQUESTS = 6;
 const MAX_STAGE_VARS = 8;
-const MAX_SECRETS = 8;
 
 const TEMPLATE_PATTERN = /{{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s*}}/g;
 
@@ -123,41 +122,11 @@ function validateResponseInstructions(response: InstructionPluginDefinition["res
   }
 }
 
-function validateSecretNames(request: InstructionPluginDefinition["request"]): Set<string> {
-  const names = new Set<string>();
-  const secrets = request.secrets;
-  if (secrets === undefined) return names;
-  if (!Array.isArray(secrets) || secrets.length > MAX_SECRETS) {
-    throw new Error(`request.secrets 必须是最多 ${MAX_SECRETS} 个密钥名的数组`);
-  }
-  for (const name of secrets) {
-    if (typeof name !== "string" || !VARIABLE_NAME_PATTERN.test(name)) {
-      throw new Error(`request.secrets 密钥名不合法: ${String(name)}`);
-    }
-    names.add(`secret.${name}`);
-  }
-  return names;
-}
-
-function rejectSecretsInUrlOrQuery(
-  url: string,
-  query: Record<string, InstructionValue> | undefined,
-  secretNames: ReadonlySet<string>,
-  path: string
-): void {
-  const referenced = collectReferencedVariables({ url, query });
-  for (const name of referenced) {
-    if (secretNames.has(name)) {
-      throw new Error(`${path} 不允许引用密钥（密钥仅可用于请求头和请求体）`);
-    }
-  }
-}
 
 function validateStage(
   stage: InstructionStageRequest,
   index: number,
   allowedSoFar: ReadonlySet<string>,
-  secretNames: ReadonlySet<string>,
   urlOptions: { allowedDomains?: string[]; allowHttp?: boolean }
 ): Set<string> {
   const path = `request.stages[${index}]`;
@@ -166,7 +135,6 @@ function validateStage(
   if (!["GET", "POST"].includes(method)) throw new Error(`${path}.method 仅支持 GET/POST`);
   if (!stage.url || typeof stage.url !== "string") throw new Error(`${path}.url 必填`);
   validateOutboundUrl(stage.url, urlOptions);
-  rejectSecretsInUrlOrQuery(stage.url, stage.query, secretNames, `${path}.url`);
   validateTemplates({ url: stage.url, query: stage.query, headers: stage.headers, body: stage.body }, allowedSoFar);
   for (const name of Object.keys(stage.headers || {})) {
     if (isForbiddenOutboundHeader(name)) throw new Error(`${path}.headers.${name} 不允许设置`);
@@ -262,16 +230,6 @@ export function validateInstructionDefinition(input: unknown): InstructionPlugin
     allowHttp: request.allowInsecureHttp,
   };
   validateOutboundUrl(request.url, urlOptions);
-  const fallbackUrls = request.fallbackUrls ?? [];
-  if (!Array.isArray(fallbackUrls) || fallbackUrls.length > 3) {
-    throw new Error("request.fallbackUrls 必须是最多 3 个备用 URL 的数组");
-  }
-  for (const [index, fallbackUrl] of fallbackUrls.entries()) {
-    if (typeof fallbackUrl !== "string" || !fallbackUrl.trim()) {
-      throw new Error(`request.fallbackUrls[${index}] 必须是非空字符串`);
-    }
-    validateOutboundUrl(fallbackUrl, urlOptions);
-  }
   const retry = request.retry;
   if (retry !== undefined) {
     if (!retry || typeof retry !== "object" || Array.isArray(retry)) {
@@ -284,29 +242,22 @@ export function validateInstructionDefinition(input: unknown): InstructionPlugin
       throw new Error("request.retry.delayMs 必须是 0 到 5000 的整数");
     }
   }
-  const secretNames = validateSecretNames(request);
-  rejectSecretsInUrlOrQuery(request.url, request.query, secretNames, "request.url");
-  fallbackUrls.forEach((fallbackUrl, index) => {
-    rejectSecretsInUrlOrQuery(fallbackUrl, request.query, secretNames, `request.fallbackUrls[${index}]`);
-  });
-
   // Stages run sequentially; stage i may only reference variables extracted
-  // by earlier stages, plus reserved variables and declared secrets.
+  // by earlier stages plus reserved variables.
   const stages = request.stages ?? [];
   if (stages.length > MAX_STAGES) throw new Error(`request.stages 最多 ${MAX_STAGES} 个阶段`);
   const stageVarNames = new Set<string>();
   let allowedSoFar: ReadonlySet<string> = RESERVED_VARIABLES;
   stages.forEach((stage, index) => {
-    const extracted = validateStage(stage, index, allowedSoFar, secretNames, urlOptions);
+    const extracted = validateStage(stage, index, allowedSoFar, urlOptions);
     for (const name of extracted) stageVarNames.add(name);
     allowedSoFar = new Set([...RESERVED_VARIABLES, ...stageVarNames]);
   });
 
-  const allAllowed = new Set([...RESERVED_VARIABLES, ...stageVarNames, ...secretNames]);
+  const allAllowed = new Set([...RESERVED_VARIABLES, ...stageVarNames]);
   validateTemplates(
     {
       url: request.url,
-      fallbackUrls: request.fallbackUrls,
       query: request.query,
       headers: request.headers,
       body: request.body,

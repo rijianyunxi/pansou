@@ -159,7 +159,7 @@ function buildUpstreams(
   })).sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function buildChannels(config: { defaultChannels?: string[] }, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
+function buildChannels(config: unknown, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
   const settings = getSearchSettings();
   const system = getSystemSettings(config);
   const builtinDefaults = normalizeTelegramChannels(system.defaultChannels);

@@ -9,11 +9,6 @@ export type HostResolver = (
   hostname: string
 ) => Promise<DnsLookupRecord[]>;
 
-/** Test hook for the DNS-over-HTTPS fallback. */
-export type DnsOverHttpsResolver = (
-  hostname: string
-) => Promise<DnsLookupRecord[] | null>;
-
 const DOH_ENDPOINTS = [
   "https://cloudflare-dns.com/dns-query",
   "https://dns.google/resolve",
@@ -21,8 +16,6 @@ const DOH_ENDPOINTS = [
 const DOH_TIMEOUT_MS = 3_000;
 
 let defaultResolver: HostResolver | null | undefined;
-let overrideResolver: HostResolver | null | undefined;
-let dohResolverOverride: DnsOverHttpsResolver | null | undefined;
 
 async function loadDefaultResolver(): Promise<HostResolver | null> {
   if (defaultResolver !== undefined) return defaultResolver;
@@ -36,25 +29,6 @@ async function loadDefaultResolver(): Promise<HostResolver | null> {
     defaultResolver = null;
   }
   return defaultResolver;
-}
-
-/**
- * Test/admin hook: pin or disable the resolver used by
- * `assertSafeHostResolution` (null disables DNS verification).
- */
-export function setHostResolver(resolver: HostResolver | null | undefined): void {
-  overrideResolver = resolver;
-}
-
-/**
- * Test hook for replacing the fixed DNS-over-HTTPS fallback. Keeping the
- * fallback endpoint fixed in production prevents this from becoming another
- * arbitrary outbound request primitive.
- */
-export function setDohResolver(
-  resolver: DnsOverHttpsResolver | null | undefined
-): void {
-  dohResolverOverride = resolver;
 }
 
 function isIpLiteral(hostname: string): boolean {
@@ -123,10 +97,6 @@ async function fetchDohRecords(
 }
 
 async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null> {
-  if (dohResolverOverride !== undefined) {
-    return dohResolverOverride ? dohResolverOverride(hostname) : null;
-  }
-
   for (const endpoint of DOH_ENDPOINTS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DOH_TIMEOUT_MS);
@@ -165,8 +135,7 @@ async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null
  * its native transport (fail-open policy, unchanged behaviour):
  * - runtimes without `node:dns` (e.g. Cloudflare Workers) delegate DNS to the
  *   platform and have no way to pin sockets;
- * - DNS verification is disabled (`setHostResolver(null)`) or the resolver
- *   itself fails — the real connection surfaces DNS failures on its own;
+ * - the resolver itself fails — the real connection surfaces DNS failures on its own;
  * - the resolver returned no usable records.
  *
  * IP literals are validated directly and returned without a lookup.
@@ -174,7 +143,6 @@ async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null
  */
 export async function resolveSafeHostAddresses(
   hostname: string,
-  resolver?: HostResolver | null
 ): Promise<DnsLookupRecord[] | null> {
   if (isIpLiteral(hostname)) {
     const address = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -183,12 +151,7 @@ export async function resolveSafeHostAddresses(
     }
     return [{ address, family: address.includes(":") ? 6 : 4 }];
   }
-  const active =
-    resolver !== undefined
-      ? resolver
-      : overrideResolver !== undefined
-        ? overrideResolver
-        : await loadDefaultResolver();
+  const active = await loadDefaultResolver();
   if (!active) return null;
 
   let records: DnsLookupRecord[];
@@ -213,19 +176,4 @@ export async function resolveSafeHostAddresses(
   }
 
   throw blockedResolutionError(hostname, blocked[0]!.address);
-}
-
-/**
- * Second line of defense against DNS rebinding: resolve the hostname and
- * reject when any resolved address is private/reserved. IP literals are
- * rejected directly without a lookup. Resolver unavailability is fail-open —
- * the subsequent real connection surfaces DNS failures on its own.
- * Callers that can control the socket should prefer `resolveSafeHostAddresses`
- * to also pin the connection to the validated address.
- */
-export async function assertSafeHostResolution(
-  hostname: string,
-  resolver?: HostResolver | null
-): Promise<void> {
-  await resolveSafeHostAddresses(hostname, resolver);
 }

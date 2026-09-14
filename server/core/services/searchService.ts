@@ -10,7 +10,7 @@ import {
 } from "./tgChannelSettings";
 import { recordTgChannelHealth, flushTgChannelHealth } from "./tgChannelHealthStore";
 import { getTgSourceSettingsVersion } from "./tgSourceSettings";
-import type { MergedLink, SearchResponse, SearchResult, SearchSourceUpdate } from "../types/models";
+import type { CloudType, SearchExecutionResponse, SearchResult, SearchSourceUpdate } from "../types/models";
 import {
   PluginManager,
   type SearchPlugin,
@@ -28,6 +28,7 @@ import {
 } from "../utils/errors";
 import { buildSearchKeywordVariants } from "../utils/searchKeyword";
 import { logSearchSource } from "../utils/upstreamDebug";
+import { inferDriveType, normalizeCloudType } from "../../../utils/upstreamAdapter";
 
 interface PluginSearchExecution {
   results: SearchResult[];
@@ -164,19 +165,17 @@ export class SearchService {
     channels: string[] | undefined,
     concurrency: number | undefined,
     forceRefresh: boolean | undefined,
-    resultType: string | undefined,
     sourceType: "all" | "tg" | "plugin" | undefined,
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
     executionOptions: SearchExecutionOptions = {}
-  ): Promise<SearchResponse> {
+  ): Promise<SearchExecutionResponse> {
     const { response } = await this.searchWithWarnings(
       keyword,
       channels,
       concurrency,
       forceRefresh,
-      resultType,
       sourceType,
       plugins,
       cloudTypes,
@@ -192,13 +191,12 @@ export class SearchService {
     channels: string[] | undefined,
     concurrency: number | undefined,
     forceRefresh: boolean | undefined,
-    resultType: string | undefined,
     sourceType: "all" | "tg" | "plugin" | undefined,
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
     executionOptions: SearchExecutionOptions = {}
-  ): Promise<{ response: SearchResponse; warnings: WarningInfo[] }> {
+  ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     executionOptions.signal?.throwIfAborted();
     const configuredBudget = Number(this.options.searchTimeoutMs);
     const timeoutMs = Number.isFinite(configuredBudget) && configuredBudget > 0
@@ -214,7 +212,7 @@ export class SearchService {
     };
     try {
       const result = await this.performSearch(
-        keyword, channels, limit, forceRefresh, resultType, sourceType,
+        keyword, channels, limit, forceRefresh, sourceType,
         plugins, cloudTypes, ext, execution,
       );
       executionOptions.signal?.throwIfAborted();
@@ -236,13 +234,12 @@ export class SearchService {
     channels: string[] | undefined,
     concurrency: number | undefined,
     forceRefresh: boolean | undefined,
-    resultType: string | undefined,
     sourceType: "all" | "tg" | "plugin" | undefined,
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
     execution: SearchExecution
-  ): Promise<{ response: SearchResponse; warnings: WarningInfo[] }> {
+  ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const errorCollector = new ErrorCollector();
     const searchId = createSearchId();
     const effChannels =
@@ -251,7 +248,6 @@ export class SearchService {
       concurrency && concurrency > 0
         ? concurrency
         : this.options.defaultConcurrency;
-    const effResultType = resultType || "links";
     const effSourceType = sourceType ?? "all";
 
     let tgResults: SearchResult[] = [];
@@ -301,43 +297,34 @@ export class SearchService {
     const allResults = this.mergeSearchResults(tgResults, pluginResults);
     this.sortResultsByTimeDesc(allResults);
 
+    const allowedCloudTypes = cloudTypes?.length
+      ? new Set(cloudTypes.map((value) => normalizeCloudType(value)).filter((value): value is CloudType => !!value))
+      : undefined;
     const filteredForResults: SearchResult[] = [];
     for (const result of allResults) {
+      const resultLinks = allowedCloudTypes
+        ? result.links.filter((link) => allowedCloudTypes.has(inferDriveType(link.url, link.type)))
+        : result.links;
       const hasTime = !!result.datetime;
-      const hasLinks = Array.isArray(result.links) && result.links.length > 0;
+      const hasLinks = resultLinks.length > 0;
       const keywordPriority = this.getKeywordPriority(result.title);
       const pluginLevel = this.getPluginLevelBySource(
         this.getResultSource(result)
       );
-      if (hasTime || hasLinks || keywordPriority > 0 || pluginLevel <= 2) {
-        filteredForResults.push(result);
+      const hasFilteredLinks = resultLinks.length > 0;
+      if ((hasFilteredLinks && (hasTime || hasLinks)) || keywordPriority > 0 || pluginLevel <= 2) {
+        filteredForResults.push(
+          resultLinks.length === result.links.length ? result : { ...result, links: resultLinks },
+        );
       }
     }
 
-    const mergedLinks = this.mergeResults(
-      allResults,
-      cloudTypes
-    );
-
-    let total = 0;
-    const meta = { registryVersion, pluginVersions };
-    let response: SearchResponse = { total: 0, meta };
-    if (effResultType === "links") {
-      // 默认响应统一为扁平数组，避免消费者依赖按平台嵌套结构。
-      total = mergedLinks.length;
-      response = { total, results: mergedLinks, meta };
-    } else if (effResultType === "results") {
-      total = filteredForResults.length;
-      response = { total, results: filteredForResults, meta };
-    } else {
-      total = filteredForResults.length;
-      response = {
-        total,
-        results: filteredForResults,
-        items: mergedLinks,
-        meta,
-      };
-    }
+    const total = filteredForResults.length;
+    const response: SearchExecutionResponse = {
+      total,
+      results: filteredForResults,
+      meta: { registryVersion, pluginVersions },
+    };
 
     return {
       response,
@@ -912,38 +899,6 @@ export class SearchService {
 
   private getKeywordPriority(_title: string): number {
     return 0;
-  }
-
-  private mergeResults(
-    results: SearchResult[],
-    cloudTypes?: string[]
-  ): MergedLink[] {
-    const allow =
-      cloudTypes && cloudTypes.length > 0
-        ? new Set(cloudTypes.map((value) => value.toLowerCase()))
-        : undefined;
-    const out: MergedLink[] = [];
-    for (const result of results) {
-      for (const link of result.links || []) {
-        const type = (link.type || "others").toLowerCase();
-        if (allow && !allow.has(type)) continue;
-        out.push({
-          type,
-          url: link.url,
-          password: link.password || "",
-          note: result.title,
-          datetime: result.datetime,
-          source: result.source === "plugin"
-            ? `plugin:${result.pluginId}@${result.pluginVersion}`
-            : `tg:${result.channel}`,
-          pluginId: result.pluginId,
-          pluginVersion: result.pluginVersion,
-          registryVersion: result.registryVersion,
-          images: result.images,
-        });
-      }
-    }
-    return out;
   }
 
   private async runWithConcurrency(

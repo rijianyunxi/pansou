@@ -14,14 +14,17 @@ export interface SystemSettingsSeed {
  * Defaults are seeded into SQLite on first boot, then all runtime values are
  * read from SQLite. The shared defaults module is only a recoverable bootstrap source.
  */
-export function getSystemSettings(fallback: Partial<SystemSettingsSeed> = {}): SystemSettingsSeed {
+export function getSystemSettings(fallback: unknown = {}): SystemSettingsSeed {
   const db = getSqliteDatabase();
   const row = db.getRow<any>("SELECT default_concurrency,plugin_timeout_ms,cache_ttl_minutes FROM system_settings WHERE id=1");
   const channels = (kind: string) => db.allRows<any>("SELECT name FROM system_channels WHERE kind=? ORDER BY position", kind).map(item => item.name);
   if (row) return { priorityChannels: normalizeTelegramChannels(channels("priority")), defaultChannels: normalizeTelegramChannels(channels("default")), defaultConcurrency: row.default_concurrency, pluginTimeoutMs: row.plugin_timeout_ms, cacheTtlMinutes: row.cache_ttl_minutes };
   // 只有首次初始化时才使用默认值；已有 SQLite 配置始终优先。
   // fallback 仅保留给测试和显式运行时覆盖，不会引入任何默认频道。
-  const bootstrap = { ...SYSTEM_DEFAULTS, ...fallback };
+  const override = fallback && typeof fallback === "object" && !Array.isArray(fallback)
+    ? fallback as Partial<SystemSettingsSeed>
+    : {};
+  const bootstrap = { ...SYSTEM_DEFAULTS, ...override };
   const seed: SystemSettingsSeed = {
     priorityChannels: normalizeTelegramChannels(Array.from(bootstrap.priorityChannels || [])),
     defaultChannels: normalizeTelegramChannels(Array.from(bootstrap.defaultChannels || [])),

@@ -1,115 +1,105 @@
 <template>
-  <div :class="['result-card', { 'flat-results': !showHeader }]">
-    <!-- 卡片头部 -->
-    <div v-if="showHeader" class="card-header">
-      <div class="platform-badge" :style="{ background: color }">
-        <span class="platform-icon">{{ icon }}</span>
-      </div>
+  <section :class="['result-card', { 'result-card--flat': !showHeader }]">
+    <header v-if="showHeader" class="card-header">
+      <div class="header-mark" :style="{ '--mark-color': color }" aria-hidden="true">{{ icon }}</div>
       <div class="header-info">
-        <h3 class="platform-title">{{ title }}</h3>
+        <h2 class="platform-title">{{ title }}</h2>
         <span class="resource-count">{{ items.length }} 个资源</span>
       </div>
-      <button
-        v-if="canToggleCollapse && !expanded && items.length > initialVisible"
-        class="expand-btn"
-        @click="$emit('toggle')">
-        展开
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M6 9l6 6 6-6"></path>
-        </svg>
+      <button v-if="canToggleCollapse" class="expand-btn" type="button" @click="$emit('toggle')">
+        {{ expanded ? '收起' : '展开' }}
       </button>
-    </div>
+    </header>
 
-    <!-- 资源列表 -->
     <ul class="resource-list">
-      <li v-for="r in visibleItems" :key="[r.type, r.url, r.password, r.source, r.note].join('|')" class="resource-item">
-        <div class="resource-content">
-          <a
-            class="resource-link"
-            :href="r.url"
-            target="_blank"
-            rel="noopener noreferrer nofollow"
-            :title="r.note || r.url">
-            <span class="link-text">{{ r.note || r.url }}</span>
-            <svg class="external-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-              <polyline points="15 3 21 3 21 9"></polyline>
-              <line x1="10" y1="14" x2="21" y2="3"></line>
-            </svg>
-          </a>
+      <li v-for="resource in visibleItems" :key="resource.id" class="resource-item">
+        <div class="resource-heading">
+          <div class="resource-heading-main">
+            <h3 class="resource-title">{{ resource.name }}</h3>
+            <p v-if="resource.description" class="resource-description">{{ resource.description }}</p>
+          </div>
+          <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
+        </div>
 
-          <div class="resource-meta">
-            <div class="meta-tags">
-              <button
-                v-if="r.type"
-                type="button"
-                :class="['meta-tag', 'platform', { active: activePlatform === r.type }]"
-                :aria-pressed="activePlatform === r.type"
-                :title="`${platformLabel(r.type)}：点击筛选`"
-                @click="$emit('filter-platform', r.type)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 13l-7 7-9-9V4h7l9 9z"></path>
-                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                </svg>
-                {{ platformLabel(r.type) }}
-              </button>
-              <span v-if="r.source" class="meta-tag source" :title="r.source">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="9"></circle>
-                  <path d="M8 12h8M12 8v8"></path>
-                </svg>
-                来源: {{ formatSource(r.source) }}
-              </span>
-              <span class="meta-tag date">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-                  <line x1="16" y1="2" x2="16" y2="6"></line>
-                  <line x1="8" y1="2" x2="8" y2="6"></line>
-                  <line x1="3" y1="10" x2="21" y2="10"></line>
-                </svg>
-                {{ formatDate(r.datetime) || "时间未知" }}
-              </span>
+        <div v-if="resource.cloud_types.length || resource.tags?.length" class="resource-meta">
+          <div class="meta-tags">
+            <button
+              v-for="type in resource.cloud_types"
+              :key="type"
+              type="button"
+              :class="['meta-tag', 'platform', { active: activePlatform === type }]"
+              :aria-pressed="activePlatform === type"
+              :title="`${platformLabel(type)}：点击筛选`"
+              @click="$emit('filter-platform', type)">
+              <span class="tag-dot" aria-hidden="true"></span>
+              {{ platformLabel(type) }}
+            </button>
+            <span v-for="tag in resource.tags" :key="tag" class="meta-tag tag">{{ tag }}</span>
+          </div>
+        </div>
 
-              <span v-if="r.password" class="meta-tag password">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <div class="resource-links" aria-label="资源链接">
+          <div v-for="link in resource.links" :key="linkKey(link)" class="link-row">
+            <span class="link-provider-icon" aria-hidden="true">{{ typeIcon(link.type) }}</span>
+            <div class="link-main">
+              <span class="link-provider">{{ platformLabel(link.type) }}</span>
+              <span v-if="link.password" class="password-badge">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <rect x="3" y="11" width="18" height="11" rx="2"></rect>
                   <circle cx="12" cy="16" r="1"></circle>
                   <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                 </svg>
-                提取码: {{ r.password }}
+                提取码 {{ link.password }}
               </span>
             </div>
-
-            <button class="copy-btn" @click.prevent="$emit('copy', r.url)" title="复制链接">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-              复制
-            </button>
+            <div class="link-actions">
+              <a
+                class="open-btn"
+                :href="link.url"
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                :aria-label="`打开${platformLabel(link.type)}链接`"
+                title="打开链接">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M14 3h7v7"></path>
+                  <path d="M10 14 21 3"></path>
+                  <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path>
+                </svg>
+                打开链接
+              </a>
+              <button class="copy-btn" type="button" :aria-label="`复制${platformLabel(link.type)}链接`" @click="copy(link.url, linkKey(link))">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                {{ copiedKey === linkKey(link) ? '已复制' : '复制' }}
+              </button>
+            </div>
           </div>
         </div>
       </li>
     </ul>
 
-    <!-- 底部展开按钮 -->
-    <div v-if="!expanded && items.length > initialVisible" class="card-footer">
-      <button class="load-more-btn" @click="$emit('toggle')">
-        显示更多 ({{ items.length - initialVisible }})
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <footer v-if="!expanded && items.length > initialVisible" class="card-footer">
+      <button class="load-more-btn" type="button" @click="$emit('toggle')">
+        显示更多 {{ items.length - initialVisible }} 个资源
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M12 5v14M5 12l7 7 7-7"></path>
         </svg>
       </button>
-    </div>
-  </div>
+    </footer>
+  </section>
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from "vue";
+import type { NormalizedCloudLink, NormalizedSearchResult } from "~/server/core/types/models";
+
 const props = withDefaults(defineProps<{
   title: string;
   color: string;
   icon: string;
-  items: any[];
+  items: NormalizedSearchResult[];
   expanded: boolean;
   initialVisible: number;
   canToggleCollapse?: boolean;
@@ -122,498 +112,121 @@ const props = withDefaults(defineProps<{
   activePlatform: "all",
   platformLabel: (type: string) => type || "其他",
 });
-defineEmits(["toggle", "copy", "filter-platform"]);
 
-const visibleItems = computed(() =>
-  props.expanded ? props.items : props.items.slice(0, props.initialVisible)
-);
+const emit = defineEmits<{
+  (event: "toggle"): void;
+  (event: "copy", url: string): void;
+  (event: "filter-platform", type: string): void;
+}>();
 
-function formatSource(source?: string) {
-  if (!source) return "";
-  if (source.startsWith("tg:")) return `Telegram @${source.slice(3)}`;
-  if (source.startsWith("plugin:")) return `解析器 ${source.slice(7)}`;
-  return source;
+const copiedKey = ref("");
+const visibleItems = computed(() => props.expanded ? props.items : props.items.slice(0, props.initialVisible));
+
+function linkKey(link: NormalizedCloudLink): string {
+  return `${link.type}|${link.url}|${link.password || ""}`;
 }
 
-function formatDate(d?: string) {
-  if (!d) return "";
-  const dt = new Date(d);
-  return isNaN(dt.getTime())
-    ? ""
-    : dt.toLocaleDateString() + " " + dt.toLocaleTimeString();
+function typeIcon(type: string): string {
+  if (type === "magnet") return "⚡";
+  if (type === "others") return "↗";
+  return "☁";
+}
+
+function copy(url: string, key: string) {
+  copiedKey.value = key;
+  emit("copy", url);
+  window.setTimeout(() => {
+    if (copiedKey.value === key) copiedKey.value = "";
+  }, 1600);
 }
 </script>
 
 <style scoped>
-/* 结果卡片主体 - 白色扁平卡片 */
 .result-card {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-light);
-  border-radius: 16px;
-  box-shadow: var(--shadow-sm);
   overflow: hidden;
-  transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+  border: 1px solid var(--border-light);
+  border-radius: 18px;
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-sm);
 }
 
-.result-card:hover {
-  box-shadow: var(--shadow-md);
-}
+.result-card--flat { border-radius: 18px; }
 
-.result-card.flat-results {
-  border-radius: 16px;
-}
-
-.flat-results .resource-list {
-  max-height: none;
-  overflow: visible;
-}
-
-/* 卡片头部 */
 .card-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 16px;
-  background: var(--bg-primary);
+  padding: 15px 18px;
   border-bottom: 1px solid var(--border-light);
 }
 
-/* 平台徽章 */
-.platform-badge {
-  width: 36px;
-  height: 36px;
+.header-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
   border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 16px;
-  font-weight: 700;
-  flex-shrink: 0;
+  background: color-mix(in srgb, var(--mark-color) 14%, var(--bg-primary));
+  color: var(--mark-color);
+  font-size: 19px;
 }
 
-.platform-icon {
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
-}
+.header-info { min-width: 0; flex: 1; }
+.platform-title { margin: 0; color: var(--text-primary); font-size: 16px; font-weight: 750; }
+.resource-count { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
 
-/* 头部信息 */
-.header-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.platform-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-  line-height: 1.2;
-}
-
-.resource-count {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-weight: 500;
-}
-
-/* 展开按钮 */
-.expand-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  background: transparent;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    color var(--transition-fast), transform var(--transition-fast);
-  white-space: nowrap;
-}
-
-.expand-btn:hover {
-  background: var(--bg-secondary);
-  border-color: var(--border-medium);
-  color: var(--text-primary);
-  transform: translateY(-1px);
-}
-
-.expand-btn svg {
-  stroke: currentColor;
-}
-
-/* 资源列表 */
-.resource-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  max-height: 600px;
-  overflow-y: auto;
-}
-
-/* 自定义滚动条 */
-.resource-list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.resource-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.resource-list::-webkit-scrollbar-thumb {
-  background: var(--border-light);
-  border-radius: 3px;
-}
-
-.resource-list::-webkit-scrollbar-thumb:hover {
-  background: var(--border-medium);
-}
-
-/* 单个资源项 */
-.resource-item {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border-light);
-  transition: background var(--transition-fast);
-}
-
-.resource-item:last-child {
-  border-bottom: none;
-}
-
-.resource-item:hover {
-  background: var(--bg-secondary);
-}
-
-.resource-content {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* 资源链接 */
-.resource-link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  text-decoration: none;
-  color: var(--primary);
-  font-weight: 600;
-  font-size: 14px;
-  line-height: 1.4;
-  transition: color var(--transition-fast), gap var(--transition-fast);
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.resource-link:hover {
-  color: var(--primary-dark);
-  gap: 8px;
-}
-
-.link-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.external-icon {
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.resource-link:hover .external-icon {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.external-icon {
-  stroke: currentColor;
-}
-
-/* 资源元数据 */
-.resource-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.meta-tags {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  flex: 1;
-}
-
-/* 元数据标签 */
-.meta-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-light);
-  border-radius: 999px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.meta-tag svg {
-  stroke: currentColor;
-  opacity: 0.7;
-}
-
-button.meta-tag.platform {
-  appearance: none;
-  font-family: inherit;
-  line-height: inherit;
-  cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    color var(--transition-fast), transform var(--transition-fast);
-}
-
-button.meta-tag.platform:hover {
-  color: var(--primary);
-  border-color: var(--primary);
-  transform: translateY(-1px);
-}
-
-button.meta-tag.platform.active {
-  color: var(--primary);
-  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
-  border-color: transparent;
-  font-weight: 600;
-}
-
-button.meta-tag.platform:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
-
-.meta-tag.date {
-  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
-  border-color: transparent;
-  color: var(--primary);
-}
-
-.meta-tag.password {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.2);
-  color: var(--success);
-}
-
-/* 复制按钮 */
-.copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  background: transparent;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast),
-    color var(--transition-fast), transform var(--transition-fast);
-  white-space: nowrap;
-}
-
-.copy-btn:hover {
-  background: var(--bg-secondary);
-  border-color: var(--border-medium);
-  color: var(--text-primary);
-  transform: translateY(-1px);
-}
-
-.copy-btn:active {
-  transform: translateY(0);
-  background: var(--border-light);
-}
-
-.copy-btn svg {
-  stroke: currentColor;
-}
-
-/* 卡片底部 */
-.card-footer {
-  padding: 12px 16px;
-  background: var(--bg-primary);
-  border-top: 1px solid var(--border-light);
-  text-align: center;
-}
-
+.expand-btn,
 .load-more-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  background: var(--ink);
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  font-size: 14px;
-  font-weight: 600;
+  gap: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: background-color var(--transition-fast);
+  font-size: 12px;
+  font-weight: 650;
 }
+.expand-btn { padding: 7px 10px; }
+.expand-btn:hover, .load-more-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
 
-.load-more-btn:hover {
-  background: var(--ink-hover);
-}
+.resource-list { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; background: var(--border-light); }
+.resource-item { padding: 18px; background: var(--bg-primary); transition: background-color var(--transition-fast); }
+.resource-item:hover { background: color-mix(in srgb, var(--bg-primary) 94%, var(--primary)); }
 
-.load-more-btn svg {
-  stroke: currentColor;
-}
+.resource-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.resource-heading-main { min-width: 0; flex: 1; }
+.resource-title { margin: 0; color: var(--text-primary); font-size: 16px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
+.resource-description { display: -webkit-box; overflow: hidden; margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.resource-date { flex-shrink: 0; padding-top: 3px; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
 
-/* 移动端优化 */
-@media (max-width: 640px) {
-  .card-header {
-    padding: 12px;
-    gap: 10px;
-  }
+.resource-meta { margin-top: 12px; }
+.meta-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.meta-tag { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border-light); border-radius: 999px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 11px; line-height: 1; }
+button.meta-tag { cursor: pointer; font-family: inherit; }
+button.meta-tag:hover, button.meta-tag.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--border-light)); color: var(--primary); background: var(--primary-soft); }
+.tag-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
-  .platform-badge {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    font-size: 14px;
-  }
+.resource-links { display: grid; gap: 8px; margin-top: 14px; }
+.link-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 11px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); }
+.link-provider-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; border-radius: 9px; background: var(--bg-primary); color: var(--primary); font-size: 14px; }
+.link-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; flex-wrap: wrap; }
+.link-provider { color: var(--text-primary); font-size: 13px; font-weight: 700; }
+.password-badge { display: inline-flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 11px; }
+.link-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.open-btn, .copy-btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-primary); color: var(--text-secondary); cursor: pointer; font-size: 11px; font-weight: 650; text-decoration: none; white-space: nowrap; }
+.open-btn:hover, .copy-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.card-footer { display: flex; justify-content: center; padding: 12px; border-top: 1px solid var(--border-light); background: var(--bg-primary); }
+.load-more-btn { padding: 8px 12px; }
 
-  .platform-title {
-    font-size: 15px;
-  }
-
-  .resource-item {
-    padding: 12px;
-  }
-
-  .resource-link {
-    font-size: 13px;
-  }
-
-  .meta-tag {
-    padding: 3px 6px;
-    font-size: 10px;
-  }
-
-  .copy-btn {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-
-  .expand-btn {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-
-  .load-more-btn {
-    padding: 8px 12px;
-    font-size: 13px;
-  }
-}
-
-/* 深色模式支持 */
-@media (prefers-color-scheme: dark) {
-  .result-card {
-    background: rgba(15, 23, 42, 0.5);
-    border-color: rgba(255, 255, 255, 0.15);
-  }
-
-  .card-header {
-    background: rgba(15, 23, 42, 0.6);
-    border-bottom-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .resource-item:hover {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .meta-tag {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .meta-tag.date {
-    background: rgba(99, 102, 241, 0.15);
-    border-color: rgba(99, 102, 241, 0.25);
-  }
-
-  .meta-tag.password {
-    background: rgba(16, 185, 129, 0.15);
-    border-color: rgba(16, 185, 129, 0.25);
-  }
-
-  .copy-btn,
-  .expand-btn {
-    background: rgba(30, 41, 59, 0.5);
-    border-color: rgba(100, 116, 139, 0.3);
-  }
-
-  .copy-btn:hover,
-  .expand-btn:hover {
-    background: rgba(15, 23, 42, 0.7);
-    border-color: rgba(100, 116, 139, 0.5);
-  }
-
-  .card-footer {
-    background: rgba(15, 23, 42, 0.6);
-    border-top-color: rgba(100, 116, 139, 0.3);
-  }
-}
-
-/* 高对比度模式支持 */
-@media (prefers-contrast: high) {
-  .result-card {
-    border-width: 2px;
-  }
-
-  .platform-badge {
-    border: 2px solid white;
-  }
-
-  .meta-tag {
-    border-width: 2px;
-  }
-
-  .copy-btn,
-  .expand-btn,
-  .load-more-btn {
-    border-width: 2px;
-  }
-}
-
-/* 减少动画模式支持 */
-@media (prefers-reduced-motion: reduce) {
-  .result-card,
-  .resource-item,
-  .resource-link,
-  .expand-btn,
-  .copy-btn,
-  .load-more-btn {
-    transition: none;
-  }
-
-  .result-card:hover,
-  .resource-link:hover,
-  .expand-btn:hover,
-  .copy-btn:hover,
-  .load-more-btn:hover {
-    transform: none;
-  }
-
-  .external-icon {
-    transition: none;
-  }
+@media (max-width: 560px) {
+  .resource-item { padding: 15px 13px; }
+  .resource-heading { display: block; }
+  .resource-date { display: block; margin-top: 7px; padding: 0; }
+  .link-row { align-items: flex-start; }
+  .link-main { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .link-actions { width: 100%; justify-content: flex-end; }
+  .open-btn, .copy-btn { flex: 1; justify-content: center; }
 }
 </style>

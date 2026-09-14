@@ -418,7 +418,7 @@ type ParserBindings = { upstream: Record<string, ParserBinding>; telegram: Recor
 type BindingTag = { scope: BindingScope; id: string };
 type MarketPlugin =
   | (ParserPluginRecord & { kind: "parser"; key: string; source?: never; channel?: never })
-  | (ParserPluginRecord & { kind: "configured-upstream"; key: string; source: UpstreamDefinition & { transform?: string }; channel?: never })
+  | (ParserPluginRecord & { kind: "configured-upstream"; key: string; source: UpstreamDefinition; channel?: never })
   | (ParserPluginRecord & { kind: "configured-telegram"; key: string; source?: never; channel: string; parserId?: string; requestSummary: string });
 
 const emit = defineEmits<{
@@ -523,7 +523,7 @@ const filteredItems = computed(() => {
     const source = plugin.source;
     const matchesKeyword = !normalizedKeyword || [
       plugin.id, plugin.manifest.name, plugin.manifest.description,
-      source?.url, source?.adapter, source?.plugin, plugin.channel,
+      source?.url, source?.name, source?.description, plugin.channel,
     ].some((value) => String(value || "").toLowerCase().includes(normalizedKeyword));
     const target = plugin.source ? "upstream" : plugin.manifest.target;
     return matchesKeyword && (!query.status || plugin.status === query.status) && (!query.format || plugin.manifest.format === query.format) && (!query.target || target === query.target);

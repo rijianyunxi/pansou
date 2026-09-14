@@ -597,14 +597,6 @@
   color: #5e90a6;
   background: #eef6fa;
 }
-.upstream-app .draft-tag {
-  font-size: 8px;
-  font-weight: 400;
-  padding: 1px 4px;
-  color: #a16207;
-  background: #fefce8;
-  border-radius: 3px;
-}
 .upstream-app .state-badge {
   display: inline-flex;
   align-items: center;
@@ -2619,8 +2611,7 @@
   .upstream-app h1 { font-size: 27px; }
 }
 
-/* Unified upstream directory metadata: keep descriptions and classification tags
-   readable without making the action column jump. */
+/* Unified upstream directory metadata: keep descriptions readable without making the action column jump. */
 .upstream-app .source-description {
   margin-top: 2px;
   max-width: min(42vw, 520px);
@@ -2630,42 +2621,6 @@
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.upstream-app .source-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-  max-width: min(56vw, 720px);
-}
-.upstream-app .source-tags .draft-tag {
-  margin: 0;
-  line-height: 1.3;
-}
-@media (max-width: 720px) {
-  .upstream-app .source-description {
-    max-width: 58vw;
-  }
-  .upstream-app .source-tags {
-    max-width: 62vw;
-  }
-}
-.upstream-app .detail-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.upstream-app .detail-tag {
-  display: inline-block;
-  max-width: 100%;
-  margin: 2px 4px 2px 0;
-  padding: 2px 6px;
-  border: 1px solid #dbe7f5;
-  border-radius: 4px;
-  background: #f8fbff;
-  color: #475569;
-  font-size: 10px;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 700px) {
   /* The unified directory is intentionally one table, but it must not hide
@@ -3134,7 +3089,6 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .upstream-app .source-dialog .editor-advanced,
-.upstream-app .source-dialog .editor-meta,
 .upstream-app .source-dialog .editor-function {
   margin-top: 16px;
   padding: 17px 18px 18px;
@@ -3327,36 +3281,6 @@
   vertical-align: 1px;
   content: "";
 }
-.upstream-app .source-tags-cell {
-  white-space: normal;
-}
-.upstream-app .directory-table .compact-tags {
-  max-width: 100%;
-  margin: 0;
-  gap: 4px;
-}
-.upstream-app .directory-table .compact-tags .draft-tag {
-  max-width: 86px;
-  padding: 2px 6px;
-  overflow: hidden;
-  border: 1px solid #e5eaf1;
-  border-radius: 5px;
-  background: #f8fafc;
-  color: #667386;
-  font-size: 8px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.upstream-app .directory-table .compact-tags .more-tag {
-  border-color: #d7e5fb;
-  background: #eff6ff;
-  color: #2563eb;
-}
-.upstream-app .source-empty-meta {
-  color: #b0b8c3;
-  font-size: 9px;
-}
 .upstream-app .directory-table .action-column {
   text-align: right !important;
 }
@@ -3508,7 +3432,7 @@
   }
 }
 
-/* Source directory comfort pass: softer surfaces, clearer hierarchy and readable tags. */
+/* Source directory comfort pass: softer surfaces and clearer hierarchy. */
 .upstream-app .console-main-sources .directory-panel {
   border: 1px solid #dfe7f0;
   border-radius: 14px;
@@ -3664,30 +3588,6 @@
   outline: 2px solid #75a7e8;
   outline-offset: 1px;
 }
-.upstream-app .console-main-sources .directory-table .compact-tags {
-  gap: 6px;
-}
-.upstream-app .console-main-sources .directory-table .compact-tags .draft-tag {
-  max-width: 112px;
-  min-height: 27px;
-  padding: 5px 9px;
-  border-color: #d8e1eb;
-  border-radius: 7px;
-  background: #f2f5f9;
-  color: #45556b;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-.upstream-app .console-main-sources .directory-table .compact-tags .more-tag {
-  border-color: #c7daf4;
-  background: #edf5ff;
-  color: #245fa8;
-}
-.upstream-app .console-main-sources .source-empty-meta {
-  color: #7f8da0;
-  font-size: 11px;
-}
 .upstream-app .console-main-sources .directory-panel .table-footer {
   border-top-color: #e3eaf2;
   background: #f8fafc;
@@ -3721,15 +3621,13 @@
 .upstream-app .directory-table th:nth-child(1),
 .upstream-app .directory-table td:nth-child(1) { width: 6%; }
 .upstream-app .directory-table th:nth-child(2),
-.upstream-app .directory-table td:nth-child(2) { width: 24%; }
+.upstream-app .directory-table td:nth-child(2) { width: 29%; }
 .upstream-app .directory-table th:nth-child(3),
-.upstream-app .directory-table td:nth-child(3) { width: 12%; }
+.upstream-app .directory-table td:nth-child(3) { width: 15%; }
 .upstream-app .directory-table th:nth-child(4),
-.upstream-app .directory-table td:nth-child(4) { width: 24%; }
+.upstream-app .directory-table td:nth-child(4) { width: 30%; }
 .upstream-app .directory-table th:nth-child(5),
-.upstream-app .directory-table td:nth-child(5) { width: 16%; }
-.upstream-app .directory-table th:nth-child(6),
-.upstream-app .directory-table td:nth-child(6) { width: 18%; }
+.upstream-app .directory-table td:nth-child(5) { width: 20%; }
 .upstream-app .directory-table .source-index-column,
 .upstream-app .directory-table .source-index-cell {
   padding-left: 12px;

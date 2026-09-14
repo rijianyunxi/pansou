@@ -1,16 +1,13 @@
 import type { UpstreamDefinition } from "../../../types/source";
 import type { InstructionPluginDefinition } from "../instructions/types";
-import { InstructionsPlugin, type SecretValuesLoader } from "../instructions/plugin";
+import { InstructionsPlugin } from "../instructions/plugin";
 import type { SearchPlugin } from "../plugins/manager";
-
-const DEFAULT_HTML_ITEMS = ".result";
 
 function configurationVersion(source: UpstreamDefinition): string {
   const input = JSON.stringify({
     url: source.url,
     method: source.method,
     format: source.format,
-    mapping: source.mapping,
     request: source.request,
     response: source.response,
     transform: source.transform,
@@ -24,19 +21,17 @@ function configurationVersion(source: UpstreamDefinition): string {
 }
 
 /**
- * Turn the catalog row into the declarative runtime definition.  The catalog
- * is the only source of endpoint/mapping settings; this adapter deliberately
- * contains no source-specific behavior.
+ * Turn a catalog row into the declarative runtime definition. The catalog has
+ * one parsing model: transform(payload, $, context) owns the complete result
+ * conversion, including the new resource-level result shape.
  */
-export function upstreamToInstructionDefinition(
-  source: UpstreamDefinition,
-): InstructionPluginDefinition {
+export function upstreamToInstructionDefinition(source: UpstreamDefinition): InstructionPluginDefinition {
   const request = source.request;
+  const transform = source.transform?.trim();
+  if (!transform) throw new Error("来源必须配置 transform(payload, $, context)");
   const allowedDomains = request?.allowedDomains?.length
     ? request.allowedDomains
     : [new URL(source.url).hostname];
-  const isJson = source.format === "json";
-  const responseItems = isJson ? source.mapping.items : (source.mapping.items || DEFAULT_HTML_ITEMS);
 
   return {
     schemaVersion: 1,
@@ -64,52 +59,21 @@ export function upstreamToInstructionDefinition(
       allowedDomains,
       allowInsecureHttp: false,
       maxRequestBodyBytes: request?.maxRequestBodyBytes,
-      secrets: request?.secrets,
       stages: request?.stages as InstructionPluginDefinition["request"]["stages"],
     },
-    response: isJson
-      ? {
-          format: "json",
-          ...(source.transform?.trim() ? { transform: source.transform } : {}),
-          items: responseItems,
-          fields: {
-            title: source.mapping.title,
-            content: source.mapping.content || undefined,
-            datetime: source.mapping.datetime || undefined,
-          },
-          links: {
-            array: source.mapping.linkArray || undefined,
-            url: source.mapping.url,
-            type: source.mapping.type || undefined,
-            password: source.mapping.password || undefined,
-          },
-          nextPage: source.response?.nextPage,
-        }
-      : {
-          format: "html",
-          ...(source.transform?.trim() ? { transform: source.transform } : {}),
-          items: responseItems,
-          fields: {
-            title: source.mapping.title || ".title",
-            content: source.mapping.content || undefined,
-            datetime: source.mapping.datetime || undefined,
-          },
-          links: {
-            selector: source.mapping.linkArray || "a[href]",
-            url: source.mapping.url
-              ? { selector: source.mapping.url, source: "href" as const }
-              : { source: "href" as const },
-            type: source.mapping.type ? { selector: source.mapping.type } : undefined,
-            password: source.mapping.password ? { selector: source.mapping.password } : undefined,
-          },
-          nextPage: source.response?.nextPage,
-        },
+    // The mapping placeholders are intentionally unreachable when transform is
+    // present; InstructionsPlugin selects transform before field extraction.
+    response: {
+      format: source.format,
+      transform,
+      items: "",
+      fields: { title: "" },
+      links: { url: "" },
+      nextPage: source.response?.nextPage,
+    },
   };
 }
 
-export function createConfiguredUpstreamPlugin(
-  source: UpstreamDefinition,
-  loadSecrets?: SecretValuesLoader,
-): SearchPlugin {
-  return new InstructionsPlugin(upstreamToInstructionDefinition(source), loadSecrets);
+export function createConfiguredUpstreamPlugin(source: UpstreamDefinition): SearchPlugin {
+  return new InstructionsPlugin(upstreamToInstructionDefinition(source));
 }

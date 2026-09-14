@@ -1,17 +1,3 @@
-export interface AdapterMapping {
-  /** JSON dot path or HTML item selector. */
-  items: string;
-  /** JSON field path or HTML selector. */
-  title: string;
-  /** JSON field path or HTML URL selector; empty means the current link node. */
-  url: string;
-  type: string;
-  password: string;
-  linkArray?: string;
-  content?: string;
-  datetime?: string;
-}
-
 export interface UpstreamRequestConfig {
   query?: Record<string, unknown>;
   headers?: Record<string, string>;
@@ -22,7 +8,6 @@ export interface UpstreamRequestConfig {
   redirect?: "error" | "follow";
   allowedDomains?: string[];
   maxRequestBodyBytes?: number;
-  secrets?: string[];
   stages?: unknown[];
 }
 
@@ -36,34 +21,22 @@ export interface UpstreamResponseConfig {
 
 export type UpstreamSourceKind = "http" | "telegram";
 
+/**
+ * Unified source configuration. A source is request + transform; display
+ * metadata and field mapping are deliberately not part of this contract.
+ */
 export interface UpstreamDefinition {
   id: string;
-  /** One directory model for HTTP endpoints and Telegram channel sources. */
   sourceKind?: UpstreamSourceKind;
-  /** Public Telegram username when sourceKind is telegram. */
   channel?: string;
   name: string;
   description: string;
   url: string;
-  /** Management labels, independent from drive/resource classification. */
-  tags?: string[];
-  /** Cloud drive category, e.g. aliyun, quark, baidu, magnet. */
-  driveType?: string;
-  /** Resource categories, e.g. movie, anime, novel, music, document. */
-  resourceTypes?: string[];
   method: "GET" | "POST";
   format: "json" | "html";
-  plugin: string;
-  adapter: string;
-  color: string;
-  initials: string;
-  mapping: AdapterMapping;
-  /** Whether this configured source participates in formal search. */
   enabled?: boolean;
-  /** Declarative request/response details used by the generic configured executor. */
   request?: UpstreamRequestConfig;
-  /** Sandboxed synchronous transform(payload, $, context) source. */
-  transform?: string;
+  transform: string;
   response?: UpstreamResponseConfig;
 }
 
@@ -96,5 +69,6 @@ export interface UpstreamProbe {
   traces: ProbeTrace[];
   raw: string;
   rawTruncated: boolean;
-  results: import("../server/core/types/models").SearchResult[];
+  /** Final resource-level shape, identical to /api/search output. */
+  results: import("../server/core/types/models").NormalizedSearchResult[];
 }

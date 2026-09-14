@@ -94,23 +94,30 @@
           <button
             class="button secondary monitor-settings-button"
             type="button"
-            :aria-expanded="searchSettingsOpen"
-            @click="searchSettingsOpen = !searchSettingsOpen"
+            :aria-expanded="sourceSettingsOpen"
+            @click="openSourceSettings"
           >
             <ConsoleIcon name="sliders" :size="15" />
-            <span>{{ searchSettingsOpen ? "收起设置" : "来源设置" }}</span>
+            <span>来源设置</span>
           </button>
-      <section
-        v-if="searchSettingsOpen"
-        class="monitor-search-settings"
+      <dialog
+        v-if="sourceSettingsOpen"
+        ref="sourceSettingsDialog"
+        class="source-settings-dialog"
         aria-labelledby="monitor-search-settings-title"
+        @close="sourceSettingsOpen = false"
+        @click="onSourceSettingsBackdrop"
       >
+      <section class="source-settings-panel">
         <header class="monitor-settings-header">
           <div>
             <h3 id="monitor-search-settings-title">来源与性能</h3>
             <p>管理默认来源和运行参数；来源与频道的开启状态会和运行状态保持一致。</p>
           </div>
           <span v-if="settingsLoading" class="tiny-muted">正在读取…</span>
+          <button class="icon-button" type="button" aria-label="关闭来源设置" @click="sourceSettingsDialog?.close()">
+            <ConsoleIcon name="close" :size="16" />
+          </button>
         </header>
         <div class="monitor-settings-content">
           <div class="section-label">
@@ -190,6 +197,7 @@
           </div>
         </div>
       </section>
+      </dialog>
           </div>
           <button class="button primary monitor-refresh-button" :disabled="loading" @click="loadMonitor()">
             <span v-if="loading" class="spinner"></span>
@@ -432,7 +440,8 @@ const upstreamDeleteConfirm = ref("");
 const channelDeleteTarget = ref<MonitorRow | null>(null);
 
 const autoRefresh = ref(true);
-const searchSettingsOpen = ref(false);
+const sourceSettingsOpen = ref(false);
+const sourceSettingsDialog = ref<HTMLDialogElement>();
 const nextRefreshIn = ref(AUTO_REFRESH_SECONDS);
 let autoTimer: ReturnType<typeof setInterval> | undefined;
 let countdownTimer: ReturnType<typeof setInterval> | undefined;
@@ -464,6 +473,19 @@ const channelRows = computed(() =>
     .filter((row) => row.kind === "channel")
     .sort((a, b) => a.id.localeCompare(b.id)),
 );
+
+function openSourceSettings() {
+  sourceSettingsOpen.value = true;
+  nextTick(() => {
+    if (sourceSettingsDialog.value && !sourceSettingsDialog.value.open) {
+      sourceSettingsDialog.value.showModal();
+    }
+  });
+}
+
+function onSourceSettingsBackdrop(event: MouseEvent) {
+  if (event.target === sourceSettingsDialog.value) sourceSettingsDialog.value?.close();
+}
 
 function apiErrorMessage(error: any): string {
   const code = error?.statusCode || error?.response?.status;
@@ -611,6 +633,7 @@ async function saveSearchSettingsUi() {
       : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id);
     await loadMonitor({ silent: true });
     notify("来源设置已保存，来源开启状态已与运行状态统一。");
+    sourceSettingsDialog.value?.close();
   } catch (error: any) {
     settingsError.value = apiErrorMessage(error);
     if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
@@ -837,18 +860,25 @@ onBeforeUnmount(() => {
   position: relative;
   flex: 0 0 auto;
 }
-.monitor-search-settings {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  z-index: 30;
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(72vh, 680px);
-  overflow: auto;
+.source-settings-dialog {
+  width: min(680px, calc(100vw - 48px));
+  max-width: none;
+  max-height: min(88dvh, 760px);
+  overflow: hidden;
+  padding: 0;
   border: 1px solid #dfe7f1;
-  border-radius: 14px;
+  border-radius: 18px;
   background: #fff;
-  box-shadow: 0 18px 45px rgba(30, 64, 110, .16);
+  color: var(--ink);
+  box-shadow: 0 34px 110px rgba(15, 23, 42, 0.28);
+}
+.source-settings-dialog::backdrop {
+  background: rgba(17, 24, 39, 0.46);
+  backdrop-filter: blur(3px);
+}
+.source-settings-panel {
+  max-height: min(88dvh, 760px);
+  overflow-y: auto;
 }
 .monitor-settings-header {
   display: flex;
@@ -1012,9 +1042,8 @@ onBeforeUnmount(() => {
 .monitor-card-toggle { flex: 0 0 auto; }
 @media (max-width: 980px) { .monitor-card-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
-  .monitor-search-settings {
-    right: -8px;
-    width: min(520px, calc(100vw - 28px));
+  .source-settings-dialog {
+    width: calc(100vw - 28px);
   }
   .monitor-channel-settings { grid-template-columns: 1fr; }
 }

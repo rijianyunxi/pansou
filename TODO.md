@@ -134,7 +134,7 @@
 - 上游目录：`GET/PUT /api/settings/upstreams`，以及 `/api/settings/upstreams/:id` 的删除、启停、导入导出接口。
 - 搜索设置：`GET/PUT /api/settings/search`。
 - TG 设置和诊断：`GET/PUT /api/settings/telegram`、`GET/PUT /api/settings/tg-source`、`POST /api/tg/probe`、`POST /api/tg/validate-channel`、`/api/tg/channels/**`、`/api/tg/accounts/**`、`/api/tg/mtproto/**`。
-- Instructions 插件：`/api/plugins` 及其 `validate/debug/publish/disable/enable/rollback/archive/restore/copy/secrets/import/export` 子接口。
+- 来源配置统一使用 `/api/settings/upstreams`；旧 Instructions 生命周期接口已删除。
 - Parser Plugin：`/api/parser-plugins` 及其 `test/publish/disable/enable/rollback/archive/restore/import/export` 子接口。
 - 健康与监控：`GET /api/health`、`GET /api/plugin-health`、`GET /api/monitor`。
 
@@ -152,7 +152,6 @@
 |---|---|
 | `upstream_catalog` | 系统/自定义上游目录、配置版本和垃圾箱关联状态 |
 | `plugin_repository` | Instructions 定义、版本和生命周期审计 |
-| `plugin_secrets` | 插件密钥值；接口不返回明文 |
 | `parser_plugins` | Parser Plugin 定义、版本和发布状态 |
 | `search_settings` | 搜索来源、并发、超时和垃圾箱设置 |
 | `tg_channel_settings` | TG 频道清单、策略、停用/删除状态和解析器绑定 |
@@ -164,11 +163,10 @@
 
 SQLite 结构化表是唯一持久化源；不再读取旧 JSON、`json_store` 或通用 KV 配置。
 
-### 5.2 管理认证和密钥
+### 5.2 管理认证
 
 - `ADMIN_PASSWORD` 与搜索密码 `SEARCH_PASSWORD` 完全独立。
 - 管理 Cookie 有效期 8 小时，`HttpOnly; SameSite=Strict`，HTTPS 下附加 `Secure`。
-- 插件定义只声明密钥名，密钥值存放在 `plugin_secrets`，不进入版本历史、导出文件、审计记录或调试轨迹。
 - Instructions 只支持显式变量插值，不支持 `eval`、函数表达式、shell、文件访问或读取系统环境变量。
 - 出站 URL 默认仅允许 HTTPS；禁止 localhost、环回、私网、链路本地、云元数据和不允许端口；重定向逐跳重新校验。
 - Node 出站请求使用已校验 IP 连接，保留 SNI/Host/证书校验；平台不支持钉住时不宣称等价安全能力。
@@ -214,12 +212,12 @@ SQLite 结构化表是唯一持久化源；不再读取旧 JSON、`json_store` �
 
 ```js
 function transform(payload, $, context) {
-  return [{ title: "资源标题", url: "https://pan.baidu.com/s/xxx", password: "abcd" }];
+  return [{ id: "stable-resource-id", name: "资源标题", description: null, datetime: null, links: [{ url: "https://pan.baidu.com/s/xxx", password: "abcd" }] }];
 }
 ```
 
 - HTML 响应提供 Cheerio `$`；JSON 响应提供已解析对象；文本/Jina 响应提供原始文本；`auto` 按本次响应格式适配。
-- 返回数组或 `{ items: [] }`；每项至少要有有效链接，运行时补齐来源、唯一 ID 和插件版本。
+- 必须返回资源数组；每项使用 `id`、`name`、`description`、`datetime`、`links[]`，且至少包含一个有效链接。来源、频道、插件版本等诊断信息由运行时补齐。
 - 代码在受限 VM 中同步执行，超时或异步返回会失败；Parser Plugin 不负责发起网络请求。
 - 该能力已有 API 和孤立管理台组件，但尚未成为 `/admin` 的独立导航项，见第 2 节。
 

@@ -3,6 +3,7 @@ import { executeInstructions } from "../instructions/executor";
 import { upstreamToInstructionDefinition } from "./configuredUpstreamPlugin";
 import { getConfiguredUpstream } from "./upstreamCatalog";
 import { probeTgChannel } from "./tg";
+import { normalizeSearchResult } from "../utils/searchResultNormalizer";
 
 function requestQuery(rawUrl: string): Record<string, string | string[]> {
   try {
@@ -62,7 +63,7 @@ export async function probeUpstreamDefinition(
       })),
       raw: tg.upstreamResponse?.body || "",
       rawTruncated: tg.upstreamResponse?.bodyTruncated || false,
-      results: tg.results,
+      results: tg.results.map((item) => normalizeSearchResult(item, false)),
     };
   }
 
@@ -95,7 +96,7 @@ export async function probeUpstreamDefinition(
       limit: 200,
       onTrace: (trace) => { result.traces.push(mapTrace(trace)); },
     });
-    result.results = execution.results;
+    result.results = execution.results.map((item) => normalizeSearchResult(item, false));
     const lastResponse = [...result.traces].reverse().find((trace) => trace.status != null);
     result.httpStatus = lastResponse?.status ?? null;
     result.raw = execution.raw;

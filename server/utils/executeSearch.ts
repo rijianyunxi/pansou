@@ -1,5 +1,6 @@
 import { getOrCreateSearchService } from "../core/services";
-import type { SearchSourceUpdate } from "../core/types/models";
+import type { NormalizedSearchSourceUpdate, SearchSourceUpdate } from "../core/types/models";
+import { normalizeSearchResponse, normalizeSearchUpdate } from "../core/utils/searchResultNormalizer";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest } from "./searchRequest";
 import {
@@ -23,29 +24,34 @@ export function prepareSearch(raw: unknown): PreparedSearch {
 export async function executePreparedSearch(
   prepared: PreparedSearch,
   signal?: AbortSignal,
-  onSourceSuccess?: (update: SearchSourceUpdate) => void,
+  onSourceSuccess?: (update: NormalizedSearchSourceUpdate) => void,
 ) {
   const { request, effective } = prepared;
   const service = getOrCreateSearchService(useRuntimeConfig());
   const sourceCallback = onSourceSuccess
-    ? (update: SearchSourceUpdate) => onSourceSuccess(request.debug ? update : hideSearchUpdateDebugFields(update))
+    ? (update: SearchSourceUpdate) => {
+        const normalized = normalizeSearchUpdate(update, request.debug, request.cloud_types);
+        onSourceSuccess(request.debug ? normalized : hideSearchUpdateDebugFields(normalized));
+      }
     : undefined;
   const { response, warnings } = await service.searchWithWarnings(
     request.kw,
     effective.channels,
     effective.conc,
     !!request.refresh,
-    request.res,
     effective.src,
     effective.plugins,
     request.cloud_types,
     effective.ext,
     { signal, onSourceSuccess: sourceCallback },
   );
+  const normalizedResponse = normalizeSearchResponse(response, request.debug, request.cloud_types);
   return {
     code: 0,
     message: warnings.length ? "partial_success" : "success",
-    data: request.debug ? response : hideSearchResponseDebugFields(response),
+    data: request.debug
+      ? normalizedResponse
+      : hideSearchResponseDebugFields(normalizedResponse),
     ...(request.debug && warnings.length ? { warnings } : {}),
   };
 }

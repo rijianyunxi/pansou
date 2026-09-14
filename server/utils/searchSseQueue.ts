@@ -1,15 +1,15 @@
-import type { SearchSourceUpdate } from "../core/types/models";
+import type { NormalizedSearchSourceUpdate } from "../core/types/models";
 
 export const SEARCH_SSE_INTERVAL_MS = 300;
 
-type PushUpdate = (update: SearchSourceUpdate) => Promise<void>;
+type PushUpdate = (update: NormalizedSearchSourceUpdate) => Promise<void>;
 
 /**
  * Sends the first completed source immediately, then keeps every later source
  * in FIFO order and emits exactly one result event per 300ms interval.
  */
 export class SearchSseQueue {
-  private readonly pending: SearchSourceUpdate[] = [];
+  private readonly pending: NormalizedSearchSourceUpdate[] = [];
   private draining?: Promise<void>;
   private timer?: ReturnType<typeof setTimeout>;
   private resolveTimer?: () => void;
@@ -22,7 +22,7 @@ export class SearchSseQueue {
     private readonly intervalMs = SEARCH_SSE_INTERVAL_MS,
   ) {}
 
-  enqueue(update: SearchSourceUpdate): void {
+  enqueue(update: NormalizedSearchSourceUpdate): void {
     if (this.cancelled || this.failure) return;
     this.pending.push(update);
     this.startDrain();

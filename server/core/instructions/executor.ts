@@ -18,7 +18,7 @@ import {
   validateInstructionDefinition,
 } from "./validator";
 import { executeSafeHttp, type SafeHttpResponse } from "../http/safeHttpExecutor";
-import { runWithFallbackRetry } from "../utils/retry";
+import { runWithRetry } from "../utils/retry";
 import {
   inferDriveType,
   readMappingPath,
@@ -237,7 +237,6 @@ export interface ExecutionBudgetOptions {
 
 interface RenderedRequest {
   url: URL;
-  fallbackUrls: URL[];
   headers: Record<string, string>;
   body?: string;
   method: "GET" | "POST";
@@ -245,33 +244,31 @@ interface RenderedRequest {
 
 const DEBUG_SENSITIVE_KEY = /(?:authorization|cookie|token|api[-_]?key|secret|password|passwd|credential|signature)/i;
 
-function redactDebugValue(value: unknown, secretValues: ReadonlySet<string>): unknown {
-  if (typeof value === "string" && secretValues.has(value)) return "[REDACTED]";
-  if (Array.isArray(value)) return value.map((item) => redactDebugValue(item, secretValues));
+function redactDebugValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactDebugValue(item));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
     key,
-    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactDebugValue(child, secretValues),
+    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactDebugValue(child),
   ]));
 }
 
 function requestDebugSnapshot(
   rawUrl: string,
   rendered: RenderedRequest,
-  secretValues: ReadonlySet<string>,
 ) {
   const url = new URL(rawUrl);
   const query: Record<string, string | string[]> = {};
   for (const key of new Set(url.searchParams.keys())) {
     const values = url.searchParams.getAll(key).map((value) => (
-      DEBUG_SENSITIVE_KEY.test(key) || secretValues.has(value) ? "[REDACTED]" : value
+      DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : value
     ));
     query[key] = values.length > 1 ? values : values[0] || "";
     if (DEBUG_SENSITIVE_KEY.test(key)) url.searchParams.set(key, "[REDACTED]");
   }
   const headers = Object.fromEntries(Object.entries(rendered.headers).map(([key, value]) => [
     key,
-    DEBUG_SENSITIVE_KEY.test(key) || secretValues.has(value) ? "[REDACTED]" : value,
+    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : value,
   ]));
   let body: unknown = undefined;
   if (rendered.body !== undefined) {
@@ -285,7 +282,7 @@ function requestDebugSnapshot(
     } catch {
       body = rendered.body;
     }
-    body = redactDebugValue(body, secretValues);
+    body = redactDebugValue(body);
   }
   return {
     url: url.toString(),
@@ -319,8 +316,6 @@ export async function executeInstructions(
     page?: number;
     cursor?: string;
     limit?: number;
-    /** Secret values keyed by plain name (without the "secret." prefix). */
-    secrets?: Record<string, string>;
     /** Per-call resource budget; defaults keep today's worst case admissible. */
     budget?: ExecutionBudgetOptions;
     /** Optional admin-published parser plugin for the final response. */
@@ -358,24 +353,18 @@ export async function executeInstructions(
   const maxPages = nextPage
     ? Math.min(Math.max(nextPage.maxPages ?? DEFAULT_MAX_PAGES, 1), MAX_PAGES)
     : 1;
-  const secretNames = new Set((request.secrets ?? []).map((name) => `secret.${name}`));
   const baseVariables = {
     keyword,
     page: options.page ?? 1,
     cursor: options.cursor ?? "",
     limit: options.limit ?? definition.manifest.maxResults,
   };
-  const secretValues = options.secrets ?? {};
-  const debugSecretValues = new Set(Object.values(secretValues).filter(Boolean));
 
   const runtimeVariables = (
     stageVars: Record<string, string>,
     page: number
   ): Record<string, string | number> => {
     const variables: Record<string, string | number> = { ...baseVariables, page, ...stageVars };
-    for (const name of secretNames) {
-      variables[name] = secretValues[name.slice("secret.".length)] ?? "";
-    }
     return variables;
   };
 
@@ -383,7 +372,6 @@ export async function executeInstructions(
     spec: {
       method: "GET" | "POST";
       url: string;
-      fallbackUrls?: string[];
       query?: Record<string, InstructionValue>;
       headers?: Record<string, string>;
       bodyType?: "json" | "form";
@@ -394,8 +382,7 @@ export async function executeInstructions(
     acceptFor: "json" | "html",
     nextPageParam?: { name: string; page: number }
   ): RenderedRequest => {
-    const requestUrls = [spec.url, ...(spec.fallbackUrls || [])]
-      .map((url) => new URL(interpolateTemplate(url, variables, allowedNames) as string));
+    const requestUrl = new URL(interpolateTemplate(spec.url, variables, allowedNames) as string);
     const applyQuery = (requestUrl: URL): void => {
       for (const [key, value] of Object.entries(spec.query || {})) {
         requestUrl.searchParams.set(
@@ -407,8 +394,7 @@ export async function executeInstructions(
         requestUrl.searchParams.set(nextPageParam.name, String(nextPageParam.page));
       }
     };
-    requestUrls.forEach(applyQuery);
-    const requestUrl = requestUrls[0]!;
+    applyQuery(requestUrl);
     const headers: Record<string, string> = {
       accept:
         spec.bodyType === "json" || acceptFor === "json"
@@ -430,7 +416,7 @@ export async function executeInstructions(
         headers["content-type"] ||= "application/json";
       }
     }
-    return { url: requestUrl, fallbackUrls: requestUrls.slice(1), headers, body, method: spec.method };
+    return { url: requestUrl, headers, body, method: spec.method };
   };
 
   const traces: InstructionExecutionTrace[] = [];
@@ -477,17 +463,17 @@ export async function executeInstructions(
   ): Promise<SafeHttpResponse> => {
     const started = Date.now();
     try {
-      const urls = [rendered.url, ...rendered.fallbackUrls];
-      return await runWithFallbackRetry(
-        urls.map((url) => url.toString()),
-        async (url) => {
+      const url = rendered.url.toString();
+      return await runWithRetry(
+        url,
+        async (attemptUrl) => {
           assertRequestBudget();
           requestsUsed++;
           const attemptStarted = Date.now();
           try {
             const payload = await executeSafeHttp({
               method: rendered.method,
-              url,
+              url: attemptUrl,
               headers: rendered.headers,
               body: rendered.body,
               signal: options.signal,
@@ -514,18 +500,18 @@ export async function executeInstructions(
               elapsedMs: payload.elapsedMs,
               bytes: payload.bytes,
               contentType: payload.contentType,
-              request: requestDebugSnapshot(url, rendered, debugSecretValues),
+              request: requestDebugSnapshot(attemptUrl, rendered),
             });
             return payload;
           } catch (error) {
             recordTrace({
               stage,
-              url,
+              url: attemptUrl,
               method: rendered.method,
               status: null,
               elapsedMs: Date.now() - attemptStarted,
               bytes: 0,
-              request: requestDebugSnapshot(url, rendered, debugSecretValues),
+              request: requestDebugSnapshot(attemptUrl, rendered),
               error: error instanceof Error ? error.message : String(error),
             });
             throw error;
@@ -547,7 +533,7 @@ export async function executeInstructions(
           status: null,
           elapsedMs: Date.now() - started,
           bytes: 0,
-          request: requestDebugSnapshot(rendered.url.toString(), rendered, debugSecretValues),
+          request: requestDebugSnapshot(rendered.url.toString(), rendered),
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -593,9 +579,10 @@ export async function executeInstructions(
         );
         return {
           url: linkUrl,
-          type:
-            text(fieldValue(object, response.links.type, "links.type")) ||
-            inferDriveType(linkUrl),
+          type: inferDriveType(
+            linkUrl,
+            text(fieldValue(object, response.links.type, "links.type")),
+          ),
           password: text(
             fieldValue(object, response.links.password, "links.password")
           ),
@@ -658,7 +645,7 @@ export async function executeInstructions(
         );
         return {
           url: linkUrl,
-          type: type || inferDriveType(linkUrl),
+          type: inferDriveType(linkUrl, type),
           password,
         };
       });
@@ -767,7 +754,7 @@ export async function executeInstructions(
   for (const stage of stages) {
     for (const name of Object.keys(stage.response.vars)) allStageVarNames.add(name);
   }
-  const allNames = new Set([...RESERVED_VARIABLES, ...allStageVarNames, ...secretNames]);
+  const allNames = new Set([...RESERVED_VARIABLES, ...allStageVarNames]);
   const placeholderStageVars: Record<string, string> = {};
   for (const name of allStageVarNames) placeholderStageVars[name] = "";
   let scopeUrl: URL | null = null;
@@ -782,7 +769,7 @@ export async function executeInstructions(
     const stage = stages[index];
     if (!stage) break;
     // Stage i may reference variables extracted by stages before it only.
-    const allowed = new Set([...RESERVED_VARIABLES, ...Object.keys(stageVars), ...secretNames]);
+    const allowed = new Set([...RESERVED_VARIABLES, ...Object.keys(stageVars)]);
     const rendered = buildRendered(
       { ...stage, method: stage.method ?? "GET" },
       runtimeVariables(stageVars, baseVariables.page),
@@ -858,7 +845,7 @@ export async function executeInstructions(
         // original POST method; the body template no longer applies.
         const headers = { ...first.headers };
         delete headers["content-type"];
-        next = { url: target, fallbackUrls: [], headers, method: "GET" };
+        next = { url: target, headers, method: "GET" };
       }
     } else if (nextPage?.queryParam) {
       next = buildRendered(

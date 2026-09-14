@@ -15,10 +15,5 @@ export class SqliteHotSearchStore implements IHotSearchStore {
     db.run("DELETE FROM hot_searches WHERE term NOT IN (SELECT term FROM hot_searches ORDER BY score DESC,last_searched DESC LIMIT ?)", MAX_ENTRIES);
   }
   async getHotSearches(limit: number): Promise<HotSearchItem[]> { return read().slice(0, Math.min(MAX_ENTRIES, Math.max(0, limit))); }
-  async cleanupOldEntries(maxEntries: number): Promise<void> { getSqliteDatabase().run("DELETE FROM hot_searches WHERE term NOT IN (SELECT term FROM hot_searches ORDER BY score DESC,last_searched DESC LIMIT ?)", Math.min(MAX_ENTRIES, Math.max(0, maxEntries))); }
-  async clearHotSearches(): Promise<{ success: boolean; message: string }> { getSqliteDatabase().run("DELETE FROM hot_searches"); return { success: true, message: "热搜记录已清除" }; }
-  async deleteHotSearch(term: string): Promise<{ success: boolean; message: string }> { const result = getSqliteDatabase().run("DELETE FROM hot_searches WHERE term=?", term); return result.changes ? { success: true, message: `热搜词 "${term}" 已删除` } : { success: false, message: "热搜词不存在" }; }
   async getStats(): Promise<HotSearchStats> { const all = read(); return { total: all.length, topTerms: all.slice(0, 10) }; }
-  getFileSize(): number { return 0; }
-  close(): void {}
 }

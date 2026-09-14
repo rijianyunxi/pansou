@@ -17,23 +17,30 @@ import {
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 const HTTP_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
-const MAX_TAGS = 24;
-const MAX_TAG_LENGTH = 40;
-const MAX_RESOURCE_TYPES = 16;
-const MAX_RESOURCE_TYPE_LENGTH = 40;
-
 type StoredCatalog = Record<string, UpstreamDefinition>;
 
-function clone<T>(value: T): T { return structuredClone(value); }
+// The upstream catalog intentionally has one configuration model: request +
+// transform. Do not silently accept fields from the removed adapter-based
+// model, otherwise clients can believe they saved a mapping that is ignored.
+const REMOVED_SOURCE_FIELDS = [
+  "plugin", "adapter", "color", "initials", "mapping",
+  "tags", "driveType", "resourceTypes", "fallbackUrls",
+] as const;
 
-function stringList(raw: unknown, maxItems: number, maxLength: number): string[] {
-  if (!Array.isArray(raw)) return [];
-  return [...new Set(raw
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim().slice(0, maxLength))
-    .filter(Boolean))].slice(0, maxItems);
+function assertNewSourceShape(raw: unknown): asserts raw is Partial<UpstreamDefinition> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("来源配置必须是对象");
+  }
+  const legacy = REMOVED_SOURCE_FIELDS.filter((field) =>
+    Object.prototype.hasOwnProperty.call(raw, field),
+  );
+  if (legacy.length) {
+    throw new Error(`${legacy.join("、")} 已废弃，请移除这些字段并使用 transform(payload, $, context)`);
+  }
+  assertNewRequestShape((raw as Record<string, unknown>).request);
 }
 
+function clone<T>(value: T): T { return structuredClone(value); }
 
 function validateSourceUrl(url: string, sourceKind: "http" | "telegram"): void {
   const sample = sourceKind === "telegram"
@@ -45,8 +52,24 @@ function validateSourceUrl(url: string, sourceKind: "http" | "telegram"): void {
 const REQUEST_FIELDS = [
   "query", "headers", "bodyType", "body", "timeoutMs",
   "maxResponseBytes", "redirect", "allowedDomains", "maxRequestBodyBytes",
-  "secrets", "stages",
+  "stages",
 ] as const;
+
+const REMOVED_REQUEST_FIELDS = ["fallbackUrls", "secrets"] as const;
+
+function assertNewRequestShape(raw: unknown, path = "request"): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const request = raw as Record<string, unknown>;
+  const removed = REMOVED_REQUEST_FIELDS.filter((field) =>
+    Object.prototype.hasOwnProperty.call(request, field),
+  );
+  if (removed.length) {
+    throw new Error(`${path}.${removed.join("、")} 已废弃；HTTP 来源只允许一个 request.url`);
+  }
+  if (Array.isArray(request.stages)) {
+    request.stages.forEach((stage, index) => assertNewRequestShape(stage, `${path}.stages[${index}]`));
+  }
+}
 
 function sanitizeSourceRequest(raw: unknown): NonNullable<UpstreamDefinition["request"]> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -96,37 +119,19 @@ function sanitize(raw: unknown): StoredCatalog {
     const method = source.method === "POST" ? "POST" : source.method === "GET" ? "GET" : null;
     const format = source.format === "html" ? "html" : source.format === "json" ? "json" : null;
     if (!method || !format) continue;
-    const mapping = source.mapping && typeof source.mapping === "object" ? source.mapping : {};
+    const transform = typeof source.transform === "string" ? source.transform.slice(0, 100_000) : "";
+    if (!transform.trim()) continue;
     out[id] = {
       id,
       ...(sourceKind === "telegram" ? { sourceKind: "telegram" as const, channel } : { sourceKind: "http" as const }),
       name: String(source.name || id).trim().slice(0, 100),
       description: String(source.description || "").trim().slice(0, 500),
       url,
-      tags: stringList(source.tags, MAX_TAGS, MAX_TAG_LENGTH),
-      driveType: typeof source.driveType === "string" ? source.driveType.trim().slice(0, MAX_TAG_LENGTH) : "",
-      resourceTypes: stringList(source.resourceTypes, MAX_RESOURCE_TYPES, MAX_RESOURCE_TYPE_LENGTH),
       method,
       format,
-      plugin: String(source.plugin || id).trim().slice(0, 100),
-      adapter: String(source.adapter || "").trim().slice(0, 100),
-      color: String(source.color || "#697fbd").trim().slice(0, 20),
-      initials: String(source.initials || id.slice(0, 1)).trim().slice(0, 3),
-      mapping: {
-        items: String((mapping as any).items || "").slice(0, 200),
-        title: String((mapping as any).title || "").slice(0, 200),
-        url: String((mapping as any).url || "").slice(0, 200),
-        type: String((mapping as any).type || "").slice(0, 200),
-        password: String((mapping as any).password || "").slice(0, 200),
-        content: String((mapping as any).content || "").slice(0, 200),
-        datetime: String((mapping as any).datetime || "").slice(0, 200),
-        ...((mapping as any).linkArray ? { linkArray: String((mapping as any).linkArray).slice(0, 200) } : {}),
-      },
+      transform,
       ...(source.request && typeof source.request === "object" && !Array.isArray(source.request)
         ? { request: sanitizeSourceRequest(source.request) }
-        : {}),
-      ...(typeof source.transform === "string" && source.transform.trim()
-        ? { transform: source.transform.slice(0, 100_000) }
         : {}),
       ...(source.response && typeof source.response === "object" && !Array.isArray(source.response)
         ? { response: structuredClone(source.response) }
@@ -213,16 +218,8 @@ function buildTelegramDefinition(channel: string, stored?: UpstreamDefinition): 
     name: stored?.name || `@${channel}`,
     description: stored?.description || "Telegram 频道来源",
     url: stored?.url || telegramUrl("direct", channel),
-    tags: stored?.tags || [],
-    driveType: stored?.driveType || "",
-    resourceTypes: stored?.resourceTypes || [],
     method: "GET" as const,
     format: "html" as const,
-    plugin: stored?.plugin || id,
-    adapter: stored?.adapter || "configured-transform",
-    color: stored?.color || "#4c8ed9",
-    initials: stored?.initials || "T",
-    mapping: stored?.mapping || { items: "", title: "", url: "", type: "", password: "" },
     enabled: state ? state.enabled && !state.deleted : stored?.enabled !== false,
     request: stored?.request || {
       query: { q: "{{keyword}}" },
@@ -270,9 +267,8 @@ export function getUnifiedUpstream(id: string): UpstreamDefinition | undefined {
 
 /** Validate and normalize an unsaved source for the admin online debugger without persisting it. */
 export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition {
-  const value = raw && typeof raw === "object" && !Array.isArray(raw)
-    ? structuredClone(raw as Partial<UpstreamDefinition>)
-    : {};
+  assertNewSourceShape(raw);
+  const value = structuredClone(raw);
   const telegram = isTelegramSource(value);
   const channel = telegram
     ? String(value.channel || "").trim().replace(/^@/, "").toLowerCase()
@@ -287,21 +283,24 @@ export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition
     ? { ...buildTelegramDefinition(channel), ...value, id, sourceKind: "telegram" as const, channel }
     : { ...value, id, sourceKind: "http" as const };
   const next = sanitize({ [id]: input })[id];
-  if (!next) throw new Error("来源配置无效：请检查 HTTPS 地址、请求方式和响应格式");
-  if (next.transform?.trim()) validateParserCode(next.transform);
+  if (!next) throw new Error("来源配置无效：请检查 HTTPS 地址、请求方式、响应格式和 transform");
+  validateParserCode(next.transform);
+
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   return clone(next);
 }
 
 export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
-  const value = raw && typeof raw === "object" ? raw as Partial<UpstreamDefinition> : {};
+  assertNewSourceShape(raw);
+  const value = raw;
   const id = String(value.id || "").trim().toLowerCase();
   const catalog = read();
   const current = catalog[id];
   const merged = { ...current, ...value, id } as Partial<UpstreamDefinition>;
   const next = sanitize({ [id]: merged })[id];
-  if (!next) throw new Error("来源配置无效：请检查 ID、HTTPS 地址、请求方式和响应格式");
-  if (next.transform?.trim()) validateParserCode(next.transform);
+  if (!next) throw new Error("来源配置无效：请检查 ID、HTTPS 地址、请求方式、响应格式和 transform");
+  validateParserCode(next.transform);
+
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
   const store = getSqliteDatabase();
@@ -318,7 +317,8 @@ export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
 }
 
 export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition {
-  const value = raw && typeof raw === "object" ? raw as Partial<UpstreamDefinition> : {};
+  assertNewSourceShape(raw);
+  const value = raw;
   const rawChannel = String(value.channel || (String(value.id || "").toLowerCase().startsWith("tg-") ? String(value.id).slice(3) : ""));
   const channel = rawChannel.trim().replace(/^@/, "").toLowerCase();
   if (!TG_CHANNEL_PATTERN.test(channel)) throw new Error("Telegram 来源必须填写有效的公开频道用户名");
@@ -339,7 +339,7 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
   };
   const next = sanitize({ [id]: nextInput })[id];
   if (!next) throw new Error("Telegram 来源配置无效：请检查频道、HTTPS 地址、请求配置和响应格式");
-  if (next.transform?.trim()) validateParserCode(next.transform);
+  validateParserCode(next.transform);
   validateInstructionDefinition(upstreamToInstructionDefinition(next));
   catalog[id] = next;
   const settings = getSearchSettings();
@@ -352,8 +352,8 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
 }
 
 export function saveUnifiedUpstream(raw: unknown): UpstreamDefinition {
-  const value = raw && typeof raw === "object" ? raw as Partial<UpstreamDefinition> : {};
-  return isTelegramSource(value) ? saveConfiguredTelegramUpstream(value) : saveConfiguredUpstream(value);
+  assertNewSourceShape(raw);
+  return isTelegramSource(raw) ? saveConfiguredTelegramUpstream(raw) : saveConfiguredUpstream(raw);
 }
 
 export function deleteConfiguredTelegramUpstream(idOrChannel: string): void {
@@ -440,7 +440,7 @@ export function getUnifiedUpstreamVersion(): string {
   return `${getConfiguredUpstreamVersion()}|${getSearchSettingsVersion()}|${getTgSourceSettingsVersion()}|${JSON.stringify(listUnifiedUpstreams())}`;
 }
 
-export const UPSTREAM_CONFIG_SCHEMA_VERSION = 2;
+export const UPSTREAM_CONFIG_SCHEMA_VERSION = 3;
 
 export interface UpstreamConfigExport {
   schemaVersion: number;
@@ -486,7 +486,8 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
   const nextCatalog = { ...catalog };
   const imported: UpstreamDefinition[] = [];
   for (const entry of entries) {
-    const value = entry && typeof entry === "object" ? entry as Partial<UpstreamDefinition> : {};
+    assertNewSourceShape(entry);
+    const value = entry;
     const id = String(value.id || "").trim().toLowerCase();
     if (isTelegramSource(value)) {
       const saved = saveConfiguredTelegramUpstream(value);
@@ -496,7 +497,7 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
     }
     const next = sanitize({ [id]: { ...catalog[id], ...value, id } })[id];
     if (!next) throw new Error(`来源配置无效: ${id || "缺少 id"}`);
-    if (next.transform?.trim()) validateParserCode(next.transform);
+    validateParserCode(next.transform);
     validateInstructionDefinition(upstreamToInstructionDefinition(next));
     nextCatalog[id] = next;
     imported.push(clone(next));

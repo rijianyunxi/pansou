@@ -1,11 +1,27 @@
+export type CloudType =
+  | "baidu"
+  | "quark"
+  | "aliyun"
+  | "mobile"
+  | "tianyi"
+  | "115"
+  | "123"
+  | "jianguoyun"
+  | "lanzou"
+  | "xunlei"
+  | "magnet"
+  | "others";
+
 export interface Link {
-  type?: string;
+  /** Stable cloud provider identifier inferred from the share URL. */
+  type?: CloudType;
   url: string;
   password: string;
 }
 
 export type SearchResultSource = "telegram" | "plugin";
 
+/** Internal result shape produced by Telegram, parser plugins and Instructions. */
 export interface SearchResult {
   message_id: string;
   unique_id: string;
@@ -16,47 +32,59 @@ export interface SearchResult {
   links: Link[];
   tags?: string[];
   images?: string[];
-  /** Runtime provenance. Additive fields keep the existing result contract intact. */
+  /** Runtime provenance retained internally and exposed only by debug=1. */
   source?: SearchResultSource;
   pluginId?: string;
   pluginVersion?: string;
   registryVersion?: number;
 }
 
-export interface MergedLink {
-  /** 网盘类型，用于前端平台分组；扁平响应不再依赖 merged_by_type。 */
-  type?: string;
+export interface NormalizedCloudLink {
+  type: CloudType;
   url: string;
-  password: string;
-  note: string;
-  datetime: string; // ISO string
-  source?: string; // e.g. "tg:channel" or "plugin:id@version"
+  password: string | null;
+}
+
+/** Public resource-level result returned by search APIs. */
+export interface NormalizedSearchResult {
+  id: string;
+  name: string;
+  description: string | null;
+  datetime: string | null;
+  cloud_types: CloudType[];
+  links: NormalizedCloudLink[];
+  tags?: string[];
+  images?: string[];
+  /** Only returned when debug=1. */
+  source?: SearchResultSource;
+  channel?: string;
   pluginId?: string;
   pluginVersion?: string;
   registryVersion?: number;
-  images?: string[];
 }
-
-export type MergedLinks = Record<string, MergedLink[]>;
 
 export interface SearchResponseMeta {
   registryVersion: number;
   pluginVersions: Record<string, string>;
 }
 
-export type SearchResponseItem = SearchResult | MergedLink;
+/** Internal response assembled from source adapters before public normalization. */
+export interface SearchExecutionResponse {
+  total: number;
+  results: SearchResult[];
+  meta?: SearchResponseMeta;
+}
 
+/** The only public resource shape returned by both search APIs. */
 export interface SearchResponse {
   total: number;
+  results: NormalizedSearchResult[];
   meta?: SearchResponseMeta;
-  /** 默认响应为扁平 MergedLink[]；res=results 时返回原始 SearchResult[]。 */
-  results?: SearchResponseItem[];
-  /** 仅 res=all 使用，避免再返回按平台嵌套的 merged_by_type。 */
-  items?: MergedLink[];
 }
 
 export interface SearchSourceUpdate {
-  source: {
+  /** Source execution details are returned only when debug=1. */
+  source?: {
     kind: SearchResultSource;
     id: string;
     version?: string;
@@ -69,8 +97,15 @@ export interface SearchSourceUpdate {
   results: SearchResult[];
 }
 
+export interface NormalizedSearchSourceUpdate {
+  /** Source execution details are returned only when debug=1. */
+  source?: SearchSourceUpdate["source"];
+  request: SearchSourceUpdate["request"];
+  results: NormalizedSearchResult[];
+}
+
 export interface SearchStreamResultData {
-  update: SearchSourceUpdate;
+  update: NormalizedSearchSourceUpdate;
 }
 
 export interface SearchStreamCompleteData {
@@ -93,8 +128,6 @@ export interface SearchRequest {
   refresh?: boolean;
   /** Include warnings, response metadata, and result provenance fields. */
   debug?: boolean;
-  /** links（默认）返回扁平链接；results 返回原始消息；all 返回两者。 */
-  res?: "links" | "all" | "results";
   src?: "all" | "tg" | "plugin";
   plugins?: string[];
   ext?: Record<string, any>;

@@ -14,41 +14,48 @@ function text(value: unknown, max = MAX_CONTENT): string {
   return value == null ? "" : String(value).trim().slice(0, max);
 }
 
+function compact(value: unknown): string {
+  return String(value ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
 function normalizeLink(value: unknown): Link | null {
-  if (typeof value === "string") value = { url: value };
-  if (!value || typeof value !== "object") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  const url = text(input.url || input.href || input.link, MAX_URL);
+  const url = text(input.url, MAX_URL);
   if (!url || !validResourceUrl(url)) return null;
   return {
     url,
-    type: text(input.type, 80) || inferDriveType(url),
-    password: text(input.password || input.pwd, 100),
+    type: inferDriveType(url),
+    password: text(input.password, 100),
   };
 }
 
 function normalizeResults(value: unknown, record: ParserPluginRecord, context: ParserExecutionContext): SearchResult[] {
-  const items = Array.isArray(value)
-    ? value
-    : value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items)
-      ? (value as { items: unknown[] }).items
-      : [];
-  return items.slice(0, Math.min(MAX_OUTPUT, record.manifest.maxResults)).flatMap((item, index) => {
-    if (!item || typeof item !== "object") return [];
+  // Parser transforms have one output contract. Do not silently adapt the
+  // removed title/content/url/items shape here: a source must return the same
+  // resource-level fields that the public search API exposes.
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, Math.min(MAX_OUTPUT, record.manifest.maxResults)).flatMap((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const input = item as Record<string, unknown>;
-    const rawLinks = Array.isArray(input.links)
-      ? input.links
-      : [input.url || input.href || input.link].filter(Boolean);
-    const links = rawLinks.map(normalizeLink).filter((link): link is Link => !!link);
+    if (typeof input.id !== "string" && typeof input.id !== "number") return [];
+    if (typeof input.name !== "string") return [];
+    if (!(typeof input.description === "string" || input.description === null)) return [];
+    if (!(typeof input.datetime === "string" || input.datetime === null)) return [];
+    if (!Array.isArray(input.cloud_types) || !input.cloud_types.length || input.cloud_types.some((type) => typeof type !== "string") || !Array.isArray(input.links)) return [];
+    const links = input.links.map(normalizeLink).filter((link): link is Link => !!link);
     if (!links.length) return [];
-    const unique = text(input.unique_id || input.uniqueId, 200) || `${context.channel || context.source || record.id}-${index}`;
+    const id = text(input.id, 200) || `${context.channel || context.source || record.id}-${index}`;
+    const description = text(input.description);
+    const needle = compact(context.keyword);
+    if (needle && !compact(`${input.name} ${description}`).includes(needle)) return [];
     return [{
-      message_id: text(input.message_id || input.messageId, 200),
-      unique_id: unique,
-      channel: text(input.channel, 200) || context.channel || context.source || record.id,
-      datetime: text(input.datetime || input.date || input.time, 100),
-      title: text(input.title || input.name, MAX_TITLE),
-      content: text(input.content || input.description || input.desc),
+      message_id: "",
+      unique_id: id,
+      channel: context.channel || context.source || record.id,
+      datetime: text(input.datetime, 100),
+      title: text(input.name, MAX_TITLE),
+      content: description,
       links,
       ...(Array.isArray(input.tags) ? { tags: input.tags.map((tag) => text(tag, 80)).filter(Boolean).slice(0, 20) } : {}),
       ...(Array.isArray(input.images) ? { images: input.images.map((image) => text(image, MAX_URL)).filter(Boolean).slice(0, 10) } : {}),
