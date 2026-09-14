@@ -2,8 +2,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-const IS_TEST_RUNTIME = process.env.NODE_ENV === "test" || process.env.VITEST === "true" || Boolean(process.env.VITEST_WORKER_ID);
-const DEFAULT_PATH = process.env.PANHUB_SQLITE_DB || (IS_TEST_RUNTIME ? ":memory:" : "./data/panhub.sqlite");
+const DEFAULT_PATH = process.env.PANHUB_SQLITE_DB || "./data/panhub.sqlite";
 const connections = new Map<string, SqliteDatabase>();
 const normalizePath = (path: string): string => path === ":memory:" ? path : resolve(path);
 

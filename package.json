@@ -22,13 +22,7 @@
     "generate": "cross-env PANHUB_BUILD_DIR=.nuxt-generate nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
-    "test": "vitest run",
-    "typecheck": "cross-env PANHUB_BUILD_DIR=.nuxt-typecheck nuxt typecheck",
-    "test:watch": "vitest watch",
-    "test:api": "node ./test/api.test.mjs",
-    "test:coverage": "vitest run --coverage",
-    "test:live": "vitest run --config vitest.live.config.ts",
-    "test:e2e": "playwright test"
+    "typecheck": "cross-env PANHUB_BUILD_DIR=.nuxt-typecheck nuxt typecheck"
   },
   "dependencies": {
     "TagCloud": "^2.5.0",
@@ -44,12 +38,9 @@
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/qrcode": "^1.5.6",
-    "@vitest/coverage-v8": "^2.1.0",
-    "cross-env": "^10.1.0",
-    "vitest": "^2.1.9"
+    "cross-env": "^10.1.0"
   },
   "license": "MIT",
   "keywords": [

@@ -1,12 +1,6 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
 import { PluginManager } from "../plugins/manager";
-import { InstructionsPlugin } from "../instructions/plugin";
 import { createConfiguredUpstreamPlugin } from "./configuredUpstreamPlugin";
-import {
-  getPluginRepository,
-  resolvePublishedDefinition,
-  asVersionCheckable,
-} from "../plugins/repository";
 import { getPluginSecretStore } from "../plugins/secretStore";
 import { getPluginHealthStore } from "../plugins/healthStore";
 import { getSystemSettings } from "./systemSettingsService";
@@ -50,27 +44,7 @@ function createServiceOptions(runtimeConfig: any): SearchServiceOptions {
     searchTimeoutMs: runtimeConfig.searchTimeoutMs,
     cacheEnabled: !!runtimeConfig.cacheEnabled,
     cacheTtlMinutes: system.cacheTtlMinutes,
-    dynamicPluginLoader: async () => {
-      const configured = loadConfiguredPlugins();
-      const configuredIds = new Set(configured.map((plugin) => plugin.manifest.id));
-      const records = await getPluginRepository().list();
-      const secretStore = getPluginSecretStore();
-      const declarativeRecords = records
-        .map(resolvePublishedDefinition)
-        .filter(
-          (definition): definition is NonNullable<typeof definition> =>
-            !!definition && definition.manifest.kind === "instructions" &&
-            !configuredIds.has(definition.manifest.id)
-        )
-        .map(
-          (definition) =>
-            new InstructionsPlugin(
-              definition,
-              (pluginId, names) => secretStore.getMany(pluginId, names),
-            )
-        );
-      return [...configured, ...declarativeRecords];
-    },
+    dynamicPluginLoader: async () => loadConfiguredPlugins(),
     healthStore: getPluginHealthStore(),
   };
 }
@@ -94,11 +68,7 @@ export function getOrCreateSearchService(runtimeConfig: any): SearchService {
     // 多进程/多副本一致性：Registry 刷新前先做 stat 级版本检查，
     // 配置未变化时跳过全量重载；变化时由 manager 原子替换快照。
     pluginManager.setUpdateSource({
-      getRepositoryVersion: async () => {
-        const checkable = asVersionCheckable(getPluginRepository());
-        const repositoryVersion = checkable ? await checkable.getConfigVersion() : null;
-        return `${getConfiguredUpstreamVersion()}|${repositoryVersion ?? "unknown"}`;
-      },
+      getRepositoryVersion: async () => getConfiguredUpstreamVersion(),
       load: loader,
     });
   }

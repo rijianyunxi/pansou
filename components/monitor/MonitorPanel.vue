@@ -269,7 +269,6 @@
               <ConsoleIcon name="refresh" :size="18" />
             </button>
             <button
-              v-if="row.kind === 'channel' || row.upstreamKind === 'instructions'"
               class="monitor-icon-action danger"
               type="button"
               :aria-label="`删除 ${row.name}`"
@@ -307,17 +306,12 @@
       >
         <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
         <h2 id="monitor-delete-upstream-title">
-          {{ needsIdConfirmation ? "永久删除此来源？" : "配置来源不可删除" }}
+          删除此来源？
         </h2>
-        <p v-if="needsIdConfirmation">
+        <p>
           <strong>{{ upstreamDeleteTarget.name }}</strong>
-          的配置、版本和审计记录将被永久删除，且无法恢复。
+          的来源配置将被删除，下一次搜索立即停止加载。
         </p>
-        <p v-else>
-          <strong>{{ upstreamDeleteTarget.name }}</strong>
-          由来源目录管理；如需修改请前往来源管理。
-        </p>
-        <template v-if="needsIdConfirmation">
           <label for="monitor-delete-confirmation">输入来源 ID <code>{{ upstreamDeleteTarget.id }}</code> 以确认</label>
           <input
             id="monitor-delete-confirmation"
@@ -326,16 +320,16 @@
             spellcheck="false"
             :placeholder="upstreamDeleteTarget.id"
           />
-        </template>
+
         <div class="confirm-actions">
           <button class="button secondary" type="button" @click="closeUpstreamDelete">取消</button>
           <button
             class="button destructive"
             type="submit"
-            :disabled="deleteBusy || (needsIdConfirmation && upstreamDeleteConfirm !== upstreamDeleteTarget.id)"
+            :disabled="deleteBusy || upstreamDeleteConfirm !== upstreamDeleteTarget.id"
           >
             <span v-if="deleteBusy" class="spinner"></span>
-            {{ needsIdConfirmation ? "永久删除" : "知道了" }}
+            确认删除
           </button>
         </div>
       </form>
@@ -436,7 +430,6 @@ const generatedAtLabel = computed(() => {
 const upstreamDeleteTarget = ref<MonitorRow | null>(null);
 const upstreamDeleteConfirm = ref("");
 const channelDeleteTarget = ref<MonitorRow | null>(null);
-const needsIdConfirmation = computed(() => upstreamDeleteTarget.value?.upstreamKind === "instructions");
 
 const autoRefresh = ref(true);
 const searchSettingsOpen = ref(false);
@@ -557,9 +550,7 @@ async function loadSearchSettings() {
 
 async function setUpstreamEnabled(row: MonitorRow, enabled: boolean) {
   const response = await $fetch<{ code?: number; message?: string }>(
-    row.upstreamKind === "code"
-      ? `/api/settings/upstreams/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`
-      : `/api/plugins/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
+    `/api/settings/upstreams/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
     { method: "POST" },
   );
   if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
@@ -714,7 +705,7 @@ async function toggleChannel(row: MonitorRow) {
 }
 
 function requestDeleteUpstream(row: MonitorRow) {
-  if (row.upstreamKind !== "instructions" || busyKey.value || deleteBusy.value) return;
+  if (row.kind !== "upstream" || busyKey.value || deleteBusy.value) return;
   upstreamDeleteTarget.value = row;
   upstreamDeleteConfirm.value = "";
 }
@@ -729,22 +720,15 @@ function closeUpstreamDelete() {
 async function confirmDeleteUpstream() {
   const target = upstreamDeleteTarget.value;
   if (!target || deleteBusy.value) return;
-  if (target.upstreamKind === "instructions" && upstreamDeleteConfirm.value !== target.id) return;
+  if (upstreamDeleteConfirm.value !== target.id) return;
   deleteBusy.value = true;
   const snapshot = rows.value;
   try {
-    if (target.upstreamKind === "instructions") {
-      await $fetch(`/api/plugins/${encodeURIComponent(target.id)}`, {
-        method: "DELETE",
-        body: { confirmation: target.id, actor: "monitor-console" },
-      });
-      notify(`${target.name} 已永久删除。`);
-    } else {
-      // 配置来源不会进入删除流程；保留防御分支，避免旧页面调用造成误操作。
-      rows.value = snapshot;
-      notify("配置来源不可删除，请前往来源管理修改或关闭。");
-      return;
-    }
+    await $fetch(`/api/settings/upstreams/${encodeURIComponent(target.id)}`, {
+      method: "DELETE",
+      body: { confirmation: target.id, actor: "monitor-console" },
+    });
+    notify(`${target.name} 已删除。`);
     upstreamDeleteTarget.value = null;
     upstreamDeleteConfirm.value = "";
     await loadMonitor({ silent: true });

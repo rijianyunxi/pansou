@@ -2,8 +2,6 @@ import { defineEventHandler, getQuery, setResponseHeader } from "h3";
 import { requireAdminAuth } from "../utils/requireAdminAuth";
 import { getOrCreateSearchService } from "../core/services";
 import { getSystemSettings } from "../core/services/systemSettingsService";
-import { getPluginRepository, type PluginRecord } from "../core/plugins/repository";
-import type { PluginManager } from "../core/plugins/manager";
 import {
   DIMENSION_KEYS,
   type PluginDimensionKey,
@@ -12,6 +10,7 @@ import {
 } from "../core/plugins/pluginHealth";
 import { getSearchSettings } from "../core/services/searchSettingsService";
 import { getTgChannelPolicies, getTgChannelStates } from "../core/services/tgChannelSettings";
+import { upstreamToInstructionDefinition } from "../core/services/configuredUpstreamPlugin";
 import { listConfiguredUpstreams } from "../core/services/upstreamCatalog";
 import {
   getAllTgChannelHealthSummaries,
@@ -20,14 +19,14 @@ import {
 import { tgChannelOrigin, type TgChannelPolicy } from "../utils/telegramSettings";
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
 
-/** /api/monitor 来源行：解析器仓库 ∪ Registry，附五维健康快照。 */
+/** /api/monitor 来源行：统一来源目录，附五维健康快照。 */
 export interface MonitorUpstreamEntry {
   id: string;
   name: string;
   kind: "code" | "instructions";
-  /** 未关闭（published 且未被放入回收站）。 */
+  /** 来源配置已启用。 */
   enabled: boolean;
-  /** 已删除/归档（回收站内）。 */
+  /** 来源目录不包含已删除项，此字段恒为 false。 */
   trashed: boolean;
   version: string;
   health: MonitorUpstreamHealth | null;
@@ -145,59 +144,19 @@ function mapChannelHealth(summary: TgChannelHealthSummary): MonitorChannelHealth
   };
 }
 
-/** Registry 解析器与解析器仓库记录按 id 归并（仓库记录是 instructions 解析器的生命周期事实来源）。 */
+/** Monitoring reads the same catalog as source management and search. */
 function buildUpstreams(
-  manager: PluginManager,
-  records: PluginRecord[],
   healthById: Record<string, PluginHealthStatus>,
-  trashedSet: Set<string>,
 ): MonitorUpstreamEntry[] {
-  const byId = new Map<string, MonitorUpstreamEntry>();
-  const recordById = new Map(records.map((record) => [record.id, record]));
-  const activeIds = new Set(manager.snapshot().plugins.map((plugin) => plugin.manifest.id));
-  const configuredById = new Map(listConfiguredUpstreams().map((source) => [source.id, source]));
-
-  for (const plugin of manager.list({ includeDisabled: true })) {
-    const { id, name, version, kind } = plugin.manifest;
-    const record = recordById.get(id);
-    const trashed = (record?.status === "archived") || trashedSet.has(id.toLowerCase());
-    const configured = configuredById.get(id);
-    const enabled = configured
-      ? configured.enabled !== false && !trashed
-      : record
-        ? record.status === "published" && !trashedSet.has(id.toLowerCase())
-        : activeIds.has(id) && !trashed;
-    byId.set(id, {
-      id,
-      name: record?.definition.manifest.name || name,
-      kind: kind === "instructions" ? "instructions" : "code",
-      enabled,
-      trashed,
-      version: record
-        ? record.publishedVersion || record.definition.manifest.version
-        : version,
-      health: mapUpstreamHealth(healthById[id]),
-    });
-  }
-
-  for (const record of records) {
-    if (byId.has(record.id)) continue;
-    const trashed = record.status === "archived" || trashedSet.has(record.id.toLowerCase());
-    byId.set(record.id, {
-      id: record.id,
-      name: record.definition.manifest.name,
-      kind: "instructions",
-      enabled: record.status === "published" && !trashedSet.has(record.id.toLowerCase()),
-      trashed,
-      version: record.publishedVersion || record.definition.manifest.version,
-      health: mapUpstreamHealth(healthById[record.id]),
-    });
-  }
-
-  // 回收站中的来源只保留在回收站管理，不再作为运行监控对象展示。
-  return [...byId.values()]
-    .filter((entry) => !entry.trashed)
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return listConfiguredUpstreams().map((source) => ({
+    id: source.id,
+    name: source.name,
+    kind: "instructions" as const,
+    enabled: source.enabled !== false,
+    trashed: false,
+    version: upstreamToInstructionDefinition(source).manifest.version,
+    health: mapUpstreamHealth(healthById[source.id]),
+  })).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function buildChannels(config: { defaultChannels?: string[] }, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
@@ -246,12 +205,8 @@ export default defineEventHandler(async (event) => {
     const config = useRuntimeConfig();
     const includeDeleted = String(getQuery(event).includeDeleted || "") === "true";
     const service = getOrCreateSearchService(config);
-    const records = await getPluginRepository().list({ includeArchived: true });
     const healthById = Object.fromEntries(
       service.getPluginHealthStatus().map((status) => [status.name, status]),
-    );
-    const trashedSet = new Set(
-      getSearchSettings().trashedPlugins.map((value) => String(value).toLowerCase()),
     );
 
     return {
@@ -259,7 +214,7 @@ export default defineEventHandler(async (event) => {
       message: "success",
       data: {
         generatedAt: new Date().toISOString(),
-        upstreams: buildUpstreams(service.getPluginManager(), records, healthById, trashedSet),
+        upstreams: buildUpstreams(healthById),
         channels: buildChannels(config, { includeDeleted }),
       },
     };

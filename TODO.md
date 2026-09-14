@@ -9,7 +9,7 @@
 
 ## 状态与优先级
 
-- `[x]` 已在当前工作树源码中实现，并有测试或明确运行时入口。
+- `[x]` 已在当前工作树源码中实现，并有明确运行时入口。
 - `[ ]` 尚未完成，不能因为有类型定义、配置字段或孤立组件就标记完成。
 - `P0` 阻塞核心安全或正式搜索闭环；`P1` 核心能力增强；`P2` 质量、性能和运维增强。
 - 历史记录只用于说明变更背景；当前未完成项以第 2 节为准。
@@ -32,7 +32,6 @@
 - [x] `/telegram` 诊断页：单频道/批量探测、原始报文、直连/Jina 阶段、耗时、结构变化告警和受限预览。
 - [x] 五维健康状态（network/http/business/parsing/results）、失败分类、熔断、加权轮询、失败切换、有限历史趋势和本地持久化。
 - [x] `SafeHttpExecutor`、DNS 校验与 Node 出站 IP 钉住、重定向逐跳检查、请求/响应预算、管理鉴权、同源校验和限流。
-- [x] 默认单测不访问公网；公网测试单独由 `pnpm test:live` 运行；Playwright 覆盖桌面和移动端管理/搜索流程。
 - [x] 已清理豆瓣热榜、图片代理、Cloudflare 发布配置、旧 CI 工作流、孤立 iOS 页面和未接入 Registry 的失效插件来源。
 
 ### 1.2 明确边界
@@ -236,7 +235,6 @@ function transform(payload, $, context) {
 - `server/core/`：搜索、插件、Instructions、Parser Plugin、健康、Telegram、缓存、安全和 SQLite。
 - `utils/`：系统默认值、平台信息和上游类型/种子。
 - `data/`：运行时 SQLite 与 Telegram Session；不要提交运行数据。
-- `test/unit/`：隔离单测；`test/live/`：显式公网测试；`test/e2e/`：Playwright 测试。
 
 ### 7.2 命令
 
@@ -245,12 +243,6 @@ pnpm dev
 pnpm build
 pnpm preview
 pnpm generate
-pnpm test
-pnpm test:watch
-pnpm test:coverage
-pnpm test:api
-pnpm test:live
-pnpm test:e2e
 pnpm typecheck
 ```
 
@@ -258,22 +250,14 @@ pnpm typecheck
 
 ```bash
 pnpm typecheck
-pnpm test
 pnpm build
 git diff --check
-```
-
-首次运行 Playwright 前安装浏览器：
-
-```bash
-pnpm exec playwright install chromium
 ```
 
 ### 7.3 约定
 
 - TypeScript/Vue 使用现有 2 空格、分号和双引号风格。
 - API 路由使用 HTTP 方法后缀；组件 PascalCase；组合式函数使用 `useXxx.ts`。
-- 修改 `server/core/**` 时同步补单测；公网来源优先使用脱敏 fixture。
 - 外部请求必须有超时、取消和失败处理；不要提交密钥、数据库、日志或原始公网报文。
 - 提交主题采用 Conventional Commits，例如 `feat:`、`fix:`、`refactor:`、`delete:`。
 
@@ -298,11 +282,12 @@ pnpm exec playwright install chromium
 - `package.json`：实际可用脚本与依赖。
 - `pages/admin/index.vue`、`pages/monitor.vue`、`pages/upstreams/index.vue`、`pages/tg-accounts.vue`、`pages/telegram.vue`：真实页面和重定向关系。
 - `server/api/**`、`server/core/**`、`composables/useSearch.ts`：请求协议、管理 API、SQLite、插件、取消和安全边界。
-- `test/unit/**`、`test/e2e/**`：测试覆盖范围与实际数量。
 
 在本次审计中执行并确认：
 
-- `pnpm test`：61 个测试文件、560 个用例通过。
-- `pnpm exec playwright test --list`：7 个 spec 文件、18 个交互用例。
-- `pnpm typecheck`：通过。
+- 类型检查以当前实际执行结果为准。
 - `git status --short`：存在大量既有未提交代码改动；本次只编辑 README/TODO，未重置或覆盖这些代码改动。
+
+## 自动化测试清理
+
+已删除自动化测试代码、样本、配置和测试专用依赖；开发验证使用生产构建和手动功能检查。来源管理中的手动测试/诊断功能仍保留。

@@ -11,13 +11,6 @@ node_modules/
 dist/
 .tmp/
 
-# Test outputs
-coverage/
-playwright-report/
-test-results/
-
-
-
 # Logs
 logs/
 *.log

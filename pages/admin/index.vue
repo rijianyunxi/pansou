@@ -1,211 +1,170 @@
 <template>
   <div class="upstream-app" :data-ready="clientReady ? 'true' : 'false'">
-    <AdminAccessGate
-      v-if="adminChecking || adminLocked"
-      :checking="adminChecking"
-      :configured="adminConfigured"
-      :busy="adminUnlocking"
-      :ready="clientReady"
-      :error="authError"
-      title="进入管理后台"
-      description="管理配置、来源请求与诊断数据属于敏感信息。验证成功后将建立 8 小时管理会话。"
-      @submit="unlockAdmin"
-      @clear-error="authError = ''"
-    />
+    <AdminAccessGate v-if="adminChecking || adminLocked" :checking="adminChecking" :configured="adminConfigured"
+      :busy="adminUnlocking" :ready="clientReady" :error="authError" title="进入管理后台"
+      description="管理配置、来源请求与诊断数据属于敏感信息。验证成功后将建立 8 小时管理会话。" @submit="unlockAdmin" @clear-error="authError = ''" />
     <template v-else>
-    <aside class="console-sidebar">
-      <NuxtLink to="/" class="console-brand"
-        ><span class="brand-symbol"><ConsoleIcon name="box" :size="22" /></span
-        >PanHub <span class="brand-tag">CONSOLE</span></NuxtLink
-      >
-      <nav aria-label="后台导航">
-        <button
-          :class="{ active: view === 'monitor' }"
-          @click="setView('monitor')"
-        >
-          <ConsoleIcon name="activity" />运行监控
-        </button>
-        <button
-          :class="{ active: view === 'sources' }"
-          @click="setView('sources')"
-        >
-          <ConsoleIcon name="box" />来源管理
-        </button>
-        <button :class="{ active: view === 'accounts' }" @click="setView('accounts')">
-          <ConsoleIcon name="user" />Telegram 账户
-        </button>
-        <button class="archive-nav" type="button" @click="openArchive">
-          <ConsoleIcon name="trash" :size="16" />回收站
-          <span class="nav-count">{{ trashCount }}</span>
-        </button>
-      </nav>
-      <div class="sidebar-bottom">
-        <NuxtLink to="/" class="back-search"
-          ><ConsoleIcon name="back" />返回搜索<ConsoleIcon
-            name="external"
-            :size="14"
-        /></NuxtLink>
-        <div class="sidebar-footer">
-          <span class="status-dot available"></span>管理员会话有效<span
-            >v1.0</span
-          >
-        </div>
-      </div>
-    </aside>
-
-    <div class="console-body">
-      <header class="console-topbar">
-        <div class="breadcrumbs">
-          <ConsoleIcon name="grid" :size="16" /><span>管理后台</span
-          ><ConsoleIcon name="chevron" :size="13" /><strong>{{
-            viewTitle
-          }}</strong>
-        </div>
-        <div class="topbar-right">
-          <span class="local-chip"><span></span>ADMIN SESSION</span>
-          <span class="topbar-divider"></span>
-          <button class="session-button" type="button" @click="lockAdmin">
-            <span class="user-avatar">P</span>
-            <span>退出后台</span>
-            <ConsoleIcon name="logout" :size="15" />
+      <aside class="console-sidebar">
+        <NuxtLink to="/" class="console-brand"><span class="brand-symbol">
+            <ConsoleIcon name="box" :size="22" />
+          </span>PanHub <span class="brand-tag">CONSOLE</span></NuxtLink>
+        <nav aria-label="后台导航">
+          <button :class="{ active: view === 'monitor' }" @click="setView('monitor')">
+            <ConsoleIcon name="activity" />运行监控
           </button>
-        </div>
-      </header>
-      <main class="console-main" :class="{ 'console-main-sources': view === 'sources' }">
-        <div v-if="storageError" class="notice error-notice" role="alert">
-          <ConsoleIcon name="info" />{{ storageError }}
-        </div>
+          <button :class="{ active: view === 'sources' }" @click="setView('sources')">
+            <ConsoleIcon name="box" />来源管理
+          </button>
+          <button :class="{ active: view === 'accounts' }" @click="setView('accounts')">
+            <ConsoleIcon name="user" />Telegram 账户
+          </button>
+          <button class="archive-nav" type="button" @click="openArchive">
+            <ConsoleIcon name="trash" :size="16" />回收站
+            <span class="nav-count">{{ trashCount }}</span>
+          </button>
+        </nav>
+      </aside>
 
-        <template v-if="view === 'sources'">
-          <section class="sources-panel directory-panel" aria-label="来源管理目录">
-            <div class="source-toolbar directory-toolbar" aria-label="来源查询与操作">
-              <label class="source-search"><ConsoleIcon name="search" :size="17" /><input v-model="search" type="search" aria-label="搜索来源名称或地址" placeholder="搜索来源名称、地址或标签…" /></label>
-              <label class="source-type-filter">
-                <span>来源类型</span>
-                <select v-model="sourceTypeFilter" aria-label="按来源类型筛选">
-                  <option value="all">全部类型</option>
-                  <option value="http">HTTP 来源</option>
-                  <option value="telegram">Telegram 来源</option>
-                </select>
-              </label>
-              <button class="button primary directory-add-button" type="button" @click="openEditor()">
-                <ConsoleIcon name="plus" :size="15" />新增来源
-              </button>
-            </div>
-            <div class="table-scroll">
-              <table class="source-table directory-table">
-                <thead>
-                  <tr>
-                    <th class="source-index-column">序号</th>
-                    <th>来源</th>
-                    <th>接入方式</th>
-                    <th>请求地址</th>
-                    <th>分类标签</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(source, sourceIndex) in filteredSources" :key="source.id">
-                    <td class="source-index-cell" data-label="序号">{{ sourceIndex + 1 }}</td>
-                    <td class="source-summary-cell" data-label="来源">
-                      <div class="source-identity">
-                        <span class="source-avatar" :style="{ '--source-color': source.color }">{{ source.initials }}</span>
-                        <div class="source-text">
-                          <div class="source-name">{{ source.name }}</div>
-                          <div v-if="source.description" class="source-description">{{ source.description }}</div>
+      <div class="console-body">
+        <header class="console-topbar">
+          <div class="breadcrumbs">
+            <ConsoleIcon name="grid" :size="16" /><span>管理后台</span>
+            <ConsoleIcon name="chevron" :size="13" /><strong>{{
+              viewTitle
+              }}</strong>
+          </div>
+          <div class="topbar-right">
+            <span class="local-chip"><span></span>ADMIN SESSION</span>
+            <span class="topbar-divider"></span>
+            <NuxtLink to="/" class="back-search">
+              <ConsoleIcon name="external" :size="14" />返回搜索
+            </NuxtLink>
+            <button class="session-button" type="button" @click="lockAdmin">
+              <span class="user-avatar">P</span>
+              <span>退出后台</span>
+              <ConsoleIcon name="logout" :size="15" />
+            </button>
+          </div>
+        </header>
+        <main class="console-main" :class="{ 'console-main-sources': view === 'sources' }">
+          <div v-if="storageError" class="notice error-notice" role="alert">
+            <ConsoleIcon name="info" />{{ storageError }}
+          </div>
+
+          <template v-if="view === 'sources'">
+            <section class="sources-panel directory-panel" aria-label="来源管理目录">
+              <div class="source-toolbar directory-toolbar" aria-label="来源查询与操作">
+                <label class="source-search">
+                  <ConsoleIcon name="search" :size="17" /><input v-model="search" type="search" aria-label="搜索来源名称或地址"
+                    placeholder="搜索来源名称、地址或标签…" />
+                </label>
+                <label class="source-type-filter">
+                  <span>来源类型</span>
+                  <select v-model="sourceTypeFilter" aria-label="按来源类型筛选">
+                    <option value="all">全部类型</option>
+                    <option value="http">HTTP 来源</option>
+                    <option value="telegram">Telegram 来源</option>
+                  </select>
+                </label>
+                <button class="button primary directory-add-button" type="button" @click="openEditor()">
+                  <ConsoleIcon name="plus" :size="15" />新增来源
+                </button>
+              </div>
+              <div class="table-scroll">
+                <table class="source-table directory-table">
+                  <thead>
+                    <tr>
+                      <th class="source-index-column">序号</th>
+                      <th>来源</th>
+                      <th>接入方式</th>
+                      <th>请求地址</th>
+                      <th>分类标签</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(source, sourceIndex) in filteredSources" :key="source.id">
+                      <td class="source-index-cell" data-label="序号">{{ sourceIndex + 1 }}</td>
+                      <td class="source-summary-cell" data-label="来源">
+                        <div class="source-identity">
+                          <span class="source-avatar" :style="{ '--source-color': source.color }">{{ source.initials
+                            }}</span>
+                          <div class="source-text">
+                            <div class="source-name">{{ source.name }}</div>
+                            <div v-if="source.description" class="source-description">{{ source.description }}</div>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td class="source-kind-cell" data-label="接入方式">
-                      <span class="source-kind-badge" :class="source.sourceKind === 'telegram' ? 'telegram' : 'http'">
-                        <ConsoleIcon :name="source.sourceKind === 'telegram' ? 'channel' : 'globe'" :size="13" />
-                        {{ source.sourceKind === 'telegram' ? 'Telegram' : 'HTTP' }}
-                      </span>
-                      <!-- <span class="source-kind-meta">{{ source.sourceKind === 'telegram' ? '频道订阅' : `${source.method} · ${source.format.toUpperCase()}` }}</span> -->
-                    </td>
-                    <td class="source-endpoint-cell" data-label="请求地址">
-                      <a
-                        class="source-endpoint mono"
-                        :href="buildSourceDebugUrl(source, keyword)"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        :title="sourceDebugLinkTitle(source)"
-                        :aria-label="`在新标签打开 ${source.name} 的完整调试请求地址`"
-                      >
-                        <span class="source-endpoint-text">{{ displayUrl(buildSourceDebugUrl(source, keyword)) }}</span>
-                        <ConsoleIcon name="external" :size="13" />
-                      </a>
-                    </td>
-                    <td class="source-tags-cell" data-label="分类标签">
-                      <div v-if="sourceDirectoryTags(source).length" class="source-tags compact-tags">
-                        <span v-for="tag in sourceDirectoryTags(source).slice(0, 3)" :key="`${source.id}-${tag}`" class="draft-tag">{{ tag }}</span>
-                        <span v-if="sourceDirectoryTags(source).length > 3" class="draft-tag more-tag">+{{ sourceDirectoryTags(source).length - 3 }}</span>
-                      </div>
-                      <span v-else class="source-empty-meta">未分类</span>
-                    </td>
-                    <td class="action-column" data-label="操作">
-                      <div class="row-actions">
-                        <button class="button secondary tiny" type="button" @click="openDetail(source)">详情</button>
-                        <button class="button secondary tiny" type="button" :disabled="!!runningId" @click="openDebug(source)"><ConsoleIcon name="play" :size="13" />测试</button>
-                        <button class="icon-button" type="button" :aria-label="`修改 ${source.name}`" title="修改" @click="openEditor(source)"><ConsoleIcon name="edit" :size="15" /></button>
-                        <button class="icon-button danger-icon" type="button" :aria-label="`删除 ${source.name}`" title="删除" @click="requestDeleteSource(source)"><ConsoleIcon name="trash" :size="15" /></button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              <div v-if="!filteredSources.length" class="empty-sources"><ConsoleIcon name="search" :size="28" /><h3>没有匹配的来源</h3><p>修改关键词或类型筛选。</p><button class="button secondary small" type="button" @click="search = ''; sourceTypeFilter = 'all'">重置筛选</button></div>
-            </div>
-            <footer class="table-footer"><span><span class="status-dot neutral"></span>{{ filteredSources.length }} / {{ sources.length }} 个来源</span></footer>
-          </section>
-        </template>
-        <TgAccountManager v-else-if="view === 'accounts'" @unauthorized="adminLocked = true" />
-        <MonitorPanel v-else-if="view === 'monitor'" @unauthorized="adminLocked = true" @focus-upstream="focusUpstream" @debug-channel="focusTelegramUpstream" />
-      </main>
-    </div>
+                      </td>
+                      <td class="source-kind-cell" data-label="接入方式">
+                        <span class="source-kind-badge" :class="source.sourceKind === 'telegram' ? 'telegram' : 'http'">
+                          <ConsoleIcon :name="source.sourceKind === 'telegram' ? 'channel' : 'globe'" :size="13" />
+                          {{ source.sourceKind === 'telegram' ? 'Telegram' : 'HTTP' }}
+                        </span>
+                        <!-- <span class="source-kind-meta">{{ source.sourceKind === 'telegram' ? '频道订阅' : `${source.method} · ${source.format.toUpperCase()}` }}</span> -->
+                      </td>
+                      <td class="source-endpoint-cell" data-label="请求地址">
+                        <a class="source-endpoint mono" :href="buildSourceDebugUrl(source, keyword)" target="_blank"
+                          rel="noopener noreferrer" :title="sourceDebugLinkTitle(source)"
+                          :aria-label="`在新标签打开 ${source.name} 的完整调试请求地址`">
+                          <span class="source-endpoint-text">{{ displayUrl(buildSourceDebugUrl(source, keyword))
+                            }}</span>
+                          <ConsoleIcon name="external" :size="13" />
+                        </a>
+                      </td>
+                      <td class="source-tags-cell" data-label="分类标签">
+                        <div v-if="sourceDirectoryTags(source).length" class="source-tags compact-tags">
+                          <span v-for="tag in sourceDirectoryTags(source).slice(0, 3)" :key="`${source.id}-${tag}`"
+                            class="draft-tag">{{ tag }}</span>
+                          <span v-if="sourceDirectoryTags(source).length > 3" class="draft-tag more-tag">+{{
+                            sourceDirectoryTags(source).length - 3 }}</span>
+                        </div>
+                        <span v-else class="source-empty-meta">未分类</span>
+                      </td>
+                      <td class="action-column" data-label="操作">
+                        <div class="row-actions">
+                          <button class="button secondary tiny" type="button" @click="openDetail(source)">详情</button>
+                          <button class="button secondary tiny" type="button" :disabled="!!runningId"
+                            @click="openDebug(source)">
+                            <ConsoleIcon name="play" :size="13" />测试
+                          </button>
+                          <button class="icon-button" type="button" :aria-label="`修改 ${source.name}`" title="修改"
+                            @click="openEditor(source)">
+                            <ConsoleIcon name="edit" :size="15" />
+                          </button>
+                          <button class="icon-button danger-icon" type="button" :aria-label="`删除 ${source.name}`"
+                            title="删除" @click="requestDeleteSource(source)">
+                            <ConsoleIcon name="trash" :size="15" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="!filteredSources.length" class="empty-sources">
+                  <ConsoleIcon name="search" :size="28" />
+                  <h3>没有匹配的来源</h3>
+                  <p>修改关键词或类型筛选。</p><button class="button secondary small" type="button"
+                    @click="search = ''; sourceTypeFilter = 'all'">重置筛选</button>
+                </div>
+              </div>
+              <footer class="table-footer"><span><span class="status-dot neutral"></span>{{ filteredSources.length }} /
+                  {{ sources.length }} 个来源</span></footer>
+            </section>
+          </template>
+          <TgAccountManager v-else-if="view === 'accounts'" @unauthorized="adminLocked = true" />
+          <MonitorPanel v-else-if="view === 'monitor'" @unauthorized="adminLocked = true"
+            @focus-upstream="focusUpstream" @debug-channel="focusTelegramUpstream" />
+        </main>
+      </div>
     </template>
-    <UpstreamDetailDrawer
-      v-if="detailDrawerOpen && selected"
-      :source="selected"
-      :catalog-source="isCatalogSource(selected)"
-      :record="selectedRecord"
-      :record-status="recordStatus(selected.id)"
-      :published-version="selectedRecord?.publishedVersion"
-      :validation-text="validationText"
-      :can-publish="canPublishSelected"
-      :running="!!runningId"
-      :keyword="keyword"
-      :plugin-secrets="pluginSecrets"
-      :secret-name="secretName"
-      :secret-value="secretValue"
-      @close="detailDrawerOpen = false"
-      @edit="openEditor(selected)"
-      @debug="openDebug(selected)"
-      @delete="requestDeleteSource(selected)"
-      @validate="validatePlugin(selected.id)"
-      @publish="publishPlugin(selected.id)"
-      @disable="disablePlugin(selected.id)"
-      @delete-secret="deleteSecret(selected.id, $event)"
-      @save-secret="saveSecret(selected.id)"
-      @update:secret-name="secretName = $event"
-      @update:secret-value="secretValue = $event"
-    />
-    <UpstreamDebugDrawer
-      v-if="debugDrawerOpen && selected"
-      :source="selected"
-      :report="selectedReport"
-      :keyword="keyword"
-      :running="!!runningId"
-      @close="debugDrawerOpen = false"
-      @send="testSource(selected)"
-      @update:keyword="keyword = $event"
-    />
-    <UpstreamEditor
-      v-if="!adminLocked && editorOpen"
-      :source="editingSource"
-      @close="editorOpen = false"
-      @save="saveSource"
-    />
+    <UpstreamDetailDrawer v-if="detailDrawerOpen && selected" :source="selected" :running="!!runningId"
+      @close="detailDrawerOpen = false" @edit="openEditor(selected)"
+      @debug="openDebug(selected)" @delete="requestDeleteSource(selected)" />
+    <UpstreamDebugDrawer v-if="debugDrawerOpen && selected" :source="selected" :report="selectedReport"
+      :keyword="keyword" :running="!!runningId" @close="debugDrawerOpen = false" @send="testSource(selected)"
+      @update:keyword="keyword = $event" />
+    <UpstreamEditor v-if="!adminLocked && editorOpen" :source="editingSource" @close="editorOpen = false"
+      @save="saveSource" />
     <div v-if="archiveOpen" class="modal-backdrop" @click.self="archiveOpen = false">
       <section class="archive-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title">
         <header>
@@ -228,24 +187,21 @@
           <li v-for="channel in archivedChannels" :key="`telegram:${channel.channel}`">
             <span class="source-avatar" style="--source-color: #229ed9">TG</span>
             <div class="archive-item-copy">
-              <a
-                class="archive-channel-link"
-                :href="`https://t.me/s/${channel.channel}`"
-                target="_blank"
-                rel="noopener noreferrer"
-                :aria-label="`在新标签页打开 Telegram 频道 @${channel.channel}`"
-                :title="`打开 https://t.me/s/${channel.channel}`"
-              >
+              <a class="archive-channel-link" :href="`https://t.me/s/${channel.channel}`" target="_blank"
+                rel="noopener noreferrer" :aria-label="`在新标签页打开 Telegram 频道 @${channel.channel}`"
+                :title="`打开 https://t.me/s/${channel.channel}`">
                 <span class="archive-channel-name">@{{ channel.channel }}</span>
                 <ConsoleIcon name="external" :size="13" />
               </a>
               <span class="archive-channel-meta">{{ channel.origin === "builtin" ? "内置来源" : "自定义来源" }} · 已移除</span>
             </div>
             <div class="archive-actions">
-              <button class="button secondary small" :disabled="!!archiveBusyId" @click="restoreArchivedChannel(channel.channel)">
+              <button class="button secondary small" :disabled="!!archiveBusyId"
+                @click="restoreArchivedChannel(channel.channel)">
                 <ConsoleIcon name="restore" :size="14" />恢复
               </button>
-              <button class="button danger-button small" :disabled="!!archiveBusyId" @click="requestPurgeArchivedChannel(channel)">
+              <button class="button danger-button small" :disabled="!!archiveBusyId"
+                @click="requestPurgeArchivedChannel(channel)">
                 <ConsoleIcon name="trash" :size="14" />永久删除
               </button>
             </div>
@@ -255,24 +211,21 @@
     </div>
     <div v-if="purgeTarget" class="modal-backdrop" @click.self="cancelPurgeArchivedChannel">
       <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="purge-channel-title">
-        <div class="confirm-icon"><ConsoleIcon name="trash" :size="22" /></div>
+        <div class="confirm-icon">
+          <ConsoleIcon name="trash" :size="22" />
+        </div>
         <h2 id="purge-channel-title">永久删除频道？</h2>
         <p>
           此操作会永久删除 <code>@{{ purgeTarget.channel }}</code> 的频道配置、解析器绑定和健康历史，且无法恢复。
         </p>
         <label for="purge-channel-confirmation">请输入 <code>@{{ purgeTarget.channel }}</code> 确认</label>
-        <input
-          id="purge-channel-confirmation"
-          v-model="purgeConfirmation"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          :placeholder="`@${purgeTarget.channel}`"
-          @keydown.enter="confirmPurgeArchivedChannel"
-        />
+        <input id="purge-channel-confirmation" v-model="purgeConfirmation" type="text" autocomplete="off"
+          spellcheck="false" :placeholder="`@${purgeTarget.channel}`" @keydown.enter="confirmPurgeArchivedChannel" />
         <div class="confirm-actions">
-          <button class="button secondary" type="button" :disabled="!!archiveBusyId" @click="cancelPurgeArchivedChannel">取消</button>
-          <button class="button destructive" type="button" :disabled="!canConfirmPurge || !!archiveBusyId" @click="confirmPurgeArchivedChannel">
+          <button class="button secondary" type="button" :disabled="!!archiveBusyId"
+            @click="cancelPurgeArchivedChannel">取消</button>
+          <button class="button destructive" type="button" :disabled="!canConfirmPurge || !!archiveBusyId"
+            @click="confirmPurgeArchivedChannel">
             <span v-if="archiveBusyId" class="spinner"></span>
             <ConsoleIcon v-else name="trash" :size="15" />永久删除
           </button>
@@ -295,10 +248,6 @@ import UpstreamDetailDrawer from "../../components/upstreams/UpstreamDetailDrawe
 import UpstreamDebugDrawer from "../../components/upstreams/UpstreamDebugDrawer.vue";
 import type { UpstreamDefinition, UpstreamProbe } from "../../types/source";
 import { buildSourceDebugUrl } from "../../utils/upstreamDebugUrl";
-import type {
-  PluginRecord,
-  PluginRecordStatus,
-} from "../../server/core/plugins/repository";
 import { shallowRef } from "vue";
 useHead({
   title: "来源管理",
@@ -319,10 +268,6 @@ const configuredUpstreams = ref<UpstreamDefinition[]>([]);
 function isTelegramSource(source: UpstreamDefinition | null | undefined): boolean {
   return source?.sourceKind === "telegram";
 }
-function isCatalogSource(source: UpstreamDefinition | null | undefined): boolean {
-  return !!source && configuredUpstreams.value.some((item) => item.id === source.id);
-}
-const pluginRecords = shallowRef<PluginRecord[]>([]);
 type ArchivedTelegramChannel = {
   channel: string;
   origin: "builtin" | "custom";
@@ -331,26 +276,11 @@ type ArchivedTelegramChannel = {
 };
 const monitorChannels = shallowRef<ArchivedTelegramChannel[]>([]);
 const archivedChannels = computed(() => monitorChannels.value.filter((channel) => channel.deleted));
-const drafts = computed<UpstreamDefinition[]>(() => {
-  const configuredIds = new Set(configuredUpstreams.value.map((source) => source.id));
-  const records: PluginRecord[] = pluginRecords.value;
-  return records
-    .filter((record) => record.status !== "archived" && !configuredIds.has(record.id))
-    .map((record) => recordToSource(record));
-});
 const reports = ref<Record<string, UpstreamProbe>>({});
-// The server catalog is the single source of truth. Telegram channels are ordinary
-// upstream rows now, not a second client-side directory.
-const sources = computed<UpstreamDefinition[]>(() => [
-  ...configuredUpstreams.value,
-  ...drafts.value.filter((source) => !trashedPluginSet.value.has(source.id)),
-]);
-const trashedPluginSet = computed(() => new Set(searchSettings.value.trashedPlugins || []));
+// The unified catalog is the only source directory. Parser records are never sources.
+const sources = configuredUpstreams;
 const trashCount = computed(() => archivedChannels.value.length);
 const selectedId = ref("");
-const selectedRecord = computed(() =>
-  pluginRecords.value.find((record) => record.id === selectedId.value),
-);
 const defaultUnifiedSource: UpstreamDefinition = {
   id: "",
   sourceKind: "http",
@@ -376,17 +306,6 @@ const selected = computed<UpstreamDefinition>(
     defaultUnifiedSource,
 );
 const selectedReport = computed(() => selected.value ? reports.value[selected.value.id] : undefined);
-const validationText = computed(() => {
-  const record = selectedRecord.value;
-  if (!record) return "—";
-  return record.validation?.valid && record.validation.version === record.definition.manifest.version
-    ? `已通过 · ${record.validation.sampleResultCount ?? 0} 条样本`
-    : "待验证";
-});
-const canPublishSelected = computed(() => {
-  const record = selectedRecord.value;
-  return !!record?.validation?.valid && record.validation.version === record.definition.manifest.version;
-});
 const route = useRoute();
 const router = useRouter();
 type ConsoleView = "sources" | "accounts" | "monitor";
@@ -422,21 +341,6 @@ const purgeConfirmation = ref("");
 const canConfirmPurge = computed(() =>
   purgeConfirmation.value.trim().replace(/^@/, "").toLowerCase() === purgeTarget.value?.channel,
 );
-// 来源设置由运行监控页统一维护；此处只读取回收站状态用于导航计数。
-interface SearchSettingsState {
-  plugins: string[] | null;
-  channels: string[] | null;
-  concurrency: number | null;
-  pluginTimeoutMs: number | null;
-  trashedPlugins: string[];
-}
-const searchSettings = ref<SearchSettingsState>({
-  plugins: null,
-  channels: null,
-  concurrency: null,
-  pluginTimeoutMs: null,
-  trashedPlugins: [],
-});
 const notice = ref("");
 let noticeTimer: ReturnType<typeof setTimeout>;
 function sourceDirectoryTags(source: UpstreamDefinition): string[] {
@@ -462,79 +366,21 @@ function apiErrorMessage(error: any): string {
   return error?.data?.statusMessage || error?.message || "服务端操作失败。";
 }
 
-function recordToSource(record: PluginRecord): UpstreamDefinition {
-  const definition = record.definition;
-  const links = definition.response.links;
-  const fieldPath = (field: any) => typeof field === "string" ? field : field?.path || field?.selector || "";
-  return {
-    id: record.id,
-    name: definition.manifest.name,
-    description: `${pluginStatusText(record.status)} · 当前版本 ${definition.manifest.version}${record.publishedVersion ? ` · 线上版本 ${record.publishedVersion}` : ""}`,
-    url: definition.request.url,
-    method: definition.request.method,
-    format: definition.response.format,
-    plugin: record.id,
-    adapter: "configured-transform",
-    color: "#697fbd",
-    initials: definition.manifest.name.charAt(0).toUpperCase(),
-    mapping: {
-      items: definition.response.items,
-      title: fieldPath(definition.response.fields.title),
-      url: fieldPath(links.url),
-      type: fieldPath(links.type),
-      password: fieldPath(links.password),
-      linkArray: links.array,
-      content: fieldPath(definition.response.fields.content),
-      datetime: fieldPath(definition.response.fields.datetime),
-    },
-    request: {
-      query: definition.request.query,
-      headers: definition.request.headers,
-      bodyType: definition.request.bodyType,
-      body: definition.request.body,
-      timeoutMs: definition.request.timeoutMs,
-      maxResponseBytes: definition.request.maxResponseBytes,
-      redirect: definition.request.redirect,
-      allowedDomains: definition.request.allowedDomains,
-      maxRequestBodyBytes: definition.request.maxRequestBodyBytes,
-      secrets: definition.request.secrets,
-      stages: definition.request.stages,
-    },
-    response: { nextPage: definition.response.nextPage },
-    ...(definition.response.transform ? { transform: definition.response.transform } : {}),
-  };
-}
 async function loadUpstreamCatalog() {
   try {
     const response = await $fetch<{ data?: UpstreamDefinition[] }>("/api/settings/upstreams");
     configuredUpstreams.value = response.data ?? [];
+    storageError.value = "";
     if (!sources.value.some((source) => source.id === selectedId.value)) selectedId.value = sources.value[0]?.id || "";
   } catch (error: any) {
     configuredUpstreams.value = [];
-    storageError.value = apiErrorMessage(error);
-  }
-}
-async function loadPluginRecords() {
-  try {
-    const response = await $fetch<{ data: PluginRecord[] }>(
-      "/api/plugins",
-    );
-    pluginRecords.value = response.data || [];
-    adminLocked.value = false;
-    storageError.value = "";
-  } catch (error: any) {
-    const code = error?.statusCode || error?.response?.status;
-    if (code === 401) {
+    if ((error?.statusCode || error?.response?.status) === 401) {
       adminLocked.value = true;
-      pluginRecords.value = [];
-      monitorChannels.value = [];
-      archiveOpen.value = false;
-      return;
+      detailDrawerOpen.value = false;
+      debugDrawerOpen.value = false;
     }
     storageError.value = apiErrorMessage(error);
   }
-  void loadSearchSettings();
-  void loadUpstreamCatalog();
 }
 async function loadArchivedChannels() {
   try {
@@ -556,23 +402,6 @@ async function loadArchivedChannels() {
     storageError.value = apiErrorMessage(error);
   }
 }
-async function loadSearchSettings() {
-  try {
-    const response = await $fetch<{ data: SearchSettingsState }>(
-      "/api/settings/search",
-      { cache: "no-store" },
-    );
-    searchSettings.value = {
-      plugins: response.data?.plugins ?? null,
-      channels: response.data?.channels ?? null,
-      concurrency: response.data?.concurrency ?? null,
-      pluginTimeoutMs: response.data?.pluginTimeoutMs ?? null,
-      trashedPlugins: response.data?.trashedPlugins ?? [],
-    };
-  } catch (error: any) {
-    storageError.value = apiErrorMessage(error);
-  }
-}
 async function checkAdminSession() {
   adminChecking.value = true;
   try {
@@ -581,7 +410,7 @@ async function checkAdminSession() {
     );
     adminConfigured.value = status.configured;
     adminLocked.value = status.locked;
-    if (!status.locked) await loadPluginRecords();
+    if (!status.locked) await loadUpstreamCatalog();
   } catch (error: any) {
     adminConfigured.value = false;
     adminLocked.value = true;
@@ -599,7 +428,8 @@ async function unlockAdmin(password: string) {
       method: "POST",
       body: { password },
     });
-    await Promise.all([loadPluginRecords(), loadArchivedChannels()]);
+    adminLocked.value = false;
+    await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
     notify("管理员控制台已解锁。");
   } catch (error: any) {
     authError.value = apiErrorMessage(error);
@@ -611,7 +441,7 @@ async function lockAdmin() {
   try {
     await $fetch("/api/auth/admin-lock", { method: "POST" });
   } finally {
-    pluginRecords.value = [];
+    configuredUpstreams.value = [];
     monitorChannels.value = [];
     reports.value = {};
     editorOpen.value = false;
@@ -621,120 +451,6 @@ async function lockAdmin() {
     adminLocked.value = true;
     authError.value = "";
   }
-}
-async function validatePlugin(id: string) {
-  if (!keyword.value.trim()) return;
-  runningId.value = id;
-  try {
-    const response = await $fetch<any>(`/api/plugins/${id}/validate`, {
-      method: "POST",
-      body: { keyword: keyword.value.trim(), actor: "admin-console" },
-    });
-    reports.value[id] = instructionDebugToProbe(id, { data: response.sample });
-    await loadPluginRecords();
-    notify("Schema、安全检查和样本解析均已通过。");
-  } catch (error: any) {
-    await loadPluginRecords();
-    notify(apiErrorMessage(error));
-  } finally {
-    runningId.value = "";
-  }
-}
-async function publishPlugin(id: string) {
-  try {
-    await $fetch(`/api/plugins/${id}/publish`, { method: "POST" });
-    await loadPluginRecords();
-    notify("解析器已发布，下一次搜索会自动刷新来源。");
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  }
-}
-async function disablePlugin(id: string) {
-  try {
-    await $fetch(`/api/plugins/${id}/disable`, { method: "POST" });
-    await loadPluginRecords();
-    notify("线上版本已关闭，下一次搜索将不再调用该来源。");
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  }
-}
-const pluginSecrets = ref<string[]>([]);
-const secretName = ref("");
-const secretValue = ref("");
-async function loadSecrets() {
-  const record = selectedRecord.value;
-  if (!record) {
-    pluginSecrets.value = [];
-    return;
-  }
-  try {
-    const response = await $fetch<any>(`/api/plugins/${record.id}/secrets`);
-    pluginSecrets.value = response?.data?.names || [];
-  } catch {
-    pluginSecrets.value = [];
-  }
-}
-async function saveSecret(id: string) {
-  try {
-    await $fetch(`/api/plugins/${id}/secrets`, {
-      method: "PUT",
-      body: {
-        name: secretName.value.trim(),
-        value: secretValue.value,
-        actor: "admin-console",
-      },
-    });
-    secretName.value = "";
-    secretValue.value = "";
-    await loadSecrets();
-    notify("密钥已保存到独立存储，测试与正式搜索均会注入。");
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  }
-}
-async function deleteSecret(id: string, name: string) {
-  try {
-    await $fetch(
-      `/api/plugins/${id}/secrets?name=${encodeURIComponent(name)}`,
-      { method: "DELETE" }
-    );
-    await loadSecrets();
-    notify("密钥已删除。");
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  }
-}
-watch(selectedId, () => { void loadSecrets(); }, { immediate: true });
-function instructionDebugToProbe(sourceId: string, response: any): UpstreamProbe {
-  const execution = response?.data || { results: [], traces: [] };
-  const traces = (execution.traces || []).map((trace: any) => ({
-    ...trace,
-    contentType: trace.contentType || "",
-  }));
-  return {
-    sourceId,
-    checkedAt: new Date().toISOString(),
-    state: execution.results?.length ? "available" : "warning",
-    message: execution.results?.length ? `解析到 ${execution.results.length} 条结果` : "请求成功，但没有可用结果",
-    elapsedMs: traces.reduce((sum: number, trace: any) => sum + Number(trace.elapsedMs || 0), 0),
-    httpStatus: traces.at(-1)?.status ?? null,
-    traces,
-    raw: execution.raw || JSON.stringify(execution.results || [], null, 2),
-    rawTruncated: execution.rawTruncated === true,
-    results: execution.results || [],
-  };
-}
-function recordStatus(id: string): PluginRecordStatus | undefined {
-  return pluginRecords.value.find((record) => record.id === id)?.status;
-}
-function pluginStatusText(status?: PluginRecordStatus): string {
-  return {
-    draft: "草稿",
-    validated: "已验证",
-    published: "已发布",
-    disabled: "已关闭",
-    archived: "已删除",
-  }[status || "draft"];
 }
 const SENSITIVE_KEY = /(?:authorization|cookie|token|api[-_]?key|secret|password|passwd|credential|signature)/i;
 function redactUrl(url: string) {
@@ -747,16 +463,6 @@ function redactUrl(url: string) {
   } catch {
     return url;
   }
-}
-function redactDebugValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactDebugValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-      key,
-      SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactDebugValue(child),
-    ]),
-  );
 }
 function displayUrl(url: string) {
   const safeUrl = redactUrl(url).replace(/^https?:\/\//, "");
@@ -772,14 +478,6 @@ function sourceDebugLinkTitle(source: UpstreamDefinition): string {
     ? `POST 参数浏览器预览（实际请求仍使用 POST Body）\n${url}`
     : `在新标签打开完整 GET 请求\n${url}`;
 }
-function formatTime(time: string) {
-  return new Date(time).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 function notify(message: string) {
   notice.value = message;
   clearTimeout(noticeTimer);
@@ -788,12 +486,11 @@ function notify(message: string) {
 onMounted(async () => {
   clientReady.value = true;
   if (adminChecking.value) await checkAdminSession();
-  else if (!adminLocked.value) await loadPluginRecords();
+  else if (!adminLocked.value) await loadUpstreamCatalog();
   if (adminLocked.value) {
     return;
   }
   await loadArchivedChannels();
-  await loadUpstreamCatalog();
 });
 function openDetail(source: UpstreamDefinition) {
   selectedId.value = source.id;
@@ -840,7 +537,7 @@ async function saveSource(source: UpstreamDefinition) {
       method: "PUT",
       body: { source },
     });
-    await Promise.all([loadUpstreamCatalog(), loadPluginRecords()]);
+    await loadUpstreamCatalog();
     notify("来源配置已保存，下一次请求立即生效。");
   } catch (error: any) {
     notify(apiErrorMessage(error));
@@ -890,36 +587,20 @@ async function testSource(source: UpstreamDefinition) {
   }
 }
 async function requestDeleteSource(source: UpstreamDefinition) {
-  if (isTelegramSource(source)) {
-    if (!source.channel || !window.confirm(`确定移除「@${source.channel}」吗？`)) return;
-    try {
-      await $fetch(`/api/settings/upstreams/${encodeURIComponent(source.id)}`, { method: "DELETE", body: { confirmation: source.id, actor: "admin-console" } });
-      delete reports.value[source.id];
-      await loadUpstreamCatalog();
-      notify(`@${source.channel} 已从统一来源列表移除。`);
-    } catch (error: any) {
-      notify(apiErrorMessage(error));
-    }
-    return;
+  if (!window.confirm(`确定删除「${source.name}」吗？删除后下一次请求立即停止加载。`)) return;
+  try {
+    await $fetch(`/api/settings/upstreams/${encodeURIComponent(source.id)}`, {
+      method: "DELETE",
+      body: { confirmation: source.id, actor: "admin-console" },
+    });
+    delete reports.value[source.id];
+    detailDrawerOpen.value = false;
+    debugDrawerOpen.value = false;
+    await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
+    notify("来源已删除，下一次请求立即生效。");
+  } catch (error: any) {
+    notify(apiErrorMessage(error));
   }
-  if (isCatalogSource(source)) {
-    if (!window.confirm(`确定删除「${source.name}」吗？删除后下一次请求立即停止加载。`)) return;
-    try {
-      await $fetch(`/api/settings/upstreams/${encodeURIComponent(source.id)}`, {
-        method: "DELETE",
-        body: { confirmation: source.id, actor: "admin-console" },
-      });
-      delete reports.value[source.id];
-      detailDrawerOpen.value = false;
-      debugDrawerOpen.value = false;
-      await Promise.all([loadUpstreamCatalog(), loadPluginRecords()]);
-      notify("来源已删除，下一次请求立即生效。");
-    } catch (error: any) {
-      notify(apiErrorMessage(error));
-    }
-    return;
-  }
-  notify("该来源不属于统一来源目录，当前版本不再支持解析器归档操作。");
 }
 async function openArchive() {
   archiveOpen.value = true;

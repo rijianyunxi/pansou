@@ -36,7 +36,6 @@
 - 搜索接口有实例级治理：客户端在途并发默认 3、实例全局在途默认 16，并限制 30 秒窗口内已接纳请求数。
 - 动态 Instructions 请求统一通过 `SafeHttpExecutor`：默认仅 HTTPS（schema 支持显式 `allowInsecureHttp`，但上游目录转换会强制关闭），校验 DNS 解析后的地址，逐跳校验重定向，并限制请求/响应体、端口、请求头和总预算。
 - 健康监控区分网络、HTTP、业务、解析和结果五个维度，并保留有限的历史趋势和熔断状态。
-- 当前回归基线：`pnpm test` 为 61 个 Vitest 文件、560 个用例；Playwright 列表为 18 个交互用例。覆盖率以实际 `pnpm test:coverage` 报告为准。
 
 ## 🚀 快速开始
 
@@ -142,16 +141,10 @@ server/core/
 └── storage/         # SQLite 结构化存储
 ```
 
-## 🧪 开发与测试
+## 🛠️ 开发与构建
 
 ```bash
 pnpm dev
-pnpm test                 # 默认不访问公网
-pnpm test:watch
-pnpm test:coverage
-pnpm test:api              # 需先启动本地服务
-pnpm test:e2e              # 首次运行需 pnpm exec playwright install chromium
-pnpm test:live            # 显式公网测试
 pnpm typecheck
 pnpm build                # Node server 生产构建
 pnpm preview
@@ -161,7 +154,6 @@ pnpm preview
 
 ```bash
 pnpm typecheck
-pnpm test
 pnpm build
 git diff --check
 ```
