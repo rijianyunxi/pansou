@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import type {
   GenericResponse,
   MergedLink,
@@ -111,10 +111,14 @@ export function useSearch() {
         const payload = JSON.parse(event.data) as GenericResponse<unknown> & { warnings?: unknown[] };
         if (event.event === "result") {
           const update = (payload.data as SearchStreamResultData | undefined)?.update;
-          if (update) applyResponse({ total: update.results.length, results: update.results }, false);
+          if (update) {
+            applyResponse({ total: update.results.length, results: update.results }, false);
+            // Let Vue commit this increment before reading the next SSE event. This
+            // keeps the result grid live even when multiple chunks are already buffered.
+            await nextTick();
+          }
         } else if (event.event === "complete") {
           if (payload.code !== 0) throw new Error(payload.message || "搜索失败");
-          applyResponse(payload.data as SearchResponse | undefined, true);
           state.value.warning = payload.warnings?.length
             ? `部分来源未完成（${payload.warnings.length} 项告警），已展示成功来源的结果。` : "";
           completed = true;

@@ -68,8 +68,8 @@ pnpm dev
 `GET /api/search` 和 `POST /api/search` 均只返回 `text/event-stream`，不再提供一次性 JSON 响应。POST 客户端应使用 `fetch` 读取响应流。事件顺序如下：
 
 - `start`：搜索已接纳，包含服务端推送间隔 `intervalMs: 300`。
-- `result`：一次成功后端调用的增量；`data.update` 包含来源、执行阶段、实际关键词和该次返回的标准化 `SearchResult[]`。第一次成功立即推送，后续成功调用进入 FIFO 队列，相邻 `result` 事件间隔不小于 300ms。
-- `complete`：最终权威结果和 warnings；客户端应使用它替换增量视图。
+- `result`：一次成功后端调用的增量；`data.update` 包含来源、执行阶段、实际关键词和本次新出现的标准化 `SearchResult[]`。流内已发送结果会被剔除；即使本次没有新增结果，也仍会为该次成功调用发送一个空增量事件。第一次成功立即推送，后续成功调用进入 FIFO 队列，相邻 `result` 事件间隔不小于 300ms。
+- `complete`：只包含最终 `total`、可选 `meta` 和 warnings，不重复发送完整结果；客户端应保留并展示此前收到的增量。
 - `error`：流建立后的搜索错误。认证、参数校验和并发治理在建流前仍使用对应 HTTP 状态码。
 
 ### 管理控制台 `/admin`

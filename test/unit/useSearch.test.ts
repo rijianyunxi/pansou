@@ -40,7 +40,7 @@ describe("frontend search lifecycle", () => {
     expect(search.error.value).toContain("添加至少一个");
   });
 
-  it("renders source results before completion and then accepts the authoritative final result", async () => {
+  it("renders source results before completion and keeps them when complete only sends a summary", async () => {
     const encoder = new TextEncoder();
     let streamController!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({ start(controller) { streamController = controller; } });
@@ -53,16 +53,17 @@ describe("frontend search lifecycle", () => {
       data: { update: { source: { kind: "plugin", id: "one" }, request: { keyword: "test", phase: "variant" }, results: [{ title: "first", datetime: "", links: [{ type: "quark", url: "https://first", password: "" }] }] } },
     })}\n\n`));
     await vi.waitFor(() => expect(search.total.value).toBe(1));
+    expect(search.merged.value).toEqual({ quark: [expect.objectContaining({ url: "https://first" })] });
     expect(search.loading.value).toBe(true);
     streamController.enqueue(encoder.encode(`event: complete\ndata: ${JSON.stringify({
       code: 0,
       message: "partial_success",
-      data: { total: 1, results: [{ type: "baidu", url: "https://final", password: "", note: "final", datetime: "" }] },
+      data: { total: 1, meta: { registryVersion: 3, pluginVersions: { one: "1.0.0" } } },
       warnings: [{}],
     })}\n\n`));
     streamController.close();
     await pending;
-    expect(search.merged.value).toEqual({ baidu: [expect.objectContaining({ url: "https://final" })] });
+    expect(search.merged.value).toEqual({ quark: [expect.objectContaining({ url: "https://first" })] });
     expect(search.state.value.warning).toContain("部分来源");
   });
 

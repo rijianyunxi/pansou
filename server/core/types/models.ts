@@ -73,6 +73,11 @@ export interface SearchStreamResultData {
   update: SearchSourceUpdate;
 }
 
+export interface SearchStreamCompleteData {
+  total: number;
+  meta?: SearchResponseMeta;
+}
+
 export interface GenericResponse<T> {
   code: number;
   message: string;

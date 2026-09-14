@@ -262,3 +262,64 @@ test("个人搜索暂停后移除最后一个频道，仍可按原始快照继�
   await expect(page.getByRole("button", { name: "开始搜索" })).toBeDisabled();
   await expect(page.locator(".channel-configuration-notice")).toBeVisible();
 });
+
+test("SSE 未结束时页面已经展示增量结果", async ({ page }) => {
+  await page.route("**/api/hot-searches**", (route) => route.fulfill({ json: { data: [] } }));
+  await page.route("**/api/auth/status", (route) => route.fulfill({ json: { enabled: false, locked: false } }));
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.endsWith("/api/search")) return nativeFetch(input, init);
+
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("event: start\ndata: {\"code\":0,\"message\":\"started\",\"data\":{\"intervalMs\":300}}\n\n"));
+          controller.enqueue(encoder.encode(`event: result\ndata: ${JSON.stringify({
+            code: 0,
+            message: "source_success",
+            data: {
+              update: {
+                source: { kind: "plugin", id: "stream-test", version: "1.0.0" },
+                request: { keyword: "stream", phase: "variant" },
+                results: [{
+                  message_id: "stream-1",
+                  unique_id: "stream-1",
+                  channel: "",
+                  datetime: "2026-09-14T00:00:00.000Z",
+                  title: "流中结果",
+                  content: "",
+                  links: [{ type: "quark", url: "https://example.com/stream", password: "" }],
+                  source: "plugin",
+                  pluginId: "stream-test",
+                  pluginVersion: "1.0.0",
+                }],
+              },
+            },
+          })}\n\n`));
+          (window as any).__finishSearch = () => {
+            controller.enqueue(encoder.encode(`event: complete\ndata: ${JSON.stringify({
+              code: 0,
+              message: "success",
+              data: { total: 1, meta: { registryVersion: 1, pluginVersions: { "stream-test": "1.0.0" } } },
+            })}\n\n`));
+            controller.close();
+          };
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream; charset=utf-8" } });
+    };
+  });
+
+  await page.goto("/");
+  await page.getByLabel("搜索关键词").fill("stream");
+  await page.getByRole("button", { name: "开始搜索" }).click();
+
+  await expect(page.getByRole("link", { name: "流中结果" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "暂停搜索" })).toBeVisible();
+  await expect(page.locator(".stat-value").first()).toHaveText("1");
+  await page.evaluate(() => (window as any).__finishSearch());
+  await expect(page.getByRole("button", { name: "开始搜索" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "流中结果" })).toHaveCount(1);
+});

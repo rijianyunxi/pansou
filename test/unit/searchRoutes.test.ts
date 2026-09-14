@@ -46,7 +46,9 @@ it.each(["GET", "POST"])("%s only mode cannot be broadened by src or plugin argu
   expect(search.mock.calls[0]![5]).toBe("tg");
   expect(search.mock.calls[0]![6]).toEqual([]);
 });
-it("streams successful sources before the final complete event", async () => {
+it("flushes source results before search completion", async () => {
+  let finishSearch!: () => void;
+  let searchFinished = false;
   search.mockImplementationOnce((...args) => {
     const onSourceSuccess = args[9].onSourceSuccess;
     onSourceSuccess({
@@ -54,21 +56,90 @@ it("streams successful sources before the final complete event", async () => {
       request: { keyword: "test", phase: "shallow" },
       results: [],
     });
-    return new Promise((resolve) => setTimeout(() => {
-      onSourceSuccess({
-        source: { kind: "plugin", id: "plugin-one", version: "1.0.0" },
-        request: { keyword: "test", phase: "variant" },
-        results: [],
-      });
-      resolve({ response: { total: 0, results: [] }, warnings: [] });
-    }, 10));
+    return new Promise((resolve) => {
+      finishSearch = () => {
+        searchFinished = true;
+        resolve({ response: { total: 0 }, warnings: [] });
+      };
+    });
   });
+
+  const response = await fetch(`${base}/get?kw=test`);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let partial = "";
+  while (!partial.includes("event: result")) {
+    const chunk = await reader.read();
+    expect(chunk.done).toBe(false);
+    partial += decoder.decode(chunk.value, { stream: true });
+  }
+  expect(searchFinished).toBe(false);
+  expect(partial).toContain('"id":"firstchan"');
+
+  finishSearch();
+  while (!(await reader.read()).done) { /* drain */ }
+});
+
+it("sends only unseen result deltas and a summary-only complete event", async () => {
+  const result = (id: string, url: string) => ({
+    message_id: id,
+    unique_id: id,
+    channel: "source",
+    datetime: "2026-09-14T00:00:00.000Z",
+    title: id,
+    content: "",
+    links: [{ type: "quark", url, password: "" }],
+  });
+  search.mockImplementationOnce((...args) => {
+    const onSourceSuccess = args[9].onSourceSuccess;
+    const first = result("first", "https://first");
+    const second = result("second", "https://second");
+    const third = result("third", "https://third");
+    onSourceSuccess({
+      source: { kind: "telegram", id: "firstchan" },
+      request: { keyword: "test", phase: "shallow" },
+      results: [first, second],
+    });
+    onSourceSuccess({
+      source: { kind: "telegram", id: "firstchan" },
+      request: { keyword: "test", phase: "deep" },
+      results: [first, second],
+    });
+    onSourceSuccess({
+      source: { kind: "plugin", id: "plugin-one", version: "1.0.0" },
+      request: { keyword: "test", phase: "variant" },
+      results: [first, second, third],
+    });
+    return Promise.resolve({
+      response: {
+        total: 3,
+        results: [first, second, third],
+        meta: { registryVersion: 7, pluginVersions: {} },
+      },
+      warnings: [],
+    });
+  });
+
   const response = await fetch(`${base}/get?kw=test`);
   const text = await response.text();
-  const eventNames = [...text.matchAll(/^event: (.+)$/gm)].map((match) => match[1]);
-  expect(eventNames).toEqual(["start", "result", "result", "complete"]);
-  expect(text).toContain('"id":"firstchan"');
-  expect(text).toContain('"id":"plugin-one"');
+  const blocks = text.split(/\r?\n\r?\n/).filter(Boolean).map((block) => {
+    const event = block.match(/^event: (.+)$/m)?.[1];
+    const data = block.match(/^data: (.+)$/m)?.[1];
+    return { event, data: data ? JSON.parse(data) : undefined };
+  });
+  const resultEvents = blocks.filter((item) => item.event === "result");
+  expect(resultEvents).toHaveLength(3);
+  expect(resultEvents[0]!.data.data.update.results.map((item: any) => item.unique_id)).toEqual(["first", "second"]);
+  expect(resultEvents[1]!.data.data.update.results).toEqual([]);
+  expect(resultEvents[2]!.data.data.update.results.map((item: any) => item.unique_id)).toEqual(["third"]);
+
+  const completeEvent = blocks.find((item) => item.event === "complete")!;
+  expect(completeEvent.data.data).toEqual({
+    total: 3,
+    meta: { registryVersion: 7, pluginVersions: {} },
+  });
+  expect(completeEvent.data.data).not.toHaveProperty("results");
+  expect(completeEvent.data.data).not.toHaveProperty("items");
 });
 
 it.each(["GET", "POST"])("%s only mode with no channels fails before scheduling", async (method) => {

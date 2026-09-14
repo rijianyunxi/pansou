@@ -208,7 +208,6 @@ SQLite 结构化表是唯一持久化源；不再读取旧 JSON、`json_store` �
 - 页码分页、HTML 下一页 selector、多阶段 token/buildId 提取；阶段只能访问同域或显式白名单域，并受阶段数/总请求数限制。
 - 结果标准化：危险链接协议过滤、空标题丢弃、重复链接去重、时间规范化和结果上限。
 
-可导入示例位于 `examples/plugins/`：JSON、HTML selector、多阶段各一；由 `test/unit/pluginExamples.test.ts` 使用生产 validator 校验。
 
 ### 6.3 Parser Plugin
 
@@ -240,7 +239,6 @@ function transform(payload, $, context) {
 - `config/`：内置频道、插件和上游种子配置。
 - `data/`：运行时 SQLite 与 Telegram Session；不要提交运行数据。
 - `test/unit/`：隔离单测；`test/live/`：显式公网测试；`test/e2e/`：Playwright 测试。
-- `examples/plugins/`：可导入 Instructions 示例。
 
 ### 7.2 命令
 
