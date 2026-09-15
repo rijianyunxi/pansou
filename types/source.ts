@@ -3,20 +3,10 @@ export interface UpstreamRequestConfig {
   headers?: Record<string, string>;
   bodyType?: "json" | "form";
   body?: unknown;
-  timeoutMs?: number;
   maxResponseBytes?: number;
   redirect?: "error" | "follow";
   allowedDomains?: string[];
   maxRequestBodyBytes?: number;
-  stages?: unknown[];
-}
-
-export interface UpstreamResponseConfig {
-  nextPage?: {
-    selector?: string;
-    queryParam?: string;
-    maxPages?: number;
-  };
 }
 
 export type UpstreamSourceKind = "http" | "telegram";
@@ -37,7 +27,6 @@ export interface UpstreamDefinition {
   enabled?: boolean;
   request?: UpstreamRequestConfig;
   transform: string;
-  response?: UpstreamResponseConfig;
 }
 
 export type ProbeState = "available" | "warning" | "error";

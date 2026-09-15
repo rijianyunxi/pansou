@@ -6,6 +6,8 @@ const USER_SETTINGS_STORAGE_KEY = "panhub.settings";
 export interface UserSettings {
   /** 用户添加的 Telegram 频道：仅在首页选择“自定义频道”时使用 */
   userTgChannels: string[];
+  /** 首页视觉风格：classic 保留原始风格，geometric 使用明快几何风格 */
+  theme: "classic" | "geometric";
 }
 
 export interface UseSettingsReturn {
@@ -23,9 +25,13 @@ function sanitizeChannels(value: unknown): string[] {
     .filter((name) => TG_CHANNEL_PATTERN.test(name)).slice(0, MAX_USER_TG_CHANNELS);
 }
 
+function sanitizeTheme(value: unknown): UserSettings["theme"] {
+  return value === "geometric" ? "geometric" : "classic";
+}
+
 export function useSettings(): UseSettingsReturn {
   // Nuxt request-scoped state avoids sharing user preferences across SSR requests.
-  const settings = useState<UserSettings>("user-search-settings", () => ({ userTgChannels: [] }));
+  const settings = useState<UserSettings>("user-search-settings", () => ({ userTgChannels: [], theme: "classic" }));
 
   const settingsReady = useState<boolean>("user-search-settings-ready", () => false);
   const storageError = useState<string>("user-search-settings-error", () => "");
@@ -44,6 +50,7 @@ export function useSettings(): UseSettingsReturn {
 
       settings.value = {
         userTgChannels: sanitizeChannels(parsed.userTgChannels),
+        theme: sanitizeTheme(parsed.theme),
       };
     } catch (_error) {
       storageError.value = "无法读取浏览器设置，当前使用默认配置。";
@@ -56,7 +63,10 @@ export function useSettings(): UseSettingsReturn {
   function saveSettings(): boolean {
     if (typeof window === "undefined" || !settingsReady.value) return false;
     try {
-      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({ userTgChannels: settings.value.userTgChannels }));
+      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({
+        userTgChannels: settings.value.userTgChannels,
+        theme: settings.value.theme,
+      }));
       storageError.value = "";
       return true;
     } catch {
@@ -66,7 +76,7 @@ export function useSettings(): UseSettingsReturn {
   }
 
   function resetToDefault(): void {
-    settings.value = { userTgChannels: [] };
+    settings.value = { ...settings.value, userTgChannels: [] };
     saveSettings();
   }
 

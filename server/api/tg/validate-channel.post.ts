@@ -31,7 +31,7 @@ export default defineEventHandler(async (event): Promise<TgChannelValidationResu
 
   active++;
   try {
-    return await validateTgChannel(channel, { timeoutMs: 8_000 });
+    return await validateTgChannel(channel);
   } finally {
     active--;
   }

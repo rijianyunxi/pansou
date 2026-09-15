@@ -27,7 +27,6 @@ export function resolveSearchDefaults(
   const channels = normalizeTelegramChannels(defaults);
   const src = req.src ?? "all";
   const ext = { ...req.ext };
-  if (ext.__plugin_timeout_ms === undefined && settings.pluginTimeoutMs) ext.__plugin_timeout_ms = settings.pluginTimeoutMs;
   return {
     channels: src === "plugin" ? [] : channels,
     plugins: req.plugins ?? settings.plugins ?? undefined,

@@ -61,6 +61,9 @@ type StoredSnapshot = Record<string, TgChannelHealthRecord[]>;
 
 let cached: StoredSnapshot | null = null;
 let dirty = false;
+let pending: Array<{ channel: string; record: TgChannelHealthRecord }> = [];
+let removedChannels = new Set<string>();
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
 function clampText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -149,7 +152,11 @@ function load(): StoredSnapshot {
 }
 
 function getStore(): StoredSnapshot {
-  if (cached === null) cached = load();
+  if (cached === null) {
+    cached = load();
+    pending = [];
+    removedChannels = new Set();
+  }
   return cached;
 }
 
@@ -157,11 +164,24 @@ export function flushTgChannelHealth(): boolean {
   if (!dirty) return true;
   try {
     const db = getSqliteDatabase();
+    const records = pending;
+    const removed = [...removedChannels];
     db.transaction(() => {
-      db.run("DELETE FROM tg_channel_health");
-      for (const [channel, records] of Object.entries(cached || {})) for (const record of records) db.run("INSERT OR IGNORE INTO tg_channel_health(channel,checked_at,ok,elapsed_ms,results_count,source,failure_kind,message) VALUES(?,?,?,?,?,?,?,?)", channel, record.at, record.ok ? 1 : 0, record.elapsedMs, record.resultsCount, record.source, record.failureKind || null, record.message || null);
+      for (const channel of removed) db.run("DELETE FROM tg_channel_health WHERE channel=?", channel);
+      for (const { channel, record } of records) db.run(
+        "INSERT INTO tg_channel_health(channel,checked_at,ok,elapsed_ms,results_count,source,failure_kind,message) VALUES(?,?,?,?,?,?,?,?)",
+        channel, record.at, record.ok ? 1 : 0, record.elapsedMs, record.resultsCount, record.source, record.failureKind || null, record.message || null,
+      );
+      // Keep the bounded in-memory retention policy mirrored in SQLite.
+      for (const [channel, channelRecords] of Object.entries(cached || {})) {
+        const oldest = channelRecords[0]?.at;
+        if (oldest) db.run("DELETE FROM tg_channel_health WHERE channel=? AND checked_at<?", channel, oldest);
+      }
     });
+    pending = [];
+    removedChannels = new Set();
     dirty = false;
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
     return true;
   } catch {
     return false;
@@ -180,7 +200,9 @@ export function recordTgChannelHealth(entry: {
 }): void {
   const name = (entry.channel || "").trim().replace(/^@/, "").toLowerCase();
   if (!TG_CHANNEL_PATTERN.test(name) || typeof entry.ok !== "boolean") return;
-  const at = Number.isFinite(entry.at) && (entry.at as number) > 0 ? Math.floor(entry.at as number) : Date.now();
+  let at = Number.isFinite(entry.at) && (entry.at as number) > 0 ? Math.floor(entry.at as number) : Date.now();
+  const existingTimes = new Set((getStore()[name] || []).map((item) => item.at));
+  while (existingTimes.has(at)) at += 1;
   const elapsedMs = toCount(entry.elapsedMs) ?? 0;
   const resultsCount = toCount(entry.resultsCount) ?? 0;
   const record: TgChannelHealthRecord = { at, ok: entry.ok, elapsedMs, resultsCount, source: entry.source };
@@ -192,6 +214,7 @@ export function recordTgChannelHealth(entry: {
   const store = getStore();
   const records = [...(store[name] || []), record].slice(-MAX_TG_CHANNEL_HEALTH_RECORDS);
   const next: StoredSnapshot = { ...store, [name]: records };
+  pending.push({ channel: name, record });
   const keys = Object.keys(next);
   if (keys.length > MAX_TG_CHANNEL_HEALTH_CHANNELS) {
     keys.sort((a, b) => {
@@ -201,13 +224,17 @@ export function recordTgChannelHealth(entry: {
     });
     for (const key of keys.slice(0, keys.length - MAX_TG_CHANNEL_HEALTH_CHANNELS)) {
       delete next[key];
+      removedChannels.add(key);
     }
   }
   cached = next;
   dirty = true;
-  // Health is non-critical, but SQLite keeps the latest state durable without
-  // making the search path fail if a write is temporarily unavailable.
-  flushTgChannelHealth();
+  // Health is non-critical: debounce writes so bursts are batched and one
+  // health sample never rewrites the entire history table.
+  if (!flushTimer) {
+    flushTimer = setTimeout(() => { flushTimer = undefined; flushTgChannelHealth(); }, 1000);
+    (flushTimer as unknown as { unref?: () => void })?.unref?.();
+  }
 }
 
 /** 单频道聚合视图；该频道没有任何记录时返回 null。 */

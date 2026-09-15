@@ -17,7 +17,7 @@ export type MonitorRowState =
   | "trashed"
   | "unknown";
 
-/** 类型筛选：全部 / 来源 / Telegram 频道 / 异常 / 已关闭（含已删除）。 */
+/** 类型筛选：全部 / 来源 / 其他来源 / 异常 / 已关闭（含已删除）。 */
 export type MonitorFilter = "all" | "upstream" | "channel" | "error" | "inactive";
 
 export interface MonitorHistoryBucket {
@@ -129,8 +129,8 @@ export interface MonitorRow {
   enabled: boolean;
   trashed: boolean;
   origin: "builtin" | "custom" | "";
-  /** 来源解析器类型：code=Core 配置来源，instructions=页面发布的规则解析器。决定删除语义。 */
-  upstreamKind: "code" | "instructions" | "";
+  /** 来源解析器类型：code=Core 配置来源，source=页面发布的规则解析器。决定删除语义。 */
+  upstreamKind: "code" | "source" | "";
   version: string;
   metrics: string[];
   detail: string;
@@ -438,12 +438,12 @@ function buildUpstreamRow(entry: MonitorUpstreamEntry): MonitorRow | null {
     kind: "upstream",
     id,
     name: text(entry.name).trim() || id,
-    typeLabel: text(entry.kind) === "instructions" ? "规则解析器" : "代码来源",
+    typeLabel: text(entry.kind) === "source" ? "规则解析器" : "代码来源",
     state,
     enabled: bool(entry.enabled) !== false,
     trashed: bool(entry.trashed) === true,
     origin: "",
-    upstreamKind: text(entry.kind) === "instructions" ? "instructions" : "code",
+    upstreamKind: text(entry.kind) === "source" ? "source" : "code",
     version: text(entry.version),
     metrics: upstreamMetrics(health),
     detail: text(health?.lastErrorMessage),

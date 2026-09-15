@@ -6,7 +6,7 @@
           <span class="eyebrow">REQUEST</span>
           <strong>发起测试请求</strong>
         </div>
-        <span class="debug-limit">超时 12 秒 · 不自动重试</span>
+        <span class="debug-limit">使用系统统一超时 · 不自动重试</span>
       </div>
       <label class="field-label" :for="keywordInputId">测试关键词</label>
       <div class="debug-controls">

@@ -1,6 +1,6 @@
 import type { SearchResult } from "../types/models";
 
-export type PluginKind = "code" | "instructions" | "telegram";
+export type PluginKind = "code" | "source" | "telegram";
 
 export interface PluginManifest {
   readonly id: string;
@@ -8,7 +8,6 @@ export interface PluginManifest {
   readonly version: string;
   readonly kind: PluginKind;
   readonly priority: number;
-  readonly timeoutMs: number;
   readonly maxResults: number;
   readonly schemaVersion: number;
   readonly outputTypes: readonly string[];
@@ -23,6 +22,7 @@ export interface PluginSearchContext {
   readonly searchId: string;
   readonly keyword: string;
   readonly keywordVariants: readonly string[];
+  /** Remaining slice of the unified per-source timeout budget. */
   readonly timeoutMs: number;
   readonly signal: AbortSignal;
   readonly ext: Readonly<Record<string, unknown>>;
@@ -52,7 +52,6 @@ export function definePluginManifest(input: PluginManifestInput): PluginManifest
     version: input.version || "1.0.0",
     kind: input.kind || "code",
     priority: input.priority,
-    timeoutMs: input.timeoutMs || 0,
     maxResults: input.maxResults || 200,
     schemaVersion: input.schemaVersion || 1,
     outputTypes: Object.freeze([...(input.outputTypes || [])]),

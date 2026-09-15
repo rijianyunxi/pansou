@@ -7,10 +7,10 @@ import { getConfiguredUpstreamVersion, listConfiguredUpstreams } from "./upstrea
 import {
   filterEffectiveTgChannels,
   getTgChannelSettingsVersion,
-  getTgChannelPolicy,
 } from "./tgChannelSettings";
 import { recordTgChannelHealth, flushTgChannelHealth } from "./tgChannelHealthStore";
 import { getTgSourceSettingsVersion } from "./tgSourceSettings";
+import { getUnifiedRequestTimeoutMs } from "./timeoutPolicy";
 import type { CloudType, SearchExecutionResponse, SearchResult, SearchSourceUpdate } from "../types/models";
 import {
   PluginManager,
@@ -63,7 +63,6 @@ export interface SearchServiceOptions {
   priorityChannels: string[];
   defaultChannels: string[];
   defaultConcurrency: number;
-  pluginTimeoutMs: number;
   cacheEnabled: boolean;
   cacheTtlMinutes: number;
   /** Wall-clock budget for the entire search, including queues and variants. */
@@ -350,16 +349,19 @@ export class SearchService {
     if (sourceType !== "all" || channelScope !== "configured") return false;
     if (plugins !== undefined || cloudTypes?.length) return false;
     const extensionKeys = Object.keys(ext ?? {});
-    if (extensionKeys.some((key) => key !== "__plugin_timeout_ms")) return false;
-    const requestedTimeout = Number(ext?.__plugin_timeout_ms) || 0;
-    const configuredTimeout = getSearchSettings().pluginTimeoutMs ?? this.options.pluginTimeoutMs;
-    if (requestedTimeout > 0 && requestedTimeout !== configuredTimeout) return false;
+    if (extensionKeys.length) return false;
 
+    // Compare the effective channel set, not the raw configured default list.
+    // Disabled/deleted channels are filtered immediately before execution, so
+    // comparing the raw list made every default search miss the shared cache.
     const configuredChannels = filterEffectiveTgChannels(
       getSearchSettings().channels ?? this.options.defaultChannels,
     );
     const normalized = (items: string[]) => [...new Set(items.map((item) => item.toLowerCase()))].sort();
-    return sameStringList(normalized(channels), normalized(configuredChannels));
+    return sameStringList(
+      normalized(filterEffectiveTgChannels(channels)),
+      normalized(configuredChannels),
+    );
   }
 
   private buildSearchCacheKey(keyword: string): string {
@@ -501,7 +503,6 @@ export class SearchService {
     if (
       this.options.cacheEnabled &&
       response.results.length > 0 &&
-      warnings.length === 0 &&
       !execution.signal.aborted
     ) {
       if (this.isSharedCacheable(effChannels, effSourceType, plugins, cloudTypes, ext, channelScope)) {
@@ -532,13 +533,7 @@ export class SearchService {
     const priorityChannels = channelScope === "configured" ? this.options.priorityChannels : [];
 
     const { fetchTgChannelPosts } = await import("./tg");
-    const requestedTimeout = Number((ext as any)?.__plugin_timeout_ms) || 0;
-    const timeoutMs = Math.max(
-      3000,
-      requestedTimeout > 0
-        ? requestedTimeout
-        : this.options.pluginTimeoutMs || 0
-    );
+    const timeoutMs = getUnifiedRequestTimeoutMs();
     const concurrency = Math.max(
       1,
       Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 12)
@@ -559,10 +554,9 @@ export class SearchService {
     };
     const createChannelTask =
       (channel: string, limitPerChannel: number, phase: "shallow" | "deep") => async () => {
-        // 每频道超时策略：显式配置时覆盖全局默认（外层 searchTimeoutMs 预算仍然生效）。
-        const channelTimeoutMs = channelScope === "configured"
-          ? getTgChannelPolicy(channel)?.timeoutMs ?? timeoutMs
-          : timeoutMs;
+        // Every Telegram channel uses the same persisted request timeout.
+        // The outer search budget may still cancel the task earlier.
+        const channelTimeoutMs = timeoutMs;
         const scope = createAbortScope(channelTimeoutMs, `Telegram 频道 ${channel} 请求超时 (${channelTimeoutMs}ms)`, execution?.signal);
         const startedAt = Date.now();
         // 页面级告警（前几页成功、后续页失败）：任务仍会带部分结果返回，
@@ -588,7 +582,7 @@ export class SearchService {
         };
         try {
           const results = await runWithSignal(() => fetchTgChannelPosts(channel, keyword, {
-            limitPerChannel, signal: scope.signal, timeoutMs,
+            limitPerChannel, signal: scope.signal,
             scope: channelScope,
             onWarning: (error) => {
               warning = error;
@@ -697,10 +691,7 @@ export class SearchService {
     const pluginVersions = Object.fromEntries(
       selected.map((plugin) => [plugin.manifest.id, plugin.manifest.version])
     );
-    const requestedTimeout = Number(ext?.__plugin_timeout_ms) || 0;
-    const defaultTimeout = requestedTimeout > 0
-      ? requestedTimeout
-      : Math.max(3000, this.options.pluginTimeoutMs || 0);
+    const defaultTimeout = getUnifiedRequestTimeoutMs();
     const variants =
       (keyword || "").trim().length <= 1
         ? [keyword, "电影", "movie", "1080p"]
@@ -782,10 +773,7 @@ export class SearchService {
       run.errorCollector.record(classifyError(error, name), "plugin_search");
       throw error;
     }
-    const timeoutMs = Math.max(
-      1,
-      Number(plugin.manifest.timeoutMs) || run.defaultTimeout
-    );
+    const timeoutMs = Math.max(1_000, Math.round(run.defaultTimeout));
     const startedAt = Date.now();
     logSearchSource("start", { source: name, keyword: run.keyword });
     const scope = createAbortScope(timeoutMs, `解析器 ${name} 请求超时 (${timeoutMs}ms)`, run.execution.signal);

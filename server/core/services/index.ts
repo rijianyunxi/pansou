@@ -1,6 +1,6 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
 import { PluginManager } from "../plugins/manager";
-import { createConfiguredUpstreamPlugin } from "./configuredUpstreamPlugin";
+import { createConfiguredSourcePlugin } from "./configuredSourcePlugin";
 import { getPluginHealthStore } from "../plugins/healthStore";
 import { getSystemSettings } from "./systemSettingsService";
 import { getConfiguredUpstreamVersion, listConfiguredUpstreams } from "./upstreamCatalog";
@@ -12,7 +12,7 @@ function createConfiguredPlugin(
   source: ReturnType<typeof listConfiguredUpstreams>[number],
 ): SearchPlugin {
   // 所有来源都从数据库定义创建，运行时不再根据 id 选择内置处理器。
-  return createConfiguredUpstreamPlugin(source);
+  return createConfiguredSourcePlugin(source);
 }
 
 function loadConfiguredPlugins(): SearchPlugin[] {
@@ -36,7 +36,6 @@ function createServiceOptions(runtimeConfig: any): SearchServiceOptions {
     priorityChannels: system.priorityChannels,
     defaultChannels: system.defaultChannels,
     defaultConcurrency: system.defaultConcurrency,
-    pluginTimeoutMs: system.pluginTimeoutMs,
     searchTimeoutMs: runtimeConfig.searchTimeoutMs,
     cacheEnabled: !!runtimeConfig.cacheEnabled,
     cacheTtlMinutes: system.cacheTtlMinutes,

@@ -53,16 +53,15 @@ export default defineNuxtConfig({
     preset: "node-server",
   },
   routeRules: {
-    // 管理控制台（含旧 /upstreams 重定向）依赖管理员 Cookie 鉴权，禁止缓存
+    // 管理控制台及其路径页面（含旧入口重定向）依赖管理员 Cookie 鉴权，禁止缓存
     "/admin": { swr: false, cache: false },
+    "/admin/**": { swr: false, cache: false },
     "/upstreams": { swr: false, cache: false },
     // 健康监控重定向页禁止缓存
     "/monitor": { swr: false, cache: false },
     "/api/monitor": { swr: false, cache: false },
     "/api/upstreams/**": { swr: false, cache: false },
     "/api/plugins/**": { swr: false, cache: false },
-    "/api/parser-plugins": { swr: false, cache: false },
-    "/api/parser-plugins/**": { swr: false, cache: false },
     "/telegram": { swr: false, cache: false },
     "/tg-accounts": { swr: false, cache: false },
     "/api/tg/**": { swr: false, cache: false },

@@ -239,22 +239,12 @@ function getSearchOptions() {
   };
 }
 
-// 记录热搜词
-async function recordHotSearch(keyword: string) {
-  const term = keyword?.trim();
-  if (!term) return;
-  try {
-    await $fetch(`${apiBase}/hot-searches`, { method: "POST", body: { term } });
-  } catch (_e) {}
-}
-
 // 执行实际搜索逻辑（供 requestUnlock 回调复用）
 async function doSearch() {
   if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
   // 新搜索从全量结果视图开始，避免沿用上一次平台筛选状态。
   filterPlatform.value = "all";
-  if (!onlyUserTg.value) recordHotSearch(keyword);
   await performSearch({
     ...getSearchOptions(),
     onAuthRequired: requestUnlock ?? undefined,

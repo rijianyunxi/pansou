@@ -165,7 +165,7 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * 网盘 / 磁力链接特征，复用服务端 parseChannelPage 的主机名口径
+ * 网盘 / 磁力链接特征，与服务端 Telegram transform 的网盘主机名口径一致
  * （pan.baidu.com、pan.quark.cn、aliyundrive/alipan、yun.139.com、cloud.189.cn、115、123pan、jianguoyun、pan.xunlei.com、lanzou）。
  * 主机名必须紧跟在 `//`（scheme 后）或某个子域标签之后，且后面不能继续接
  * 域名字符，避免把 "x115.com"、"115.com.evil.com" 这类无关域名误判。

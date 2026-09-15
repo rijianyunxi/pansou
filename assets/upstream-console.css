@@ -141,7 +141,8 @@
   font-size: 12px;
   text-decoration: none;
 }
-.upstream-app nav button.active {
+.upstream-app nav button.active,
+.upstream-app nav .console-nav-link.active {
   color: #2563eb;
   background: #eff6ff;
   font-weight: 600;
@@ -1588,12 +1589,6 @@
   .upstream-app .nav-dot {
     display: none;
   }
-  .upstream-app nav .archive-nav {
-    border-top: 0;
-    border-radius: 7px;
-    margin-top: 0;
-    padding-top: 10px;
-  }
   .upstream-app .console-topbar {
     height: 49px;
     padding: 0 18px;
@@ -2067,15 +2062,6 @@
 .upstream-app .session-button:hover {
   color: #111827;
   background: #f0f5f2;
-}
-.upstream-app nav .archive-nav {
-  border-top: 1px solid var(--line);
-  border-radius: 0;
-  margin-top: 10px;
-  padding-top: 15px;
-}
-.upstream-app nav .archive-nav:hover {
-  background: #f6f7f9;
 }
 .upstream-app .danger-zone {
   margin-top: 26px;
@@ -2661,7 +2647,8 @@
     -webkit-overflow-scrolling: touch;
   }
   .upstream-app .console-sidebar nav::-webkit-scrollbar { display: none; }
-  .upstream-app .console-sidebar nav button {
+  .upstream-app .console-sidebar nav button,
+  .upstream-app .console-sidebar nav .console-nav-link {
     flex: 0 0 auto;
     width: auto;
     min-width: 72px;
@@ -2722,10 +2709,20 @@
   font: inherit;
   cursor: pointer;
 }
-.upstream-app .directory-add-button {
+.upstream-app .directory-add-button,
+.upstream-app .directory-trash-button {
   min-height: 44px;
   border-radius: 10px;
   padding: 0 16px;
+}
+.upstream-app .directory-trash-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.upstream-app .directory-trash-button .nav-count {
+  margin-left: 1px;
 }
 .upstream-app .directory-panel .table-scroll {
   max-height: min(680px, calc(100vh - 285px));
@@ -2799,7 +2796,8 @@
   .upstream-app .directory-toolbar .source-type-filter select {
     min-width: 84px;
   }
-  .upstream-app .directory-add-button {
+  .upstream-app .directory-add-button,
+  .upstream-app .directory-trash-button {
     flex: 0 0 auto;
   }
   .upstream-app .monitor-panel .source-toolbar .source-search {
@@ -3488,8 +3486,11 @@
   color: #253247;
   font-weight: 500;
 }
-.upstream-app .console-main-sources .directory-add-button {
+.upstream-app .console-main-sources .directory-add-button,
+.upstream-app .console-main-sources .directory-trash-button {
   min-height: 42px;
+}
+.upstream-app .console-main-sources .directory-add-button {
   box-shadow: 0 5px 14px rgba(37, 99, 235, 0.14);
 }
 .upstream-app .console-main-sources .directory-table thead {

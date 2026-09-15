@@ -2,44 +2,52 @@
   <div v-if="!loading && searches.length === 0" class="hidden"></div>
 
   <div v-else class="hot-search-section">
-    <div class="cloud-container">
-      <div v-if="loading" class="loading-state">
-        <div class="spinner"></div>
-        <span>搜索热度加载中…</span>
+    <div v-if="loading" class="loading-state">
+      <div class="spinner"></div>
+      <span>搜索热度加载中…</span>
+    </div>
+
+    <section v-else class="hot-search-panel" aria-label="热门搜索">
+      <div class="hot-search-glow hot-search-glow--one" aria-hidden="true"></div>
+      <div class="hot-search-glow hot-search-glow--two" aria-hidden="true"></div>
+
+      <header class="hot-search-header">
+        <div>
+          <span class="hot-search-kicker">TRENDING / 现在热搜</span>
+          <h2>热门搜索</h2>
+          <p>从大家正在寻找的内容开始，发现下一站资源。</p>
+        </div>
+        <span class="hot-search-live"><i aria-hidden="true"></i> TRENDING</span>
+      </header>
+
+      <div class="hot-search-grid">
+        <button
+          v-for="(item, index) in searches.slice(0, 10)"
+          :key="item.term"
+          type="button"
+          class="hot-search-item"
+          :class="{ featured: index === 0 }"
+          @click="props.onSearch(item.term)">
+          <span class="hot-search-rank">{{ String(index + 1).padStart(2, "0") }}</span>
+          <span class="hot-search-item-main">
+            <strong>{{ truncateTerm(item.term) }}</strong>
+            <small>{{ index === 0 ? "当前热词" : "热门关键词" }}</small>
+          </span>
+          <span class="hot-search-arrow" aria-hidden="true">↗</span>
+          <span class="hot-search-spark" aria-hidden="true"><b :style="{ width: `${Math.min(100, 32 + index * 7)}%` }"></b></span>
+        </button>
       </div>
 
-      <ClientOnly>
-        <div
-          v-show="!loading && searches.length > 0"
-          class="tag-cloud-card"
-        >
-          <div class="cloud-title">热门搜索</div>
-          <div
-            ref="tagCloudRef"
-            class="tag-cloud-wrap"
-            @click="onContainerClick"
-            @mouseenter="pauseTagCloud"
-            @mouseleave="resumeTagCloud"
-            @focusin="pauseTagCloud"
-            @focusout="resumeTagCloud"
-          />
-        </div>
-        <template #fallback>
-          <div class="tag-cloud-card">
-            <div class="cloud-title">热门搜索</div>
-            <div class="tag-cloud-placeholder" />
-          </div>
-        </template>
-      </ClientOnly>
-    </div>
+      <footer class="hot-search-footer">
+        <span>点击词条，快速开始搜索</span>
+        <span>{{ searches.length }} 个热搜词 · 热度随搜索更新</span>
+      </footer>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount, nextTick } from "vue";
-import type { TagCloud as TagCloudInstanceApi, TagCloudOptions } from "TagCloud";
-
-type PanHubTagCloudOptions = TagCloudOptions & { direction?: number };
+import { ref } from "vue";
 
 interface Props {
   onSearch: (term: string) => void;
@@ -53,20 +61,10 @@ interface HotSearchItem {
 }
 
 const props = defineProps<Props>();
-
 const loading = ref(false);
 const searches = ref<HotSearchItem[]>([]);
 const hasInitialized = ref(false);
-const tagCloudRef = ref<HTMLElement | null>(null);
-const isUpdating = ref(false);
-let tagCloudInstance: TagCloudInstanceApi | null = null;
-let tagCloudPaused = false;
-let prefersReducedMotion = false;
-let updateTimer: ReturnType<typeof setTimeout> | null = null;
-
-// 热搜词展示截断：过长的词会撑爆标签云，点击时再映射回完整原词
-const HOT_TERM_MAX_CHARS = 14;
-let displayToTerm = new Map<string, string>();
+const HOT_TERM_MAX_CHARS = 18;
 
 function truncateTerm(term: string) {
   return term.length > HOT_TERM_MAX_CHARS ? `${term.slice(0, HOT_TERM_MAX_CHARS)}…` : term;
@@ -101,235 +99,237 @@ async function refresh() {
   await fetchHotSearches();
 }
 
-function getTerms(): string[] {
-  displayToTerm = new Map();
-  const displayTerms: string[] = [];
-  for (const s of searches.value) {
-    const display = truncateTerm(s.term);
-    if (!displayToTerm.has(display)) displayToTerm.set(display, s.term);
-    displayTerms.push(display);
-  }
-  return displayTerms;
-}
-
-async function initTagCloud() {
-  if (!tagCloudRef.value || typeof window === "undefined") return;
-  const terms = getTerms();
-  if (terms.length === 0) return;
-
-  // 防抖：避免频繁更新
-  if (isUpdating.value) {
-    if (updateTimer) clearTimeout(updateTimer);
-    updateTimer = setTimeout(() => {
-      isUpdating.value = false;
-      initTagCloud();
-    }, 300);
-    return;
-  }
-
-  if (tagCloudInstance) {
-    isUpdating.value = true;
-    tagCloudInstance.update(terms);
-    // 更新完成后重置状态
-    setTimeout(() => {
-      isUpdating.value = false;
-    }, 100);
-    return;
-  }
-
-  prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  tagCloudPaused = prefersReducedMotion;
-
-  const TagCloud = (await import("TagCloud")).default as unknown as (
-    container: Element,
-    texts: string[],
-    options?: PanHubTagCloudOptions,
-  ) => TagCloudInstanceApi;
-  // initTagCloud can be triggered by both the data watcher and the page ref;
-  // re-check after the async import so concurrent calls cannot mount two loops.
-  if (tagCloudInstance || !tagCloudRef.value) return;
-  tagCloudInstance = TagCloud(tagCloudRef.value, terms, {
-    radius: 150,
-    maxSpeed: "slow",
-    initSpeed: "slow",
-    direction: 135,
-    keep: true,
-    containerClass: "hot-tagcloud",
-    itemClass: "hot-tagcloud-item",
-  });
-  if (tagCloudPaused) tagCloudInstance.pause();
-}
-
-function pauseTagCloud() {
-  tagCloudPaused = true;
-  tagCloudInstance?.pause();
-}
-
-function resumeTagCloud() {
-  tagCloudPaused = prefersReducedMotion;
-  if (!prefersReducedMotion) tagCloudInstance?.resume();
-}
-
-function destroyTagCloud() {
-  if (updateTimer) {
-    clearTimeout(updateTimer);
-    updateTimer = null;
-  }
-  if (tagCloudInstance) {
-    tagCloudInstance.destroy();
-    tagCloudInstance = null;
-  }
-  isUpdating.value = false;
-}
-
-function onContainerClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (target?.classList?.contains("hot-tagcloud-item")) {
-    const display = target.innerText?.trim();
-    if (display) props.onSearch(displayToTerm.get(display) ?? display);
-  }
-}
-
-watch(
-  () => [searches.value.length, loading.value] as const,
-  async ([len, ld]) => {
-    if (ld) return;
-    if (len === 0) {
-      // The ClientOnly node is replaced when the API returns an empty list;
-      // release the old instance so a later refresh can mount a fresh cloud.
-      destroyTagCloud();
-      return;
-    }
-    await nextTick();
-    initTagCloud();
-  },
-  { flush: "post" }
-);
-
-onBeforeUnmount(() => {
-  destroyTagCloud();
-});
-
 defineExpose({ init, refresh });
 </script>
 
 <style scoped>
-.hot-search-section {
-  width: 100%;
-}
+.hot-search-section { width: 100%; }
 
-.cloud-container {
-  width: 100%;
-}
-
-/* 白色扁平卡片 + 灰色小标题 */
-.tag-cloud-card {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-light);
-  border-radius: 16px;
-  box-shadow: var(--shadow-sm);
-  padding: 20px;
-}
-
-.cloud-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  text-align: center;
-  margin-bottom: 8px;
-}
-
-.tag-cloud-wrap {
-  min-height: 320px;
-  cursor: pointer;
-}
-
-.tag-cloud-placeholder {
-  min-height: 300px;
-}
-
-/* 覆盖 TagCloud 默认样式，适配项目主题 */
-.tag-cloud-card :deep(.hot-tagcloud) {
+.hot-search-panel {
   position: relative;
-  width: 100%;
-  height: 300px;
-  /* GPU 加速 */
-  transform: translateZ(0);
-  will-change: transform;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 26px 28px 18px;
+  border: 1px solid rgba(117, 140, 255, 0.3);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(104, 125, 255, 0.16), transparent 34%),
+    linear-gradient(145deg, #ffffff 0%, #f8faff 55%, #f4f6ff 100%);
+  box-shadow: 0 18px 48px rgba(52, 92, 255, 0.1), inset 0 1px 0 rgba(255,255,255,.9);
 }
 
-.tag-cloud-card :deep(.hot-tagcloud-item) {
-  color: var(--text-secondary, #4b5563) !important;
-  font-weight: 600 !important;
-  font-family: inherit !important;
-  cursor: pointer;
-  transition: color 0.15s ease;
-  /* GPU 加速 */
-  transform: translateZ(0);
-  will-change: transform, color;
-}
-
-.tag-cloud-card :deep(.hot-tagcloud-item:hover) {
-  color: var(--primary, #2563eb) !important;
-}
-
-.loading-state {
+.hot-search-header {
+  position: relative;
+  z-index: 1;
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 21px;
+}
+
+.hot-search-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: #536cf0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+}
+
+.hot-search-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.hot-search-header p {
+  margin: 7px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.hot-search-live {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 40px 20px;
-  color: var(--text-secondary);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-light);
-  border-radius: 16px;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid rgba(52, 92, 255, 0.2);
+  border-radius: 999px;
+  color: #536cf0;
+  background: rgba(255,255,255,.72);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
 }
 
-.spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid var(--border-light);
-  border-top-color: var(--text-primary);
+.hot-search-live i {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  background: #6cdbad;
+  box-shadow: 0 0 0 4px rgba(108, 219, 173, .16), 0 0 14px rgba(108, 219, 173, .8);
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.hot-search-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
+
+.hot-search-item {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 22px;
+  grid-template-rows: auto 4px;
+  column-gap: 10px;
+  row-gap: 11px;
+  padding: 14px 15px 12px;
+  overflow: hidden;
+  border: 1px solid rgba(126, 143, 196, .2);
+  border-radius: 14px;
+  background: rgba(255,255,255,.74);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+
+.hot-search-item:hover,
+.hot-search-item:focus-visible {
+  transform: translateY(-3px);
+  border-color: rgba(52, 92, 255, .55);
+  background: #fff;
+  box-shadow: 0 9px 24px rgba(52, 92, 255, .15);
+}
+
+.hot-search-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.hot-search-item.featured { border-color: rgba(52, 92, 255, .5); background: linear-gradient(135deg, rgba(52, 92, 255, .11), rgba(255,255,255,.88)); }
+.hot-search-rank { color: #7081de; font-size: 11px; font-weight: 800; letter-spacing: .6px; }
+.hot-search-item-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.hot-search-item-main strong { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.hot-search-item-main small { color: var(--text-tertiary); font-size: 10px; }
+.hot-search-arrow { color: #7185ef; font-size: 19px; line-height: 1; text-align: right; }
+.hot-search-spark { grid-column: 1 / -1; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(52, 92, 255, .09); }
+.hot-search-spark b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #345cff, #a39dff); box-shadow: 0 0 10px rgba(52, 92, 255, .5); }
+.hot-search-footer { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 12px; margin-top: 17px; color: var(--text-tertiary); font-size: 10px; }
+.hot-search-glow { position: absolute; z-index: 0; width: 160px; height: 160px; border-radius: 50%; filter: blur(2px); pointer-events: none; }
+.hot-search-glow--one { right: -55px; top: -72px; border: 1px solid rgba(125, 139, 255, .2); box-shadow: 0 0 0 18px rgba(125,139,255,.04), 0 0 0 38px rgba(125,139,255,.025); }
+.hot-search-glow--two { left: -95px; bottom: -125px; border: 1px solid rgba(108,219,173,.18); box-shadow: 0 0 0 20px rgba(108,219,173,.04); }
+
+.loading-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-secondary); font-size: 12px; }
+.spinner { width: 28px; height: 28px; border: 3px solid var(--border-light); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 640px) {
-  .tag-cloud-card {
-    padding: 12px;
-  }
-
-  .tag-cloud-wrap {
-    min-height: 260px;
-  }
-
-  .tag-cloud-card :deep(.hot-tagcloud) {
-    height: 240px;
-  }
-
-  .loading-state {
-    padding: 24px 12px;
-  }
+  .hot-search-panel { padding: 21px 15px 15px; border-radius: 18px; }
+  .hot-search-header { margin-bottom: 16px; }
+  .hot-search-header h2 { font-size: 19px; }
+  .hot-search-header p { max-width: 230px; line-height: 1.5; }
+  .hot-search-grid { grid-template-columns: 1fr; gap: 8px; }
+  .hot-search-footer { flex-direction: column; gap: 5px; }
 }
 
-@media (prefers-color-scheme: dark) {
-  .tag-cloud-card :deep(.hot-tagcloud-item) {
-    color: #9ca3af !important;
-  }
-
-  .tag-cloud-card :deep(.hot-tagcloud-item:hover) {
-    color: #60a5fa !important;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .hot-search-item { transition: none; }
+  .spinner { animation: none; opacity: .7; }
 }
 
-.hidden {
-  display: none;
+.hidden { display: none; }
+</style>
+
+<style>
+/* 明快几何主题：热门搜索变成高对比的“趋势卡片” */
+.layout.theme-geometric .hot-search-panel {
+  padding: 22px 24px 16px;
+  border: 2px solid #20201e;
+  border-radius: 10px;
+  background: #fffbed;
+  box-shadow: 5px 5px 0 #20201e;
+}
+
+.layout.theme-geometric .hot-search-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 8px;
+  background: #ffb687;
+  border-bottom: 2px solid #20201e;
+}
+
+.layout.theme-geometric .hot-search-glow--one {
+  right: -34px;
+  top: 20px;
+  width: 116px;
+  height: 116px;
+  border: 2px solid #20201e;
+  background: #e1e4fc;
+  box-shadow: 11px 12px 0 -2px #ffe48a, 11px 12px 0 0 #20201e;
+  filter: none;
+}
+
+.layout.theme-geometric .hot-search-glow--two {
+  left: -88px;
+  bottom: -94px;
+  width: 148px;
+  height: 148px;
+  border: 2px solid #20201e;
+  background: #ffcbab;
+  box-shadow: 13px -10px 0 -3px #3155e7, 13px -10px 0 0 #20201e;
+  filter: none;
+}
+
+.layout.theme-geometric .hot-search-kicker { color: #3155e7; font-weight: 900; }
+.layout.theme-geometric .hot-search-header h2 { letter-spacing: -.02em; }
+.layout.theme-geometric .hot-search-header p { color: #56564f; }
+.layout.theme-geometric .hot-search-live {
+  border: 2px solid #20201e;
+  border-radius: 5px;
+  color: #20201e;
+  background: #ffe48a;
+  box-shadow: 2px 2px 0 #20201e;
+}
+.layout.theme-geometric .hot-search-live i { background: #3155e7; box-shadow: none; }
+.layout.theme-geometric .hot-search-grid { gap: 11px; }
+.layout.theme-geometric .hot-search-item {
+  border: 2px solid #20201e;
+  border-radius: 6px;
+  background: #fffefa;
+  box-shadow: 3px 3px 0 #20201e;
+  transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
+}
+.layout.theme-geometric .hot-search-item:nth-child(3n + 1) { background: #ffe48a; }
+.layout.theme-geometric .hot-search-item:nth-child(3n + 2) { background: #e1e4fc; }
+.layout.theme-geometric .hot-search-item:nth-child(3n) { background: #ffcbab; }
+.layout.theme-geometric .hot-search-item.featured { background: #3155e7; color: #fffefa; }
+.layout.theme-geometric .hot-search-item.featured .hot-search-rank,
+.layout.theme-geometric .hot-search-item.featured .hot-search-item-main strong,
+.layout.theme-geometric .hot-search-item.featured .hot-search-item-main small,
+.layout.theme-geometric .hot-search-item.featured .hot-search-arrow { color: #fffefa; }
+.layout.theme-geometric .hot-search-item:hover,
+.layout.theme-geometric .hot-search-item:focus-visible {
+  transform: translate(-2px, -2px);
+  border-color: #20201e;
+  background: #fffefa;
+  box-shadow: 5px 5px 0 #20201e;
+}
+.layout.theme-geometric .hot-search-rank { color: #20201e; font-weight: 900; }
+.layout.theme-geometric .hot-search-item-main strong { color: #20201e; font-weight: 850; }
+.layout.theme-geometric .hot-search-item-main small { color: #56564f; font-weight: 600; }
+.layout.theme-geometric .hot-search-arrow { color: #20201e; font-weight: 900; }
+.layout.theme-geometric .hot-search-spark { background: rgba(32,32,30,.16); }
+.layout.theme-geometric .hot-search-spark b { background: #3155e7; box-shadow: none; }
+.layout.theme-geometric .hot-search-item.featured .hot-search-spark { background: rgba(255,255,255,.35); }
+.layout.theme-geometric .hot-search-item.featured .hot-search-spark b { background: #ffe48a; }
+.layout.theme-geometric .hot-search-footer { color: #56564f; font-weight: 600; }
+
+@media (max-width: 640px) {
+  .layout.theme-geometric .hot-search-panel { padding: 20px 14px 14px; }
+  .layout.theme-geometric .hot-search-panel::before { height: 6px; }
 }
 </style>

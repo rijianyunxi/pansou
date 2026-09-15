@@ -40,8 +40,8 @@ function parseCommonRequest(raw: unknown, mode: "system" | "user-channels"): Par
   }
   if (ext !== undefined && (!ext || typeof ext !== "object" || Array.isArray(ext))) return invalid("ext must be an object");
   const extra = { ...(ext as Record<string, unknown> || {}) };
-  if (extra.__plugin_timeout_ms !== undefined) {
-    extra.__plugin_timeout_ms = integer(extra.__plugin_timeout_ms, 1000, 60000, "ext.__plugin_timeout_ms");
+  if (Object.prototype.hasOwnProperty.call(extra, "__plugin_timeout_ms")) {
+    return invalid("ext.__plugin_timeout_ms is server-configured and cannot be overridden");
   }
   const channels = list(value.channels, "channels", MAX_USER_TG_CHANNELS);
   if (mode === "system" && (Object.prototype.hasOwnProperty.call(value, "channels") || Object.prototype.hasOwnProperty.call(value, "channels_mode"))) {

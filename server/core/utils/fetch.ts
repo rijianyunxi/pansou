@@ -10,6 +10,7 @@ import type { DnsLookupRecord } from "../security/dnsGuard";
 import type { IncomingMessage } from "node:http";
 import type { Readable as NodeReadable } from "node:stream";
 import { logUpstreamRequest } from "./upstreamDebug";
+import { getUnifiedRequestTimeoutMs } from "../services/timeoutPolicy";
 
 function normalizeError(error: unknown): Error {
   if (error instanceof Error) return error;
@@ -24,8 +25,6 @@ export interface FetchWithRetryOptions {
   baseDelay?: number;
   /** 是否使用指数退避，默认 true */
   exponentialBackoff?: boolean;
-  /** 超时时间（毫秒），默认 8000 */
-  timeout?: number;
   /** 调用方取消信号；取消后不再重试。 */
   signal?: AbortSignal;
 }
@@ -42,7 +41,6 @@ export interface FetchWithRetryOptions {
  * ```typescript
  * const data = await fetchWithRetry('https://api.example.com/data', {}, {
  *   maxRetries: 3,
- *   timeout: 5000
  * });
  * ```
  */
@@ -61,9 +59,9 @@ export async function fetchWithRetry<T = any>(
     maxRetries = 3,
     baseDelay = 1000,
     exponentialBackoff = true,
-    timeout = 8000,
     signal: retrySignal,
   } = retryOptions;
+  const timeout = getUnifiedRequestTimeoutMs();
   const signal = retrySignal && options.signal
     ? AbortSignal.any([retrySignal, options.signal])
     : retrySignal || options.signal || undefined;
@@ -132,7 +130,7 @@ export async function fetchWithRetry<T = any>(
 
 /**
  * Fetch the exact upstream response body. This is deliberately separate from
- * fetchWithRetry<T>: parser plugins need the original JSON bytes rather than a
+ * fetchWithRetry<T>: transform functions need the original JSON bytes rather than a
  * JSON.stringify() reconstruction of an already parsed object.
  */
 export async function fetchRawWithRetry(

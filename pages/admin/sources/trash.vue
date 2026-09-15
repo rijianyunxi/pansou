@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 管理后台根入口统一落到来源管理，具体模块使用语义化路径。
+// 回收站已收归来源管理，仅保留旧地址的兼容跳转。
 await navigateTo("/admin/sources", { replace: true });
 </script>
 <template><div /></template>

@@ -51,6 +51,9 @@ importers:
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
+      vite:
+        specifier: 7.3.1
+        version: 7.3.1(@types/node@22.20.2)(jiti@2.6.1)(terser@5.46.0)(yaml@2.8.2)
 
 packages:
 
@@ -5538,6 +5541,10 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.3
 
+  fdir@6.5.0(picomatch@4.0.7):
+    optionalDependencies:
+      picomatch: 4.0.7
+
   file-uri-to-path@1.0.0: {}
 
   fill-range@7.1.1:
@@ -6405,8 +6412,7 @@ snapshots:
 
   picomatch@4.0.3: {}
 
-  picomatch@4.0.7:
-    optional: true
+  picomatch@4.0.7: {}
 
   pkg-types@1.3.1:
     dependencies:
@@ -6671,7 +6677,7 @@ snapshots:
   rollup-plugin-visualizer@6.0.11(rollup@4.59.0):
     dependencies:
       open: 8.4.2
-      picomatch: 4.0.3
+      picomatch: 4.0.7
       source-map: 0.7.6
       yargs: 17.7.2
     optionalDependencies:
@@ -7173,7 +7179,7 @@ snapshots:
       chokidar: 4.0.3
       npm-run-path: 6.0.0
       picocolors: 1.1.1
-      picomatch: 4.0.3
+      picomatch: 4.0.7
       tiny-invariant: 1.3.3
       tinyglobby: 0.2.15
       vite: 7.3.1(@types/node@22.20.2)(jiti@2.6.1)(terser@5.46.0)(yaml@2.8.2)
@@ -7212,8 +7218,8 @@ snapshots:
   vite@7.3.1(@types/node@22.20.2)(jiti@2.6.1)(terser@5.46.0)(yaml@2.8.2):
     dependencies:
       esbuild: 0.27.3
-      fdir: 6.5.0(picomatch@4.0.3)
-      picomatch: 4.0.3
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
       postcss: 8.5.8
       rollup: 4.59.0
       tinyglobby: 0.2.15

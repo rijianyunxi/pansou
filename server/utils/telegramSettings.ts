@@ -8,8 +8,6 @@ export const MAX_SYSTEM_TG_CHANNELS = 200;
  * 未配置的字段沿用全局默认；整份策略按频道用户名（小写）为键存储。
  */
 export interface TgChannelPolicy {
-  /** 单频道抓取超时（毫秒） */
-  timeoutMs?: number | null;
   /** 最多抓取的分页数 */
   maxPages?: number | null;
   /** 单频道结果数上限 */
@@ -40,14 +38,13 @@ export interface TgChannelStateEntry {
 export type TgChannelStateMap = Record<string, TgChannelStateEntry>;
 
 export const TG_POLICY_RANGES = {
-  timeoutMs: { min: 1_000, max: 120_000 },
   maxPages: { min: 1, max: 50 },
   maxResults: { min: 1, max: 200 },
   maxRetries: { min: 0, max: 3 },
   retryDelayMs: { min: 0, max: 5_000 },
 } as const;
 
-const NUMERIC_POLICY_FIELDS = ["timeoutMs", "maxPages", "maxResults", "maxRetries", "retryDelayMs"] as const;
+const NUMERIC_POLICY_FIELDS = ["maxPages", "maxResults", "maxRetries", "retryDelayMs"] as const;
 export type TgChannelPolicyField = (typeof NUMERIC_POLICY_FIELDS)[number] | "fallback" | "fallbackUrls";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -1,8 +1,5 @@
 <script setup lang="ts">
-// 运行监控已并入管理控制台（/admin?view=monitor）；此路由仅做重定向兼容旧链接。
-await navigateTo("/admin?view=monitor", { replace: true });
+// 运行监控旧入口，统一跳转到带语义路径的管理后台页面。
+await navigateTo("/admin/monitor", { replace: true });
 </script>
-
-<template>
-  <div />
-</template>
+<template><div /></template>

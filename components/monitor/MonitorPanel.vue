@@ -9,7 +9,7 @@
         <div class="metric-label">管理来源<ConsoleIcon name="grid" /></div>
         <div class="metric-value">
           {{ summary.total }}<span>个</span>
-          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.total }} · Telegram 频道 {{ summary.channels.total }}</small>
+          <small class="metric-pill">来源总数 {{ summary.total }}</small>
         </div>
         <p>已纳入管理的来源</p>
       </article>
@@ -17,7 +17,7 @@
         <div class="metric-label">正常<ConsoleIcon name="check" /></div>
         <div class="metric-value green">
           {{ summary.healthy }}<span>个</span>
-          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.healthy }} · Telegram 频道 {{ summary.channels.healthy }}</small>
+          <small class="metric-pill">正常来源 {{ summary.healthy }}</small>
         </div>
         <p><span class="status-dot warning"></span>另有需关注 {{ summary.warning }} 个</p>
       </article>
@@ -25,7 +25,7 @@
         <div class="metric-label">异常<ConsoleIcon name="activity" /></div>
         <div class="metric-value">
           {{ summary.error }}<span>个</span>
-          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.error }} · Telegram 频道 {{ summary.channels.error }}</small>
+          <small class="metric-pill">异常来源 {{ summary.error }}</small>
         </div>
         <p><span class="status-dot error"></span>最近检查存在失败</p>
       </article>
@@ -33,7 +33,7 @@
         <div class="metric-label">已关闭<ConsoleIcon name="sliders" /></div>
         <div class="metric-value">
           {{ summary.inactive }}<span>个</span>
-          <small class="metric-pill">HTTP 来源 {{ summary.upstreams.inactive }} · Telegram 频道 {{ summary.channels.inactive }}</small>
+          <small class="metric-pill">关闭来源 {{ summary.inactive }}</small>
         </div>
         <p><span class="status-dot warning"></span>已移除 {{ summary.trashed }} 个，可在回收站恢复</p>
       </article>
@@ -48,11 +48,10 @@
               <span class="status-dot available"></span>最近同步 {{ generatedAtLabel }}
             </span>
           </div>
-          <p>查看各来源的运行状态，可按类型、状态和关键词筛选</p>
         </div>
       </header>
       <div class="source-toolbar">
-        <div class="filter-tabs" aria-label="按类型或状态筛选">
+        <div class="filter-tabs" aria-label="按来源或状态筛选">
           <button
             v-for="option in FILTERS"
             :key="option.value"
@@ -112,7 +111,7 @@
         <header class="monitor-settings-header">
           <div>
             <h3 id="monitor-search-settings-title">来源与性能</h3>
-            <p>管理默认来源和运行参数；来源与频道的开启状态会和运行状态保持一致。</p>
+            <p>管理来源和运行参数；所有来源的开启状态会和运行状态保持一致。</p>
           </div>
           <span v-if="settingsLoading" class="tiny-muted">正在读取…</span>
           <button class="icon-button" type="button" aria-label="关闭来源设置" @click="sourceSettingsDialog?.close()">
@@ -121,42 +120,25 @@
         </header>
         <div class="monitor-settings-content">
           <div class="section-label">
-            开启范围 <span class="tiny-muted">来源统一管理</span>
+            来源范围 <span class="tiny-muted">统一管理</span>
           </div>
           <label class="settings-plugin-item">
-            <input v-model="useAllPlugins" type="checkbox" :disabled="settingsSaving || settingsLoading" />
+            <input v-model="useAllSources" type="checkbox" :disabled="settingsSaving || settingsLoading" @change="onUseAllSourcesChange" />
             使用全部已开启来源
           </label>
-          <div v-if="!useAllPlugins" class="settings-plugin-grid">
-            <label v-for="name in pluginOptions" :key="name" class="settings-plugin-item">
+          <div v-if="!useAllSources" class="settings-plugin-grid">
+            <label v-for="row in sourceOptions" :key="row.key" class="settings-plugin-item">
               <input
                 type="checkbox"
-                :value="name"
-                v-model="settingsDraft.plugins"
+                :value="sourceSelectionKey(row)"
+                v-model="settingsDraft.sources"
                 :disabled="settingsSaving || settingsLoading" />
-              <span>{{ name }}</span>
+              <span>{{ row.name }}</span>
+              <small class="tiny-muted">{{ row.id }}</small>
             </label>
-            <p v-if="!pluginOptions.length" class="field-hint">暂无可用来源。</p>
+            <p v-if="!sourceOptions.length" class="field-hint">暂无可用来源。</p>
           </div>
-          <p class="field-hint">关闭后仅使用勾选的来源；运行状态中的开启/关闭会同步更新这里的选择。</p>
-
-          <p class="field-hint monitor-channel-hint">Telegram 频道同样由下方开关控制，修改后立即同步到运行状态。</p>
-          <div v-if="channelRows.length" class="monitor-channel-settings">
-            <div v-for="row in channelRows" :key="row.key" class="monitor-channel-setting">
-              <span class="monitor-channel-setting-name">@{{ row.id }}</span>
-              <button
-                class="toggle"
-                :class="{ on: row.enabled && !row.trashed }"
-                type="button"
-                role="switch"
-                :aria-checked="row.enabled && !row.trashed"
-                :aria-label="`${row.enabled && !row.trashed ? '关闭' : '开启'} @${row.id}`"
-                :disabled="settingsSaving || busyKey === row.key || deleteBusy"
-                @click="toggleChannel(row)"
-              ><span></span></button>
-            </div>
-          </div>
-          <p v-else class="field-hint">暂无纳管频道。</p>
+          <p class="field-hint">关闭后仅使用勾选的来源；来源启停与搜索范围会保持一致。</p>
 
           <div class="section-label settings-section-gap">
             运行参数 <span class="tiny-muted">留空使用服务端默认值</span>
@@ -173,17 +155,17 @@
                 :disabled="settingsSaving || settingsLoading" />
             </label>
             <label class="settings-field">
-              单个来源超时 (ms)
+              统一请求 / transform 超时（ms）
               <input
-                v-model="settingsDraft.pluginTimeoutMs"
+                v-model="settingsDraft.requestTimeoutMs"
                 type="number"
                 min="1000"
                 step="500"
-                placeholder="默认 15000"
+                placeholder="默认 5000"
                 :disabled="settingsSaving || settingsLoading" />
             </label>
             <label class="settings-field">
-              搜索缓存时长 (分钟)
+              搜索缓存时长（分钟）
               <input
                 v-model="settingsDraft.cacheTtlMinutes"
                 type="number"
@@ -235,7 +217,7 @@
               </span> -->
               <div class="source-text">
                 <div class="monitor-card-name">
-                  <span class="monitor-kind-tag">{{ row.kind === "channel" ? "Telegram" : "HTTP" }}</span>
+                  <span class="monitor-kind-tag">来源</span>
                   <strong>{{ row.name }}</strong>
                 </div>
                 <div class="monitor-card-id" :title="row.id">{{ row.detail || row.id }}</div>
@@ -284,7 +266,7 @@
               class="monitor-action-label"
               type="button"
               @click="row.kind === 'channel' ? emit('debug-channel', row.id) : emit('focus-upstream', row.id)"
-            ><ConsoleIcon name="grid" :size="16" />{{ row.kind === "channel" ? "测试" : "详情" }}</button>
+            ><ConsoleIcon name="grid" :size="16" />{{ "测试" }}</button>
             <button class="monitor-icon-action" type="button" :aria-label="`刷新 ${row.name}`" title="刷新" :disabled="loading" @click="loadMonitor()">
               <ConsoleIcon name="refresh" :size="18" />
             </button>
@@ -364,11 +346,11 @@
         @submit.prevent="confirmDeleteChannel"
       >
         <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
-        <h2 id="monitor-delete-channel-title">移除频道 @{{ channelDeleteTarget.id }}？</h2>
+        <h2 id="monitor-delete-channel-title">移除来源 @{{ channelDeleteTarget.id }}？</h2>
         <p v-if="channelDeleteTarget.origin === 'builtin'">
-          频道将从生效清单中移除，之后可以重新开启。
+          来源将从生效清单中移除，之后可以重新开启。
         </p>
-        <p v-else>该自定义频道将从清单中永久移除。</p>
+        <p v-else>该自定义来源将从清单中永久移除。</p>
         <div class="confirm-actions">
           <button class="button secondary" type="button" @click="channelDeleteTarget = null">取消</button>
           <button class="button destructive" type="submit" :disabled="deleteBusy">
@@ -411,7 +393,7 @@ const emit = defineEmits<{
 const FILTERS: Array<{ label: string; value: MonitorFilter }> = [
   { label: "全部", value: "all" },
   { label: "来源", value: "upstream" },
-  { label: "频道", value: "channel" },
+  { label: "来源", value: "channel" },
   { label: "异常", value: "error" },
   { label: "已关闭", value: "inactive" },
 ];
@@ -422,7 +404,7 @@ interface SearchSettingsState {
   plugins: string[] | null;
   channels: string[] | null;
   concurrency: number | null;
-  pluginTimeoutMs: number | null;
+  requestTimeoutMs: number | null;
   trashedPlugins: string[];
   cacheTtlMinutes: number;
 }
@@ -463,7 +445,7 @@ const searchSettings = ref<SearchSettingsState>({
   plugins: null,
   channels: null,
   concurrency: null,
-  pluginTimeoutMs: null,
+  requestTimeoutMs: null,
   trashedPlugins: [],
   cacheTtlMinutes: 10,
 });
@@ -471,23 +453,29 @@ const settingsLoading = ref(false);
 const settingsSaving = ref(false);
 const settingsError = ref("");
 const settingsDraft = ref<{
-  plugins: string[];
+  sources: string[];
   concurrency: number | "";
-  pluginTimeoutMs: number | "";
+  requestTimeoutMs: number | "";
   cacheTtlMinutes: number | "";
-}>({ plugins: [], concurrency: "", pluginTimeoutMs: "", cacheTtlMinutes: "" });
-const useAllPlugins = ref(true);
-const pluginOptions = computed(() =>
+}>({ sources: [], concurrency: "", requestTimeoutMs: "", cacheTtlMinutes: "" });
+const useAllSources = ref(true);
+const sourceOptions = computed(() =>
   rows.value
-    .filter((row) => row.kind === "upstream" && !row.trashed)
-    .map((row) => row.id)
-    .sort(),
+    .filter((row) => !row.trashed)
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 );
-const channelRows = computed(() =>
-  rows.value
-    .filter((row) => row.kind === "channel")
-    .sort((a, b) => a.id.localeCompare(b.id)),
-);
+
+function sourceSelectionKey(row: MonitorRow): string {
+  return row.kind === "channel" ? `channel:${row.id}` : `upstream:${row.id}`;
+}
+
+function sourceSelectionKeys(options = sourceOptions.value): string[] {
+  return options.filter((row) => row.enabled && !row.trashed).map(sourceSelectionKey);
+}
+
+function onUseAllSourcesChange() {
+  if (!useAllSources.value) settingsDraft.value.sources = sourceSelectionKeys();
+}
 
 function openSourceSettings() {
   sourceSettingsOpen.value = true;
@@ -565,17 +553,21 @@ async function loadSearchSettings() {
       plugins: data.plugins ?? null,
       channels: data.channels ?? null,
       concurrency: data.concurrency ?? null,
-      pluginTimeoutMs: data.pluginTimeoutMs ?? null,
+      requestTimeoutMs: data.requestTimeoutMs ?? null,
       trashedPlugins: data.trashedPlugins ?? [],
       cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
-    useAllPlugins.value = searchSettings.value.plugins === null;
+    useAllSources.value = searchSettings.value.plugins === null && searchSettings.value.channels === null;
+    const selectedSources = useAllSources.value
+      ? sourceSelectionKeys()
+      : [
+          ...(searchSettings.value.plugins || []).map((id) => `upstream:${id}`),
+          ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
+        ];
     settingsDraft.value = {
-      plugins: searchSettings.value.plugins
-        ? [...searchSettings.value.plugins]
-        : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id),
+      sources: selectedSources,
       concurrency: searchSettings.value.concurrency ?? "",
-      pluginTimeoutMs: searchSettings.value.pluginTimeoutMs ?? "",
+      requestTimeoutMs: searchSettings.value.requestTimeoutMs ?? "",
       cacheTtlMinutes: searchSettings.value.cacheTtlMinutes ?? 10,
     };
     settingsError.value = "";
@@ -600,39 +592,54 @@ async function saveSearchSettingsUi() {
   settingsSaving.value = true;
   settingsError.value = "";
   try {
+    const desiredSources = new Set(settingsDraft.value.sources);
     const desiredPlugins = new Set(
-      settingsDraft.value.plugins.filter((id) => pluginOptions.value.includes(id)),
+      sourceOptions.value
+        .filter((row) => row.kind === "upstream" && desiredSources.has(sourceSelectionKey(row)))
+        .map((row) => row.id),
     );
-    if (!useAllPlugins.value) {
-      for (const row of rows.value.filter((item) => item.kind === "upstream" && !item.trashed)) {
-        const currentlyEnabled = row.enabled;
-        const shouldBeEnabled = desiredPlugins.has(row.id);
-        if (currentlyEnabled !== shouldBeEnabled) {
+    const desiredChannels = new Set(
+      sourceOptions.value
+        .filter((row) => row.kind === "channel" && desiredSources.has(sourceSelectionKey(row)))
+        .map((row) => row.id),
+    );
+    if (!useAllSources.value) {
+      for (const row of sourceOptions.value) {
+        const shouldBeEnabled = desiredSources.has(sourceSelectionKey(row));
+        if (row.kind === "upstream" && row.enabled !== shouldBeEnabled) {
           await setUpstreamEnabled(row, shouldBeEnabled);
+        }
+        if (row.kind === "channel" && row.enabled !== shouldBeEnabled) {
+          const action = shouldBeEnabled ? "enable" : "disable";
+          const response = await $fetch<{ code?: number; message?: string }>(
+            `/api/tg/channels/${encodeURIComponent(row.id)}/${action}`, { method: "POST" },
+          );
+          if ((response.code ?? 0) !== 0) throw new Error(response.message || "来源状态更新失败");
         }
       }
     }
 
     const concurrency = Number(settingsDraft.value.concurrency);
-    const pluginTimeoutMs = Number(settingsDraft.value.pluginTimeoutMs);
+    const requestTimeoutMs = Number(settingsDraft.value.requestTimeoutMs);
     const cacheTtlMinutes = Number(settingsDraft.value.cacheTtlMinutes);
     const response = await $fetch<{ data?: SearchSettingsState }>(
       "/api/settings/search",
       {
         method: "PUT",
         body: {
-          plugins: useAllPlugins.value ? null : [...desiredPlugins],
+          plugins: useAllSources.value ? null : [...desiredPlugins],
+          channels: useAllSources.value ? null : [...desiredChannels],
           concurrency:
             settingsDraft.value.concurrency !== "" &&
             Number.isFinite(concurrency) &&
             concurrency > 0
               ? concurrency
               : null,
-          pluginTimeoutMs:
-            settingsDraft.value.pluginTimeoutMs !== "" &&
-            Number.isFinite(pluginTimeoutMs) &&
-            pluginTimeoutMs > 0
-              ? pluginTimeoutMs
+          requestTimeoutMs:
+            settingsDraft.value.requestTimeoutMs !== "" &&
+            Number.isFinite(requestTimeoutMs) &&
+            requestTimeoutMs > 0
+              ? requestTimeoutMs
               : null,
           cacheTtlMinutes:
             settingsDraft.value.cacheTtlMinutes !== "" &&
@@ -649,14 +656,17 @@ async function saveSearchSettingsUi() {
       plugins: data.plugins ?? null,
       channels: data.channels ?? null,
       concurrency: data.concurrency ?? null,
-      pluginTimeoutMs: data.pluginTimeoutMs ?? null,
+      requestTimeoutMs: data.requestTimeoutMs ?? null,
       trashedPlugins: data.trashedPlugins ?? [],
       cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
-    useAllPlugins.value = searchSettings.value.plugins === null;
-    settingsDraft.value.plugins = searchSettings.value.plugins
-      ? [...searchSettings.value.plugins]
-      : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id);
+    useAllSources.value = searchSettings.value.plugins === null && searchSettings.value.channels === null;
+    settingsDraft.value.sources = useAllSources.value
+      ? sourceSelectionKeys()
+      : [
+          ...(searchSettings.value.plugins || []).map((id) => `upstream:${id}`),
+          ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
+        ];
     settingsDraft.value.cacheTtlMinutes = searchSettings.value.cacheTtlMinutes ?? 10;
     await loadMonitor({ silent: true });
     notify("来源设置已保存，来源开启状态已与运行状态统一。");
@@ -710,12 +720,13 @@ async function toggleUpstream(row: MonitorRow) {
   rows.value = withUpstreamEnabled(rows.value, row.id, next);
   try {
     await setUpstreamEnabled(row, next);
-    if (!useAllPlugins.value) {
-      const plugins = new Set(settingsDraft.value.plugins);
-      if (next) plugins.add(row.id);
-      else plugins.delete(row.id);
-      settingsDraft.value.plugins = [...plugins];
-      searchSettings.value.plugins = [...plugins];
+    if (!useAllSources.value) {
+      const sources = new Set(settingsDraft.value.sources);
+      const key = sourceSelectionKey(row);
+      if (next) sources.add(key);
+      else sources.delete(key);
+      settingsDraft.value.sources = [...sources];
+      searchSettings.value.plugins = [...sources].filter((value) => value.startsWith("upstream:")).map((value) => value.slice(9));
     }
     notify(`${row.name} 已${next ? "开启" : "关闭"}，来源设置已同步。`);
     await loadMonitor({ silent: true });
@@ -743,6 +754,13 @@ async function toggleChannel(row: MonitorRow) {
       { method: "POST" },
     );
     if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
+    if (!useAllSources.value) {
+      const sources = new Set(settingsDraft.value.sources);
+      const key = sourceSelectionKey(row);
+      if (next) sources.add(key);
+      else sources.delete(key);
+      settingsDraft.value.sources = [...sources];
+    }
     notify(`@${row.id} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {

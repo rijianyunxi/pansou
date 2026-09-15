@@ -9,20 +9,12 @@ import {
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
 import { getSqliteDatabase } from "../storage/sqlite";
 
-export interface TgChannelParserBinding {
-  pluginId: string | null;
-  updatedAt: string;
-}
-export type UpstreamParserBindingMap = Record<string, TgChannelParserBinding>;
-
 interface TgChannelSettingsState {
   policies: TgChannelPolicyMap;
   channelState: TgChannelStateMap;
-  parsers: Record<string, TgChannelParserBinding>;
-  upstreamParsers: UpstreamParserBindingMap;
 }
 
-const NUMERIC_FIELDS = ["timeoutMs", "maxPages", "maxResults", "maxRetries", "retryDelayMs"] as const;
+const NUMERIC_FIELDS = ["maxPages", "maxResults", "maxRetries", "retryDelayMs"] as const;
 let version = 0;
 
 
@@ -59,18 +51,11 @@ function readState(): TgChannelSettingsState {
     let fallbackUrls: string[] | undefined;
     try { fallbackUrls = row.fallback_urls ? JSON.parse(row.fallback_urls) : undefined; } catch { fallbackUrls = undefined; }
     const channel = String(row.channel || "").trim().replace(/^@/, "").toLowerCase();
-    const policy = sanitizePolicies({ [channel]: { ...(row.timeout_ms != null ? { timeoutMs: row.timeout_ms } : {}), ...(row.max_pages != null ? { maxPages: row.max_pages } : {}), ...(row.max_results != null ? { maxResults: row.max_results } : {}), ...(row.max_retries != null ? { maxRetries: row.max_retries } : {}), ...(row.retry_delay_ms != null ? { retryDelayMs: row.retry_delay_ms } : {}), ...(row.fallback ? { fallback: row.fallback } : {}), ...(fallbackUrls ? { fallbackUrls } : {}) } })[channel];
+    const policy = sanitizePolicies({ [channel]: { ...(row.max_pages != null ? { maxPages: row.max_pages } : {}), ...(row.max_results != null ? { maxResults: row.max_results } : {}), ...(row.max_retries != null ? { maxRetries: row.max_retries } : {}), ...(row.retry_delay_ms != null ? { retryDelayMs: row.retry_delay_ms } : {}), ...(row.fallback ? { fallback: row.fallback } : {}), ...(fallbackUrls ? { fallbackUrls } : {}) } })[channel];
     if (policy) policies[channel] = policy;
   }
   const channelState = sanitizeChannelStates(Object.fromEntries(db.allRows<any>("SELECT channel,enabled,deleted FROM tg_channel_states ORDER BY channel").map(row => [row.channel, { enabled: Boolean(row.enabled), deleted: Boolean(row.deleted) }])));
-  const parsers: Record<string, TgChannelParserBinding> = {};
-  const upstreamParsers: UpstreamParserBindingMap = {};
-  for (const row of db.allRows<any>("SELECT scope,source_id,plugin_id,updated_at FROM parser_bindings ORDER BY scope,source_id")) {
-    const binding = { pluginId: row.plugin_id, updatedAt: row.updated_at };
-    if (row.scope === "telegram") parsers[row.source_id] = binding;
-    else if (row.scope === "upstream") upstreamParsers[row.source_id] = binding;
-  }
-  return { policies, channelState, parsers, upstreamParsers };
+  return { policies, channelState };
 }
 
 function bumpVersion(): void {
@@ -81,9 +66,8 @@ function insertPolicyRows(policies: TgChannelPolicyMap, now: number): void {
   const db = getSqliteDatabase();
   for (const [channel, policy] of Object.entries(policies)) {
     db.run(
-      "INSERT INTO tg_channel_policies(channel,timeout_ms,max_pages,max_results,max_retries,retry_delay_ms,fallback,fallback_urls,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO tg_channel_policies(channel,max_pages,max_results,max_retries,retry_delay_ms,fallback,fallback_urls,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(channel) DO UPDATE SET max_pages=excluded.max_pages,max_results=excluded.max_results,max_retries=excluded.max_retries,retry_delay_ms=excluded.retry_delay_ms,fallback=excluded.fallback,fallback_urls=excluded.fallback_urls,updated_at=excluded.updated_at",
       channel,
-      policy.timeoutMs ?? null,
       policy.maxPages ?? null,
       policy.maxResults ?? null,
       policy.maxRetries ?? null,
@@ -117,95 +101,22 @@ export function getTgChannelPoliciesVersion(): number {
   return version;
 }
 
-/**
- * Persistent cache token for every Telegram setting, including parser bindings.
- * The numeric counter is a process-local monotonic signal; search caches must
- * use this persistent token so a restart or another
- * process cannot serve results parsed with an older binding.
- */
+/** Persistent cache token for Telegram channel settings. */
 export function getTgChannelSettingsVersion(): string {
   const db = getSqliteDatabase();
   const row = db.getRow<{ updated_at: number | null }>(
     "SELECT MAX(updated_at) AS updated_at FROM (SELECT updated_at FROM tg_channel_policies UNION ALL SELECT updated_at FROM tg_channel_states)",
   );
-  const parserRow = db.getRow<{ updated_at: string | null }>(
-    "SELECT MAX(updated_at) AS updated_at FROM parser_bindings",
-  );
-  return `${row?.updated_at ?? 0}:${parserRow?.updated_at ?? ""}:${JSON.stringify(readState())}`;
-}
-
-export function getTgChannelParsers(): Record<string, TgChannelParserBinding> {
-  return structuredClone(readState().parsers);
-}
-
-
-export function setTgChannelParser(channel: string, pluginId: string | null): TgChannelParserBinding | null {
-  const name = (channel || "").trim().replace(/^@/, "").toLowerCase();
-  if (!TG_CHANNEL_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(channel).slice(0, 64)}`);
-  const db = getSqliteDatabase();
-  const normalizedPluginId = pluginId?.trim();
-  if (!normalizedPluginId) {
-    const result = db.run("DELETE FROM parser_bindings WHERE scope=? AND source_id=?", "telegram", name);
-    if (result.changes) bumpVersion();
-    return null;
-  }
-  const binding = { pluginId: normalizedPluginId, updatedAt: new Date().toISOString() };
-  db.run(
-    "INSERT INTO parser_bindings(scope,source_id,plugin_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(scope,source_id) DO UPDATE SET plugin_id=excluded.plugin_id,updated_at=excluded.updated_at",
-    "telegram", name, binding.pluginId, binding.updatedAt,
-  );
-  bumpVersion();
-  return { ...binding };
-}
-
-
-export function getUpstreamParsers(): UpstreamParserBindingMap {
-  return structuredClone(readState().upstreamParsers);
-}
-
-export interface ParserPluginBindingReference {
-  scope: "upstream" | "telegram";
-  id: string;
-}
-
-export function getParserPluginBindingReferences(pluginId: string): ParserPluginBindingReference[] {
-  const target = pluginId.trim().toLowerCase();
-  if (!target) return [];
-  const state = readState();
-  const references: ParserPluginBindingReference[] = [];
-  for (const [id, binding] of Object.entries(state.upstreamParsers)) {
-    if (binding.pluginId?.trim().toLowerCase() === target) references.push({ scope: "upstream", id });
-  }
-  for (const [id, binding] of Object.entries(state.parsers)) {
-    if (binding.pluginId?.trim().toLowerCase() === target) references.push({ scope: "telegram", id });
-  }
-  return references;
-}
-
-export function setUpstreamParser(id: string, pluginId: string | null): TgChannelParserBinding | null {
-  const name = (id || "").trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(name)) throw new Error(`invalid upstream id: ${id}`);
-  const db = getSqliteDatabase();
-  const normalizedPluginId = pluginId?.trim();
-  if (!normalizedPluginId) {
-    const result = db.run("DELETE FROM parser_bindings WHERE scope=? AND source_id=?", "upstream", name);
-    if (result.changes) bumpVersion();
-    return null;
-  }
-  const binding = { pluginId: normalizedPluginId, updatedAt: new Date().toISOString() };
-  db.run(
-    "INSERT INTO parser_bindings(scope,source_id,plugin_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(scope,source_id) DO UPDATE SET plugin_id=excluded.plugin_id,updated_at=excluded.updated_at",
-    "upstream", name, binding.pluginId, binding.updatedAt,
-  );
-  bumpVersion();
-  return { ...binding };
+  return `${row?.updated_at ?? 0}:${JSON.stringify(readState())}`;
 }
 
 export function saveTgChannelPolicies(patch: unknown): TgChannelPolicyMap {
   const policies = sanitizePolicies(patch);
   const db = getSqliteDatabase();
   db.transaction(() => {
-    db.run("DELETE FROM tg_channel_policies");
+    const channels = Object.keys(policies);
+    if (channels.length) db.run(`DELETE FROM tg_channel_policies WHERE channel NOT IN (${channels.map(() => "?").join(",")})`, ...channels);
+    else db.run("DELETE FROM tg_channel_policies");
     insertPolicyRows(policies, Date.now());
   });
   bumpVersion();
@@ -251,7 +162,6 @@ export interface PurgedTgChannel {
   removedSystemEntries: number;
   removedSearchEntries: number;
   removedPolicy: boolean;
-  removedParserBindings: number;
   removedHealthRecords: number;
   removedUpstreamDefinitions: number;
 }
@@ -272,9 +182,6 @@ export function purgeTgChannel(channel: string): PurgedTgChannel {
     const removedSystemEntries = db.run("DELETE FROM system_channels WHERE name=?", name).changes;
     const removedSearchEntries = db.run("DELETE FROM search_setting_channels WHERE channel=?", name).changes;
     const removedPolicy = db.run("DELETE FROM tg_channel_policies WHERE channel=?", name).changes > 0;
-    const removedParserBindings =
-      db.run("DELETE FROM parser_bindings WHERE scope='telegram' AND source_id=?", name).changes +
-      db.run("DELETE FROM parser_bindings WHERE scope='upstream' AND source_id=?", `tg-${name}`).changes;
     const removedHealthRecords = db.run("DELETE FROM tg_channel_health WHERE channel=?", name).changes;
     const removedUpstreamDefinitions = db.run(
       "DELETE FROM upstream_definitions WHERE source_kind='telegram' AND (channel=? OR id=?)",
@@ -299,7 +206,6 @@ export function purgeTgChannel(channel: string): PurgedTgChannel {
       removedSystemEntries,
       removedSearchEntries,
       removedPolicy,
-      removedParserBindings,
       removedHealthRecords,
       removedUpstreamDefinitions,
     };

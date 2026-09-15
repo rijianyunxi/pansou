@@ -3,8 +3,9 @@ import { Script, createContext } from "node:vm";
 import { inferDriveType, validResourceUrl } from "../../../utils/upstreamAdapter";
 import type { Link, SearchResult } from "../types/models";
 import { formatSearchDateTime } from "../utils/searchDateTime";
-import type { ParserExecutionContext, ParserPluginRecord } from "./types";
-import { validateParserCode } from "./repository";
+import type { SourceTransformDefinition, SourceTransformContext } from "./types";
+import { validateSourceTransformCode } from "./validation";
+import { getUnifiedRequestTimeoutMs } from "../services/timeoutPolicy";
 
 const MAX_OUTPUT = 500;
 const MAX_NAME = 500;
@@ -31,12 +32,11 @@ function normalizeLink(value: unknown): Link | null {
   };
 }
 
-function validateAndLimitResults(value: unknown, record: ParserPluginRecord, context: ParserExecutionContext): SearchResult[] {
-  // Parser transforms have one output contract. Do not silently adapt the
-  // removed title/content/url/items shape here: a source must return the same
+function validateAndLimitResults(value: unknown, definition: SourceTransformDefinition, context: SourceTransformContext): SearchResult[] {
+  // Transforms have one output contract. A source must return the same
   // resource-level fields that the public search API exposes.
   if (!Array.isArray(value)) return [];
-  return value.slice(0, Math.min(MAX_OUTPUT, record.manifest.maxResults)).flatMap((item, index) => {
+  return value.slice(0, Math.min(MAX_OUTPUT, definition.maxResults)).flatMap((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const input = item as Record<string, unknown>;
     if (typeof input.id !== "string" && typeof input.id !== "number") return [];
@@ -46,7 +46,7 @@ function validateAndLimitResults(value: unknown, record: ParserPluginRecord, con
     if (!Array.isArray(input.cloud_types) || !input.cloud_types.length || input.cloud_types.some((type) => typeof type !== "string") || !Array.isArray(input.links)) return [];
     const links = input.links.map(normalizeLink).filter((link): link is Link => !!link);
     if (!links.length) return [];
-    const id = text(input.id, 200) || `${context.channel || context.source || record.id}-${index}`;
+    const id = text(input.id, 200) || `${context.channel || context.source || definition.id}-${index}`;
     const description = text(input.description);
     const needle = compact(context.keyword);
     if (needle && !compact(`${input.name} ${description}`).includes(needle)) return [];
@@ -61,8 +61,8 @@ function validateAndLimitResults(value: unknown, record: ParserPluginRecord, con
       ...(Array.isArray(input.tags) ? { tags: input.tags.map((tag) => text(tag, 80)).filter(Boolean).slice(0, 20) } : {}),
       ...(Array.isArray(input.images) ? { images: input.images.map((image) => text(image, MAX_URL)).filter(Boolean).slice(0, 10) } : {}),
       source: "plugin",
-      pluginId: record.id,
-      pluginVersion: record.manifest.version,
+      pluginId: definition.id,
+      pluginVersion: definition.version,
     } satisfies SearchResult];
   });
 }
@@ -75,34 +75,26 @@ function createTransformSource(code: string): string {
   return `(function(payload, $, context) {\n${trimmed}\n})`;
 }
 
-export function parseWithParserPlugin(
-  record: ParserPluginRecord,
+export function executeSourceTransform(
+  definition: SourceTransformDefinition,
   rawBody: string,
-  context: ParserExecutionContext,
-  options: { allowUnpublished?: boolean } = {},
+  context: SourceTransformContext,
 ): SearchResult[] {
-  validateParserCode(record.code);
-  if (record.status !== "published" && !(options.allowUnpublished && record.status !== "archived")) {
-    throw new Error(`解析器 ${record.id} 当前未发布或已关闭`);
+  const code = validateSourceTransformCode(definition.code);
+  if (definition.format !== "auto" && definition.format !== context.format) {
+    throw new Error(`解析函数 ${definition.id} 需要 ${definition.format}，当前响应是 ${context.format}`);
   }
-  if (record.manifest.format !== "auto" && record.manifest.format !== context.format) {
-    throw new Error(`解析器 ${record.id} 需要 ${record.manifest.format}，当前响应是 ${context.format}`);
-  }
-  // auto lets one TG/channel plugin handle both Telegram HTML and Jina
-  // Markdown. The transform still receives the actual format in context.
   const payload = context.format === "json" ? JSON.parse(rawBody) : rawBody;
   const $: CheerioAPI | undefined = context.format === "html" ? load(rawBody) : undefined;
   const safeContext = Object.freeze({ ...context });
-  // Invoke the transform inside the VM as well. Calling a VM-created function
-  // from the host would bypass vm.Script's timeout and make `while (true)` a
-  // process-blocking denial of service.
   const sandbox = createContext({ payload, $, context: safeContext });
-  const createScript = new Script(createTransformSource(record.code), { filename: `parser-plugin:${record.id}` });
-  const transform = createScript.runInContext(sandbox, { timeout: record.manifest.timeoutMs });
-  if (typeof transform !== "function") throw new Error("解析器必须返回一个函数");
+  const timeoutMs = getUnifiedRequestTimeoutMs();
+  const createScript = new Script(createTransformSource(code), { filename: `transform:${definition.id}` });
+  const transform = createScript.runInContext(sandbox, { timeout: timeoutMs });
+  if (typeof transform !== "function") throw new Error("transform 必须返回一个函数");
   (sandbox as Record<string, unknown>).transform = transform;
-  const result = new Script("transform(payload, $, context)", { filename: `parser-plugin:${record.id}:invoke` })
-    .runInContext(sandbox, { timeout: record.manifest.timeoutMs });
-  if (result && typeof result.then === "function") throw new Error("解析器必须是同步函数，不允许异步网络请求");
-  return validateAndLimitResults(result, record, context);
+  const result = new Script("transform(payload, $, context)", { filename: `transform:${definition.id}:invoke` })
+    .runInContext(sandbox, { timeout: timeoutMs });
+  if (result && typeof result.then === "function") throw new Error("transform 必须是同步函数，不允许异步网络请求");
+  return validateAndLimitResults(result, definition, context);
 }

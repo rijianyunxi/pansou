@@ -10,7 +10,7 @@ import {
 } from "../core/plugins/pluginHealth";
 import { getSearchSettings } from "../core/services/searchSettingsService";
 import { getTgChannelPolicies, getTgChannelStates } from "../core/services/tgChannelSettings";
-import { upstreamToInstructionDefinition } from "../core/services/configuredUpstreamPlugin";
+import { upstreamToSourceDefinition } from "../core/services/configuredSourcePlugin";
 import { listConfiguredUpstreams } from "../core/services/upstreamCatalog";
 import {
   getAllTgChannelHealthSummaries,
@@ -23,7 +23,7 @@ import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/teleg
 export interface MonitorUpstreamEntry {
   id: string;
   name: string;
-  kind: "code" | "instructions";
+  kind: "code" | "source";
   /** 来源配置已启用。 */
   enabled: boolean;
   /** 来源目录不包含已删除项，此字段恒为 false。 */
@@ -151,10 +151,10 @@ function buildUpstreams(
   return listConfiguredUpstreams().map((source) => ({
     id: source.id,
     name: source.name,
-    kind: "instructions" as const,
+    kind: "source" as const,
     enabled: source.enabled !== false,
     trashed: false,
-    version: upstreamToInstructionDefinition(source).manifest.version,
+    version: upstreamToSourceDefinition(source).manifest.version,
     health: mapUpstreamHealth(healthById[source.id]),
   })).sort((a, b) => a.id.localeCompare(b.id));
 }

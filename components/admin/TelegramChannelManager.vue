@@ -48,7 +48,7 @@
             <label>请求标识<input v-model="sourceDraft.userAgent" maxlength="300" /></label>
             <label class="tg-headers-field">请求 Headers（JSON）<textarea v-model="sourceHeadersText" rows="3" spellcheck="false" placeholder='{"user-agent":"Mozilla/5.0"}' /></label>
           </div>
-          <div class="mapping-actions"><button class="button secondary small" type="button" :disabled="sourceSaving" @click="saveSourceSettings">{{ sourceSaving ? '保存中…' : '保存来源配置' }}</button><span class="field-hint">模板、Headers 和全局解析方式保存后，下一次请求立即生效。</span></div>
+          <div class="mapping-actions"><button class="button secondary small" type="button" :disabled="sourceSaving" @click="saveSourceSettings">{{ sourceSaving ? '保存中…' : '保存来源配置' }}</button><span class="field-hint">模板、Headers 和重试参数保存后，下一次请求立即生效；每个频道的解析函数在频道行内单独保存。</span></div>
         </details>
         <form class="tg-add" @submit.prevent="addChannel">
           <label for="system-channel">添加公开频道</label>
@@ -79,10 +79,9 @@
                 </div>
                 <small class="tg-health"><span class="status-dot" :class="healthTone(channel)"></span>{{ rowSummary(channel) }}</small>
               </div>
-              <div class="tg-row-actions"><label class="tg-parser-inline"><span>解析方式</span><select :value="parserBindings[channel] || ''" :disabled="parserSaving === channel || saving || batchRunning" :aria-label="`选择 ${channel} 的解析方式`" @change="onParserChange(channel, $event)"><option value="">使用默认解析</option><option v-for="plugin in telegramParsers" :key="plugin.id" :value="plugin.id">{{ plugin.name }} · {{ plugin.manifest.version }}</option></select></label><span v-if="parserSaving === channel" class="field-hint">保存中…</span><button type="button" class="button secondary small" :disabled="!!running || batchRunning || !keyword.trim()" :aria-label="`测试 ${channel}`" @click="probe(channel)">{{ running === channel ? '测试中…' : '测试' }}</button><button type="button" class="button secondary small" :disabled="batchRunning" :aria-label="`查看报文 ${channel}`" @click="debugChannel = channel">查看报文</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`抓取策略 ${channel}`" @click="togglePolicy(channel)">策略{{ hasPolicyDraft(channel) ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`编辑解析 ${channel}`" @click="toggleFunction(channel)">解析{{ functionEditorFor === channel ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`${overrideActionLabel(channel)}频道 ${channel}`" @click="toggleOverride(channel)">{{ monitorBusy === channel ? '处理中…' : overrideActionLabel(channel) }}</button><button type="button" class="button danger-button small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`移除频道 ${channel}`" @click="deleteChannelRow(channel)">删除</button></div>
+              <div class="tg-row-actions"><button type="button" class="button secondary small" :disabled="!!running || batchRunning || !keyword.trim()" :aria-label="`测试 ${channel}`" @click="probe(channel)">{{ running === channel ? '测试中…' : '测试' }}</button><button type="button" class="button secondary small" :disabled="batchRunning" :aria-label="`查看报文 ${channel}`" @click="debugChannel = channel">查看报文</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`抓取策略 ${channel}`" @click="togglePolicy(channel)">策略{{ hasPolicyDraft(channel) ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="batchRunning || saving" :aria-label="`编辑解析 ${channel}`" @click="toggleFunction(channel)">解析{{ functionEditorFor === channel ? ' ·' : '' }}</button><button type="button" class="button secondary small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`${overrideActionLabel(channel)}频道 ${channel}`" @click="toggleOverride(channel)">{{ monitorBusy === channel ? '处理中…' : overrideActionLabel(channel) }}</button><button type="button" class="button danger-button small" :disabled="monitorBusy === channel || saving || batchRunning" :aria-label="`移除频道 ${channel}`" @click="deleteChannelRow(channel)">删除</button></div>
             </div>
             <div v-if="policyEditorFor === channel" class="tg-policy">
-              <label><span>超时 ms</span><input v-model="policyDraft[channel]!.timeoutMs" inputmode="numeric" placeholder="默认" /></label>
               <label><span>抓取页数</span><input v-model="policyDraft[channel]!.maxPages" inputmode="numeric" placeholder="默认" /></label>
               <label><span>结果上限</span><input v-model="policyDraft[channel]!.maxResults" inputmode="numeric" placeholder="默认" /></label>
               <label><span>Fallback</span><select v-model="policyDraft[channel]!.fallback" aria-label="抓取 fallback 策略"><option value="">先直连后 Jina</option><option value="direct">仅直连</option><option value="jina">仅 Jina</option></select></label>
@@ -90,14 +89,14 @@
                 <button class="button secondary" type="button" :disabled="saving" @click="savePolicy(channel)">{{ saving ? '保存中…' : '保存策略' }}</button>
                 <button class="text-button" type="button" @click="policyEditorFor = ''">收起</button>
               </div>
-              <p class="field-hint">留空使用全局默认。范围：超时 1000–120000ms、页数 1–50、结果数 1–200。</p>
+              <p class="field-hint">留空使用全局统一请求超时；页数范围 1–50，结果数范围 1–200。</p>
             </div>
             <div v-if="functionEditorFor === channel" class="tg-function-editor">
               <div class="tg-function-request">
                 <strong>请求参数</strong>
                 <span>GET · HTML</span>
                 <code>{{ directUrlFor(channel) }}</code>
-                <code>Headers: {{ Object.keys(sourceDraft.headers || {}).length ? JSON.stringify(sourceDraft.headers) : "默认" }}</code>
+                <code>Headers: {{ headersTextFor(channel) }}</code>
               </div>
               <label class="tg-transform-field">
                 <span class="function-label-line"><span>transform(payload, $, context)</span><span class="function-file-actions"><button type="button" class="text-button" :disabled="functionSaving" @click="openTransformImport">导入 JS</button><button type="button" class="text-button" :disabled="!functionDraft.transform.trim()" @click="exportTransform(channel)">导出 JS</button></span></span>
@@ -105,7 +104,7 @@
                 <input ref="transformImportInput" class="transform-file" type="file" accept=".js,.mjs,text/javascript" @change="importTransform" />
               </label>
               <div class="tg-function-actions">
-                <span class="field-hint">{{ parserBindings[channel] ? `当前绑定：${parserBindings[channel]}；保存会生成新版本并发布。` : "当前使用全局 Telegram 解析规则；保存会更新所有未绑定频道。" }}</span>
+                <span class="field-hint">这是 @{{ channel }} 的独立 transform；只影响当前频道，保存后下一次请求立即生效。</span>
                 <button class="button secondary small" type="button" :disabled="functionSaving || !functionDraft.transform.trim()" @click="saveFunction(channel)">{{ functionSaving ? "保存中…" : "保存解析规则" }}</button>
               </div>
             </div>
@@ -122,7 +121,7 @@
             <span v-else-if="ioError" class="tg-io-error" role="alert">{{ ioError }}</span>
           </div>
           <div v-if="showPasteImport" class="tg-io-paste">
-            <textarea v-model="pasteText" rows="6" spellcheck="false" aria-label="粘贴导入 JSON" placeholder='粘贴导出的 JSON，例如 {"channels": ["xxx"], "policies": {"xxx": {"timeoutMs": 10000}}}。缺省键不修改，null 重置。'></textarea>
+            <textarea v-model="pasteText" rows="6" spellcheck="false" aria-label="粘贴导入 JSON" placeholder='粘贴导出的 JSON，例如 {"channels": ["xxx"], "policies": {"xxx": {"maxPages": 5}}}。缺省键不修改，null 重置。'></textarea>
             <div class="tg-io-paste-actions">
               <button class="button primary" type="button" :disabled="ioBusy || !pasteText.trim()" @click="importFromText">{{ ioBusy && ioAction === 'paste' ? '导入中…' : '确认导入' }}</button>
               <button class="button secondary" type="button" :disabled="ioBusy" @click="closePasteImport">收起</button>
@@ -144,14 +143,15 @@ import type { TgProbeResult } from "../../server/core/services/tg";
 import type { TgChannelPolicy } from "../../server/utils/telegramSettings";
 type ChannelPolicy = TgChannelPolicy;
 const props = defineProps<{ focusChannel?: string | null }>();
-type PolicyDraft = { timeoutMs: string; maxPages: string; maxResults: string; fallback: "" | "direct" | "jina" };
+type PolicyDraft = { maxPages: string; maxResults: string; fallback: "" | "direct" | "jina" };
 type Settings = { channels: string[] | null; defaultChannels: string[]; effectiveChannels: string[]; policies?: Record<string, ChannelPolicy> };
-type TgSourceSettings = { directTemplate: string; jinaTemplate: string; userAgent: string; headers: Record<string, string>; transform: string; parserVersion: string };
-type ParserPlugin = { id: string; name: string; code?: string; status: string; manifest: { id?: string; name?: string; version: string; description?: string; format: "html" | "json" | "text" | "auto"; target: "upstream" | "telegram" | "both"; timeoutMs?: number; maxResults?: number } };
+type TgSourceSettings = { directTemplate: string; jinaTemplate: string; userAgent: string; headers: Record<string, string>; fallbackUrls?: string[]; retry?: { maxRetries: number; delayMs: number } };
+type TelegramSource = { id: string; sourceKind?: "telegram"; channel?: string; name: string; description: string; url: string; method: "GET" | "POST"; format: "html" | "json"; enabled?: boolean; request?: Record<string, unknown>; response?: Record<string, unknown>; transform: string };
 const emit = defineEmits<{ (event: "unauthorized"): void }>();
 const loading = ref(true), loaded = ref(false), saving = ref(false);
 const saved = ref<Settings>({ channels: null, defaultChannels: [], effectiveChannels: [], policies: {} });
-const sourceDraft = reactive<TgSourceSettings>({ directTemplate: "", jinaTemplate: "", userAgent: "", headers: {}, transform: "", parserVersion: "" });
+const sourceDraft = reactive<TgSourceSettings>({ directTemplate: "", jinaTemplate: "", userAgent: "", headers: {} });
+const telegramSources = ref<Record<string, TelegramSource>>({});
 const sourceHeadersText = ref("{}");
 const sourceSaving = ref(false);
 const newChannel = ref(""), keyword = ref("三体"), channelSearch = ref(""), error = ref(""), message = ref(""), running = ref("");
@@ -175,9 +175,6 @@ const overrides = ref<Record<string, ChannelOverride>>({});
 const channelHealth = ref<Record<string, { state: string; elapsedMs: number | null; resultsCount: number | null; message: string; failureKind: string } | null>>({});
 const monitorBusy = ref(""), monitorLoading = ref(false);
 const batchRunning = ref(false), batchProgress = ref(0), batchTotal = ref(0);
-const parserBindings = ref<Record<string, string>>({});
-const telegramParsers = ref<ParserPlugin[]>([]);
-const parserSaving = ref("");
 const functionEditorFor = ref("");
 const functionDraft = reactive({ transform: "" });
 const functionSaving = ref(false);
@@ -261,29 +258,6 @@ async function batchProbe() {
     message.value = `批量测试完成：${responded}/${targets.length} 个频道可用。`;
   } finally { if (!disposed) batchRunning.value = false; }
 }
-async function loadParserSettings() {
-  try {
-    const [bindingResponse, pluginResponse] = await Promise.all([
-      $fetch<{ data?: { telegram?: Record<string, { pluginId?: string | null }> } }>("/api/settings/parser-bindings"),
-      $fetch<{ data?: ParserPlugin[] }>("/api/parser-plugins"),
-    ]);
-    parserBindings.value = Object.fromEntries(Object.entries(bindingResponse.data?.telegram ?? {}).flatMap(([channel, binding]) => binding?.pluginId ? [[channel, binding.pluginId]] : []));
-    telegramParsers.value = (pluginResponse.data ?? []).filter((plugin) => plugin.status === "published" && (plugin.manifest.target === "telegram" || plugin.manifest.target === "both") && (plugin.manifest.format === "html" || plugin.manifest.format === "text" || plugin.manifest.format === "auto"));
-    syncFocusedFunction();
-  } catch { /* parser management is additive; channel management remains usable */ }
-}
-async function onParserChange(channel: string, event: Event) {
-  const pluginId = (event.target as HTMLSelectElement).value;
-  parserSaving.value = channel; error.value = "";
-  try {
-    await $fetch("/api/settings/parser-bindings", { method: "PUT", body: { scope: "telegram", id: channel, pluginId } });
-    const next = { ...parserBindings.value };
-    if (pluginId) next[channel] = pluginId; else delete next[channel];
-    parserBindings.value = next;
-    message.value = `@${channel} 的解析方式已更新，下一次请求立即生效。`;
-  } catch (reason: any) { fail(reason); }
-  finally { parserSaving.value = ""; }
-}
 function openTransformImport() { transformImportInput.value?.click(); }
 function exportTransform(channel: string) {
   const blob = new Blob([functionDraft.transform], { type: "text/javascript;charset=utf-8" });
@@ -298,11 +272,18 @@ async function importTransform(event: Event) {
   if (code.trim()) { functionDraft.transform = code; error.value = ""; }
 }
 const CHANNEL_TOKEN = "{{channel}}";
-function directUrlFor(channel: string): string {
-  return sourceDraft.directTemplate.replaceAll(CHANNEL_TOKEN, channel);
+function sourceFor(channel: string): TelegramSource | undefined {
+  return telegramSources.value[`tg-${channel}`];
 }
-function parserById(id: string) {
-  return telegramParsers.value.find((plugin) => plugin.id === id);
+function directUrlFor(channel: string): string {
+  return (sourceFor(channel)?.url || sourceDraft.directTemplate).replaceAll(CHANNEL_TOKEN, channel);
+}
+function headersTextFor(channel: string): string {
+  const sourceHeaders = sourceFor(channel)?.request?.headers;
+  const headers = sourceHeaders && typeof sourceHeaders === "object" && !Array.isArray(sourceHeaders)
+    ? sourceHeaders as Record<string, string>
+    : sourceDraft.headers;
+  return Object.keys(headers || {}).length ? JSON.stringify(headers) : "默认";
 }
 function toggleFunction(channel: string) {
   if (functionEditorFor.value === channel) {
@@ -310,49 +291,32 @@ function toggleFunction(channel: string) {
     return;
   }
   functionEditorFor.value = channel;
-  const parserId = parserBindings.value[channel];
-  functionDraft.transform = parserId && parserById(parserId)?.code
-    ? parserById(parserId)!.code!
-    : sourceDraft.transform || "function transform(payload, $, context) {\n  return [];\n}";
+  functionDraft.transform = sourceFor(channel)?.transform || "function transform(payload, $, context) {\n  return [];\n}";
 }
 function syncFocusedFunction() {
   const focus = String(props.focusChannel || "").replace(/^@/, "").toLowerCase();
   if (!focus || !displayed.value.includes(focus)) return;
   channelSearch.value = focus;
   functionEditorFor.value = focus;
-  const parserId = parserBindings.value[focus];
-  functionDraft.transform = parserId && parserById(parserId)?.code
-    ? parserById(parserId)!.code!
-    : sourceDraft.transform || "function transform(payload, $, context) {\n  return [];\n}";
-}
-function nextPatchVersion(version: string) {
-  const parts = version.split(".").map(Number);
-  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) return "1.0.1";
-  const [major, minor, patch] = parts;
-  if (major === undefined || minor === undefined || patch === undefined) return "1.0.1";
-  return `${major}.${minor}.${patch + 1}`;
+  functionDraft.transform = sourceFor(focus)?.transform || "function transform(payload, $, context) {\n  return [];\n}";
 }
 async function saveFunction(channel: string) {
   if (!functionDraft.transform.trim()) return;
   functionSaving.value = true;
   error.value = "";
   try {
-    const parserId = parserBindings.value[channel];
-    const parser = parserId ? parserById(parserId) : undefined;
-    if (parserId && parser) {
-      const manifest = { ...parser.manifest, id: parser.id, name: parser.name, version: nextPatchVersion(parser.manifest.version) };
-      await $fetch(`/api/parser-plugins/${parser.id}`, { method: "PUT", body: { plugin: { manifest, code: functionDraft.transform } } });
-      await $fetch(`/api/parser-plugins/${parser.id}/publish`, { method: "POST" });
-      await loadParserSettings();
-      message.value = `@${channel} 的 transform 已保存并发布。`;
-    } else {
-      const response = await $fetch<{ data: TgSourceSettings }>("/api/settings/tg-source/transform", {
-        method: "PUT",
-        body: { transform: functionDraft.transform },
-      });
-      Object.assign(sourceDraft, response.data);
-      message.value = `Telegram 全局 transform 已保存，@${channel} 等未绑定频道下一次请求立即生效。`;
+    let source = sourceFor(channel);
+    if (!source) {
+      await loadTelegramSources();
+      source = sourceFor(channel);
     }
+    if (!source) throw new Error(`未找到 @${channel} 的 Telegram 来源配置。`);
+    const response = await $fetch<{ data: TelegramSource }>("/api/settings/upstreams", {
+      method: "PUT",
+      body: { source: { ...source, transform: functionDraft.transform } },
+    });
+    telegramSources.value = { ...telegramSources.value, [response.data.id]: response.data };
+    message.value = `@${channel} 的独立 transform 已保存，下一次请求立即生效。`;
   } catch (reason: any) {
     fail(reason);
   } finally {
@@ -429,12 +393,11 @@ async function deleteChannelRow(channel: string) {
     error.value = reason?.data?.statusMessage || reason?.message || "删除失败，请重试。";
   } finally { monitorBusy.value = ""; }
 }
-const emptyDraft = (): PolicyDraft => ({ timeoutMs: "", maxPages: "", maxResults: "", fallback: "" });
+const emptyDraft = (): PolicyDraft => ({ maxPages: "", maxResults: "", fallback: "" });
 function draftFromPolicies(policies: Record<string, ChannelPolicy> | undefined): Record<string, PolicyDraft> {
   const out: Record<string, PolicyDraft> = {};
   for (const [name, policy] of Object.entries(policies ?? {})) {
     out[name] = {
-      timeoutMs: policy?.timeoutMs != null ? String(policy.timeoutMs) : "",
       maxPages: policy?.maxPages != null ? String(policy.maxPages) : "",
       maxResults: policy?.maxResults != null ? String(policy.maxResults) : "",
       fallback: policy?.fallback ?? "",
@@ -444,7 +407,7 @@ function draftFromPolicies(policies: Record<string, ChannelPolicy> | undefined):
 }
 function hasPolicyDraft(channel: string): boolean {
   const draft = policyDraft.value[channel];
-  return !!draft && !!(draft.timeoutMs.trim() || draft.maxPages.trim() || draft.maxResults.trim() || draft.fallback);
+  return !!draft && !!(draft.maxPages.trim() || draft.maxResults.trim() || draft.fallback);
 }
 function togglePolicy(channel: string) {
   if (!policyDraft.value[channel]) policyDraft.value[channel] = draftFromPolicies(saved.value.policies)[channel] || emptyDraft();
@@ -452,11 +415,18 @@ function togglePolicy(channel: string) {
 }
 function stateText(state: string) { return ({ available: "可提取结果", warning: "需确认", error: "请求异常" } as Record<string, string>)[state] || state; }
 function fail(reason: any) { if ((reason?.statusCode || reason?.response?.status) === 401) emit("unauthorized"); error.value = reason?.data?.statusMessage || reason?.message || "操作失败，请重试。"; }
+async function loadTelegramSources() {
+  const response = await $fetch<{ data: TelegramSource[] }>("/api/settings/upstreams");
+  telegramSources.value = Object.fromEntries(
+    (response.data || []).filter((source) => source.sourceKind === "telegram" && source.channel).map((source) => [source.id, source]),
+  );
+}
 async function loadSourceSettings() {
   try {
     const response = await $fetch<{ data: TgSourceSettings }>("/api/settings/tg-source");
     Object.assign(sourceDraft, response.data);
     sourceHeadersText.value = JSON.stringify(response.data.headers || {}, null, 2);
+    await loadTelegramSources();
   } catch (reason) { fail(reason); }
 }
 async function saveSourceSettings() {
@@ -499,6 +469,7 @@ async function addChannel() {
   if (base.includes(name)) { message.value = `@${name} 已在清单中。`; return; }
   if (base.length >= 200) { error.value = "最多添加 200 个配置频道。"; return; }
   if (await saveChannels([...base, name])) {
+    await loadTelegramSources();
     newChannel.value = "";
     message.value = `@${name} 已添加并保存，下一次本站搜索生效。`;
   }
@@ -516,7 +487,7 @@ async function restoreDefaults() {
 async function savePolicy(channel: string) {
   const draft = policyDraft.value[channel] || emptyDraft();
   const policy: ChannelPolicy = {};
-  for (const field of ["timeoutMs", "maxPages", "maxResults"] as const) {
+  for (const field of ["maxPages", "maxResults"] as const) {
     const raw = (draft[field] || "").trim();
     if (!raw) continue;
     const parsed = Number(raw);
@@ -562,7 +533,7 @@ async function probe(channel: string, options = { keyword: keyword.value.trim(),
 }
 watch(() => props.focusChannel, () => { if (loaded.value) syncFocusedFunction(); });
 onBeforeUnmount(() => { disposed = true; probeController?.abort(); });
-onMounted(() => { void load(); void loadMonitorSummary(); void loadParserSettings(); });
+onMounted(() => { void load(); void loadMonitorSummary(); });
 /** ---- 批量导入 / 导出（GET /api/tg/export 与 POST /api/tg/import） ---- */
 type TgExportData = { version: number; exportedAt: string; channels: string[] | null; defaultChannels: string[]; effectiveChannels: string[]; policies: Record<string, ChannelPolicy> };
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -770,8 +741,6 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .tg-health { font-size: 12px !important; color: #64748b; }
 .tg-health .status-dot { width: 8px !important; height: 8px !important; box-shadow: 0 0 0 3px rgba(148, 163, 184, .13); }
 .tg-row-actions { gap: 8px !important; }
-.tg-parser-inline { min-width: 196px !important; gap: 5px !important; font-size: 10px !important; }
-.tg-parser-inline select { min-height: 40px; padding: 8px 10px !important; border-color: #cbd8e8 !important; border-radius: 9px !important; color: #334155; }
 .tg-row-actions .button.small { min-height: 40px; border-radius: 9px; padding: 0 12px; font-size: 11px; }
 .tg-row-actions .danger-button { border-color: #f0b4ae !important; color: #c24135 !important; background: #fffafa !important; }
 .tg-row-actions .danger-button:hover:not(:disabled) { background: #fff1ef !important; }
@@ -783,7 +752,6 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 @media (max-width: 1100px) {
   .tg-row { align-items: flex-start; flex-direction: column; gap: 12px !important; }
   .tg-row-actions { width: 100%; justify-content: flex-start; }
-  .tg-parser-inline { min-width: 210px !important; }
 }
 @media (max-width: 760px) {
   .tg-manager > .tg-manager-header, .manager-body { padding-left: 18px !important; padding-right: 18px !important; }
@@ -798,8 +766,6 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 </style>
 
 <style scoped>
-.tg-parser-inline { display: inline-grid; gap: 4px; min-width: 170px; color: #64748b; font-size: 11px; }
-.tg-parser-inline select { width: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; font: inherit; }
 </style>
 
 <style scoped>

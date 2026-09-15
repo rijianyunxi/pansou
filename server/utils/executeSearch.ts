@@ -1,4 +1,5 @@
 import { getOrCreateSearchService } from "../core/services";
+import { getOrCreateHotSearchService } from "../core/services/hotSearchService";
 import type { SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest, parseUserChannelSearchRequest } from "./searchRequest";
@@ -74,6 +75,12 @@ export async function executePreparedSearch(
         { signal, onSourceSuccess: sourceCallback },
         "configured",
       );
+
+  // 热搜记录由服务端统一处理，避免客户端额外发起一次 POST 请求。
+  // 只记录本站搜索；自定义频道搜索仍保持原来的私有范围语义。
+  if (prepared.kind === "system") {
+    await getOrCreateHotSearchService().recordSearch(prepared.request.kw);
+  }
 
   return {
     code: 0,

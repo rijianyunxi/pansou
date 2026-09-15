@@ -1,7 +1,9 @@
 import { type UpstreamDefinition, type UpstreamProbe } from "../../../types/source";
-import { executeInstructions } from "../instructions/executor";
-import { upstreamToInstructionDefinition } from "./configuredUpstreamPlugin";
+import { executeSource } from "../source-runtime/executor";
+import type { SourceExecutionTrace } from "../source-runtime/types";
+import { upstreamToSourceDefinition } from "./configuredSourcePlugin";
 import { getConfiguredUpstream } from "./upstreamCatalog";
+import { getUnifiedRequestTimeoutMs } from "./timeoutPolicy";
 import { probeTgChannel } from "./tg";
 
 function requestQuery(rawUrl: string): Record<string, string | string[]> {
@@ -29,10 +31,10 @@ export async function probeUpstreamDefinition(
   source: UpstreamDefinition,
   keyword: string,
 ): Promise<UpstreamProbe> {
+  const configuredTimeoutMs = getUnifiedRequestTimeoutMs();
   if (source.sourceKind === "telegram" && source.channel) {
     const tg = await probeTgChannel(source.channel, keyword, 20, {
       fallback: "direct",
-      timeoutMs: source.request?.timeoutMs,
       userAgent: source.request?.headers?.["user-agent"],
       headers: source.request?.headers,
       primaryUrl: source.url,
@@ -79,7 +81,7 @@ export async function probeUpstreamDefinition(
     rawTruncated: false,
     results: [],
   };
-  const mapTrace = (trace: import("../instructions/executor").InstructionExecutionTrace) => ({
+  const mapTrace = (trace: SourceExecutionTrace) => ({
     stage: trace.stage,
     url: trace.url,
     method: trace.method,
@@ -91,7 +93,7 @@ export async function probeUpstreamDefinition(
     ...(trace.error ? { error: trace.error } : {}),
   });
   try {
-    const execution = await executeInstructions(upstreamToInstructionDefinition(source), keyword, {
+    const execution = await executeSource(upstreamToSourceDefinition(source), keyword, {
       limit: 200,
       onTrace: (trace) => { result.traces.push(mapTrace(trace)); },
     });

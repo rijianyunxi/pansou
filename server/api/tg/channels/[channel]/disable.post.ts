@@ -1,6 +1,6 @@
 import { createError, defineEventHandler, getRouterParam, setResponseHeader } from "h3";
 import { requireAdminAuth } from "../../../../utils/requireAdminAuth";
-import { getSearchSettings } from "../../../../core/services/searchSettingsService";
+import { getSearchSettings, saveSearchSettings } from "../../../../core/services/searchSettingsService";
 import { getSystemSettings } from "../../../../core/services/systemSettingsService";
 import { countEffectiveTgChannels, setTgChannelState } from "../../../../core/services/tgChannelSettings";
 import { normalizeTgChannelParam, tgChannelOrigin } from "../../../../utils/telegramSettings";
@@ -29,7 +29,16 @@ export default defineEventHandler(async (event) => {
   } catch {
     return { code: -1, message: "无法保存频道状态，请检查服务端存储权限。" };
   }
-  const settings = getSearchSettings();
+  let settings = getSearchSettings();
+  // In explicit-source mode, a source toggle must update the search scope as
+  // well as the runtime state. In all-sources mode (null), the state table is
+  // the single source of truth and no explicit list is written.
+  if (settings.channels !== null) {
+    const channels = new Set(settings.channels);
+    channels.delete(channel);
+    saveSearchSettings({ channels: [...channels] });
+    settings = getSearchSettings();
+  }
   const config = useRuntimeConfig();
   const system = getSystemSettings(config);
   return {

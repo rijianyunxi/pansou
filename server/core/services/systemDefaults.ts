@@ -6,6 +6,6 @@ export const SYSTEM_DEFAULTS = {
   priorityChannels: [],
   defaultChannels: [],
   defaultConcurrency: 4,
-  pluginTimeoutMs: 5000,
+  requestTimeoutMs: 5000,
   cacheTtlMinutes: 10,
 } as const;

@@ -10,14 +10,18 @@ export default defineEventHandler(async (event) => {
   if (body && Object.prototype.hasOwnProperty.call(body, "channels")) body.channels = parseSystemChannels(body.channels);
   try {
     const data = saveSearchSettings(body);
-    if (body && Object.prototype.hasOwnProperty.call(body, "cacheTtlMinutes")) {
-      saveSystemSettings({ cacheTtlMinutes: body.cacheTtlMinutes });
+    if (body && (Object.prototype.hasOwnProperty.call(body, "cacheTtlMinutes") || Object.prototype.hasOwnProperty.call(body, "requestTimeoutMs"))) {
+      saveSystemSettings({
+        ...(Object.prototype.hasOwnProperty.call(body, "cacheTtlMinutes") ? { cacheTtlMinutes: body.cacheTtlMinutes } : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, "requestTimeoutMs") ? { requestTimeoutMs: body.requestTimeoutMs } : {}),
+      });
     }
     return {
       code: 0,
       message: "success",
       data: {
         ...data,
+        requestTimeoutMs: getSystemSettings(useRuntimeConfig()).requestTimeoutMs,
         cacheTtlMinutes: getSystemSettings(useRuntimeConfig()).cacheTtlMinutes,
       },
       version: getSearchSettingsVersion(),

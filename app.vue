@@ -1,6 +1,6 @@
 <template>
   <div v-if="isUpstreamConsole" class="upstream-console-layout"><NuxtPage /></div>
-  <div v-else class="layout">
+  <div v-else class="layout" :class="`theme-${settings.theme}`">
     <!-- 顶部导航：左侧 Logo，右侧接口文档 / 设置 -->
     <header class="topnav" :inert="openSettings">
       <NuxtLink to="/" class="brand">
@@ -22,6 +22,22 @@
           <ConsoleIcon name="shield" :size="16" />
           <span>管理控制台</span>
         </NuxtLink>
+        <div class="theme-switcher" role="group" aria-label="首页风格">
+          <button
+            type="button"
+            :class="{ active: settings.theme === 'classic' }"
+            :aria-pressed="settings.theme === 'classic'"
+            @click="setTheme('classic')">
+            原始
+          </button>
+          <button
+            type="button"
+            :class="{ active: settings.theme === 'geometric' }"
+            :aria-pressed="settings.theme === 'geometric'"
+            @click="setTheme('geometric')">
+            明快
+          </button>
+        </div>
         <button class="btn-icon" type="button" @click="openSettings = true" aria-label="打开设置" title="设置">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
@@ -88,6 +104,11 @@ const adminSessionActive = computed(() =>
   adminStatus.data.value?.configured === true && adminStatus.data.value?.locked === false,
 );
 const openSettings = ref(false);
+
+function setTheme(theme: "classic" | "geometric") {
+  settings.value.theme = theme;
+}
+
 watch(() => route.path, () => {
   openSettings.value = false;
   if (!isUpstreamConsole.value) void adminStatus.refresh();
@@ -292,6 +313,215 @@ button {
 }
 </style>
 
+<style>
+/* 明快几何主题：仅作用于搜索站点，不影响后台控制台 */
+.layout.theme-geometric {
+  --primary: #3155e7;
+  --primary-dark: #243fb5;
+  --primary-soft: #e9edff;
+  --ink: #20201e;
+  --ink-hover: #000000;
+  --bg-primary: #fffefa;
+  --bg-secondary: #fffbed;
+  --text-primary: #20201e;
+  --text-secondary: #56564f;
+  --text-tertiary: #76766b;
+  --border-light: #252621;
+  --border-medium: #20201e;
+  --shadow-sm: 3px 3px 0 rgba(32, 32, 30, 0.92);
+  --shadow-md: 4px 4px 0 rgba(32, 32, 30, 0.92);
+  --shadow-lg: 5px 5px 0 rgba(32, 32, 30, 0.92);
+  --shadow-xl: 6px 6px 0 rgba(32, 32, 30, 0.92);
+  --radius-sm: 5px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 10px;
+  background: #fffbed;
+}
+
+.layout.theme-geometric .topnav {
+  background: #fffbed;
+  border-bottom: 2px solid #20201e;
+}
+
+.layout.theme-geometric .brand-mark {
+  background: #ffe48a;
+  border: 2px solid #20201e;
+}
+
+.layout.theme-geometric .brand-mark svg { stroke: #20201e; }
+.layout.theme-geometric .brand-text { font-weight: 850; }
+.layout.theme-geometric .theme-switcher {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 2px solid #20201e;
+  border-radius: 7px;
+  background: #fffefa;
+}
+.layout.theme-geometric .theme-switcher button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #56564f;
+  font-size: 11px;
+  font-weight: 700;
+}
+.layout.theme-geometric .theme-switcher button.active {
+  background: #ffe48a;
+  color: #20201e;
+}
+.layout.theme-geometric .theme-switcher button:focus-visible {
+  outline: 2px solid #3155e7;
+  outline-offset: 2px;
+}
+.layout.theme-geometric .btn-icon:hover { background: #ffe48a; color: #20201e; }
+.layout.theme-geometric .main { max-width: 1240px; padding: 30px 28px 42px; }
+.layout.theme-geometric .home { max-width: 1040px; gap: 20px; }
+.layout.theme-geometric .hero {
+  position: relative;
+  text-align: left;
+  padding: 28px 150px 18px 8px;
+}
+.layout.theme-geometric .hero::after {
+  content: "";
+  position: absolute;
+  right: 25px;
+  top: 15px;
+  width: 92px;
+  height: 92px;
+  border: 2px solid #20201e;
+  border-radius: 50%;
+  background: #ffe48a;
+  box-shadow: 18px 22px 0 -5px #ffb687, 18px 22px 0 -3px #20201e;
+}
+.layout.theme-geometric .hero-title {
+  max-width: 650px;
+  font-size: clamp(37px, 5vw, 58px);
+  line-height: 1.15;
+  letter-spacing: -0.05em;
+}
+.layout.theme-geometric .hero-title::after {
+  content: "";
+  display: block;
+  width: 184px;
+  height: 10px;
+  margin-top: -12px;
+  background: #ffe48a;
+  transform: rotate(-2deg);
+  position: relative;
+  z-index: -1;
+}
+.layout.theme-geometric .hero-description { color: #56564f; font-weight: 500; }
+.layout.theme-geometric .search-workspace {
+  position: relative;
+  gap: 12px;
+  padding: 18px 20px 20px;
+  border: 2px solid #20201e;
+  border-radius: 10px;
+  background: #3155e7;
+  box-shadow: 5px 5px 0 #20201e;
+}
+.layout.theme-geometric .search-toolbar { align-items: center; }
+.layout.theme-geometric .search-workspace .scope-control {
+  padding: 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+.layout.theme-geometric .search-workspace .scope-control button {
+  color: #fffefa;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.layout.theme-geometric .search-workspace .scope-control button[aria-pressed="true"] {
+  background: #ffe48a;
+  color: #20201e;
+  border-color: #20201e;
+  box-shadow: 2px 2px 0 #20201e;
+}
+.layout.theme-geometric .search-workspace .scope-control .count {
+  background: #fffefa;
+  color: #20201e;
+}
+.layout.theme-geometric .manage-channels { color: #fffefa; }
+.layout.theme-geometric .manage-channels:hover { background: rgba(255,255,255,.16); }
+.layout.theme-geometric .search-workspace .search-box {
+  padding: 13px 14px 12px;
+  gap: 11px;
+  background: #fffefa;
+  border: 2px solid #20201e;
+  border-radius: 5px;
+  box-shadow: none;
+}
+.layout.theme-geometric .search-workspace .search-box.focused {
+  border-color: #20201e;
+  box-shadow: 3px 3px 0 #ffe48a;
+}
+.layout.theme-geometric .search-workspace .search-input { color: #20201e; font-weight: 550; }
+.layout.theme-geometric .search-workspace .search-input::placeholder { color: #76766b; }
+.layout.theme-geometric .search-workspace .search-icon { color: #20201e; }
+.layout.theme-geometric .search-workspace .action-btn.primary {
+  background: #ffe48a;
+  color: #20201e;
+  border: 1px solid #20201e;
+  border-radius: 4px;
+  box-shadow: 2px 2px 0 #20201e;
+}
+.layout.theme-geometric .search-workspace .action-btn.primary:hover:not(:disabled) {
+  background: #ffb687;
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 #20201e;
+}
+.layout.theme-geometric .search-workspace .action-btn.reset,
+.layout.theme-geometric .search-workspace .action-btn.pause,
+.layout.theme-geometric .search-workspace .action-btn.resume {
+  border-color: #20201e;
+  border-radius: 4px;
+  color: #20201e;
+  background: #fffbed;
+}
+.layout.theme-geometric .channel-configuration-notice,
+.layout.theme-geometric .search-notice,
+.layout.theme-geometric .stats-bar {
+  border: 2px solid #20201e;
+  border-radius: 6px;
+  background: #fffefa;
+  box-shadow: 3px 3px 0 #20201e;
+}
+.layout.theme-geometric .scope-summary { color: #fffefa; }
+.layout.theme-geometric .channel-chip { color: #20201e; background: #ffe48a; border-color: #20201e; border-radius: 4px; }
+.layout.theme-geometric .configure-channels { border: 2px solid #20201e; border-radius: 4px; background: #ffe48a; color: #20201e; }
+.layout.theme-geometric .hot-search-section .tag-cloud-card {
+  padding: 18px;
+  border: 2px solid #20201e;
+  border-radius: 6px;
+  background: #fffefa;
+  box-shadow: 4px 4px 0 #20201e;
+}
+.layout.theme-geometric .hot-search-section .cloud-title {
+  color: #20201e;
+  text-align: left;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.layout.theme-geometric .hot-search-section .hot-tagcloud-item { color: #3155e7 !important; }
+.layout.theme-geometric .hot-search-section .hot-tagcloud-item:hover { color: #d65f3f !important; }
+.layout.theme-geometric .filter-pill.active { background: #ffe48a; color: #20201e; border-color: #20201e; }
+.layout.theme-geometric .sort-select { border: 2px solid #20201e; border-radius: 4px; background: #fffefa; color: #20201e; }
+
+@media (max-width: 640px) {
+  .layout.theme-geometric .main { padding: 16px 14px 30px; }
+  .layout.theme-geometric .hero { padding: 25px 8px 12px; }
+  .layout.theme-geometric .hero::after { right: 12px; top: 9px; width: 58px; height: 58px; box-shadow: 12px 14px 0 -4px #ffb687, 12px 14px 0 -2px #20201e; }
+  .layout.theme-geometric .hero-title { padding-right: 42px; font-size: 38px; }
+  .layout.theme-geometric .search-workspace { padding: 13px; }
+  .layout.theme-geometric .theme-switcher button { padding: 0 7px; }
+}
+</style>
+
 <style scoped>
 /* 主布局：顶部导航 + 内容区 */
 .layout {
@@ -343,6 +573,38 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+}
+
+.theme-switcher button {
+  min-height: 29px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.theme-switcher button.active {
+  background: var(--bg-primary);
+  color: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.theme-switcher button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .admin-console-entry {

@@ -11,6 +11,7 @@ export default defineEventHandler(async (event) => {
       message: "success",
       data: {
         ...getSearchSettings(),
+        requestTimeoutMs: getSystemSettings(useRuntimeConfig()).requestTimeoutMs,
         cacheTtlMinutes: getSystemSettings(useRuntimeConfig()).cacheTtlMinutes,
       },
       // Opaque config version (mtime+size signature); null when unknown.

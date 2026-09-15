@@ -5,13 +5,14 @@ import { getSystemSettings } from "./systemSettingsService";
 import { getTgSourceSettings, getTgSourceSettingsVersion, buildConfiguredTgUrl } from "./tgSourceSettings";
 import { getSqliteDatabase } from "../storage/sqlite";
 import { validateOutboundUrl } from "../security/outboundUrl";
-import { upstreamToInstructionDefinition } from "./configuredUpstreamPlugin";
-import { validateInstructionDefinition } from "../instructions/validator";
-import { validateParserCode } from "../parsers/repository";
+import { upstreamToSourceDefinition } from "./configuredSourcePlugin";
+import { validateSourceDefinition, validateSourceTransformCode } from "../source-runtime/validation";
+import { TELEGRAM_DEFAULT_TRANSFORM } from "../source-runtime/defaults";
 import {
   clearTgChannelState,
   getTgChannelState,
   getTgChannelStates,
+  getTgChannelSettingsVersion,
   setTgChannelState,
 } from "./tgChannelSettings";
 
@@ -38,9 +39,8 @@ function validateSourceUrl(url: string, sourceKind: "http" | "telegram"): void {
 }
 
 const REQUEST_FIELDS = [
-  "query", "headers", "bodyType", "body", "timeoutMs",
+  "query", "headers", "bodyType", "body",
   "maxResponseBytes", "redirect", "allowedDomains", "maxRequestBodyBytes",
-  "stages",
 ] as const;
 
 function sanitizeSourceRequest(raw: unknown): NonNullable<UpstreamDefinition["request"]> {
@@ -105,9 +105,6 @@ function sanitize(raw: unknown): StoredCatalog {
       ...(source.request && typeof source.request === "object" && !Array.isArray(source.request)
         ? { request: sanitizeSourceRequest(source.request) }
         : {}),
-      ...(source.response && typeof source.response === "object" && !Array.isArray(source.response)
-        ? { response: structuredClone(source.response) }
-        : {}),
       enabled: source.enabled !== false,
     };
   }
@@ -116,8 +113,24 @@ function sanitize(raw: unknown): StoredCatalog {
 
 function readPersistedCatalog(db: ReturnType<typeof getSqliteDatabase>): StoredCatalog {
   const rawCatalog: Record<string, unknown> = {};
-  for (const row of db.allRows<{ id: string; definition: string }>("SELECT id,definition FROM upstream_definitions")) {
-    try { rawCatalog[row.id] = JSON.parse(row.definition); } catch { /* ignore malformed rows */ }
+  for (const row of db.allRows<any>("SELECT id,source_kind,channel,name,description,url,method,format,enabled,request_json,transform FROM upstream_definitions")) {
+    let request: unknown;
+    if (row.request_json) {
+      try { request = JSON.parse(row.request_json); } catch { request = undefined; }
+    }
+    rawCatalog[row.id] = {
+      id: row.id,
+      sourceKind: row.source_kind,
+      ...(row.channel ? { channel: row.channel } : {}),
+      name: row.name,
+      description: row.description,
+      url: row.url,
+      method: row.method,
+      format: row.format,
+      enabled: Boolean(row.enabled),
+      transform: row.transform,
+      ...(request && typeof request === "object" && !Array.isArray(request) ? { request } : {}),
+    };
   }
   return sanitize(rawCatalog);
 }
@@ -130,24 +143,23 @@ function readDeletedIds(db: ReturnType<typeof getSqliteDatabase>): Set<string> {
   );
 }
 
-function writeCatalog(db: ReturnType<typeof getSqliteDatabase>, catalog: StoredCatalog, now = Date.now()): void {
-  db.run("DELETE FROM upstream_definitions");
-  for (const [id, definition] of Object.entries(catalog)) {
-    db.run(
-      "INSERT INTO upstream_definitions(id,source_kind,channel,name,description,url,method,format,enabled,definition,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-      id,
-      definition.sourceKind,
-      definition.channel ?? null,
-      definition.name,
-      definition.description,
-      definition.url,
-      definition.method,
-      definition.format,
-      definition.enabled === false ? 0 : 1,
-      JSON.stringify(definition),
-      now,
-    );
-  }
+function upsertCatalogEntry(db: ReturnType<typeof getSqliteDatabase>, definition: UpstreamDefinition, now = Date.now()): void {
+  db.run(
+    `INSERT INTO upstream_definitions(id,source_kind,channel,name,description,url,method,format,enabled,request_json,transform,updated_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET source_kind=excluded.source_kind,channel=excluded.channel,name=excluded.name,description=excluded.description,url=excluded.url,method=excluded.method,format=excluded.format,enabled=excluded.enabled,request_json=excluded.request_json,transform=excluded.transform,updated_at=excluded.updated_at`,
+    definition.id, definition.sourceKind, definition.channel ?? null, definition.name, definition.description,
+    definition.url, definition.method, definition.format, definition.enabled === false ? 0 : 1,
+    definition.request ? JSON.stringify(definition.request) : null, definition.transform, now,
+  );
+}
+
+/** Full replacement is reserved for explicit imports/rebuilds, never ordinary edits. */
+function replaceCatalog(db: ReturnType<typeof getSqliteDatabase>, catalog: StoredCatalog, now = Date.now()): void {
+  const ids = Object.keys(catalog);
+  if (ids.length) db.run(`DELETE FROM upstream_definitions WHERE id NOT IN (${ids.map(() => "?").join(",")})`, ...ids);
+  else db.run("DELETE FROM upstream_definitions");
+  for (const definition of Object.values(catalog)) upsertCatalogEntry(db, definition, now);
 }
 
 function writeDeletedIds(db: ReturnType<typeof getSqliteDatabase>, deleted: Set<string>, now = Date.now()): void {
@@ -155,15 +167,25 @@ function writeDeletedIds(db: ReturnType<typeof getSqliteDatabase>, deleted: Set<
   for (const id of deleted) db.run("INSERT INTO deleted_upstreams(id,deleted_at) VALUES(?,?)", id, now);
 }
 
+let catalogCache: { revision: number; catalog: StoredCatalog } | null = null;
+
+function getCatalogRevision(db: ReturnType<typeof getSqliteDatabase>): number {
+  return db.getRow<{ revision: number }>("SELECT revision FROM config_revisions WHERE scope='upstreams'")?.revision ?? 0;
+}
+
 function read(): StoredCatalog {
   const db = getSqliteDatabase();
+  const revision = getCatalogRevision(db);
+  if (catalogCache?.revision === revision) return catalogCache.catalog;
   const deleted = readDeletedIds(db);
   const existing = readPersistedCatalog(db);
   // 数据源目录完全由 SQLite 配置决定。deleted_upstreams 只记录已删除来源，
   // 绝不能触发任何内置来源的恢复或注入。
-  return Object.fromEntries(
+  const catalog = Object.fromEntries(
     Object.entries(existing).filter(([id]) => !deleted.has(id)),
   );
+  catalogCache = { revision, catalog };
+  return catalog;
 }
 
 export function listConfiguredUpstreams(): UpstreamDefinition[] {
@@ -196,10 +218,8 @@ function buildTelegramDefinition(channel: string, stored?: UpstreamDefinition): 
     request: stored?.request || {
       query: { q: "{{keyword}}" },
       headers: settings.headers,
-      timeoutMs: 10_000,
     },
-    transform: stored?.transform || settings.transform,
-    response: stored?.response || {},
+    transform: stored?.transform || TELEGRAM_DEFAULT_TRANSFORM,
   };
   const next = sanitize({ [id]: source })[id];
   if (!next) throw new Error(`Telegram channel configuration is invalid: ${channel}`);
@@ -221,6 +241,8 @@ export function listUnifiedUpstreams(): UpstreamDefinition[] {
     .map((channel) => channel.replace(/^@/, "").toLowerCase())
     .filter((channel) => TG_CHANNEL_PATTERN.test(channel) && !states[channel]?.deleted)
     .map((channel) => buildTelegramDefinition(channel, catalog[telegramId(channel)]));
+  // Listing is read-only. A default Telegram source is materialized only when
+  // it is explicitly saved, preventing an innocent GET from writing SQLite.
   return [...listConfiguredUpstreams(), ...telegram].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -256,9 +278,9 @@ export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition
     : { ...value, id, sourceKind: "http" as const };
   const next = sanitize({ [id]: input })[id];
   if (!next) throw new Error("来源配置无效：请检查 HTTPS 地址、请求方式、响应格式和 transform");
-  validateParserCode(next.transform);
+  validateSourceTransformCode(next.transform);
 
-  validateInstructionDefinition(upstreamToInstructionDefinition(next));
+  validateSourceDefinition(upstreamToSourceDefinition(next));
   return clone(next);
 }
 
@@ -271,20 +293,15 @@ export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
   const merged = { ...current, ...value, id } as Partial<UpstreamDefinition>;
   const next = sanitize({ [id]: merged })[id];
   if (!next) throw new Error("来源配置无效：请检查 ID、HTTPS 地址、请求方式、响应格式和 transform");
-  validateParserCode(next.transform);
+  validateSourceTransformCode(next.transform);
 
-  validateInstructionDefinition(upstreamToInstructionDefinition(next));
-  catalog[id] = next;
+  validateSourceDefinition(upstreamToSourceDefinition(next));
   const store = getSqliteDatabase();
   const deleted = readDeletedIds(store);
-  if (deleted.delete(id)) {
-    store.transaction(() => {
-      writeDeletedIds(store, deleted);
-      writeCatalog(store, catalog);
-    });
-  } else {
-    store.transaction(() => writeCatalog(store, catalog));
-  }
+  store.transaction(() => {
+    if (deleted.delete(id)) store.run("DELETE FROM deleted_upstreams WHERE id=?", id);
+    upsertCatalogEntry(store, next);
+  });
   return clone(next);
 }
 
@@ -306,20 +323,19 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
     method: value.method || "GET",
     format: value.format || "html",
     url: value.url || current?.url || telegramUrl("direct", channel),
-    request: value.request !== undefined ? value.request : current?.request || { headers: getTgSourceSettings().headers, query: { q: "{{keyword}}" }, timeoutMs: 10_000 },
-    transform: value.transform !== undefined ? value.transform : current?.transform || getTgSourceSettings().transform,
+    request: value.request !== undefined ? value.request : current?.request || { headers: getTgSourceSettings().headers, query: { q: "{{keyword}}" } },
+    transform: value.transform !== undefined ? value.transform : current?.transform || TELEGRAM_DEFAULT_TRANSFORM,
   };
   const next = sanitize({ [id]: nextInput })[id];
   if (!next) throw new Error("Telegram 来源配置无效：请检查频道、HTTPS 地址、请求配置和响应格式");
-  validateParserCode(next.transform);
-  validateInstructionDefinition(upstreamToInstructionDefinition(next));
-  catalog[id] = next;
+  validateSourceTransformCode(next.transform);
+  validateSourceDefinition(upstreamToSourceDefinition(next));
   const settings = getSearchSettings();
   const configured = settings.channels === null ? systemDefaultChannels() : settings.channels;
   if (!configured.includes(channel)) saveSearchSettings({ channels: [...configured, channel] });
   clearTgChannelState(channel);
   const db = getSqliteDatabase();
-  db.transaction(() => writeCatalog(db, catalog));
+  db.transaction(() => upsertCatalogEntry(db, next));
   return clone(next);
 }
 
@@ -344,9 +360,7 @@ export function deleteConfiguredTelegramUpstream(idOrChannel: string): void {
     throw new Error("Unknown Telegram upstream");
   }
   if (catalog[telegramId(channel)]) {
-    delete catalog[telegramId(channel)];
-    const db = getSqliteDatabase();
-    db.transaction(() => writeCatalog(db, catalog));
+    getSqliteDatabase().run("DELETE FROM upstream_definitions WHERE id=?", telegramId(channel));
   }
 }
 
@@ -365,7 +379,7 @@ export function setUnifiedUpstreamEnabled(id: string, enabled: boolean): Upstrea
     const current = read()[source.id] || source;
     const next = { ...current, enabled: state.enabled && !state.deleted };
     const db = getSqliteDatabase();
-    db.transaction(() => writeCatalog(db, { ...read(), [source.id]: next }));
+    db.transaction(() => upsertCatalogEntry(db, next));
     return clone(buildTelegramDefinition(source.channel, next));
   }
   return setConfiguredUpstreamEnabled(source.id, enabled);
@@ -374,42 +388,31 @@ export function setUnifiedUpstreamEnabled(id: string, enabled: boolean): Upstrea
 export function deleteConfiguredUpstream(id: string): void {
   const key = String(id || "").trim().toLowerCase();
   const store = getSqliteDatabase();
-  const catalog = read();
-  if (!catalog[key]) throw new Error("Unknown upstream");
-  const deleted = readDeletedIds(store);
-  deleted.add(key);
-  delete catalog[key];
+  if (!read()[key]) throw new Error("Unknown upstream");
   store.transaction(() => {
-    writeCatalog(store, catalog);
-    writeDeletedIds(store, deleted);
+    store.run("DELETE FROM upstream_definitions WHERE id=?", key);
+    store.run("INSERT INTO deleted_upstreams(id,deleted_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at", key, Date.now());
   });
 }
 
 export function setConfiguredUpstreamEnabled(id: string, enabled: boolean): UpstreamDefinition {
-  const catalog = read();
   const key = String(id || "").trim().toLowerCase();
-  const current = catalog[key];
+  const current = read()[key];
   if (!current) throw new Error("Unknown upstream");
   const next = { ...current, enabled: !!enabled };
-  catalog[key] = next;
   const db = getSqliteDatabase();
-  db.transaction(() => writeCatalog(db, catalog));
+  db.transaction(() => upsertCatalogEntry(db, next));
   return clone(next);
 }
 
 export function getConfiguredUpstreamVersion(): string {
   const db = getSqliteDatabase();
-  // Seed first, then read the timestamp. This keeps the version stable even
-  // for the very first request that creates the SQLite catalog row.
-  const catalog = read();
-  const catalogUpdatedAt = db.getRow<{ updated_at: number | null }>("SELECT MAX(updated_at) AS updated_at FROM upstream_definitions")?.updated_at ?? 0;
-  const deletedUpdatedAt = db.getRow<{ deleted_at: number | null }>("SELECT MAX(deleted_at) AS deleted_at FROM deleted_upstreams")?.deleted_at ?? 0;
-  return `${catalogUpdatedAt}:${deletedUpdatedAt}:${JSON.stringify(catalog)}`;
+  return String(getCatalogRevision(db));
 }
 
 
 export function getUnifiedUpstreamVersion(): string {
-  return `${getConfiguredUpstreamVersion()}|${getSearchSettingsVersion()}|${getTgSourceSettingsVersion()}|${JSON.stringify(listUnifiedUpstreams())}`;
+  return `${getConfiguredUpstreamVersion()}|${getSearchSettingsVersion()}|${getTgChannelSettingsVersion()}|${getTgSourceSettingsVersion()}`;
 }
 
 export const UPSTREAM_CONFIG_SCHEMA_VERSION = 3;
@@ -469,8 +472,8 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
     }
     const next = sanitize({ [id]: { ...catalog[id], ...value, id } })[id];
     if (!next) throw new Error(`来源配置无效: ${id || "缺少 id"}`);
-    validateParserCode(next.transform);
-    validateInstructionDefinition(upstreamToInstructionDefinition(next));
+    validateSourceTransformCode(next.transform);
+    validateSourceDefinition(upstreamToSourceDefinition(next));
     nextCatalog[id] = next;
     imported.push(clone(next));
   }
@@ -478,7 +481,7 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
   const deleted = readDeletedIds(store);
   for (const source of imported) deleted.delete(source.id);
   store.transaction(() => {
-    writeCatalog(store, nextCatalog);
+    replaceCatalog(store, nextCatalog);
     writeDeletedIds(store, deleted);
   });
   void actor;

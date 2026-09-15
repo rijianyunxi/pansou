@@ -1,4 +1,5 @@
 <script setup lang="ts">
-await navigateTo("/admin?view=accounts", { replace: true });
+// Telegram 账户旧入口，统一跳转到带语义路径的管理后台页面。
+await navigateTo("/admin/accounts", { replace: true });
 </script>
 <template><div /></template>
