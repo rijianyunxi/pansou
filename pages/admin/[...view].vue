@@ -252,7 +252,7 @@ useHead({
 const clientReady = ref(false);
 const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
   "/api/auth/admin-status",
-  { key: "upstreams-admin-status", server: true },
+  { key: "admin-auth-status", server: true },
 );
 const configuredUpstreams = ref<UpstreamDefinition[]>([]);
 function isTelegramSource(source: UpstreamDefinition | null | undefined): boolean {
@@ -435,6 +435,14 @@ async function unlockAdmin(password: string) {
       body: { password },
     });
     adminLocked.value = false;
+    // `useFetch` data is cached by key and the page is remounted when switching
+    // console routes. Keep the cached status in sync with the newly issued cookie,
+    // otherwise a route change reuses the initial locked=true SSR result.
+    authStatus.data.value = {
+      configured: adminConfigured.value,
+      locked: false,
+    };
+    await refreshNuxtData("public-admin-status");
     await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
     // The recycle bin is an in-place modal under source management.
 
@@ -457,6 +465,11 @@ async function lockAdmin() {
     debugDialogOpen.value = false;
     archiveOpen.value = false;
     adminLocked.value = true;
+    authStatus.data.value = {
+      configured: adminConfigured.value,
+      locked: true,
+    };
+    await refreshNuxtData("public-admin-status");
     authError.value = "";
   }
 }

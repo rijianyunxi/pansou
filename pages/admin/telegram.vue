@@ -333,7 +333,7 @@ type StateFilter = "all" | "available" | "warning" | "error" | "untested";
 const clientReady = ref(false);
 const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
   "/api/auth/admin-status",
-  { key: "telegram-admin-status", server: true },
+  { key: "admin-auth-status", server: true },
 );
 const initialAuthStatus = authStatus.data.value;
 const adminChecking = ref(!initialAuthStatus && !authStatus.error.value);
@@ -486,6 +486,13 @@ async function unlockAdmin(password: string) {
       body: { password },
     });
     adminLocked.value = false;
+    // Keep the keyed SSR status cache in sync so navigating between admin pages
+    // does not show the password gate again after the page is remounted.
+    authStatus.data.value = {
+      configured: adminConfigured.value,
+      locked: false,
+    };
+    await refreshNuxtData("public-admin-status");
     await loadConfiguredChannels();
     showNotice("Telegram 管理控制台已解锁。");
   } catch (error: any) {
@@ -502,6 +509,11 @@ async function lockAdmin() {
     requestInputs.value = {};
     running.value = {};
     adminLocked.value = true;
+    authStatus.data.value = {
+      configured: adminConfigured.value,
+      locked: true,
+    };
+    await refreshNuxtData("public-admin-status");
     authError.value = "";
   }
 }
