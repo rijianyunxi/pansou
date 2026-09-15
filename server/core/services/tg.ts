@@ -44,6 +44,8 @@ export interface TgFetchOptions {
   /** Per-upstream primary URL and headers supplied by the unified catalog. */
   primaryUrl?: string;
   headers?: Record<string, string>;
+  /** User-channel searches must ignore all per-channel/unified-catalog overrides. */
+  scope?: "configured" | "user";
 }
 
 export type TgProbeState = "available" | "warning" | "error";
@@ -257,10 +259,11 @@ function resolveChannelDefaults(
   headers?: Record<string, string>;
   transform?: string;
 } {
-  const policy = getTgChannelPolicy(channel);
   const source = getTgSourceSettings();
-  const configured = getUnifiedUpstream(`tg-${channel}`);
-  const configuredAddress = options.primaryUrl || configured?.url;
+  const useConfiguredSettings = options.scope !== "user";
+  const policy = useConfiguredSettings ? getTgChannelPolicy(channel) : undefined;
+  const configured = useConfiguredSettings ? getUnifiedUpstream(`tg-${channel}`) : undefined;
+  const configuredAddress = useConfiguredSettings ? options.primaryUrl || configured?.url : undefined;
   return {
     timeoutMs: policy?.timeoutMs ?? options.timeoutMs ?? 10_000,
     limitPerChannel: policy?.maxResults ?? options.limitPerChannel,
@@ -274,7 +277,11 @@ function resolveChannelDefaults(
     retryDelayMs: policy?.retryDelayMs ?? options.retryDelayMs ?? source.retry.delayMs,
     primaryUrl: configuredAddress,
     headers: options.headers || configured?.request?.headers,
-    transform: options.transform || configured?.transform,
+    // The user-channel endpoint always uses the global Telegram transform;
+    // configured channel/upstream parser overrides are deliberately ignored.
+    transform: options.scope === "user"
+      ? source.transform
+      : options.transform || configured?.transform || source.transform,
   };
 }
 

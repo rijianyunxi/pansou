@@ -6,7 +6,7 @@ import type {
   SearchStreamCompleteData,
   SearchStreamResultData,
 } from "../core/types/models";
-import { executePreparedSearch, type PreparedSearch } from "./executeSearch";
+import { executePreparedSearch, type PreparedSearchRequest } from "./executeSearch";
 import { withRequestSignal } from "./requestSignal";
 import { SEARCH_SSE_INTERVAL_MS, SearchSseQueue } from "./searchSseQueue";
 import { logSearchStreamEvent } from "../core/utils/upstreamDebug";
@@ -47,7 +47,7 @@ function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate
 /** Starts a pure SSE search response. Validation and admission must run first. */
 export function sendSearchStream(
   event: H3Event,
-  prepared: PreparedSearch,
+  prepared: PreparedSearchRequest,
   lease: SearchLease,
 ): Promise<void> {
   setHeader(event, "Content-Type", "text/event-stream; charset=utf-8");

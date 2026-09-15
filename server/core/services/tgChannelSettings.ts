@@ -309,8 +309,12 @@ export function purgeTgChannel(channel: string): PurgedTgChannel {
 }
 
 
-export function filterEffectiveTgChannels(channels: string[]): string[] {
+export function filterEffectiveTgChannels(
+  channels: string[],
+  options: { respectState?: boolean } = {},
+): string[] {
   const normalized = normalizeTelegramChannels(Array.isArray(channels) ? channels : []).filter((name) => TG_CHANNEL_PATTERN.test(name));
+  if (options.respectState === false) return normalized;
   const states = getTgChannelStates();
   return normalized.filter((name) => {
     const state = states[name];

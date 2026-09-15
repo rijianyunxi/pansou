@@ -7,5 +7,5 @@ export const SYSTEM_DEFAULTS = {
   defaultChannels: [],
   defaultConcurrency: 4,
   pluginTimeoutMs: 5000,
-  cacheTtlMinutes: 30,
+  cacheTtlMinutes: 10,
 } as const;

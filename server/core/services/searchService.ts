@@ -1,7 +1,8 @@
 import pLimit from "p-limit";
 import { UnifiedCache, CacheNamespace } from "../cache/unifiedCache";
 import { createAbortScope, runWithSignal } from "../utils/abort";
-import { getSearchSettings } from "./searchSettingsService";
+import { getSearchSettings, getSearchSettingsVersion } from "./searchSettingsService";
+import { getSystemSettings } from "./systemSettingsService";
 import { getConfiguredUpstreamVersion, listConfiguredUpstreams } from "./upstreamCatalog";
 import {
   filterEffectiveTgChannels,
@@ -81,6 +82,36 @@ function createSearchId(): string {
   }
 }
 
+function canonicalSearchText(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+function sameStringList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Telegram 频道失败的机器可读分类：抓取错误自带 tgKind，其余按网络失败归类。 */
 function tgChannelFailureKind(error: unknown): string {
   const kind = (error as { tgKind?: unknown } | null)?.tgKind;
@@ -101,7 +132,8 @@ export class SearchService {
 
   private options: SearchServiceOptions;
   private pluginManager: PluginManager;
-  private cache: UnifiedCache;
+  private cache: UnifiedCache<SearchExecutionResponse>;
+  private inFlight = new Map<string, Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }>>();
   private healthChecker: PluginHealthChecker;
   private dynamicPluginIds = new Set<string>();
   private dynamicPluginSignature = "";
@@ -112,10 +144,16 @@ export class SearchService {
   constructor(options: SearchServiceOptions, pluginManager: PluginManager) {
     this.options = options;
     this.pluginManager = pluginManager;
-    this.cache = new UnifiedCache(
+    const configuredTtl = Number(options.cacheTtlMinutes);
+    this.cache = new UnifiedCache<SearchExecutionResponse>(
       {
         enabled: options.cacheEnabled,
-        ttlMinutes: options.cacheTtlMinutes,
+        // The actual duration is persisted in SQLite so the admin UI can
+        // change it without requiring a code change. Ten minutes is only the
+        // first-install default.
+        ttlMinutes: Number.isFinite(configuredTtl) && configuredTtl > 0
+          ? configuredTtl
+          : 10,
       },
       "search"
     );
@@ -169,7 +207,8 @@ export class SearchService {
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
-    executionOptions: SearchExecutionOptions = {}
+    executionOptions: SearchExecutionOptions = {},
+    channelScope: "configured" | "user" = "configured",
   ): Promise<SearchExecutionResponse> {
     const { response } = await this.searchWithWarnings(
       keyword,
@@ -180,7 +219,8 @@ export class SearchService {
       plugins,
       cloudTypes,
       ext,
-      executionOptions
+      executionOptions,
+      channelScope,
     );
 
     return response;
@@ -195,9 +235,72 @@ export class SearchService {
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
-    executionOptions: SearchExecutionOptions = {}
+    executionOptions: SearchExecutionOptions = {},
+    channelScope: "configured" | "user" = "configured",
   ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     executionOptions.signal?.throwIfAborted();
+    this.syncCacheTtl();
+    const effectiveChannels = channels ?? this.options.defaultChannels;
+    const effectiveSourceType = sourceType ?? "all";
+    const cacheable = this.isSharedCacheable(
+      effectiveChannels,
+      effectiveSourceType,
+      plugins,
+      cloudTypes,
+      ext,
+      channelScope,
+    );
+    const cacheKey = cacheable ? this.buildSearchCacheKey(keyword) : "";
+
+    if (cacheable && !forceRefresh && this.options.cacheEnabled) {
+      const cached = this.cache.get(CacheNamespace.SEARCH, cacheKey);
+      if (cached.hit && cached.value) {
+        const response = this.cloneCachedResponse(cached.value);
+        this.emitCachedResponse(executionOptions.onSourceSuccess, keyword, response);
+        return { response, warnings: [] };
+      }
+
+      const running = this.inFlight.get(cacheKey);
+      if (running) {
+        const shared = await waitWithSignal(running, executionOptions.signal);
+        const response = this.cloneCachedResponse(shared.response);
+        this.emitCachedResponse(executionOptions.onSourceSuccess, keyword, response);
+        return { response, warnings: shared.warnings };
+      }
+    }
+
+    const run = this.executeSearchWithTimeout(
+      keyword,
+      channels,
+      concurrency,
+      forceRefresh,
+      sourceType,
+      plugins,
+      cloudTypes,
+      ext,
+      executionOptions,
+      channelScope,
+    );
+    if (cacheable && !forceRefresh && this.options.cacheEnabled) this.inFlight.set(cacheKey, run);
+    try {
+      return await run;
+    } finally {
+      if (cacheable && this.inFlight.get(cacheKey) === run) this.inFlight.delete(cacheKey);
+    }
+  }
+
+  private async executeSearchWithTimeout(
+    keyword: string,
+    channels: string[] | undefined,
+    concurrency: number | undefined,
+    forceRefresh: boolean | undefined,
+    sourceType: "all" | "tg" | "plugin" | undefined,
+    plugins: string[] | undefined,
+    cloudTypes: string[] | undefined,
+    ext: Record<string, any> | undefined,
+    executionOptions: SearchExecutionOptions,
+    channelScope: "configured" | "user",
+  ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const configuredBudget = Number(this.options.searchTimeoutMs);
     const timeoutMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? Math.min(configuredBudget, 120_000) : 30_000;
@@ -213,7 +316,7 @@ export class SearchService {
     try {
       const result = await this.performSearch(
         keyword, channels, limit, forceRefresh, sourceType,
-        plugins, cloudTypes, ext, execution,
+        plugins, cloudTypes, ext, execution, channelScope,
       );
       executionOptions.signal?.throwIfAborted();
       if (scope.signal.aborted) {
@@ -229,6 +332,70 @@ export class SearchService {
     }
   }
 
+  private syncCacheTtl(): void {
+    this.cache.setTtlMinutes(getSystemSettings().cacheTtlMinutes);
+  }
+
+  private isSharedCacheable(
+    channels: string[],
+    sourceType: "all" | "tg" | "plugin",
+    plugins: string[] | undefined,
+    cloudTypes: string[] | undefined,
+    ext: Record<string, any> | undefined,
+    channelScope: "configured" | "user",
+  ): boolean {
+    // The public home-page search is a unified, server-configured search. A
+    // user-selected channel search or an API request with source/filter
+    // overrides must never share the keyword-only cache.
+    if (sourceType !== "all" || channelScope !== "configured") return false;
+    if (plugins !== undefined || cloudTypes?.length) return false;
+    const extensionKeys = Object.keys(ext ?? {});
+    if (extensionKeys.some((key) => key !== "__plugin_timeout_ms")) return false;
+    const requestedTimeout = Number(ext?.__plugin_timeout_ms) || 0;
+    const configuredTimeout = getSearchSettings().pluginTimeoutMs ?? this.options.pluginTimeoutMs;
+    if (requestedTimeout > 0 && requestedTimeout !== configuredTimeout) return false;
+
+    const configuredChannels = filterEffectiveTgChannels(
+      getSearchSettings().channels ?? this.options.defaultChannels,
+    );
+    const normalized = (items: string[]) => [...new Set(items.map((item) => item.toLowerCase()))].sort();
+    return sameStringList(normalized(channels), normalized(configuredChannels));
+  }
+
+  private buildSearchCacheKey(keyword: string): string {
+    return `keyword:${canonicalSearchText(keyword)}:config:${getSearchSettingsVersion()}:${getConfiguredUpstreamVersion()}:${getTgChannelSettingsVersion()}:${getTgSourceSettingsVersion()}`;
+  }
+
+  private cloneCachedResponse(response: SearchExecutionResponse): SearchExecutionResponse {
+    const registryVersion = this.pluginManager.version;
+    return {
+      ...response,
+      results: response.results.map((result) => ({
+        ...result,
+        ...(result.source === "plugin" ? { registryVersion } : {}),
+      })),
+      ...(response.meta ? { meta: { ...response.meta, registryVersion } } : {}),
+    };
+  }
+
+  private emitCachedResponse(
+    onSourceSuccess: SearchExecutionOptions["onSourceSuccess"],
+    keyword: string,
+    response: SearchExecutionResponse,
+  ): void {
+    if (!onSourceSuccess || !response.results.length) return;
+    // A full-response hit can contain both Telegram and plugin results, so it
+    // intentionally emits one update without inventing a source id.
+    try {
+      onSourceSuccess({
+        request: { keyword, phase: "cache" },
+        results: response.results,
+      });
+    } catch {
+      // Streaming observers must not turn a successful cache hit into an error.
+    }
+  }
+
   private async performSearch(
     keyword: string,
     channels: string[] | undefined,
@@ -238,7 +405,8 @@ export class SearchService {
     plugins: string[] | undefined,
     cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
-    execution: SearchExecution
+    execution: SearchExecution,
+    channelScope: "configured" | "user",
   ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const errorCollector = new ErrorCollector();
     const searchId = createSearchId();
@@ -270,7 +438,8 @@ export class SearchService {
           concOverride,
           ext,
           errorCollector,
-          execution
+          execution,
+          channelScope,
         ));
       });
     }
@@ -326,10 +495,21 @@ export class SearchService {
       meta: { registryVersion, pluginVersions },
     };
 
-    return {
-      response,
-      warnings: errorCollector.getWarnings(),
-    };
+    const warnings = errorCollector.getWarnings();
+    // Only complete, non-empty searches are shared across users. A partial
+    // response must not replace a previously good result set.
+    if (
+      this.options.cacheEnabled &&
+      response.results.length > 0 &&
+      warnings.length === 0 &&
+      !execution.signal.aborted
+    ) {
+      if (this.isSharedCacheable(effChannels, effSourceType, plugins, cloudTypes, ext, channelScope)) {
+        this.cache.set(CacheNamespace.SEARCH, this.buildSearchCacheKey(keyword), response);
+      }
+    }
+
+    return { response, warnings };
   }
 
   private async searchTG(
@@ -339,35 +519,17 @@ export class SearchService {
     concurrencyOverride?: number,
     ext?: Record<string, any>,
     errorCollector = new ErrorCollector(),
-    execution?: SearchExecution
+    execution?: SearchExecution,
+    channelScope: "configured" | "user" = "configured",
   ): Promise<SearchResult[]> {
     if (execution?.signal.aborted) return [];
     // 频道生效清单过滤：已关闭（enabled=false）或已删除（deleted=true）的频道
     // 不参与正式搜索；入参同时做归一与非法用户名过滤。
-    const chList = filterEffectiveTgChannels(Array.isArray(channels) ? channels : []);
-    // 频道配置热更新：每频道策略/启停状态版本参与缓存 key，保存后下一次搜索立即重算。
-    const cacheKey = `tg:${keyword}:${[...chList].sort().join(",")}:${getTgChannelSettingsVersion()}:${getTgSourceSettingsVersion()}`;
-    const { cacheEnabled, priorityChannels } = this.options;
-
-    if (!forceRefresh && cacheEnabled) {
-      const cached = this.cache.get(CacheNamespace.TG_SEARCH, cacheKey);
-      if (cached.hit && cached.value) {
-        const annotated = this.annotateTelegramResults(cached.value);
-        for (const channel of chList) {
-          const channelResults = annotated.filter(
-            (result) => (result.channel || "").replace(/^@/, "").toLowerCase() === channel.toLowerCase()
-          );
-          if (channelResults.length) {
-            this.emitSourceSuccess(execution, {
-              source: { kind: "telegram", id: channel, cached: true },
-              request: { keyword, phase: "cache" },
-              results: channelResults,
-            });
-          }
-        }
-        return cached.value;
-      }
-    }
+    const chList = filterEffectiveTgChannels(
+      Array.isArray(channels) ? channels : [],
+      { respectState: channelScope === "configured" },
+    );
+    const priorityChannels = channelScope === "configured" ? this.options.priorityChannels : [];
 
     const { fetchTgChannelPosts } = await import("./tg");
     const requestedTimeout = Number((ext as any)?.__plugin_timeout_ms) || 0;
@@ -382,7 +544,9 @@ export class SearchService {
       Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 12)
     );
 
-    const prioritySet = new Set((priorityChannels || []).map((name) => name.toLowerCase()));
+    const prioritySet = channelScope === "configured"
+      ? new Set((priorityChannels || []).map((name) => name.toLowerCase()))
+      : new Set<string>();
     const priorityList = chList.filter((channel) => prioritySet.has(channel.toLowerCase()));
     const normalList = chList.filter((channel) => !prioritySet.has(channel.toLowerCase()));
 
@@ -396,7 +560,9 @@ export class SearchService {
     const createChannelTask =
       (channel: string, limitPerChannel: number, phase: "shallow" | "deep") => async () => {
         // 每频道超时策略：显式配置时覆盖全局默认（外层 searchTimeoutMs 预算仍然生效）。
-        const channelTimeoutMs = getTgChannelPolicy(channel)?.timeoutMs ?? timeoutMs;
+        const channelTimeoutMs = channelScope === "configured"
+          ? getTgChannelPolicy(channel)?.timeoutMs ?? timeoutMs
+          : timeoutMs;
         const scope = createAbortScope(channelTimeoutMs, `Telegram 频道 ${channel} 请求超时 (${channelTimeoutMs}ms)`, execution?.signal);
         const startedAt = Date.now();
         // 页面级告警（前几页成功、后续页失败）：任务仍会带部分结果返回，
@@ -423,6 +589,7 @@ export class SearchService {
         try {
           const results = await runWithSignal(() => fetchTgChannelPosts(channel, keyword, {
             limitPerChannel, signal: scope.signal, timeoutMs,
+            scope: channelScope,
             onWarning: (error) => {
               warning = error;
               recordFailure(channel, error);
@@ -481,10 +648,6 @@ export class SearchService {
       results = this.mergeUniqueResults(results, deepResults);
     }
 
-    if (cacheEnabled && results.length > 0 && !failedChannels.size && !execution?.signal.aborted) {
-      this.cache.set(CacheNamespace.TG_SEARCH, cacheKey, results);
-    }
-
     return results;
   }
 
@@ -534,48 +697,6 @@ export class SearchService {
     const pluginVersions = Object.fromEntries(
       selected.map((plugin) => [plugin.manifest.id, plugin.manifest.version])
     );
-    const versionedPluginKey = selected
-      .map((plugin) => `${plugin.manifest.id.toLowerCase()}@${plugin.manifest.version}`)
-      .sort()
-      .join(",");
-    // Endpoint/method/format edits are config changes, not plugin version
-    // changes. Include the catalog version so the next request never serves a
-    // result cached against the previous published endpoint.
-    const cacheKey = `plugin:${keyword}:${getConfiguredUpstreamVersion()}:${getTgChannelSettingsVersion()}:${versionedPluginKey}`;
-    const cacheEnabled = this.options.cacheEnabled &&
-      Object.keys(ext).every((key) => key === "__plugin_timeout_ms");
-
-    if (!forceRefresh && cacheEnabled) {
-      const cached = this.cache.get(CacheNamespace.PLUGIN_SEARCH, cacheKey);
-      if (cached.hit && cached.value) {
-        const rebound = this.rebindRegistryVersion(cached.value, registrySnapshot.version);
-        const resultsByPlugin = new Map<string, SearchResult[]>();
-        for (const result of rebound) {
-          const id = result.pluginId || "unknown";
-          const results = resultsByPlugin.get(id) || [];
-          results.push(result);
-          resultsByPlugin.set(id, results);
-        }
-        for (const [id, results] of resultsByPlugin) {
-          this.emitSourceSuccess(execution, {
-            source: {
-              kind: "plugin",
-              id,
-              version: results[0]?.pluginVersion,
-              cached: true,
-            },
-            request: { keyword, phase: "cache" },
-            results,
-          });
-        }
-        return {
-          results: rebound,
-          registryVersion: registrySnapshot.version,
-          pluginVersions,
-        };
-      }
-    }
-
     const requestedTimeout = Number(ext?.__plugin_timeout_ms) || 0;
     const defaultTimeout = requestedTimeout > 0
       ? requestedTimeout
@@ -641,10 +762,6 @@ export class SearchService {
       }
     }
 
-    const sourceFailed = errorCollector.getErrors("plugin_search").length > 0;
-    if (cacheEnabled && merged.length > 0 && !sourceFailed && !execution.signal.aborted) {
-      this.cache.set(CacheNamespace.PLUGIN_SEARCH, cacheKey, merged);
-    }
     return {
       results: merged,
       registryVersion: registrySnapshot.version,
@@ -844,15 +961,6 @@ export class SearchService {
     }));
   }
 
-  private rebindRegistryVersion(
-    results: SearchResult[],
-    registryVersion: number
-  ): SearchResult[] {
-    return results.map((result) =>
-      result.source === "plugin" ? { ...result, registryVersion } : result
-    );
-  }
-
   private mergeSearchResults(
     a: SearchResult[],
     b: SearchResult[]
@@ -914,6 +1022,7 @@ export class SearchService {
   }
 
   getCacheStats() {
+    this.syncCacheTtl();
     return this.cache.getStats();
   }
 

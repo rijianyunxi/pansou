@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
 import { getSearchSettings, getSearchSettingsVersion } from "../../core/services/searchSettingsService";
+import { getSystemSettings } from "../../core/services/systemSettingsService";
 
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
@@ -8,7 +9,10 @@ export default defineEventHandler(async (event) => {
     return {
       code: 0,
       message: "success",
-      data: getSearchSettings(),
+      data: {
+        ...getSearchSettings(),
+        cacheTtlMinutes: getSystemSettings(useRuntimeConfig()).cacheTtlMinutes,
+      },
       // Opaque config version (mtime+size signature); null when unknown.
       version: getSearchSettingsVersion(),
     };

@@ -22,7 +22,7 @@
 
 - [x] Nuxt 4 + Vue 3 + TypeScript 应用，默认 Node server 构建。
 - [x] 搜索服务统一编排 Telegram 和插件来源：优先级分批、来源并发、超时、取消、重试、去重、时间排序和 warning 聚合。
-- [x] 默认系统 Telegram 清单为 48 个去重后的公开频道；支持浏览器自定义频道、`only` 搜索范围和服务端频道策略。
+- [x] 默认系统 Telegram 清单为 48 个去重后的公开频道；用户自定义频道通过独立搜索接口按请求传入，与系统频道配置隔离。
 - [x] 4 个内置 Code Plugin：`hunhepan`、`pansearch`、`duoduo`、`nyaa`。
 - [x] 动态 Instructions 插件：JSON/HTML 请求、字段映射、分页、多阶段、受限变量、样本验证、版本发布、停用、回滚、导入导出和热更新。
 - [x] Parser Plugin：同步 JavaScript 转换器运行时、版本仓库、测试、发布、停用、归档、回滚、导入导出，以及按上游/TG 频道绑定。
@@ -108,7 +108,7 @@
 ### 搜索请求边界
 
 - 关键词：去空白后 1–100 个字符。
-- 用户频道：最多 50 个，API 只接受规范化公开用户名；`channels_mode=only` 且为空时返回 400。
+- 用户频道搜索：通过 `/api/search/channels` 或 `/api/searchHttp/channels` 调用，最多 50 个，API 只接受规范化公开用户名；`channels` 为空时返回 400。系统搜索接口不接受 `channels` 和 `channels_mode`。
 - `conc`：1–16 的整数；服务内部实际并发还会受来源调度上限约束。
 - `NUXT_SEARCH_TIMEOUT_MS`：默认 30,000 ms，最大 120,000 ms；请求不能通过 `ext` 改写全局预算。
 - 搜索接口实例治理：单客户端在途默认 3、实例全局在途默认 16、30 秒窗口默认 30 次；拒绝时返回 429/503 和 `Retry-After`。

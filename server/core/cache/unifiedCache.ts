@@ -8,6 +8,7 @@ export enum CacheNamespace {
   TG_SEARCH = "tg",
   PLUGIN_SEARCH = "plugin",
   HOT_SEARCH = "hot_search",
+  SEARCH = "search",
 }
 
 /**
@@ -24,8 +25,8 @@ export interface UnifiedCacheConfig {
  * 统一缓存管理器
  * 提供命名空间支持和统一的缓存操作
  */
-export class UnifiedCache {
-  private caches: Map<string, MemoryCache<SearchResult[]>> = new Map();
+export class UnifiedCache<T = SearchResult[]> {
+  private caches: Map<string, MemoryCache<T>> = new Map();
   private config: UnifiedCacheConfig;
   private namespacePrefix: string;
 
@@ -45,13 +46,13 @@ export class UnifiedCache {
   /**
    * 获取或创建命名空间对应的缓存实例
    */
-  private getCache(namespace: CacheNamespace): MemoryCache<SearchResult[]> {
+  private getCache(namespace: CacheNamespace): MemoryCache<T> {
     const cacheKey = this.namespacePrefix
       ? `${this.namespacePrefix}:${namespace}`
       : namespace;
 
     if (!this.caches.has(cacheKey)) {
-      const cache = new MemoryCache<SearchResult[]>({
+      const cache = new MemoryCache<T>({
         maxSize: this.config.maxSize,
         maxMemoryBytes: this.config.maxMemoryBytes,
       });
@@ -64,7 +65,7 @@ export class UnifiedCache {
   /**
    * 获取缓存
    */
-  get(namespace: CacheNamespace, key: string): { hit: boolean; value?: SearchResult[] } {
+  get(namespace: CacheNamespace, key: string): { hit: boolean; value?: T } {
     if (!this.config.enabled) {
       return { hit: false };
     }
@@ -77,7 +78,7 @@ export class UnifiedCache {
   /**
    * 设置缓存
    */
-  set(namespace: CacheNamespace, key: string, value: SearchResult[]): void {
+  set(namespace: CacheNamespace, key: string, value: T): void {
     if (!this.config.enabled) {
       return;
     }
@@ -86,6 +87,13 @@ export class UnifiedCache {
     const fullKey = this.buildKey(namespace, key);
     const ttlMs = this.config.ttlMinutes * 60 * 1000;
     cache.set(fullKey, value, ttlMs);
+  }
+
+  setTtlMinutes(ttlMinutes: number): void {
+    if (Number.isFinite(ttlMinutes) && ttlMinutes > 0) {
+      if (this.config.ttlMinutes !== ttlMinutes) this.clearAll();
+      this.config.ttlMinutes = ttlMinutes;
+    }
   }
 
   /**

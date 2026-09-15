@@ -10,6 +10,13 @@ export interface SystemSettingsSeed {
   cacheTtlMinutes: number;
 }
 
+export function normalizeCacheTtlMinutes(value: unknown, fallback: number = SYSTEM_DEFAULTS.cacheTtlMinutes): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 10
+    ? Math.round(parsed)
+    : fallback;
+}
+
 /**
  * Defaults are seeded into SQLite on first boot, then all runtime values are
  * read from SQLite. The shared defaults module is only a recoverable bootstrap source.
@@ -18,7 +25,15 @@ export function getSystemSettings(fallback: unknown = {}): SystemSettingsSeed {
   const db = getSqliteDatabase();
   const row = db.getRow<any>("SELECT default_concurrency,plugin_timeout_ms,cache_ttl_minutes FROM system_settings WHERE id=1");
   const channels = (kind: string) => db.allRows<any>("SELECT name FROM system_channels WHERE kind=? ORDER BY position", kind).map(item => item.name);
-  if (row) return { priorityChannels: normalizeTelegramChannels(channels("priority")), defaultChannels: normalizeTelegramChannels(channels("default")), defaultConcurrency: row.default_concurrency, pluginTimeoutMs: row.plugin_timeout_ms, cacheTtlMinutes: row.cache_ttl_minutes };
+  if (row) {
+    const cacheTtlMinutes = normalizeCacheTtlMinutes(row.cache_ttl_minutes);
+    // Migrate an older out-of-range value (for example the former 30-minute
+    // default) into the persisted setting that the admin UI will display.
+    if (cacheTtlMinutes !== Number(row.cache_ttl_minutes)) {
+      db.run("UPDATE system_settings SET cache_ttl_minutes=?,updated_at=? WHERE id=1", cacheTtlMinutes, Date.now());
+    }
+    return { priorityChannels: normalizeTelegramChannels(channels("priority")), defaultChannels: normalizeTelegramChannels(channels("default")), defaultConcurrency: row.default_concurrency, pluginTimeoutMs: row.plugin_timeout_ms, cacheTtlMinutes };
+  }
   // 只有首次初始化时才使用默认值；已有 SQLite 配置始终优先。
   // fallback 仅保留给测试和显式运行时覆盖，不会引入任何默认频道。
   const override = fallback && typeof fallback === "object" && !Array.isArray(fallback)
@@ -30,7 +45,7 @@ export function getSystemSettings(fallback: unknown = {}): SystemSettingsSeed {
     defaultChannels: normalizeTelegramChannels(Array.from(bootstrap.defaultChannels || [])),
     defaultConcurrency: Number(bootstrap.defaultConcurrency) || SYSTEM_DEFAULTS.defaultConcurrency,
     pluginTimeoutMs: Number(bootstrap.pluginTimeoutMs) || SYSTEM_DEFAULTS.pluginTimeoutMs,
-    cacheTtlMinutes: Number(bootstrap.cacheTtlMinutes) || SYSTEM_DEFAULTS.cacheTtlMinutes,
+    cacheTtlMinutes: normalizeCacheTtlMinutes(bootstrap.cacheTtlMinutes),
   };
   const dbSeed = getSqliteDatabase();
   dbSeed.transaction(() => {
@@ -44,7 +59,7 @@ export function getSystemSettings(fallback: unknown = {}): SystemSettingsSeed {
 
 export function saveSystemSettings(patch: Partial<SystemSettingsSeed>): SystemSettingsSeed {
   const current = getSystemSettings(patch);
-  const value: SystemSettingsSeed = { ...current, ...(patch.priorityChannels ? { priorityChannels: normalizeTelegramChannels(patch.priorityChannels) } : {}), ...(patch.defaultChannels ? { defaultChannels: normalizeTelegramChannels(patch.defaultChannels) } : {}), ...(patch.defaultConcurrency !== undefined ? { defaultConcurrency: Number(patch.defaultConcurrency) } : {}), ...(patch.pluginTimeoutMs !== undefined ? { pluginTimeoutMs: Number(patch.pluginTimeoutMs) } : {}), ...(patch.cacheTtlMinutes !== undefined ? { cacheTtlMinutes: Number(patch.cacheTtlMinutes) } : {}) };
+  const value: SystemSettingsSeed = { ...current, ...(patch.priorityChannels ? { priorityChannels: normalizeTelegramChannels(patch.priorityChannels) } : {}), ...(patch.defaultChannels ? { defaultChannels: normalizeTelegramChannels(patch.defaultChannels) } : {}), ...(patch.defaultConcurrency !== undefined ? { defaultConcurrency: Number(patch.defaultConcurrency) } : {}), ...(patch.pluginTimeoutMs !== undefined ? { pluginTimeoutMs: Number(patch.pluginTimeoutMs) } : {}), ...(patch.cacheTtlMinutes !== undefined ? { cacheTtlMinutes: normalizeCacheTtlMinutes(patch.cacheTtlMinutes, current.cacheTtlMinutes) } : {}) };
   const db = getSqliteDatabase();
   db.transaction(() => {
     db.run("INSERT INTO system_settings(id,default_concurrency,plugin_timeout_ms,cache_ttl_minutes,updated_at) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET default_concurrency=excluded.default_concurrency,plugin_timeout_ms=excluded.plugin_timeout_ms,cache_ttl_minutes=excluded.cache_ttl_minutes,updated_at=excluded.updated_at", value.defaultConcurrency, value.pluginTimeoutMs, value.cacheTtlMinutes, Date.now());

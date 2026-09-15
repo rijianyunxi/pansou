@@ -89,10 +89,8 @@ export interface GenericResponse<T> {
 }
 
 export interface SearchRequest {
-  /** append (default): system + user channels; only: user TG, no plugins */
-  channels_mode?: "append" | "only";
+  /** Search only server-configured sources. User channel searches use /api/search/channels. */
   kw: string;
-  channels?: string[];
   conc?: number;
   refresh?: boolean;
   /** Include warnings, response metadata, and result provenance fields. */

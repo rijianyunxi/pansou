@@ -74,8 +74,9 @@ export function useSearch() {
     let completed = false;
     try {
       const body: Record<string, unknown> = { kw: options.keyword.trim() };
-      if (options.onlyUserTg) { body.channels = options.userTgChannels ?? []; body.channels_mode = "only"; }
-      const response = await fetch(`${options.apiBase}/search`, { method: "POST", credentials: "include", signal: ac.signal,
+      const endpoint = options.onlyUserTg ? "/search/channels" : "/search";
+      if (options.onlyUserTg) body.channels = options.userTgChannels ?? [];
+      const response = await fetch(`${options.apiBase}${endpoint}`, { method: "POST", credentials: "include", signal: ac.signal,
         headers: { "Accept": "text/event-stream", "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) {
         const data = await response.json().catch(() => undefined) as { statusMessage?: string; message?: string } | undefined;

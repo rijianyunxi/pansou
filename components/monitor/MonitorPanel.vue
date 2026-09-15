@@ -182,6 +182,18 @@
                 placeholder="默认 15000"
                 :disabled="settingsSaving || settingsLoading" />
             </label>
+            <label class="settings-field">
+              搜索缓存时长 (分钟)
+              <input
+                v-model="settingsDraft.cacheTtlMinutes"
+                type="number"
+                min="1"
+                max="10"
+                step="1"
+                placeholder="默认 10"
+                :disabled="settingsSaving || settingsLoading" />
+              <span class="field-hint">相同关键词的完整搜索结果在服务端复用，默认 10 分钟，可在此调整。</span>
+            </label>
           </div>
           <div class="mapping-actions">
             <button
@@ -412,6 +424,7 @@ interface SearchSettingsState {
   concurrency: number | null;
   pluginTimeoutMs: number | null;
   trashedPlugins: string[];
+  cacheTtlMinutes: number;
 }
 
 const rows = ref<MonitorRow[]>([]);
@@ -452,6 +465,7 @@ const searchSettings = ref<SearchSettingsState>({
   concurrency: null,
   pluginTimeoutMs: null,
   trashedPlugins: [],
+  cacheTtlMinutes: 10,
 });
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
@@ -460,7 +474,8 @@ const settingsDraft = ref<{
   plugins: string[];
   concurrency: number | "";
   pluginTimeoutMs: number | "";
-}>({ plugins: [], concurrency: "", pluginTimeoutMs: "" });
+  cacheTtlMinutes: number | "";
+}>({ plugins: [], concurrency: "", pluginTimeoutMs: "", cacheTtlMinutes: "" });
 const useAllPlugins = ref(true);
 const pluginOptions = computed(() =>
   rows.value
@@ -552,6 +567,7 @@ async function loadSearchSettings() {
       concurrency: data.concurrency ?? null,
       pluginTimeoutMs: data.pluginTimeoutMs ?? null,
       trashedPlugins: data.trashedPlugins ?? [],
+      cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
     useAllPlugins.value = searchSettings.value.plugins === null;
     settingsDraft.value = {
@@ -560,6 +576,7 @@ async function loadSearchSettings() {
         : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id),
       concurrency: searchSettings.value.concurrency ?? "",
       pluginTimeoutMs: searchSettings.value.pluginTimeoutMs ?? "",
+      cacheTtlMinutes: searchSettings.value.cacheTtlMinutes ?? 10,
     };
     settingsError.value = "";
   } catch (error: any) {
@@ -598,6 +615,7 @@ async function saveSearchSettingsUi() {
 
     const concurrency = Number(settingsDraft.value.concurrency);
     const pluginTimeoutMs = Number(settingsDraft.value.pluginTimeoutMs);
+    const cacheTtlMinutes = Number(settingsDraft.value.cacheTtlMinutes);
     const response = await $fetch<{ data?: SearchSettingsState }>(
       "/api/settings/search",
       {
@@ -616,6 +634,13 @@ async function saveSearchSettingsUi() {
             pluginTimeoutMs > 0
               ? pluginTimeoutMs
               : null,
+          cacheTtlMinutes:
+            settingsDraft.value.cacheTtlMinutes !== "" &&
+            Number.isFinite(cacheTtlMinutes) &&
+            cacheTtlMinutes >= 1 &&
+            cacheTtlMinutes <= 10
+              ? cacheTtlMinutes
+              : 10,
         },
       },
     );
@@ -626,11 +651,13 @@ async function saveSearchSettingsUi() {
       concurrency: data.concurrency ?? null,
       pluginTimeoutMs: data.pluginTimeoutMs ?? null,
       trashedPlugins: data.trashedPlugins ?? [],
+      cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
     useAllPlugins.value = searchSettings.value.plugins === null;
     settingsDraft.value.plugins = searchSettings.value.plugins
       ? [...searchSettings.value.plugins]
       : rows.value.filter((row) => row.kind === "upstream" && row.enabled && !row.trashed).map((row) => row.id);
+    settingsDraft.value.cacheTtlMinutes = searchSettings.value.cacheTtlMinutes ?? 10;
     await loadMonitor({ silent: true });
     notify("来源设置已保存，来源开启状态已与运行状态统一。");
     sourceSettingsDialog.value?.close();
