@@ -190,3 +190,16 @@ git diff --check
 ---
 
 开发边界、接口协议、Manifest/来源执行 schema、备份恢复和当前剩余待办统一见 [`TODO.md`](TODO.md)。
+
+## Transform 回归测试
+
+```bash
+pnpm run test:transforms             # 固定格式与边界用例，使用内存数据库
+pnpm run test:transforms:configured  # 逐一测试当前 SQLite 中保存的 transform
+pnpm run test:transforms:live        # 按当前请求配置访问全部启用来源
+pnpm exec jiti scripts/test-transforms-replay.ts # 回放本地实测响应
+```
+
+逐来源检查结果见 `scripts/TRANSFORM-AUDIT.md`。实测出现空结果或网络错误时退出码为非零，不能将空数组视为解析通过。回放依赖实测生成的 `.genflow_tmp/transform-live/` 响应预览（最多 100,000 字符），不代表频道全部历史消息。
+
+已有旧 Telegram 配置可运行 `pnpm exec jiti scripts/update-telegram-transforms.ts` 更新：只替换已知旧模板的哈希，保留自定义 transform，并先将 SQLite 备份至 `.genflow_tmp/`。混合盘的已知请求参数和字段问题可用 `scripts/update-hunhepan-transform.ts` 修复。当前仓库数据库已经应用这两项修复。

@@ -23,7 +23,10 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "typecheck": "cross-env PANHUB_BUILD_DIR=.nuxt-typecheck nuxt typecheck",
-    "test:jina-rate": "pnpm exec jiti scripts/test-jina-rate.ts"
+    "test:jina-rate": "pnpm exec jiti scripts/test-jina-rate.ts",
+    "test:transforms": "pnpm exec jiti scripts/test-transforms.ts",
+    "test:transforms:configured": "pnpm exec jiti scripts/test-transforms.ts --configured",
+    "test:transforms:live": "pnpm exec jiti scripts/test-transforms-live.ts"
   },
   "dependencies": {
     "TagCloud": "^2.5.0",
