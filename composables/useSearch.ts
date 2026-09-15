@@ -1,7 +1,7 @@
 import { computed, nextTick, ref } from "vue";
 import type {
   GenericResponse,
-  NormalizedSearchResult,
+  SearchResult,
   SearchResponse,
   SearchStreamResultData,
 } from "../server/core/types/models";
@@ -23,10 +23,10 @@ export interface SearchState {
   searched: boolean;
   elapsedMs: number;
   total: number;
-  results: NormalizedSearchResult[];
+  results: SearchResult[];
 }
 
-function mergeResource(current: NormalizedSearchResult, incoming: NormalizedSearchResult): NormalizedSearchResult {
+function mergeResource(current: SearchResult, incoming: SearchResult): SearchResult {
   const links = [...current.links];
   const seen = new Set(links.map((link) => `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`));
   for (const link of incoming.links) {
@@ -45,7 +45,7 @@ function mergeResource(current: NormalizedSearchResult, incoming: NormalizedSear
   };
 }
 
-function mergeIncremental(current: NormalizedSearchResult[], incoming: NormalizedSearchResult[]): NormalizedSearchResult[] {
+function mergeIncremental(current: SearchResult[], incoming: SearchResult[]): SearchResult[] {
   const byId = new Map(current.map((result) => [result.id, result]));
   for (const result of incoming) byId.set(result.id, byId.has(result.id) ? mergeResource(byId.get(result.id)!, result) : result);
   return [...byId.values()];

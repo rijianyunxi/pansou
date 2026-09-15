@@ -280,9 +280,9 @@
               </div>
               <article
                 v-for="item in selectedReport.results"
-                :key="item.unique_id"
+                :key="item.id"
               >
-                <strong>{{ item.title || "无标题" }}</strong>
+                <strong>{{ item.name || "无标题" }}</strong>
                 <p>
                   {{
                     item.links

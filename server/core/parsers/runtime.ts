@@ -2,15 +2,16 @@ import { load, type CheerioAPI } from "cheerio";
 import { Script, createContext } from "node:vm";
 import { inferDriveType, validResourceUrl } from "../../../utils/upstreamAdapter";
 import type { Link, SearchResult } from "../types/models";
+import { formatSearchDateTime } from "../utils/searchDateTime";
 import type { ParserExecutionContext, ParserPluginRecord } from "./types";
 import { validateParserCode } from "./repository";
 
 const MAX_OUTPUT = 500;
-const MAX_TITLE = 500;
-const MAX_CONTENT = 20_000;
+const MAX_NAME = 500;
+const MAX_DESCRIPTION = 20_000;
 const MAX_URL = 4_000;
 
-function text(value: unknown, max = MAX_CONTENT): string {
+function text(value: unknown, max = MAX_DESCRIPTION): string {
   return value == null ? "" : String(value).trim().slice(0, max);
 }
 
@@ -26,11 +27,11 @@ function normalizeLink(value: unknown): Link | null {
   return {
     url,
     type: inferDriveType(url),
-    password: text(input.password, 100),
+    password: text(input.password, 100) || null,
   };
 }
 
-function normalizeResults(value: unknown, record: ParserPluginRecord, context: ParserExecutionContext): SearchResult[] {
+function validateAndLimitResults(value: unknown, record: ParserPluginRecord, context: ParserExecutionContext): SearchResult[] {
   // Parser transforms have one output contract. Do not silently adapt the
   // removed title/content/url/items shape here: a source must return the same
   // resource-level fields that the public search API exposes.
@@ -49,13 +50,13 @@ function normalizeResults(value: unknown, record: ParserPluginRecord, context: P
     const description = text(input.description);
     const needle = compact(context.keyword);
     if (needle && !compact(`${input.name} ${description}`).includes(needle)) return [];
+    const datetime = formatSearchDateTime(input.datetime as string | null);
     return [{
-      message_id: "",
-      unique_id: id,
-      channel: context.channel || context.source || record.id,
-      datetime: text(input.datetime, 100),
-      title: text(input.name, MAX_TITLE),
-      content: description,
+      id,
+      name: text(input.name, MAX_NAME),
+      description: description || null,
+      datetime,
+      cloud_types: [...new Set(links.map((link) => link.type))],
       links,
       ...(Array.isArray(input.tags) ? { tags: input.tags.map((tag) => text(tag, 80)).filter(Boolean).slice(0, 20) } : {}),
       ...(Array.isArray(input.images) ? { images: input.images.map((image) => text(image, MAX_URL)).filter(Boolean).slice(0, 10) } : {}),
@@ -103,5 +104,5 @@ export function parseWithParserPlugin(
   const result = new Script("transform(payload, $, context)", { filename: `parser-plugin:${record.id}:invoke` })
     .runInContext(sandbox, { timeout: record.manifest.timeoutMs });
   if (result && typeof result.then === "function") throw new Error("解析器必须是同步函数，不允许异步网络请求");
-  return normalizeResults(result, record, context);
+  return validateAndLimitResults(result, record, context);
 }

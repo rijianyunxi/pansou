@@ -1,6 +1,5 @@
 import { load, type CheerioAPI } from "cheerio";
-type AnyNode = Parameters<CheerioAPI["contains"]>[0];
-import type { Link, SearchResult } from "../types/models";
+import type { SearchResult } from "../types/models";
 import { parseWithParserPlugin } from "../parsers/runtime";
 import type { ParserPluginRecord } from "../parsers/types";
 import type {
@@ -19,11 +18,7 @@ import {
 } from "./validator";
 import { executeSafeHttp, type SafeHttpResponse } from "../http/safeHttpExecutor";
 import { runWithRetry } from "../utils/retry";
-import {
-  inferDriveType,
-  readMappingPath,
-  validResourceUrl,
-} from "../../../utils/upstreamAdapter";
+import { readMappingPath } from "../../../utils/upstreamAdapter";
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024;
 /** Worst case today: MAX_STAGES(2) pre-stages + main request + pagination up
@@ -109,85 +104,6 @@ function fieldValue(
   return result;
 }
 
-function htmlField(
-  $: CheerioAPI,
-  item: AnyNode,
-  field: InstructionField | string | undefined,
-  path: string
-): unknown {
-  if (field == null) return "";
-  const spec: InstructionField =
-    typeof field === "string" ? { selector: field } : field;
-  if (spec.source === "constant") return spec.value;
-  let node = spec.selector ? $(item).find(spec.selector).first() : $(item);
-  if (spec.selector && !node.length) {
-    node = $(spec.selector)
-      .filter((_, candidate) => candidate === item || $.contains(item, candidate))
-      .first();
-  }
-  if (!node.length) return spec.default ?? "";
-  let value: unknown =
-    spec.source === "html"
-      ? node.html()
-      : spec.source === "href"
-        ? node.attr("href")
-        : spec.source === "attr"
-          ? node.attr(spec.attribute || "")
-          : node.text();
-  if ((value == null || value === "") && spec.default !== undefined) {
-    value = spec.default;
-  }
-  if (spec.regex) {
-    return finishField(applyRegex(text(value).trim(), spec.regex, path), spec);
-  }
-  let result = text(value).trim();
-  if (spec.transform === "number") return Number(result);
-  if (spec.transform === "boolean") return Boolean(result);
-  if (spec.prefix) result = spec.prefix + result;
-  if (spec.suffix) result += spec.suffix;
-  return result;
-}
-
-function normalizeResult(
-  result: SearchResult,
-  maxResults: number,
-  baseUrl?: string
-): SearchResult | undefined {
-  const title = result.title.replace(/<[^>]*>/g, "").trim();
-  if (!title) return undefined;
-  const links: Link[] = [];
-  const seen = new Set<string>();
-  for (const link of result.links || []) {
-    let url = link.url.trim();
-    if (baseUrl && url && !/^(?:magnet:|ed2k:|https?:)/i.test(url)) {
-      try {
-        url = new URL(url, baseUrl).toString();
-      } catch {
-        url = "";
-      }
-    }
-    if (!validResourceUrl(url) || seen.has(url)) continue;
-    seen.add(url);
-    links.push({
-      url,
-      password: String(link.password || "").trim(),
-      type: inferDriveType(url, link.type),
-    });
-  }
-  if (!links.length) return undefined;
-  const datetime =
-    result.datetime && !Number.isNaN(Date.parse(result.datetime))
-      ? new Date(result.datetime).toISOString()
-      : "";
-  return {
-    ...result,
-    title,
-    content: result.content?.trim() || "",
-    datetime,
-    links: links.slice(0, maxResults),
-  };
-}
-
 export interface InstructionExecutionTrace {
   stage: string;
   url: string;
@@ -222,10 +138,6 @@ export class ExecutionBudgetError extends Error {
     super(message);
     this.name = "ExecutionBudgetError";
   }
-}
-
-export interface InstructionParserOverride {
-  parse(body: string, context: { format: "json" | "html"; url: string; page: number }): SearchResult[];
 }
 
 export interface ExecutionBudgetOptions {
@@ -318,8 +230,6 @@ export async function executeInstructions(
     limit?: number;
     /** Per-call resource budget; defaults keep today's worst case admissible. */
     budget?: ExecutionBudgetOptions;
-    /** Optional admin-published parser plugin for the final response. */
-    parser?: InstructionParserOverride;
     /** Receives each completed request attempt, including failures. */
     onTrace?: (trace: InstructionExecutionTrace) => void;
   } = {}
@@ -328,27 +238,25 @@ export async function executeInstructions(
   const request = definition.request;
   const response = definition.response;
   const nextPage = response.nextPage;
-  const transformRecord: ParserPluginRecord | undefined = response.transform?.trim()
-    ? {
-        id: definition.manifest.id,
-        status: "published",
-        publishedVersion: definition.manifest.version,
-        manifest: {
-          id: definition.manifest.id,
-          name: definition.manifest.name,
-          version: definition.manifest.version,
-          format: response.format,
-          target: "upstream",
-          timeoutMs: Math.min(Math.max(definition.manifest.timeoutMs, 100), 5000),
-          maxResults: Math.min(Math.max(definition.manifest.maxResults, 1), 500),
-        },
-        code: response.transform,
-        versions: [],
-        createdAt: "",
-        updatedAt: "",
-        updatedBy: "system",
-      }
-    : undefined;
+  const transformRecord: ParserPluginRecord = {
+    id: definition.manifest.id,
+    status: "published",
+    publishedVersion: definition.manifest.version,
+    manifest: {
+      id: definition.manifest.id,
+      name: definition.manifest.name,
+      version: definition.manifest.version,
+      format: response.format,
+      target: "upstream",
+      timeoutMs: Math.min(Math.max(definition.manifest.timeoutMs, 100), 5000),
+      maxResults: Math.min(Math.max(definition.manifest.maxResults, 1), 500),
+    },
+    code: response.transform,
+    versions: [],
+    createdAt: "",
+    updatedAt: "",
+    updatedBy: "system",
+  };
   const stages = request.stages ?? [];
   const maxPages = nextPage
     ? Math.min(Math.max(nextPage.maxPages ?? DEFAULT_MAX_PAGES, 1), MAX_PAGES)
@@ -541,136 +449,6 @@ export async function executeInstructions(
     }
   };
 
-  const appendJsonResults = (
-    body: string,
-    baseUrl: string,
-    sink: SearchResult[],
-    page: number
-  ): number => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch (error) {
-      throw new Error(
-        `response JSON 解析失败: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-    const items = readMappingPath(parsed, response.items);
-    if (!Array.isArray(items)) {
-      throw new Error(`response.items 不是数组: ${response.items}`);
-    }
-    const before = sink.length;
-    const uniqueSuffix = page > 1 ? `-p${page}` : "";
-    for (
-      let index = 0;
-      index < items.length && sink.length < definition.manifest.maxResults;
-      index++
-    ) {
-      const item = items[index] as Record<string, unknown>;
-      const rawLinks = response.links.array
-        ? readMappingPath(item, response.links.array)
-        : [item];
-      const links = (Array.isArray(rawLinks) ? rawLinks : []).map((link) => {
-        const object = link as Record<string, unknown>;
-        const linkUrl = text(
-          fieldValue(object, response.links.url, "links.url")
-        );
-        return {
-          url: linkUrl,
-          type: inferDriveType(
-            linkUrl,
-            text(fieldValue(object, response.links.type, "links.type")),
-          ),
-          password: text(
-            fieldValue(object, response.links.password, "links.password")
-          ),
-        };
-      });
-      const normalized = normalizeResult(
-        {
-          message_id: text(
-            fieldValue(item, response.fields.messageId, "fields.messageId")
-          ),
-          unique_id:
-            text(fieldValue(item, response.fields.uniqueId, "fields.uniqueId")) ||
-            `${definition.manifest.id}${uniqueSuffix}-${index}`,
-          channel: definition.manifest.id,
-          datetime: text(
-            fieldValue(item, response.fields.datetime, "fields.datetime")
-          ),
-          title: text(fieldValue(item, response.fields.title, "fields.title")),
-          content: text(
-            fieldValue(item, response.fields.content, "fields.content")
-          ),
-          links,
-        },
-        definition.manifest.maxResults,
-        baseUrl
-      );
-      if (normalized) sink.push(normalized);
-    }
-    return sink.length - before;
-  };
-
-  const appendHtmlResults = (
-    body: string,
-    baseUrl: string,
-    sink: SearchResult[],
-    page: number
-  ): { appended: number; $: CheerioAPI } => {
-    const $ = load(body);
-    const itemNodes = $(response.items).toArray();
-    const before = sink.length;
-    const uniqueSuffix = page > 1 ? `-p${page}` : "";
-    for (
-      let index = 0;
-      index < itemNodes.length &&
-      sink.length < definition.manifest.maxResults;
-      index++
-    ) {
-      const item = itemNodes[index];
-      if (!item) continue;
-      const linkNodes = response.links.selector
-        ? $(item).find(response.links.selector).toArray()
-        : [item];
-      const links = linkNodes.map((node) => {
-        const linkUrl = text(htmlField($, node, response.links.url, "links.url"));
-        const type = text(
-          htmlField($, node, response.links.type, "links.type")
-        );
-        const password = text(
-          htmlField($, node, response.links.password, "links.password")
-        );
-        return {
-          url: linkUrl,
-          type: inferDriveType(linkUrl, type),
-          password,
-        };
-      });
-      const normalized = normalizeResult(
-        {
-          message_id: "",
-          unique_id: `${definition.manifest.id}${uniqueSuffix}-${index}`,
-          channel: definition.manifest.id,
-          datetime: text(
-            htmlField($, item, response.fields.datetime, "fields.datetime")
-          ),
-          title: text(htmlField($, item, response.fields.title, "fields.title")),
-          content: text(
-            htmlField($, item, response.fields.content, "fields.content")
-          ),
-          links,
-        },
-        definition.manifest.maxResults,
-        baseUrl
-      );
-      if (normalized) sink.push(normalized);
-    }
-    return { appended: sink.length - before, $ };
-  };
-
   const findNextPageUrl = ($: CheerioAPI, baseUrl: URL): URL | null => {
     const selector = nextPage?.selector;
     if (!selector) return null;
@@ -799,34 +577,22 @@ export async function executeInstructions(
   let lastPayload = payload;
   let lastDom: CheerioAPI | null = null;
   const appendPayloadResults = (pagePayload: SafeHttpResponse, page: number): number => {
-    if (options.parser || transformRecord) {
-      const parsed = options.parser
-        ? options.parser.parse(pagePayload.body, {
-            format: response.format,
-            url: pagePayload.url.toString(),
-            page,
-          })
-        : parseWithParserPlugin(transformRecord!, pagePayload.body, {
-            rawBody: pagePayload.body,
-            format: response.format,
-            source: definition.manifest.id,
-            ...(definition.manifest.id.startsWith("tg-")
-              ? { channel: definition.manifest.id.slice(3) }
-              : {}),
-            keyword,
-            url: pagePayload.url.toString(),
-            page,
-            route: /(^|\.)r\.jina\.ai$/i.test(pagePayload.url.hostname) ? "jina" : "direct",
-          });
-      const before = results.length;
-      results.push(...parsed.slice(0, Math.max(0, definition.manifest.maxResults - results.length)));
-      return results.length - before;
-    }
-    if (response.format === "json") {
-      return appendJsonResults(pagePayload.body, pagePayload.url.toString(), results, page);
-    }
-    lastDom = appendHtmlResults(pagePayload.body, pagePayload.url.toString(), results, page).$;
-    return results.length;
+    if (response.format === "html") lastDom = load(pagePayload.body);
+    const parsed = parseWithParserPlugin(transformRecord, pagePayload.body, {
+      rawBody: pagePayload.body,
+      format: response.format,
+      source: definition.manifest.id,
+      ...(definition.manifest.id.startsWith("tg-")
+        ? { channel: definition.manifest.id.slice(3) }
+        : {}),
+      keyword,
+      url: pagePayload.url.toString(),
+      page,
+      route: /(^|\.)r\.jina\.ai$/i.test(pagePayload.url.hostname) ? "jina" : "direct",
+    });
+    const before = results.length;
+    results.push(...parsed.slice(0, Math.max(0, definition.manifest.maxResults - results.length)));
+    return results.length - before;
   };
   appendPayloadResults(payload, 1);
 

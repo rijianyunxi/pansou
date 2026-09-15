@@ -307,7 +307,7 @@ export class SearchService {
         : result.links;
       const hasTime = !!result.datetime;
       const hasLinks = resultLinks.length > 0;
-      const keywordPriority = this.getKeywordPriority(result.title);
+      const keywordPriority = this.getKeywordPriority(result.name);
       const pluginLevel = this.getPluginLevelBySource(
         this.getResultSource(result)
       );
@@ -355,7 +355,7 @@ export class SearchService {
         const annotated = this.annotateTelegramResults(cached.value);
         for (const channel of chList) {
           const channelResults = annotated.filter(
-            (result) => result.channel.replace(/^@/, "").toLowerCase() === channel.toLowerCase()
+            (result) => (result.channel || "").replace(/^@/, "").toLowerCase() === channel.toLowerCase()
           );
           if (channelResults.length) {
             this.emitSourceSuccess(execution, {
@@ -869,10 +869,9 @@ export class SearchService {
     const pushUnique = (result: SearchResult) => {
       const firstLink = Array.isArray(result.links) ? result.links[0]?.url : "";
       const key =
-        result.unique_id ||
-        result.message_id ||
+        result.id ||
         firstLink ||
-        `${result.title}|${result.channel}|${result.datetime || ""}`;
+        `${result.name}|${result.channel || ""}|${result.datetime || ""}`;
       if (seen.has(key)) return;
       seen.add(key);
       out.push(result);
@@ -885,7 +884,7 @@ export class SearchService {
 
   private sortResultsByTimeDesc(arr: SearchResult[]) {
     arr.sort(
-      (x, y) => new Date(y.datetime).getTime() - new Date(x.datetime).getTime()
+      (x, y) => new Date(y.datetime || 0).getTime() - new Date(x.datetime || 0).getTime()
     );
   }
 

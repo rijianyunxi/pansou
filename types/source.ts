@@ -70,5 +70,5 @@ export interface UpstreamProbe {
   raw: string;
   rawTruncated: boolean;
   /** Final resource-level shape, identical to /api/search output. */
-  results: import("../server/core/types/models").NormalizedSearchResult[];
+  results: import("../server/core/types/models").SearchResult[];
 }

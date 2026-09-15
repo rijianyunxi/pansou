@@ -2,7 +2,7 @@ import { createEventStream, setHeader, type H3Event } from "h3";
 import type { SearchLease } from "../core/security/concurrency";
 import type {
   GenericResponse,
-  NormalizedSearchSourceUpdate,
+  SearchSourceUpdate,
   SearchStreamCompleteData,
   SearchStreamResultData,
 } from "../core/types/models";
@@ -16,11 +16,11 @@ function errorMessage(error: unknown): string {
   return "搜索过程中发生未知错误";
 }
 
-function searchResultKey(result: NormalizedSearchSourceUpdate["results"][number]): string {
+function searchResultKey(result: SearchSourceUpdate["results"][number]): string {
   return result.id;
 }
 
-function createDeltaFilter(): (update: NormalizedSearchSourceUpdate) => NormalizedSearchSourceUpdate {
+function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate {
   const sentLinks = new Map<string, Set<string>>();
   return (update) => ({
     ...update,

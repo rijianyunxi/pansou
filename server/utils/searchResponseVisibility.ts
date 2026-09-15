@@ -1,6 +1,6 @@
-import type { NormalizedSearchResult, NormalizedSearchSourceUpdate, SearchResponse } from "../core/types/models";
+import type { SearchResult, SearchSourceUpdate, SearchResponse } from "../core/types/models";
 
-function hideItemDebugFields(item: NormalizedSearchResult): NormalizedSearchResult {
+function hideItemDebugFields(item: SearchResult): SearchResult {
   const visible = { ...item };
   delete visible.source;
   delete visible.channel;
@@ -17,7 +17,7 @@ export function hideSearchResponseDebugFields(response: SearchResponse): SearchR
 }
 
 /** Hides the SSE source envelope and debug fields on result records by default. */
-export function hideSearchUpdateDebugFields(update: NormalizedSearchSourceUpdate): NormalizedSearchSourceUpdate {
+export function hideSearchUpdateDebugFields(update: SearchSourceUpdate): SearchSourceUpdate {
   const { source: _source, ...visible } = update;
   return {
     ...visible,

@@ -1,6 +1,5 @@
 import { getOrCreateSearchService } from "../core/services";
-import type { NormalizedSearchSourceUpdate, SearchSourceUpdate } from "../core/types/models";
-import { normalizeSearchResponse, normalizeSearchUpdate } from "../core/utils/searchResultNormalizer";
+import type { SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest } from "./searchRequest";
 import {
@@ -24,14 +23,13 @@ export function prepareSearch(raw: unknown): PreparedSearch {
 export async function executePreparedSearch(
   prepared: PreparedSearch,
   signal?: AbortSignal,
-  onSourceSuccess?: (update: NormalizedSearchSourceUpdate) => void,
+  onSourceSuccess?: (update: SearchSourceUpdate) => void,
 ) {
   const { request, effective } = prepared;
   const service = getOrCreateSearchService(useRuntimeConfig());
   const sourceCallback = onSourceSuccess
     ? (update: SearchSourceUpdate) => {
-        const normalized = normalizeSearchUpdate(update, request.debug, request.cloud_types);
-        onSourceSuccess(request.debug ? normalized : hideSearchUpdateDebugFields(normalized));
+        onSourceSuccess(request.debug ? update : hideSearchUpdateDebugFields(update));
       }
     : undefined;
   const { response, warnings } = await service.searchWithWarnings(
@@ -45,13 +43,12 @@ export async function executePreparedSearch(
     effective.ext,
     { signal, onSourceSuccess: sourceCallback },
   );
-  const normalizedResponse = normalizeSearchResponse(response, request.debug, request.cloud_types);
   return {
     code: 0,
     message: warnings.length ? "partial_success" : "success",
     data: request.debug
-      ? normalizedResponse
-      : hideSearchResponseDebugFields(normalizedResponse),
+      ? response
+      : hideSearchResponseDebugFields(response),
     ...(request.debug && warnings.length ? { warnings } : {}),
   };
 }

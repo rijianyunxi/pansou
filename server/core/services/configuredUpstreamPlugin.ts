@@ -61,14 +61,9 @@ export function upstreamToInstructionDefinition(source: UpstreamDefinition): Ins
       maxRequestBodyBytes: request?.maxRequestBodyBytes,
       stages: request?.stages as InstructionPluginDefinition["request"]["stages"],
     },
-    // The mapping placeholders are intentionally unreachable when transform is
-    // present; InstructionsPlugin selects transform before field extraction.
     response: {
       format: source.format,
       transform,
-      items: "",
-      fields: { title: "" },
-      links: { url: "" },
       nextPage: source.response?.nextPage,
     },
   };

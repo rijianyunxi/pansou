@@ -141,7 +141,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from "vue";
-import type { NormalizedSearchResult } from "~/server/core/types/models";
+import type { SearchResult } from "~/server/core/types/models";
 
 const config = useRuntimeConfig();
 const apiBase = (config.public?.apiBase as string) || "/api";
@@ -340,7 +340,7 @@ const filteredResults = computed(() => {
   return sortItems(items);
 });
 
-function sortItems(items: NormalizedSearchResult[]) {
+function sortItems(items: SearchResult[]) {
   const arr = [...items];
   switch (sortType.value) {
     case "date-desc":

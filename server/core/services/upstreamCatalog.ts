@@ -19,25 +19,13 @@ const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 const HTTP_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 type StoredCatalog = Record<string, UpstreamDefinition>;
 
-// The upstream catalog intentionally has one configuration model: request +
-// transform. Do not silently accept fields from the removed adapter-based
-// model, otherwise clients can believe they saved a mapping that is ignored.
-const REMOVED_SOURCE_FIELDS = [
-  "plugin", "adapter", "color", "initials", "mapping",
-  "tags", "driveType", "resourceTypes", "fallbackUrls",
-] as const;
-
-function assertNewSourceShape(raw: unknown): asserts raw is Partial<UpstreamDefinition> {
+// The catalog accepts only the current request + transform model. Unknown
+// properties are discarded by sanitizeSourceRequest instead of being carried
+// through to the runtime.
+function assertSourceObject(raw: unknown): asserts raw is Partial<UpstreamDefinition> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("来源配置必须是对象");
   }
-  const legacy = REMOVED_SOURCE_FIELDS.filter((field) =>
-    Object.prototype.hasOwnProperty.call(raw, field),
-  );
-  if (legacy.length) {
-    throw new Error(`${legacy.join("、")} 已废弃，请移除这些字段并使用 transform(payload, $, context)`);
-  }
-  assertNewRequestShape((raw as Record<string, unknown>).request);
 }
 
 function clone<T>(value: T): T { return structuredClone(value); }
@@ -54,22 +42,6 @@ const REQUEST_FIELDS = [
   "maxResponseBytes", "redirect", "allowedDomains", "maxRequestBodyBytes",
   "stages",
 ] as const;
-
-const REMOVED_REQUEST_FIELDS = ["fallbackUrls", "secrets"] as const;
-
-function assertNewRequestShape(raw: unknown, path = "request"): void {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
-  const request = raw as Record<string, unknown>;
-  const removed = REMOVED_REQUEST_FIELDS.filter((field) =>
-    Object.prototype.hasOwnProperty.call(request, field),
-  );
-  if (removed.length) {
-    throw new Error(`${path}.${removed.join("、")} 已废弃；HTTP 来源只允许一个 request.url`);
-  }
-  if (Array.isArray(request.stages)) {
-    request.stages.forEach((stage, index) => assertNewRequestShape(stage, `${path}.stages[${index}]`));
-  }
-}
 
 function sanitizeSourceRequest(raw: unknown): NonNullable<UpstreamDefinition["request"]> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -267,7 +239,7 @@ export function getUnifiedUpstream(id: string): UpstreamDefinition | undefined {
 
 /** Validate and normalize an unsaved source for the admin online debugger without persisting it. */
 export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition {
-  assertNewSourceShape(raw);
+  assertSourceObject(raw);
   const value = structuredClone(raw);
   const telegram = isTelegramSource(value);
   const channel = telegram
@@ -291,7 +263,7 @@ export function prepareUnifiedUpstreamForProbe(raw: unknown): UpstreamDefinition
 }
 
 export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
-  assertNewSourceShape(raw);
+  assertSourceObject(raw);
   const value = raw;
   const id = String(value.id || "").trim().toLowerCase();
   const catalog = read();
@@ -317,7 +289,7 @@ export function saveConfiguredUpstream(raw: unknown): UpstreamDefinition {
 }
 
 export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition {
-  assertNewSourceShape(raw);
+  assertSourceObject(raw);
   const value = raw;
   const rawChannel = String(value.channel || (String(value.id || "").toLowerCase().startsWith("tg-") ? String(value.id).slice(3) : ""));
   const channel = rawChannel.trim().replace(/^@/, "").toLowerCase();
@@ -352,7 +324,7 @@ export function saveConfiguredTelegramUpstream(raw: unknown): UpstreamDefinition
 }
 
 export function saveUnifiedUpstream(raw: unknown): UpstreamDefinition {
-  assertNewSourceShape(raw);
+  assertSourceObject(raw);
   return isTelegramSource(raw) ? saveConfiguredTelegramUpstream(raw) : saveConfiguredUpstream(raw);
 }
 
@@ -486,7 +458,7 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
   const nextCatalog = { ...catalog };
   const imported: UpstreamDefinition[] = [];
   for (const entry of entries) {
-    assertNewSourceShape(entry);
+    assertSourceObject(entry);
     const value = entry;
     const id = String(value.id || "").trim().toLowerCase();
     if (isTelegramSource(value)) {

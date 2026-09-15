@@ -1,6 +1,7 @@
 import { load, type CheerioAPI } from "cheerio";
 import { ofetch } from "ofetch";
 import type { CloudType, SearchResult } from "../types/models";
+import { formatSearchDateTime } from "../utils/searchDateTime";
 import { inferDriveType } from "../../../utils/upstreamAdapter";
 import { matchesSearchKeyword } from "../utils/searchKeyword";
 import {
@@ -933,15 +934,15 @@ function buildSearchResult(message: TgMessageInput): SearchResult | null {
   const timestamp = message.datetime ? Date.parse(message.datetime) : NaN;
 
   return {
-    message_id: message.postId,
-    unique_id: `tg-${message.channel}-${message.postId || message.index}`,
-    channel: message.channel,
+    id: `tg-${message.channel}-${message.postId || message.index}`,
+    name: title,
+    description: content || null,
     datetime: Number.isFinite(timestamp)
-      ? new Date(timestamp).toISOString()
-      : "",
-    title,
-    content,
-    links,
+      ? formatSearchDateTime(new Date(timestamp).toISOString())
+      : null,
+    cloud_types: [...new Set(links.map((link) => link.type))],
+    links: links.map((link) => ({ ...link, password: link.password || null })),
+    channel: message.channel,
   };
 }
 

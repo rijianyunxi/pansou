@@ -94,35 +94,6 @@ function validateFieldSpec(field: unknown, path: string): void {
   validateFieldRegex(field as InstructionField, path);
 }
 
-function validateResponseInstructions(response: InstructionPluginDefinition["response"]): void {
-  for (const key of ["title", "content", "datetime", "messageId", "uniqueId"] as const) {
-    if (response.fields?.[key] !== undefined) validateFieldSpec(response.fields[key], `response.fields.${key}`);
-  }
-  for (const key of ["url", "type", "password"] as const) {
-    if (response.links?.[key] !== undefined) validateFieldSpec(response.links[key], `response.links.${key}`);
-  }
-  const nextPage = response.nextPage;
-  if (!nextPage) return;
-  if (nextPage.selector !== undefined && typeof nextPage.selector !== "string") {
-    throw new Error("response.nextPage.selector 必须是字符串");
-  }
-  if (nextPage.queryParam !== undefined && (typeof nextPage.queryParam !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(nextPage.queryParam))) {
-    throw new Error("response.nextPage.queryParam 必须是 1 到 32 位字母、数字、下划线或连字符");
-  }
-  const hasSelector = typeof nextPage.selector === "string" && nextPage.selector.trim().length > 0;
-  const hasQueryParam = typeof nextPage.queryParam === "string" && nextPage.queryParam.length > 0;
-  if (!hasSelector && !hasQueryParam) {
-    throw new Error("response.nextPage 需要 selector 或 queryParam");
-  }
-  if (hasSelector && response.format !== "html") {
-    throw new Error("response.nextPage.selector 仅支持 HTML 响应");
-  }
-  if (nextPage.maxPages !== undefined && (!Number.isInteger(nextPage.maxPages) || nextPage.maxPages < 1 || nextPage.maxPages > 10)) {
-    throw new Error("response.nextPage.maxPages 必须是 1 到 10 的整数");
-  }
-}
-
-
 function validateStage(
   stage: InstructionStageRequest,
   index: number,
@@ -301,27 +272,28 @@ export function validateInstructionDefinition(input: unknown): InstructionPlugin
   if (!response || !["json", "html"].includes(response.format)) {
     throw new Error("response.format 必须是 json 或 html");
   }
-  const hasTransform = typeof response.transform === "string" && response.transform.trim().length > 0;
-  if (response.transform !== undefined && typeof response.transform !== "string") {
-    throw new Error("response.transform 必须是字符串");
+  if (typeof response.transform !== "string" || !response.transform.trim()) {
+    throw new Error("response.transform 必须是返回统一资源结果数组的字符串");
   }
-  // A function transform owns the complete response shape. Keep the mapping
-  // fields optional in that mode so a configured upstream is truly request +
-  // transform, rather than a second hidden adapter configuration.
-  if (!hasTransform && (typeof response.items !== "string" || !response.fields?.title || !response.links?.url)) {
-    throw new Error("未配置 transform 时，response.items、response.fields.title 和 response.links.url 是必填项");
-  }
-  if (!hasTransform) {
-    // JSON APIs may return the result array at the document root (an empty
-    // mapping path means root). HTML still needs a CSS selector to identify
-    // result cards.
-    if (response.format === "html" && !response.items.trim()) {
-      throw new Error("HTML 响应的 response.items 必须是 CSS 选择器");
+  const nextPage = response.nextPage;
+  if (nextPage) {
+    if (nextPage.selector !== undefined && typeof nextPage.selector !== "string") {
+      throw new Error("response.nextPage.selector 必须是字符串");
     }
-    if (response.format === "html" && !response.links.selector && response.links.array) {
-      throw new Error("HTML 配置应使用 response.links.selector，而不是 links.array");
+    if (nextPage.queryParam !== undefined && (typeof nextPage.queryParam !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(nextPage.queryParam))) {
+      throw new Error("response.nextPage.queryParam 必须是 1 到 32 位字母、数字、下划线或连字符");
     }
-    validateResponseInstructions(response);
+    const hasSelector = typeof nextPage.selector === "string" && nextPage.selector.trim().length > 0;
+    const hasQueryParam = typeof nextPage.queryParam === "string" && nextPage.queryParam.length > 0;
+    if (!hasSelector && !hasQueryParam) {
+      throw new Error("response.nextPage 需要 selector 或 queryParam");
+    }
+    if (hasSelector && response.format !== "html") {
+      throw new Error("response.nextPage.selector 仅支持 HTML 响应");
+    }
+    if (nextPage.maxPages !== undefined && (!Number.isInteger(nextPage.maxPages) || nextPage.maxPages < 1 || nextPage.maxPages > 10)) {
+      throw new Error("response.nextPage.maxPages 必须是 1 到 10 的整数");
+    }
   }
   return structuredClone(definition as InstructionPluginDefinition);
 }

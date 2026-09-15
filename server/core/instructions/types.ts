@@ -31,14 +31,6 @@ export interface InstructionField {
   regex?: InstructionFieldRegex;
 }
 
-export interface InstructionLinks {
-  array?: string;
-  selector?: string;
-  url: InstructionField | string;
-  type?: InstructionField | string;
-  password?: InstructionField | string;
-}
-
 export interface InstructionRetryConfig {
   /** Retries after the first request to the same URL (0-3). */
   maxRetries?: number;
@@ -59,7 +51,7 @@ export interface InstructionRequest {
   maxResponseBytes?: number;
   redirect?: "error" | "follow";
   allowedDomains?: string[];
-  /** HTTP is disabled by default; enable only for an audited legacy upstream. */
+  /** HTTP is disabled by default; enable only for an explicitly approved source. */
   allowInsecureHttp?: boolean;
   maxRequestBodyBytes?: number;
   /** Pre-main stages (max 2) that extract token/buildId style variables. */
@@ -88,17 +80,8 @@ export interface InstructionStageRequest {
 
 export interface InstructionResponse {
   format: "json" | "html";
-  items: string;
-  fields: {
-    title: InstructionField | string;
-    content?: InstructionField | string;
-    datetime?: InstructionField | string;
-    messageId?: InstructionField | string;
-    uniqueId?: InstructionField | string;
-  };
-  links: InstructionLinks;
-  /** Sandboxed synchronous transform(payload, $, context) used instead of field mapping. */
-  transform?: string;
+  /** Synchronous transform that returns canonical SearchResult records. */
+  transform: string;
   nextPage?: {
     /** HTML only: selector of the next-page anchor whose href is followed. */
     selector?: string;

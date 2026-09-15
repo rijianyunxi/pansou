@@ -93,13 +93,13 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { NormalizedCloudLink, NormalizedSearchResult } from "~/server/core/types/models";
+import type { Link, SearchResult } from "~/server/core/types/models";
 
 const props = withDefaults(defineProps<{
   title: string;
   color: string;
   icon: string;
-  items: NormalizedSearchResult[];
+  items: SearchResult[];
   expanded: boolean;
   initialVisible: number;
   canToggleCollapse?: boolean;
@@ -122,7 +122,7 @@ const emit = defineEmits<{
 const copiedKey = ref("");
 const visibleItems = computed(() => props.expanded ? props.items : props.items.slice(0, props.initialVisible));
 
-function linkKey(link: NormalizedCloudLink): string {
+function linkKey(link: Link): string {
   return `${link.type}|${link.url}|${link.password || ""}`;
 }
 
