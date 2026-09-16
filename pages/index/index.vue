@@ -87,16 +87,6 @@
           </button>
         </div>
 
-        <!-- 排序选择器 -->
-        <div class="sorter" v-if="hasResults">
-          <select v-model="sortType" class="sort-select">
-            <option value="default">默认排序</option>
-            <option value="date-desc">最新发布</option>
-            <option value="date-asc">最早发布</option>
-            <option value="name-asc">名称 A→Z</option>
-            <option value="name-desc">名称 Z→A</option>
-          </select>
-        </div>
       </div>
     </div>
 
@@ -132,11 +122,36 @@
       <span class="error-icon">⚠️</span>
       <span>{{ searchState.error }}</span>
     </section>
+
+    <!-- 页面工具：排序和回顶部固定在右下角，不占用结果区域布局。 -->
+    <div v-if="hasResults || showBackToTop" class="floating-tools" aria-label="页面工具">
+      <label v-if="hasResults" class="floating-sort">
+        <span class="floating-tool-icon" aria-hidden="true">↕</span>
+        <span class="floating-sort-label">排序</span>
+        <select v-model="sortType" aria-label="结果排序">
+          <option value="default">默认顺序</option>
+          <option value="date-desc">最新发布</option>
+          <option value="date-asc">最早发布</option>
+          <option value="name-asc">名称 A→Z</option>
+          <option value="name-desc">名称 Z→A</option>
+        </select>
+      </label>
+      <button
+        v-if="showBackToTop"
+        class="back-to-top"
+        type="button"
+        aria-label="回到顶部"
+        title="回到顶部"
+        @click="scrollToTop">
+        <span aria-hidden="true">↑</span>
+        <span>顶部</span>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from "vue";
+import { ref, onMounted, onBeforeUnmount, nextTick } from "vue";
 import type { SearchResult } from "~/server/core/types/models";
 
 const config = useRuntimeConfig();
@@ -147,9 +162,25 @@ const siteUrl = (config.public?.siteUrl as string) || "";
 const hotSearchRef = ref<{ init: () => Promise<void>; refresh: () => Promise<void> } | null>(null);
 
 // 页面加载时初始化热搜数据
+const showBackToTop = ref(false);
+
+function updateScrollState() {
+  showBackToTop.value = window.scrollY > 360;
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 onMounted(async () => {
+  window.addEventListener("scroll", updateScrollState, { passive: true });
+  updateScrollState();
   await new Promise((resolve) => setTimeout(resolve, 100));
   if (hotSearchRef.value) await hotSearchRef.value.init();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", updateScrollState);
 });
 
 // SEO 元数据
@@ -387,6 +418,7 @@ function sortItems(items: SearchResult[]) {
 .home {
   width: 100%;
   max-width: 760px;
+  min-width: 0;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -544,42 +576,105 @@ function sortItems(items: SearchResult[]) {
 }
 
 /* 排序选择器 */
-.sorter {
+.floating-tools {
+  position: fixed;
+  right: 24px;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 156px;
+}
+
+.floating-sort,
+.back-to-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.sort-select {
-  padding: 8px 12px;
+  min-height: 42px;
   border: 1px solid var(--border-light);
-  background: var(--bg-primary);
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 500;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+}
+
+.floating-sort {
+  gap: 6px;
+  padding: 5px 8px 5px 10px;
+}
+
+.floating-tool-icon {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.floating-sort-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.floating-sort select {
+  min-width: 0;
+  flex: 1;
+  padding: 5px 2px;
+  border: 0;
+  outline: 0;
+  background: transparent;
   color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
   cursor: pointer;
-  transition: border-color var(--transition-fast);
-  min-width: 140px;
 }
 
-.sort-select:hover {
-  border-color: var(--border-medium);
+.back-to-top {
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
 }
 
-.sort-select:focus {
-  outline: none;
+.back-to-top span:first-child {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.floating-sort:hover,
+.back-to-top:hover {
   border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.back-to-top:active {
+  transform: translateY(1px);
 }
 
 /* 搜索结果区域 */
 .results-section {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   animation: fadeIn 0.5s ease;
 }
 
 .results-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 16px;
 }
 
@@ -670,9 +765,15 @@ function sortItems(items: SearchResult[]) {
     font-size: 12px;
   }
 
-  .sort-select {
-    min-width: 120px;
-    font-size: 12px;
+  .floating-tools {
+    right: 14px;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    width: min(156px, calc(100vw - 28px));
+  }
+
+  .floating-sort,
+  .back-to-top {
+    min-height: 40px;
   }
 
   .empty-card {
@@ -707,9 +808,6 @@ function sortItems(items: SearchResult[]) {
     border-width: 2px;
   }
 
-  .sort-select {
-    border-width: 2px;
-  }
 }
 
 /* 减少动画模式支持 */

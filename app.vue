@@ -516,6 +516,7 @@ button {
 /* 主布局：顶部导航 + 内容区 */
 .layout {
   min-height: 100vh;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -668,6 +669,7 @@ button {
 .main {
   flex: 1;
   width: 100%;
+  min-width: 0;
   max-width: 1100px;
   margin: 0 auto;
   padding: 24px;
