@@ -4,14 +4,16 @@ export interface AuthUser {
   id: number;
   username: string;
   nickname: string | null;
+  role: "admin" | "user";
   status: "active" | "disabled";
   mustChangePassword: boolean;
   channels: string[];
+  lastLoginIp?: string | null;
   lastLoginAt: number | null;
   createdAt: number;
 }
 
-type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number };
+type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number; anonymousCustomChannels?: boolean; showAuthButtons?: boolean; registrationEnabled?: boolean };
 type ApiError = { statusCode?: number; statusMessage?: string; message?: string; data?: { statusMessage?: string; message?: string } };
 
 function errorStatus(error: ApiError | undefined): number | undefined {
@@ -36,6 +38,9 @@ export function useAuth() {
   const user = useState<AuthUser | null>("auth-user", () => null);
   const sessionReady = useState("auth-session-ready", () => false);
   const sessionId = useState<number | null>("auth-session-id", () => null);
+  const anonymousCustomChannels = useState<boolean>("auth-anonymous-custom-channels", () => false);
+  const showAuthButtons = useState<boolean>("auth-show-buttons", () => true);
+  const registrationEnabled = useState<boolean>("auth-registration-enabled", () => true);
   const sessionError = useState("auth-session-error", () => "");
   const initialized = useState("auth-session-initialized", () => false);
   let initializePromise: Promise<boolean> | undefined;
@@ -66,6 +71,9 @@ export function useAuth() {
         });
         user.value = data.authenticated ? data.user : null;
         sessionId.value = data.sessionId || null;
+        anonymousCustomChannels.value = !!data.anonymousCustomChannels;
+        showAuthButtons.value = data.showAuthButtons !== false;
+        registrationEnabled.value = data.registrationEnabled !== false;
         sessionReady.value = true;
         initialized.value = true;
         return true;
@@ -188,7 +196,7 @@ export function useAuth() {
   }
 
   return {
-    locked, loading, error, user, sessionReady, sessionId, sessionError, initialized,
+    locked, loading, error, user, sessionReady, sessionId, anonymousCustomChannels, showAuthButtons, registrationEnabled, sessionError, initialized,
     fetchStatus, initializeSession, unlock, login, register, logout, updateProfile,
     changePassword, handleSessionExpired,
   };

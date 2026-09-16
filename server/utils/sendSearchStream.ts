@@ -1,5 +1,4 @@
 import { createEventStream, setHeader, type H3Event } from "h3";
-import type { SearchLease } from "../core/security/concurrency";
 import type {
   GenericResponse,
   SearchSourceUpdate,
@@ -44,11 +43,10 @@ function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate
   });
 }
 
-/** Starts a pure SSE search response. Validation and admission must run first. */
+/** Starts a pure SSE search response. Validation and authorization must run first. */
 export function sendSearchStream(
   event: H3Event,
   prepared: PreparedSearchRequest,
-  lease: SearchLease,
 ): Promise<void> {
   setHeader(event, "Content-Type", "text/event-stream; charset=utf-8");
   setHeader(event, "Cache-Control", "private, no-store, no-transform");
@@ -102,7 +100,6 @@ export function sendSearchStream(
     }
   }).finally(async () => {
     queue.cancel();
-    lease.release();
     try {
       await stream.close();
     } catch {

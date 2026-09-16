@@ -42,7 +42,15 @@ export function listAdminSearchLogs(options: {
   const condition = where.length ? ` WHERE ${where.join(" AND ")}` : "";
   const from = " FROM search_logs l LEFT JOIN users u ON u.id = l.user_id";
   const total = Number(db.getRow<{ total: number }>(`SELECT COUNT(*) AS total${from}${condition}`, ...params)?.total || 0);
-  const rows = db.allRows<LogRow>(`SELECT l.id,l.session_id,l.user_id,u.username,u.nickname,l.keyword,l.ip,l.search_scope,l.channels_json,l.source_ids_json,l.created_at${from}${condition} ORDER BY l.created_at DESC,l.id DESC LIMIT ? OFFSET ?`, ...params, options.pageSize, (options.page - 1) * options.pageSize);
+  const rows = db.allRows<LogRow>(`SELECT l.id,l.session_id,l.user_id,u.username,u.nickname,l.keyword,COALESCE(NULLIF(NULLIF(l.ip, 'unknown'), ''), u.last_login_ip, 'unknown') AS ip,l.search_scope,l.channels_json,l.source_ids_json,l.created_at${from}${condition} ORDER BY l.created_at DESC,l.id DESC LIMIT ? OFFSET ?`, ...params, options.pageSize, (options.page - 1) * options.pageSize);
   const logs = rows.map(toLog);
   return { logs, items: logs, total, page: options.page, pageSize: options.pageSize, totalPages: Math.ceil(total / options.pageSize) };
+}
+
+export function deleteAdminSearchLogs(ids: unknown[]): { deleted: number } {
+  const uniqueIds = [...new Set(ids.map((value) => Number(value)).filter((value) => Number.isSafeInteger(value) && value > 0))];
+  if (!uniqueIds.length) return { deleted: 0 };
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  const result = getSqliteDatabase().run(`DELETE FROM search_logs WHERE id IN (${placeholders})`, ...uniqueIds);
+  return { deleted: result.changes };
 }

@@ -41,6 +41,8 @@ export interface SearchSourceMeta {
   status: SourceExecutionStatus;
   resultCount: number;
   elapsedMs: number;
+  /** Time spent executing and validating this source transform; null when not run. */
+  transformMs: number | null;
 }
 
 export interface SearchResponseMeta {
@@ -91,5 +93,4 @@ export interface SearchRequest {
   conc?: number;
   refresh?: boolean;
   ext?: Record<string, any>;
-  cloud_types?: string[];
 }

@@ -34,6 +34,31 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
     const metadata = /^(?:描述|简介|剧情|链接|下载|资源链接|类型|标签|大小|画质|视频|字幕|分享|评分|TMDB|豆瓣|提取码|密码|频道|订阅|https?:|magnet:|\[?图片|Image\s*\d)/i;
     return finish((lines.find((line) => !metadata.test(line)) || "").split(boundary)[0]);
   };
+  // Keep only the human-readable synopsis in the description field. Resource posts
+  // commonly put the title, synopsis, drive links, size, tags and channel
+  // promotion in one line after Telegram removes the original line breaks.
+  const descriptionOf = (value, title, allowFallback) => {
+    let source = String(value || "")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, " ")
+      .replace(/\*\*|__|\x60/g, "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/(?:https?:\/\/|magnet:\?)[^\s<>"')\]]+/gi, " ")
+      .replace(/\r/g, "");
+    const label = /(?:^|[\s\p{Extended_Pictographic}\uFE0F\u200D])(?:【|\[)?(?:资源描述|资源简介|剧情简介|内容简介|描述|简介|剧情介绍|摘要|介绍)(?:】|\])?\s*[:：]\s*/iu;
+    const found = source.match(label);
+    if (found) source = source.slice((found.index || 0) + found[0].length);
+    else if (!allowFallback) return null;
+    if (!found && title) {
+      const titleText = undecorate(title);
+      const titleIndex = titleText ? source.indexOf(titleText) : -1;
+      if (titleIndex >= 0) source = source.slice(titleIndex + titleText.length);
+    }
+    const stop = /(?:阿里(?:云盘)?|阿里|夸克(?:网盘)?|百度(?:网盘)?|迅雷(?:云盘)?|115(?:网盘)?|UC(?:网盘)?|天翼云盘|移动云盘|坚果云|蓝奏云|123网盘|网盘|下载地址|下载链接|资源链接|链接|提取码|密码|文件大小|大小|资源类型|类型|资源标签|标签|来源|来自|频道|群组|机器人|订阅|更新时间|上映|导演|主演|制片|评分|豆瓣|TMDB|画质|视频|字幕|分享)\s*[:：]|(?:👇|🔗|📁|📂|🏷|📢|🤖|🙍|👥)/i;
+    const boundary = source.search(stop);
+    if (boundary >= 0) source = source.slice(0, boundary);
+    source = source.replace(/^[\s:：;；|｜,，]+/, "").replace(/[\s\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").trim();
+    return clean(source).replace(/[\s\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").trim() || null;
+  };
   const passwordOf = (value) => String(value || "").match(/(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,8})/i)?.[1] || "";
   const isResource = (value) => {
     const url = String(value || "").trim();
@@ -61,7 +86,7 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
       message.find("p, div, blockquote").append("\n");
       const text = message.text().trim();
       const title = titleOf(text);
-      const content = clean(text);
+      const content = descriptionOf(text, title, false);
       const hrefs = root.find(".tgme_widget_message_text a[href]").map((_, link) => $(link).attr("href") || "").get();
       const links = linksOf(text, hrefs);
       const postId = root.find(".tgme_widget_message").attr("data-post") || "";

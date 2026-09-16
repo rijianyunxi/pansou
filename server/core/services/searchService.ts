@@ -1,14 +1,13 @@
 import pLimit from "p-limit";
 import { UnifiedCache, CacheNamespace } from "../cache/unifiedCache";
 import { createAbortScope, runWithSignal } from "../utils/abort";
-import { getSystemSettings } from "./systemSettingsService";
+import { getUserPolicy } from "./policyService";
 import { getUnifiedUpstreamVersion, listUnifiedUpstreams } from "./upstreamCatalog";
 import { upstreamToSourceDefinition } from "./configuredSource";
 import { executeSource } from "../source-runtime/executor";
 import type { UpstreamDefinition } from "../../../types/source";
-import type { CloudType, SearchExecutionResponse, SearchResult, SearchSourceMeta, SearchSourceUpdate } from "../types/models";
+import type { SearchExecutionResponse, SearchResult, SearchSourceMeta, SearchSourceUpdate } from "../types/models";
 import { ErrorCollector, classifyError, ErrorType, type WarningInfo } from "../utils/errors";
-import { inferDriveType, normalizeCloudType } from "../../../utils/upstreamAdapter";
 import { createSourceHealthChecker, type SourceHealthStatus } from "./sourceHealth";
 import {
   clearSourceHealthStatuses,
@@ -27,7 +26,6 @@ export interface SearchServiceOptions {
   defaultConcurrency: number;
   cacheEnabled: boolean;
   cacheTtlMinutes: number;
-  searchTimeoutMs?: number;
   sourceLoader?: () => Promise<UpstreamDefinition[]>;
 }
 
@@ -47,15 +45,14 @@ interface SearchCacheEntry {
   sources: Record<string, CachedSourceState>;
 }
 
-function buildCacheKey(keyword: string, sources: UpstreamDefinition[], cloudTypes: string[] | undefined, ext: Record<string, any> | undefined): string {
-  const cloudKey = (cloudTypes || []).map((value) => normalizeCloudType(value) || value.trim().toLowerCase()).sort().join(",");
+function buildCacheKey(keyword: string, sourceIds: string[], ext: Record<string, any> | undefined): string {
   let extKey = "";
   try {
     extKey = JSON.stringify(ext || {});
   } catch {
     extKey = "[unserializable]";
   }
-  return `keyword:${canonical(keyword)}:sources:${sources.map(sourceKey).sort().join(",")}:cloud:${cloudKey}:ext:${extKey}:config:${getUnifiedUpstreamVersion()}`;
+  return `keyword:${canonical(keyword)}:sources:${sourceIds.map((id) => id.trim().toLowerCase()).sort().join(",")}:ext:${extKey}:config:${getUnifiedUpstreamVersion()}`;
 }
 
 export class SearchService {
@@ -82,8 +79,11 @@ export class SearchService {
     }
   }
 
-  private syncCacheTtl(): void {
-    this.cache.setTtlMinutes(getSystemSettings().cacheTtlMinutes);
+  private syncRuntimePolicy(): void {
+    const policy = getUserPolicy();
+    this.options.defaultConcurrency = policy.defaultConcurrency;
+    this.cache.setTtlMinutes(policy.cacheTtlMinutes);
+    this.health.setMaxFailures(policy.circuitBreakerMaxFailures);
   }
 
   private resolveSources(sources: UpstreamDefinition[] | undefined, ephemeral: UpstreamDefinition[] = []): UpstreamDefinition[] {
@@ -102,15 +102,14 @@ export class SearchService {
     sources: UpstreamDefinition[] | undefined,
     concurrency: number | undefined,
     forceRefresh: boolean,
-    cloudTypes: string[] | undefined,
     ext: Record<string, any> | undefined,
     executionOptions: SearchExecutionOptions = {},
     ephemeralSources: UpstreamDefinition[] = [],
   ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     executionOptions.signal?.throwIfAborted();
-    this.syncCacheTtl();
+    this.syncRuntimePolicy();
     const resolved = this.resolveSources(sources, ephemeralSources);
-    const cacheKey = buildCacheKey(keyword, resolved, cloudTypes, ext);
+    const cacheKey = buildCacheKey(keyword, resolved.map(sourceKey), ext);
     const cacheAllowed = this.options.cacheEnabled && !ephemeralSources.length;
     const canUseCache = !forceRefresh && cacheAllowed;
     let cachedEntry: SearchCacheEntry | undefined;
@@ -129,23 +128,23 @@ export class SearchService {
         }
       }
     }
-    const run = this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, cloudTypes, ext, executionOptions, canUseCache ? cachedEntry : undefined, cacheKey, cacheAllowed);
+    const run = this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, ext, executionOptions, canUseCache ? cachedEntry : undefined, cacheKey, cacheAllowed);
     if (canUseCache) this.inFlight.set(cacheKey, run);
     try { return await run; } finally { if (this.inFlight.get(cacheKey) === run) this.inFlight.delete(cacheKey); }
   }
 
-  async search(keyword: string, sources: UpstreamDefinition[] | undefined, concurrency?: number, forceRefresh?: boolean, cloudTypes?: string[], ext?: Record<string, any>, executionOptions: SearchExecutionOptions = {}, ephemeralSources: UpstreamDefinition[] = []): Promise<SearchExecutionResponse> {
-    return (await this.searchWithWarnings(keyword, sources, concurrency, !!forceRefresh, cloudTypes, ext, executionOptions, ephemeralSources)).response;
+  async search(keyword: string, sources: UpstreamDefinition[] | undefined, concurrency?: number, forceRefresh?: boolean, ext?: Record<string, any>, executionOptions: SearchExecutionOptions = {}, ephemeralSources: UpstreamDefinition[] = []): Promise<SearchExecutionResponse> {
+    return (await this.searchWithWarnings(keyword, sources, concurrency, !!forceRefresh, ext, executionOptions, ephemeralSources)).response;
   }
 
-  private async executeSearchWithTimeout(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number | undefined, cloudTypes: string[] | undefined, ext: Record<string, any> | undefined, executionOptions: SearchExecutionOptions, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
-    const configuredBudget = Number(this.options.searchTimeoutMs);
+  private async executeSearchWithTimeout(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number | undefined, ext: Record<string, any> | undefined, executionOptions: SearchExecutionOptions, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
+    const configuredBudget = Number(getUserPolicy().searchTimeoutMs);
     const timeoutMs = Number.isFinite(configuredBudget) && configuredBudget > 0 ? Math.min(configuredBudget, 120_000) : 30_000;
     const limit = Math.min(16, Math.max(1, Math.floor(Number(concurrency || this.options.defaultConcurrency) || 1)));
     const scope = createAbortScope(timeoutMs, `整次搜索超时 (${timeoutMs}ms)，已返回完成的来源`, executionOptions.signal);
     const execution = { signal: scope.signal, schedule: pLimit(limit), onSourceSuccess: executionOptions.onSourceSuccess };
     try {
-      const result = await this.performSearch(keyword, allSources, sourcesToExecute, limit, cloudTypes, ext || {}, execution, cachedEntry, cacheKey, cacheAllowed);
+      const result = await this.performSearch(keyword, allSources, sourcesToExecute, limit, ext || {}, execution, cachedEntry, cacheKey, cacheAllowed);
       if (scope.signal.aborted && !executionOptions.signal?.aborted) {
         const detail = classifyError(scope.signal.reason, "search");
         result.warnings.push({ type: detail.type, message: detail.message, source: detail.source, count: 1 });
@@ -155,7 +154,7 @@ export class SearchService {
     } finally { scope.dispose(); }
   }
 
-  private async performSearch(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number, cloudTypes: string[] | undefined, ext: Record<string, any>, execution: { signal: AbortSignal; schedule: ReturnType<typeof pLimit>; onSourceSuccess?: (update: SearchSourceUpdate) => void }, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
+  private async performSearch(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number, ext: Record<string, any>, execution: { signal: AbortSignal; schedule: ReturnType<typeof pLimit>; onSourceSuccess?: (update: SearchSourceUpdate) => void }, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const collector = new ErrorCollector();
     const cachedWarnings: WarningInfo[] = [];
     const cachedStates = cachedEntry?.sources || {};
@@ -167,6 +166,7 @@ export class SearchService {
         status: cached?.status === "success" ? "success" : cached?.status === "failed" ? "failed" : "skipped",
         resultCount: cached?.status === "success" ? cached.results.length : 0,
         elapsedMs: 0,
+        transformMs: null,
       };
     });
     const diagnosticById = new Map(diagnostics.map((item) => [item.id, item]));
@@ -210,17 +210,22 @@ export class SearchService {
           }
           return [];
         }
-        const result = await runWithSignal(() => executeSource(definition, keyword, { signal: execution.signal, limit: definition.manifest.maxResults, context: { ext } }), execution.signal);
-        const annotated = result.results;
+        const result = await runWithSignal(() => executeSource(definition, keyword, {
+          signal: execution.signal,
+          limit: definition.manifest.maxResults,
+          context: { ext },
+          onTransformTiming: (elapsedMs) => { diagnostic.transformMs = elapsedMs; },
+        }), execution.signal);
+        const sourceResults = result.results;
         diagnostic.status = "success";
-        diagnostic.resultCount = annotated.length;
+        diagnostic.resultCount = sourceResults.length;
         diagnostic.elapsedMs = Date.now() - started;
-        this.recordHealth(source, true, diagnostic.elapsedMs, annotated.length);
+        this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
         if (execution.onSourceSuccess && !execution.signal.aborted) {
-          execution.onSourceSuccess({ request: { keyword, phase: "source" }, results: annotated });
+          execution.onSourceSuccess({ request: { keyword, phase: "source" }, results: sourceResults });
         }
-        nextStates[sourceKey(source)] = { id: source.id, name: source.name, status: "success", results: clone(annotated) };
-        return annotated;
+        nextStates[sourceKey(source)] = { id: source.id, name: source.name, status: "success", results: clone(sourceResults) };
+        return sourceResults;
       } catch (error) {
         diagnostic.status = execution.signal.aborted ? "skipped" : "failed";
         diagnostic.elapsedMs = Date.now() - started;
@@ -242,16 +247,9 @@ export class SearchService {
       const cached = cachedStates[sourceKey(source)];
       return cached?.status === "success" ? cached.results : [];
     });
-    const allResults = this.mergeUniqueResults([...cachedResults, ...resultGroups.flat()]);
-    const allowed = cloudTypes?.length ? new Set(cloudTypes.map((value) => normalizeCloudType(value)).filter((value): value is CloudType => !!value)) : undefined;
-    const filtered = allResults.map((result) => {
-      if (!allowed) return result;
-      const links = result.links.filter((link) => allowed.has(inferDriveType(link.url, link.type)));
-      return links.length === result.links.length ? result : { ...result, links, cloud_types: [...new Set(links.map((link) => link.type))] };
-    }).filter((result) => result.links.length > 0);
-    this.sortResultsByTimeDesc(filtered);
+    const results = this.mergeUniqueResults([...cachedResults, ...resultGroups.flat()]);
     const warnings = Array.from(new Map([...collector.getWarnings(), ...cachedWarnings].map((warning) => [`${warning.type}:${warning.source || ""}`, warning])).values());
-    const response: SearchExecutionResponse = { total: filtered.length, results: filtered, meta: { sources: diagnostics, warnings } };
+    const response: SearchExecutionResponse = { total: results.length, results, meta: { sources: diagnostics, warnings } };
     if (cacheAllowed && allSources.every((source) => source.enabled !== false) && Object.keys(nextStates).length) {
       this.cache.set(CacheNamespace.SEARCH, cacheKey, { sources: nextStates });
     }
@@ -263,12 +261,11 @@ export class SearchService {
       const cached = entry.sources[sourceKey(source)];
       return cached?.status === "success" ? cached.results : [];
     }));
-    this.sortResultsByTimeDesc(results);
     return {
       total: results.length,
       results,
       meta: {
-        sources: sources.map((source) => ({ id: source.id, name: source.name, status: "success", resultCount: entry.sources[sourceKey(source)]?.results.length || 0, elapsedMs: 0 })),
+        sources: sources.map((source) => ({ id: source.id, name: source.name, status: "success", resultCount: entry.sources[sourceKey(source)]?.results.length || 0, elapsedMs: 0, transformMs: null })),
         warnings: [],
       },
     };
@@ -290,7 +287,6 @@ export class SearchService {
       seen.add(key); return true;
     });
   }
-  private sortResultsByTimeDesc(results: SearchResult[]): void { results.sort((a, b) => new Date(b.datetime || 0).getTime() - new Date(a.datetime || 0).getTime()); }
   private recordHealth(source: UpstreamDefinition, ok: boolean, elapsedMs: number, resultCount: number, message?: string, category?: string): void {
     this.sourceNames.set(source.id, source.name);
     if (ok) {
@@ -306,7 +302,7 @@ export class SearchService {
     if (status) saveSourceHealthStatus(source.id, status);
   }
 
-  getCacheStats() { this.syncCacheTtl(); return this.cache.getStats(); }
+  getCacheStats() { this.syncRuntimePolicy(); return this.cache.getStats(); }
   clearCache(namespace?: CacheNamespace) { namespace ? this.cache.clearNamespace(namespace) : this.cache.clearAll(); }
   getSourceHealthStatus(): Array<SourceHealthStatus & { id: string }> {
     const configuredNames = new Map(listUnifiedUpstreams().map((source) => [source.id, source.name]));

@@ -20,7 +20,6 @@ export interface SearchState {
   loading: boolean;
     paused: boolean;
   error: string;
-  warning: string;
   searched: boolean;
   elapsedMs: number;
   total: number;
@@ -54,7 +53,7 @@ function mergeIncremental(current: SearchResult[], incoming: SearchResult[]): Se
 
 export function useSearch() {
   const initial = (): SearchState => ({ loading: false, paused: false,
-    error: "", warning: "", searched: false, elapsedMs: 0, total: 0, results: [] });
+    error: "", searched: false, elapsedMs: 0, total: 0, results: [] });
   const state = ref<SearchState>(initial());
   let seq = 0;
   let controller: AbortController | undefined;
@@ -117,7 +116,6 @@ export function useSearch() {
           if (update) { applyResponse({ total: update.results.length, results: update.results }, false); await nextTick(); }
         } else if (event.event === "complete") {
           if (payload.code !== 0) throw new Error(payload.message || "搜索失败");
-          state.value.warning = payload.message === "partial_success" ? "部分来源未完成，已展示成功来源的结果。" : "";
           completed = true;
         } else if (event.event === "error") throw new Error(payload.message || "搜索请求失败，请重试。");
       });
@@ -132,7 +130,7 @@ export function useSearch() {
       } else if (status === 403) {
         state.value.error = "搜索范围或自定义频道当前无权限（403）。请登录账号、检查频道权限或联系管理员；拒绝请求不会计入搜索配额。";
       } else if (status === 429) {
-        state.value.error = "搜索请求过于频繁或并发已达上限（429）。请稍候再试；系统会按当前浏览器会话限流，不按 IP 汇总。";
+        state.value.error = "搜索服务暂时不可用（429），请稍候再试。";
       } else {
         state.value.error = error?.data?.statusMessage || error?.message || "搜索请求失败，请重试。";
       }
@@ -153,7 +151,14 @@ export function useSearch() {
     snapshot = { ...options, userTgChannels: [...(options.userTgChannels ?? [])] }; state.value.searched = true;
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLInputElement) document.activeElement.blur(); await run(snapshot);
   }
-  function pauseSearch() { if (!controller || state.value.paused) return; accumulated += performance.now() - started; state.value.elapsedMs = Math.round(accumulated); cancelActiveRequests(); state.value.paused = true; }
+  function pauseSearch() {
+    if (!controller || state.value.paused) return;
+    accumulated += performance.now() - started;
+    state.value.elapsedMs = Math.round(accumulated);
+    cancelActiveRequests();
+    state.value.loading = false;
+    state.value.paused = true;
+  }
   async function continueSearch(_options?: SearchOptions) { if (!state.value.paused || !snapshot) return; await run(snapshot); }
   function resetSearch() { cancelActiveRequests(); snapshot = undefined; accumulated = 0; state.value = initial(); }
   async function copyLink(url: string) { try { await navigator.clipboard.writeText(url); } catch {} }

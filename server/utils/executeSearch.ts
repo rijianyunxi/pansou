@@ -42,7 +42,6 @@ export async function executePreparedSearch(prepared: PreparedSearchRequest, sig
     selected,
     prepared.effective.conc,
     !!prepared.request.refresh,
-    prepared.request.cloud_types,
     prepared.effective.ext,
     { signal, onSourceSuccess: sourceCallback },
     ephemeral,

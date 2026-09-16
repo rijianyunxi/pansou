@@ -1,8 +1,7 @@
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
 import { getSqliteDatabase } from "../storage/sqlite";
-import { getSystemSettings } from "./systemSettingsService";
 
-export interface SearchSettings { sources: string[] | null; channels: string[] | null; concurrency: number | null; /** Derived from system_settings; never stored here. */ requestTimeoutMs: number; trashedSources: string[]; }
+export interface SearchSettings { sources: string[] | null; channels: string[] | null; trashedSources: string[]; }
 const MAX_CHANNELS = 200;
 const clone = <T>(value: T): T => structuredClone(value);
 function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettings {
@@ -17,18 +16,17 @@ function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettin
   const rawChannels = strList(value.channels);
   const channels = rawChannels === null ? null : normalizeTelegramChannels(rawChannels).filter(name => TG_CHANNEL_PATTERN.test(name)).slice(0, MAX_CHANNELS);
   const trashedSources = strList(value.trashedSources, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s)) || [];
-  const concurrency = typeof value.concurrency === "number" && value.concurrency >= 1 && value.concurrency <= 16 ? Math.round(value.concurrency) : null;
-  return { sources, channels, concurrency, requestTimeoutMs: getSystemSettings().requestTimeoutMs, trashedSources };
+  return { sources, channels, trashedSources };
 }
 
 export function getSearchSettings(): SearchSettings {
   const db = getSqliteDatabase();
-  const row = db.getRow<{ concurrency: number | null; sources_configured: number; channels_configured: number }>("SELECT concurrency,sources_configured,channels_configured FROM search_settings WHERE id=1");
+  const row = db.getRow<{ sources_configured: number; channels_configured: number }>("SELECT sources_configured,channels_configured FROM search_settings WHERE id=1");
   const sourceRows = db.allRows<{ source_id: string; trashed: number }>("SELECT source_id,trashed FROM search_setting_sources ORDER BY source_id");
   const channelRows = db.allRows<{ channel: string }>("SELECT channel FROM search_setting_channels ORDER BY position");
   const configuredSources = sourceRows.filter(row => !row.trashed).map(row => row.source_id);
   const trashedSources = sourceRows.filter(row => row.trashed).map(row => row.source_id);
-  return sanitize({ sources: row?.sources_configured ? configuredSources : null, channels: row?.channels_configured ? channelRows.map(row => row.channel) : null, concurrency: row?.concurrency ?? null, trashedSources });
+  return sanitize({ sources: row?.sources_configured ? configuredSources : null, channels: row?.channels_configured ? channelRows.map(row => row.channel) : null, trashedSources });
 }
 export function getSearchSettingsVersion(): string | null {
   const db = getSqliteDatabase();
@@ -57,7 +55,7 @@ export function saveSearchSettings(patch: unknown): SearchSettings {
   const next = sanitize({ ...getSearchSettings(), ...((patch && typeof patch === "object") ? patch as Record<string, unknown> : {}) });
   const db = getSqliteDatabase(); const now = Date.now();
   db.transaction(() => {
-    db.run("INSERT INTO search_settings(id,concurrency,sources_configured,channels_configured,updated_at) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=excluded.concurrency,sources_configured=excluded.sources_configured,channels_configured=excluded.channels_configured,updated_at=excluded.updated_at", next.concurrency, next.sources !== null ? 1 : 0, next.channels !== null ? 1 : 0, now);
+    db.run("INSERT INTO search_settings(id,concurrency,sources_configured,channels_configured,updated_at) VALUES(1,NULL,?,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=NULL,sources_configured=excluded.sources_configured,channels_configured=excluded.channels_configured,updated_at=excluded.updated_at", next.sources !== null ? 1 : 0, next.channels !== null ? 1 : 0, now);
     const sourceIds = [...new Set([...(next.sources || []), ...next.trashedSources])];
     if (sourceIds.length) db.run(`DELETE FROM search_setting_sources WHERE source_id NOT IN (${sourceIds.map(() => "?").join(",")})`, ...sourceIds);
     else db.run("DELETE FROM search_setting_sources");

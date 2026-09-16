@@ -17,9 +17,7 @@ export interface UseSettingsReturn {
   syncWithSession: () => Promise<void>;
   saveSettings: () => boolean;
   saveChannels: (channels?: string[]) => Promise<boolean>;
-  importLocalChannels: () => Promise<boolean>;
   applyChannels: (channels: string[]) => void;
-  localChannels: Ref<string[]>;
   channelLimit: Ref<number>;
   isServerManaged: Ref<boolean>;
   storageError: Ref<string>;
@@ -40,7 +38,9 @@ function sanitizeTheme(value: unknown): UserSettings["theme"] {
 export function useSettings(): UseSettingsReturn {
   const auth = useAuth();
   const settings = useState<UserSettings>("user-search-settings", () => ({ userTgChannels: [], theme: "classic" }));
-  const localChannels = useState<string[]>("user-search-local-channels", () => []);
+  // Channels are no longer stored in localStorage; both authenticated and
+  // permitted anonymous channels live in SQLite (users.custom_channels_json or
+  // sessions.custom_channels_json).
   const channelLimit = useState<number>("user-search-channel-limit", () => MAX_USER_TG_CHANNELS);
   const serverManaged = useState<boolean>("user-search-channels-server-managed", () => false);
   const settingsReady = useState<boolean>("user-search-settings-ready", () => false);
@@ -50,16 +50,13 @@ export function useSettings(): UseSettingsReturn {
     if (typeof window === "undefined") return;
     try {
       const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
-      if (!raw) {
-        localChannels.value = [];
-        return;
-      }
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return;
-      const channels = sanitizeChannels((parsed as { userTgChannels?: unknown }).userTgChannels);
-      localChannels.value = channels;
-      settings.value = { userTgChannels: channels, theme: sanitizeTheme((parsed as { theme?: unknown }).theme) };
+      const parsed = raw ? JSON.parse(raw) : {};
+      const theme = sanitizeTheme(parsed && typeof parsed === "object" ? (parsed as { theme?: unknown }).theme : undefined);
+      // Remove legacy browser channel data while retaining the visual setting.
+      settings.value = { userTgChannels: [], theme };
+      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({ theme }));
     } catch {
+      settings.value = { ...settings.value, userTgChannels: [] };
       storageError.value = "无法读取浏览器设置，当前使用默认配置。";
     }
   }
@@ -76,37 +73,49 @@ export function useSettings(): UseSettingsReturn {
 
   async function syncWithSession(): Promise<void> {
     if (!settingsReady.value) loadSettings();
-    if (!auth.user.value) {
-      serverManaged.value = false;
-      channelLimit.value = MAX_USER_TG_CHANNELS;
-      applyChannels(localChannels.value);
-      return;
-    }
+    // Never fall back to a browser copy. A logout must leave the UI empty, and
+    // an anonymous session gets its own server-side channel list when allowed.
+    applyChannels([]);
+    serverManaged.value = false;
+    channelLimit.value = MAX_USER_TG_CHANNELS;
+
     try {
-      const result = await $fetch<{ channels: string[]; limit: number }>("/api/account/channels", {
+      const result = await $fetch<{
+        channels: string[];
+        limit: number;
+        anonymousCustomChannels?: boolean;
+      }>("/api/account/channels", {
         credentials: "include", cache: "no-store", retry: 0,
       });
+      if (typeof result.anonymousCustomChannels === "boolean") {
+        auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
+      }
       serverManaged.value = true;
       channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Math.max(0, Number(result.limit) || MAX_USER_TG_CHANNELS));
       applyChannels(result.channels || []);
       storageError.value = "";
     } catch (error: any) {
       const status = error?.statusCode || error?.response?.status;
-      if (status === 401) auth.handleSessionExpired("登录已过期，已切换为匿名会话。");
-      serverManaged.value = false;
-      channelLimit.value = MAX_USER_TG_CHANNELS;
-      applyChannels(localChannels.value);
-      storageError.value = status === 403 ? "当前账号暂时不能管理自定义频道。" : "无法读取账号频道，当前使用本地频道。";
+      if (status === 401 && auth.user.value) auth.handleSessionExpired("登录已过期，已切换为匿名会话。");
+      applyChannels([]);
+      // 403 is expected for anonymous visitors when anonymousCustomChannels is
+      // false; do not turn that policy decision into an alarming page error.
+      storageError.value = status === 403 && !auth.user.value
+        ? ""
+        : status === 403
+          ? "当前账号暂时不能管理自定义频道。"
+          : status === 401
+            ? "登录已过期，请重新登录。"
+            : "无法读取账号频道，请稍后重试。";
     }
   }
 
   function saveSettings(): boolean {
     if (typeof window === "undefined" || !settingsReady.value) return false;
     try {
-      const channels = serverManaged.value ? localChannels.value : settings.value.userTgChannels;
-      if (!serverManaged.value) localChannels.value = sanitizeChannels(channels);
+      // Theme is the only browser-persisted setting. Channel data is always
+      // written through /api/account/channels.
       localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({
-        userTgChannels: sanitizeChannels(channels),
         theme: settings.value.theme,
       }));
       storageError.value = "";
@@ -119,33 +128,38 @@ export function useSettings(): UseSettingsReturn {
 
   async function saveChannels(channels = settings.value.userTgChannels): Promise<boolean> {
     const next = sanitizeChannels(channels).slice(0, channelLimit.value);
-    if (!auth.user.value || !serverManaged.value) {
-      applyChannels(next);
-      localChannels.value = next;
-      return saveSettings();
+    if (!auth.sessionReady.value) {
+      applyChannels([]);
+      storageError.value = "匿名会话尚未准备好，请稍后重试。";
+      return false;
     }
     try {
-      const result = await $fetch<{ channels: string[]; limit: number }>("/api/account/channels", {
+      const result = await $fetch<{
+        channels: string[];
+        limit: number;
+        anonymousCustomChannels?: boolean;
+      }>("/api/account/channels", {
         method: "POST", body: { channels: next }, credentials: "include", retry: 0,
       });
+      if (typeof result.anonymousCustomChannels === "boolean") {
+        auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
+      }
+      serverManaged.value = true;
       channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Number(result.limit) || channelLimit.value);
       applyChannels(result.channels || next);
       storageError.value = "";
       return true;
     } catch (error: any) {
       const status = error?.statusCode || error?.response?.status;
-      if (status === 401) auth.handleSessionExpired();
+      if (status === 401 && auth.user.value) auth.handleSessionExpired();
+      if (status === 403 && !auth.user.value) applyChannels([]);
       storageError.value = status === 403
-        ? "当前账号无权保存频道，请重新登录或联系管理员。"
+        ? "自定义频道仅对登录用户开放，请先登录或注册。"
         : error?.data?.statusMessage || error?.message || "频道保存失败，请稍后重试。";
       return false;
     }
   }
 
-  async function importLocalChannels(): Promise<boolean> {
-    const merged = sanitizeChannels([...settings.value.userTgChannels, ...localChannels.value]);
-    return saveChannels(merged);
-  }
 
   function resetToDefault(): void {
     void saveChannels([]);
@@ -159,9 +173,7 @@ export function useSettings(): UseSettingsReturn {
     syncWithSession,
     saveSettings,
     saveChannels,
-    importLocalChannels,
     applyChannels,
-    localChannels,
     channelLimit,
     isServerManaged: computed(() => serverManaged.value),
     storageError,

@@ -26,15 +26,12 @@
           </div>
           <p class="hint">
             添加公开频道用户名或链接。本站搜索不会使用这些频道；选择首页「自定义频道」后，只搜索这里的频道。
-            <template v-if="isServerManaged">当前已同步到账号，可在其他设备继续使用。</template>
-            <template v-else>未登录时保存在当前浏览器；登录后可导入到账号。</template>
+            <template v-if="auth.user">当前已同步到账号，可在其他设备继续使用。</template>
+            <template v-else-if="isServerManaged">当前已保存到本次匿名会话，登录后会转存到账号。</template>
+            <template v-else>自定义频道需要登录后才能使用。</template>
           </p>
 
           <p v-if="storageError" class="feedback feedback--error" role="alert">{{ storageError }}</p>
-          <p v-if="isServerManaged && localChannels.length" class="import-hint" role="status">
-            发现本地还有 {{ localChannels.length }} 个频道，可合并导入账号。
-            <button type="button" class="inline-action" :disabled="checking" @click="importLocal">导入本地频道</button>
-          </p>
           <form class="channel-add" @submit.prevent="addChannel">
             <input
               ref="channelInput"
@@ -105,7 +102,7 @@ const emit = defineEmits<{
 
 const inner = computed(() => props.modelValue);
 const auth = useAuth();
-const { channelLimit, isServerManaged, localChannels, saveChannels, importLocalChannels } = useSettings();
+const { channelLimit, isServerManaged, saveChannels } = useSettings();
 const newChannel = ref("");
 const channelError = ref("");
 const channelStatus = ref("");
@@ -183,30 +180,13 @@ async function addChannel() {
       return;
     }
     newChannel.value = "";
-    channelStatus.value = isServerManaged.value
+    channelStatus.value = auth.user.value
       ? `已验证 @${name}，已保存到账号。`
-      : `已验证 @${name}，已加入当前浏览器的自定义频道列表。`;
+      : `已验证 @${name}，已保存到本次匿名会话。登录后会转存到账号。`;
     await nextTick();
     channelInput.value?.focus();
   } catch (reason: any) {
     channelError.value = reason?.data?.statusMessage || reason?.message || "频道验证失败，未添加。请稍后重试。";
-  } finally {
-    checking.value = false;
-  }
-}
-
-async function importLocal() {
-  if (!auth.user.value || checking.value) return;
-  checking.value = true;
-  channelError.value = "";
-  try {
-    const saved = await importLocalChannels();
-    if (saved) {
-      emit("update:modelValue", { ...inner.value });
-      channelStatus.value = "本地频道已合并到账号。";
-    } else {
-      channelError.value = "本地频道导入失败，请检查账号状态后重试。";
-    }
   } finally {
     checking.value = false;
   }

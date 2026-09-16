@@ -1896,35 +1896,6 @@
 .upstream-app .filter-tabs button > span {
   margin-left: 5px;
 }
-.admin-unlock {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.admin-unlock label {
-  font-weight: 700;
-}
-.admin-unlock input {
-  min-width: min(280px, 100%);
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--console-border, #d6d9e0);
-  border-radius: 8px;
-  background: var(--console-surface, #fff);
-  color: inherit;
-}
-.admin-unlock input:focus-visible {
-  outline: 3px solid color-mix(in srgb, #2563eb 35%, transparent);
-  outline-offset: 1px;
-}
-@media (max-width: 640px) {
-  .admin-unlock input,
-  .admin-unlock .button {
-    width: 100%;
-  }
-}
-
 /* Authenticated admin shell and lifecycle management */
 .upstream-app .admin-gate {
   min-height: 100vh;
@@ -1984,42 +1955,6 @@
   background: #eff6ff;
   padding: 2px 5px;
   border-radius: 4px;
-}
-.upstream-app .admin-password-field {
-  display: block;
-  color: #374151;
-  font-size: 11px;
-  font-weight: 650;
-}
-.upstream-app .password-input-wrap {
-  height: 46px;
-  margin-top: 8px;
-  padding: 0 13px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #6b7280;
-  border: 1px solid #d1d5db;
-  border-radius: 9px;
-  background: #fff;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.upstream-app .password-input-wrap:focus-within {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-.upstream-app .password-input-wrap input {
-  min-width: 0;
-  flex: 1;
-  height: 100%;
-  border: 0;
-  outline: 0;
-  color: var(--ink);
-  background: transparent;
-}
-.upstream-app .admin-unlock-button {
-  margin-top: 14px;
-  min-height: 46px;
 }
 .upstream-app .admin-gate-error {
   display: flex;
@@ -3648,4 +3583,111 @@
   .upstream-app .directory-table .source-summary-cell::before {
     display: none;
   }
+}
+
+/* Search policy JSON editor: keep the small policy surface calm and readable. */
+.policy-card {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 26px;
+  border: 1px solid #dfe7f1;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 34px rgba(40, 62, 92, .07);
+}
+.policy-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 21px;
+  border-bottom: 1px solid #edf1f6;
+}
+.policy-card-copy { min-width: 0; }
+.policy-eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: #2563eb;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 1.7px;
+}
+.policy-card-copy h2 { color: #182437; font-size: 21px; font-weight: 750; line-height: 1.25; }
+.policy-card-copy p { max-width: 650px; margin-top: 8px; color: #718096; font-size: 12px; line-height: 1.65; }
+.policy-card-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.policy-count {
+  padding: 6px 9px;
+  border: 1px solid #dbeafe;
+  border-radius: 7px;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.policy-card .primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  color: #fff;
+  background: #2563eb;
+  font: 600 12px/1 inherit;
+  cursor: pointer;
+}
+.policy-card .primary-button:hover:not(:disabled) { border-color: #1d4ed8; background: #1d4ed8; }
+.policy-editor { margin-top: 21px; overflow: hidden; border: 1px solid #dbe4ef; border-radius: 11px; background: #f8fafc; }
+.policy-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 13px;
+  border-bottom: 1px solid #e3eaf2;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 11px;
+}
+.policy-editor-toolbar span:first-child { color: #334155; font-weight: 650; }
+.policy-editor-toolbar span:last-child { color: #94a3b8; }
+.policy-card textarea {
+  display: block;
+  width: 100%;
+  min-height: 300px;
+  padding: 16px;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  color: #0f172a;
+  background: #f8fafc;
+  font: 13px/1.75 ui-monospace, SFMono-Regular, Consolas, monospace;
+  tab-size: 2;
+}
+.policy-card textarea:focus { box-shadow: inset 0 0 0 2px #93c5fd; }
+.policy-card .field-help { margin: 12px 2px 0; color: #7b8794; font-size: 11px; line-height: 1.6; }
+.policy-card .field-help code { color: #475569; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+@media (max-width: 700px) {
+  .policy-card { padding: 18px; }
+  .policy-card-header { flex-direction: column; gap: 16px; }
+  .policy-card-actions { width: 100%; justify-content: space-between; }
+  .policy-card textarea { min-height: 260px; padding: 13px; font-size: 12px; }
+}
+.policy-field-guide { margin-top: 20px; overflow: hidden; border: 1px solid #e5ebf3; border-radius: 11px; background: #fff; }
+.policy-guide-heading { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 13px; border-bottom: 1px solid #edf1f6; color: #94a3b8; background: #fbfcfe; font-size: 10px; letter-spacing: .2px; }
+.policy-guide-heading span:first-child { color: #475569; font-size: 11px; font-weight: 700; }
+.policy-guide-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.policy-guide-item { display: flex; align-items: flex-start; gap: 10px; min-height: 74px; padding: 13px; }
+.policy-guide-item:nth-child(odd) { border-right: 1px solid #edf1f6; }
+.policy-guide-item:nth-child(-n + 2) { border-bottom: 1px solid #edf1f6; }
+.policy-guide-icon { display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 25px; border-radius: 7px; color: #2563eb; background: #eff6ff; font-size: 11px; font-weight: 750; }
+.policy-guide-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.policy-guide-title strong { color: #334155; font-size: 11px; font-weight: 700; line-height: 1.4; }
+.policy-guide-title code { color: #64748b; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.policy-guide-item p { margin-top: 5px; color: #94a3b8; font-size: 10px; line-height: 1.5; }
+@media (max-width: 700px) {
+  .policy-guide-grid { grid-template-columns: 1fr; }
+  .policy-guide-item:nth-child(odd) { border-right: 0; }
+  .policy-guide-item:nth-child(-n + 3) { border-bottom: 1px solid #edf1f6; }
+  .policy-guide-item:last-child { border-bottom: 0; }
 }

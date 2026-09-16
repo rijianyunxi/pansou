@@ -2,7 +2,6 @@
   <div class="home">
     <!-- 简洁大标题 -->
     <header class="hero">
-      <div class="hero-account"><UserAccountPanel /></div>
       <h1 class="hero-title">全网网盘资源搜索</h1>
       <p class="hero-description">
         网盘、磁力、公开频道，一个搜索框直达。
@@ -11,8 +10,20 @@
 
     <section class="search-workspace" aria-label="资源搜索">
       <div class="search-toolbar">
-        <SearchScopeControl v-model="onlyUserTg" :count="settings.userTgChannels.length" :disabled="searchState.loading || !settingsReady || !auth.sessionReady" />
-        <button type="button" class="manage-channels" :disabled="!settingsReady || !auth.sessionReady" @click="openChannelSettings">
+        <SearchScopeControl
+          v-model="onlyUserTg"
+          :count="settings.userTgChannels.length"
+          :disabled="searchState.loading || !settingsReady || !auth.sessionReady"
+          :custom-disabled="!canUseCustomChannels"
+          @custom-disabled="notifyCustomChannelsAccess" />
+        <button
+          v-if="onlyUserTg"
+          type="button"
+          class="manage-channels"
+          :class="{ 'manage-channels--disabled': !canUseCustomChannels }"
+          :aria-disabled="!canUseCustomChannels ? 'true' : undefined"
+          :disabled="searchState.loading || !settingsReady || !auth.sessionReady"
+          @click="openChannelSettings">
           <span aria-hidden="true">+</span> {{ settings.userTgChannels.length ? '管理频道' : '添加频道' }}
         </button>
       </div>
@@ -46,10 +57,7 @@
         <p v-if="searchState.paused">继续时使用本次搜索的原始参数；频道修改将在下一次搜索生效。</p>
       </div>
     </section>
-    <p v-if="auth.sessionError" class="search-notice" role="alert">{{ auth.sessionError }}</p>
     <p v-if="storageError" class="search-notice" role="alert">{{ storageError }}</p>
-    <p v-if="searchState.warning" class="search-notice" role="status">{{ searchState.warning }}</p>
-    <p class="privacy-notice" role="note">搜索关键词、会话和 IP 仅用于搜索治理、故障排查与安全审计；登录不会绕过站点搜索密码。</p>
 
     <!-- 热门搜索：仅未搜索时展示 -->
     <div v-if="!searched" class="hot-search-section">
@@ -90,6 +98,18 @@
           </button>
         </div>
 
+        <label v-if="hasResults" class="time-sort-select" title="按时间排序">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 7v5l3 2"></path>
+          </svg>
+          <span>按时间排序</span>
+          <select v-model="sortType" aria-label="选择时间排序方式">
+            <option value="default">默认顺序</option>
+            <option value="date-desc">最新发布</option>
+            <option value="date-asc">最早发布</option>
+          </select>
+        </label>
       </div>
     </div>
 
@@ -126,20 +146,20 @@
       <span>{{ searchState.error }}</span>
     </section>
 
-    <!-- 页面工具：排序和回顶部固定在右下角，不占用结果区域布局。 -->
+    <!-- 右下角筛选按钮一键恢复为最新时间排序，回顶部按钮保留。 -->
     <div v-if="hasResults || showBackToTop" class="floating-tools" aria-label="页面工具">
-      <label v-if="hasResults" class="floating-sort" title="按时间排序">
-        <svg class="floating-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <button
+        v-if="hasResults"
+        class="floating-sort-button"
+        type="button"
+        aria-label="按时间排序，最新发布优先"
+        title="按时间排序，最新发布优先"
+        @click="applyTimeSort">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="12" cy="12" r="9"></circle>
           <path d="M12 7v5l3 2"></path>
         </svg>
-        <span class="floating-sort-label">按时间排序：</span>
-        <select v-model="sortType" aria-label="按时间排序">
-          <option value="default">默认顺序</option>
-          <option value="date-desc">最新发布</option>
-          <option value="date-asc">最早发布</option>
-        </select>
-      </label>
+      </button>
       <button
         v-if="showBackToTop"
         class="back-to-top"
@@ -260,9 +280,17 @@ const {
 } = useSearch();
 const settingsApi = useSettings();
 const { settings, settingsReady, storageError } = settingsApi;
+const auth = useAuth();
+const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
 const needsChannelConfiguration = computed(() => onlyUserTg.value && settings.value.userTgChannels.length === 0);
 const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
-const auth = useAuth();
+const showToast = inject<(message: string, type?: "info" | "success" | "error") => void>("showToast", () => {});
+function notifyCustomChannelsAccess() {
+  showToast("自定义频道仅对登录用户开放，请先登录或注册。", "info");
+}
+watch(canUseCustomChannels, (allowed) => {
+  if (!allowed && onlyUserTg.value) onlyUserTg.value = false;
+});
 const requestUnlock = inject<(onSuccess?: () => void) => void>("requestUnlock");
 
 // 获取搜索选项（用户自定义频道实时读取最新设置）
@@ -361,32 +389,25 @@ function handlePlatformFilter(type: string) {
   filterPlatform.value = filterPlatform.value === type ? "all" : type;
 }
 
+function applyTimeSort() {
+  sortType.value = "date-desc";
+}
+
 // 先筛选再进行全局排序，保证结果始终以单一列表平铺展示。
 const filteredResults = computed(() => {
   const items = filterPlatform.value === "all"
     ? searchState.value.results
     : searchState.value.results.filter((item) => item.cloud_types.includes(filterPlatform.value as any));
-  return sortItems(items);
+  // 流式返回期间始终保持到达顺序；搜索完成后仅在用户选择了排序方式时整理一次。
+  return searchState.value.loading || searchState.value.paused ? items : sortItems(items);
 });
 
 function sortItems(items: SearchResult[]) {
   const arr = [...items];
-  switch (sortType.value) {
-    case "date-desc":
-      return arr.sort(
-        (a, b) =>
-          new Date(b.datetime || "1970-01-01").getTime() -
-          new Date(a.datetime || "1970-01-01").getTime()
-      );
-    case "date-asc":
-      return arr.sort(
-        (a, b) =>
-          new Date(a.datetime || "1970-01-01").getTime() -
-          new Date(b.datetime || "1970-01-01").getTime()
-      );
-    default:
-      return arr;
-  }
+  if (sortType.value === "default") return arr;
+  return sortType.value === "date-asc"
+    ? arr.sort((a, b) => new Date(a.datetime || "1970-01-01").getTime() - new Date(b.datetime || "1970-01-01").getTime())
+    : arr.sort((a, b) => new Date(b.datetime || "1970-01-01").getTime() - new Date(a.datetime || "1970-01-01").getTime());
 }
 </script>
 
@@ -396,6 +417,8 @@ function sortItems(items: SearchResult[]) {
 .manage-channels { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; border: 0; border-radius: 8px; padding: 0 10px; background: transparent; color: var(--primary); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .manage-channels span { font-size: 20px; font-weight: 400; }
 .manage-channels:hover { background: var(--primary-soft); }
+.manage-channels--disabled { opacity: .55; color: var(--text-secondary); cursor: not-allowed; }
+.manage-channels--disabled:hover { background: transparent !important; }
 .manage-channels:focus-visible, .channel-preview button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .channel-configuration-status:empty, .scope-summary:empty { display: none; }
 .channel-configuration-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding: 14px 16px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); }
@@ -436,14 +459,6 @@ function sortItems(items: SearchResult[]) {
   position: relative;
   text-align: center;
   padding: 56px 16px 8px;
-}
-
-.hero-account {
-  position: absolute;
-  top: 18px;
-  right: 0;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .hero-title {
@@ -590,7 +605,50 @@ function sortItems(items: SearchResult[]) {
   font-weight: 600;
 }
 
-/* 排序选择器 */
+.time-sort-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 42px;
+  margin-top: 2px;
+  padding: 5px 9px 5px 13px;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.time-sort-select svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.time-sort-select select {
+  min-width: 92px;
+  padding: 4px 18px 4px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.time-sort-select:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--text-primary);
+}
+
+/* 右下角快捷筛选与回顶部按钮 */
 .floating-tools {
   position: fixed;
   right: 24px;
@@ -598,68 +656,44 @@ function sortItems(items: SearchResult[]) {
   z-index: 40;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 8px;
-  width: min(220px, calc(100vw - 48px));
 }
 
-.floating-sort,
+.floating-sort-button,
 .back-to-top {
   display: flex;
   align-items: center;
-  min-height: 42px;
-  border: 1px solid var(--border-light);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
-  color: var(--text-secondary);
-  box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(12px);
-}
-
-.floating-sort {
-  gap: 6px;
-  padding: 5px 8px 5px 10px;
-}
-
-.floating-tool-icon {
-  flex: 0 0 auto;
-  width: 17px;
-  height: 17px;
-  color: var(--primary);
-}
-
-.floating-sort-label {
-  flex: 0 0 auto;
-  font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.floating-sort select {
-  min-width: 0;
-  flex: 1;
-  padding: 5px 2px;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.back-to-top {
   justify-content: center;
   gap: 6px;
   width: 42px;
   height: 42px;
-  justify-content: center;
+  min-height: 42px;
   padding: 0;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
   color: var(--primary);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
+}
+
+
+.floating-sort-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.floating-sort-button:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.floating-sort-button:active {
+  transform: translateY(1px);
 }
 
 .back-to-top svg {
@@ -667,8 +701,8 @@ function sortItems(items: SearchResult[]) {
   height: 18px;
 }
 
-.floating-sort:hover,
-.back-to-top:hover {
+.back-to-top:hover,
+.floating-sort-button:hover {
   border-color: var(--primary);
   background: var(--primary-soft);
 }
@@ -784,30 +818,13 @@ function sortItems(items: SearchResult[]) {
   .floating-tools {
     right: 14px;
     bottom: max(14px, env(safe-area-inset-bottom));
-    width: auto;
   }
 
-  .floating-sort,
+  .floating-sort-button,
   .back-to-top {
     width: 40px;
     height: 40px;
     min-height: 40px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .floating-sort-label {
-    display: none;
-  }
-
-  .floating-sort select {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    padding: 0;
-    opacity: 0;
-    cursor: pointer;
   }
 
   .empty-card {

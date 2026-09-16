@@ -110,6 +110,8 @@ export async function executeSource(
     variables?: Record<string, string | number>;
     /** Additional context exposed to the transform without granting network access. */
     context?: Record<string, unknown>;
+    /** Reports synchronous transform + output validation time, including failures. */
+    onTransformTiming?: (elapsedMs: number) => void;
   } = {}
 ): Promise<SourceExecutionResult> {
   const definition = validateSourceDefinition(rawDefinition);
@@ -273,21 +275,26 @@ export async function executeSource(
   const payload = await fetchRequest(rendered, "request", response.format);
   const raw = payload.body.slice(0, RAW_PREVIEW_LIMIT);
   const rawTruncated = payload.body.length > RAW_PREVIEW_LIMIT;
-  const results = executeSourceTransform({
-    id: definition.manifest.id,
-    version: definition.manifest.version,
-    format: response.format,
-    // The transform runtime reads the same persisted timeout as the request.
-    maxResults: Math.min(Math.max(definition.manifest.maxResults, 1), 500),
-    code: response.transform,
-  }, payload.body, {
-    rawBody: payload.body,
-    format: response.format,
-    source: definition.manifest.id,
-    keyword,
-    url: payload.url.toString(),
-    ...(options.context || {}),
-  }).slice(0, definition.manifest.maxResults);
+  const transformStarted = Date.now();
+  try {
+    const results = executeSourceTransform({
+      id: definition.manifest.id,
+      version: definition.manifest.version,
+      format: response.format,
+      // The transform runtime reads the same persisted timeout as the request.
+      maxResults: Math.min(Math.max(definition.manifest.maxResults, 1), 500),
+      code: response.transform,
+    }, payload.body, {
+      rawBody: payload.body,
+      format: response.format,
+      source: definition.manifest.id,
+      keyword,
+      url: payload.url.toString(),
+      ...(options.context || {}),
+    }).slice(0, definition.manifest.maxResults);
 
-  return { results, traces, raw, rawTruncated };
+    return { results, traces, raw, rawTruncated };
+  } finally {
+    options.onTransformTiming?.(Date.now() - transformStarted);
+  }
 }

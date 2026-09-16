@@ -392,6 +392,12 @@ export class SourceHealthChecker {
 
   constructor(private readonly config: SourceHealthConfig) {}
 
+  setMaxFailures(maxFailures: number): void {
+    if (Number.isInteger(maxFailures) && maxFailures > 0) {
+      this.config.maxFailures = maxFailures;
+    }
+  }
+
   private createStatus(sourceName: string): InternalSourceHealthStatus {
     return {
       name: sourceName,

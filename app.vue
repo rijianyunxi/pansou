@@ -1,7 +1,7 @@
 <template>
   <div v-if="isAdminConsole" class="upstream-console-layout"><NuxtPage /></div>
   <div v-else class="layout" :class="`theme-${settings.theme}`">
-    <!-- 顶部导航：左侧 Logo，右侧接口文档 / 设置 -->
+    <!-- 顶部导航：左侧 Logo，右侧账号与公共操作 -->
     <header class="topnav" :inert="openSettings">
       <NuxtLink to="/" class="brand">
         <span class="brand-mark">
@@ -38,12 +38,7 @@
             明快
           </button>
         </div>
-        <button class="btn-icon" type="button" @click="openSettings = true" aria-label="打开设置" title="设置">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-        </button>
+        <UserAccountPanel />
       </nav>
     </header>
 
@@ -86,13 +81,7 @@ const isAdminConsole = computed(
 );
 const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
-const adminStatus = await useFetch<{ configured: boolean; locked: boolean }>(
-  "/api/auth/admin-status",
-  { key: "public-admin-status", server: true },
-);
-const adminSessionActive = computed(() =>
-  adminStatus.data.value?.configured === true && adminStatus.data.value?.locked === false,
-);
+const adminSessionActive = computed(() => auth.user.value?.role === "admin");
 const openSettings = ref(false);
 
 function setTheme(theme: "classic" | "geometric") {
@@ -101,9 +90,7 @@ function setTheme(theme: "classic" | "geometric") {
 
 watch(() => route.path, () => {
   openSettings.value = false;
-  if (!isAdminConsole.value) void adminStatus.refresh();
 });
-provide("openChannelSettings", () => { openSettings.value = true; });
 const showPasswordGate = ref(false);
 const unlockSubmitting = ref(false);
 const pendingOnUnlock = ref<(() => void) | null>(null);
@@ -143,6 +130,16 @@ function showToast(message: string, type: "info" | "success" | "error" = "info")
     toast.value.show = false;
   }, 3000);
 }
+
+const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
+function openChannelSettings() {
+  if (!canUseCustomChannels.value) {
+    showToast("自定义频道仅对登录用户开放，请先登录或注册。", "info");
+    return;
+  }
+  openSettings.value = true;
+}
+provide("openChannelSettings", openChannelSettings);
 
 // 监听设置变化并持久化（设置抽屉内即时生效）
 watch(() => JSON.stringify(settings.value), (newVal, oldVal) => {

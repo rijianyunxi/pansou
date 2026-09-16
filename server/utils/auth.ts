@@ -3,9 +3,7 @@ import type { H3Event } from "h3";
 import { getCookie, getRequestURL, setHeader } from "h3";
 
 const SEARCH_COOKIE_NAME = "panhub_unlock";
-const ADMIN_COOKIE_NAME = "panhub_admin";
 const SEARCH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
-const ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60;
 const COOKIE_PATH = "/";
 
 export function createAuthToken(secret: string): string {
@@ -70,27 +68,4 @@ export function verifyAuthCookie(event: H3Event, secret: string): boolean {
 
 export function setAuthCookie(event: H3Event, token: string): void {
   setNamedCookie(event, SEARCH_COOKIE_NAME, token, SEARCH_COOKIE_MAX_AGE);
-}
-
-export function verifyAdminAuthCookie(event: H3Event, secret: string): boolean {
-  return verifyNamedCookie(
-    event,
-    ADMIN_COOKIE_NAME,
-    secret,
-    ADMIN_COOKIE_MAX_AGE
-  );
-}
-
-export function setAdminAuthCookie(event: H3Event, token: string): void {
-  setNamedCookie(event, ADMIN_COOKIE_NAME, token, ADMIN_COOKIE_MAX_AGE);
-}
-
-export function clearAdminAuthCookie(event: H3Event): void {
-  setHeader(
-    event,
-    "Set-Cookie",
-    `${ADMIN_COOKIE_NAME}=; Path=${COOKIE_PATH}; Max-Age=0; HttpOnly; SameSite=Strict${
-      getRequestURL(event).protocol === "https:" ? "; Secure" : ""
-    }`
-  );
 }

@@ -1,4 +1,4 @@
-import { getSystemSettings } from "./systemSettingsService";
+import { getUserPolicy } from "./policyService";
 
 /** Single timeout policy for every upstream request and transform execution. */
 export const MIN_UNIFIED_TIMEOUT_MS = 1_000;
@@ -14,5 +14,5 @@ export function normalizeUnifiedTimeoutMs(value: unknown, fallback = 5_000): num
 
 /** Read the one persisted timeout used by HTTP, Telegram, probes, and transforms. */
 export function getUnifiedRequestTimeoutMs(): number {
-  return normalizeUnifiedTimeoutMs(getSystemSettings().requestTimeoutMs);
+  return normalizeUnifiedTimeoutMs(getUserPolicy().requestTimeoutMs);
 }

@@ -1,9 +1,4 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
-const requestedSearchTimeout = Number(process.env.NUXT_SEARCH_TIMEOUT_MS);
-const searchTimeoutMs = Number.isFinite(requestedSearchTimeout) && requestedSearchTimeout >= 1_000
-  ? Math.min(120_000, Math.round(requestedSearchTimeout))
-  : 30_000;
-
 export default defineNuxtConfig({
   // Allow dev, typecheck, and build commands to run without replacing each other's
   // generated Nuxt runtime in the same checkout.
@@ -52,7 +47,7 @@ export default defineNuxtConfig({
     preset: "node-server",
   },
   routeRules: {
-    // 管理控制台及其路径页面（含旧入口重定向）依赖管理员 Cookie 鉴权，禁止缓存
+    // 管理控制台及其路径页面依赖账号会话和角色鉴权，禁止缓存
     "/admin": { swr: false, cache: false },
     "/admin/**": { swr: false, cache: false },
     "/api/monitor": { swr: false, cache: false },
@@ -65,7 +60,7 @@ export default defineNuxtConfig({
     "/api/settings/**": { swr: false, cache: false },
     // 热搜接口不缓存，否则 POST 写入后 GET 仍返回旧数据
     "/api/hot-searches": { swr: false, cache: false },
-    // 密码门接口不缓存，确保 POST body 正常处理
+    // 搜索密码门接口不缓存，确保 POST body 正常处理
     "/api/auth/**": { swr: false, cache: false },
     // 普通用户会话与账号写接口必须保留 Cookie 和请求体，禁止全局 SWR 接管
     "/api/account/**": { swr: false, cache: false },
@@ -79,8 +74,6 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // server-only 配置
     searchPassword: process.env.SEARCH_PASSWORD || "",
-    adminPassword: process.env.ADMIN_PASSWORD || "",
-    searchTimeoutMs,
     cacheEnabled: true,
     public: {
       apiBase: "/api",

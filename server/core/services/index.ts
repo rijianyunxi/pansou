@@ -1,17 +1,16 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
-import { getSystemSettings } from "./systemSettingsService";
 import { listUnifiedUpstreams } from "./upstreamCatalog";
+import { getUserPolicy } from "./policyService";
 
 const SERVICE_CONTEXT_KEY = "__panhub_search_service__";
 
 function createServiceOptions(runtimeConfig: any): SearchServiceOptions {
-  const system = getSystemSettings(runtimeConfig);
+  const policy = getUserPolicy();
   return {
     defaultSourceIds: [],
-    defaultConcurrency: system.defaultConcurrency,
-    searchTimeoutMs: runtimeConfig.searchTimeoutMs,
+    defaultConcurrency: policy.defaultConcurrency,
     cacheEnabled: !!runtimeConfig.cacheEnabled,
-    cacheTtlMinutes: system.cacheTtlMinutes,
+    cacheTtlMinutes: policy.cacheTtlMinutes,
     sourceLoader: async () => listUnifiedUpstreams(),
   };
 }

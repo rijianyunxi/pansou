@@ -39,8 +39,18 @@ export async function probeUpstreamDefinition(source: UpstreamDefinition, keywor
     result.state = "available";
     result.message = result.results.length ? `解析成功，输出 ${result.results.length} 条统一结果` : "请求成功，本次关键词无有效结果";
   } catch (error) {
-    result.message = error instanceof Error ? error.message : String(error);
     result.httpStatus = [...result.traces].reverse().find((trace) => trace.status != null)?.status ?? null;
+    const message = error instanceof Error ? error.message : String(error);
+    // A 2xx response means the upstream request itself completed normally.
+    // Some providers return a business-level rejection (for example, a
+    // keyword restriction) in a 200 response; that is a diagnostic warning,
+    // not a transport/source availability error.
+    if (result.httpStatus != null && result.httpStatus >= 200 && result.httpStatus < 300) {
+      result.state = "warning";
+      result.message = `HTTP ${result.httpStatus} 已正常返回，但来源未产生可用结果：${message}`;
+    } else {
+      result.message = message;
+    }
   } finally { result.elapsedMs = Date.now() - started; }
   return result;
 }

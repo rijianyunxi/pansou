@@ -1,8 +1,7 @@
 <template>
   <div class="upstream-app" :data-ready="clientReady ? 'true' : 'false'">
-    <AdminAccessGate v-if="adminChecking || adminLocked" :checking="adminChecking" :configured="adminConfigured"
-      :busy="adminUnlocking" :ready="clientReady" :error="authError" title="进入管理后台"
-      description="管理配置、来源请求与诊断数据属于敏感信息。验证成功后将建立 8 小时管理会话。" @submit="unlockAdmin" @clear-error="authError = ''" />
+    <AdminAccessGate v-if="adminChecking || adminLocked" :checking="adminChecking" :authenticated="adminAuthenticated"
+      :error="authError" title="进入管理后台" />
     <template v-else>
       <aside class="console-sidebar">
         <NuxtLink to="/" class="console-brand"><span class="brand-symbol">
@@ -141,7 +140,7 @@
             </section>
           </template>
           <MonitorPanel v-else-if="view === 'monitor'" @unauthorized="adminLocked = true"
-            @focus-upstream="focusUpstream" @debug-channel="focusTelegramUpstream" />
+            @test-source="testSourceById" />
         </main>
       </div>
     </template>
@@ -248,10 +247,6 @@ useHead({
   ],
 });
 const clientReady = ref(false);
-const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
-  "/api/auth/admin-status",
-  { key: "admin-auth-status", server: true },
-);
 const configuredUpstreams = ref<UpstreamDefinition[]>([]);
 type ArchivedTelegramChannel = {
   channel: string;
@@ -308,11 +303,9 @@ const editingSource = ref<UpstreamDefinition | null>(null);
 const detailDrawerOpen = ref(false);
 const debugDialogOpen = ref(false);
 const storageError = ref("");
-const initialAuthStatus = authStatus.data.value;
-const adminChecking = ref(!initialAuthStatus && !authStatus.error.value);
-const adminConfigured = ref(initialAuthStatus?.configured ?? true);
-const adminLocked = ref(initialAuthStatus?.locked ?? true);
-const adminUnlocking = ref(false);
+const adminChecking = ref(true);
+const adminAuthenticated = ref(false);
+const adminLocked = ref(true);
 const authError = ref("");
 const archiveOpen = ref(false);
 const archiveLoading = ref(false);
@@ -344,10 +337,9 @@ const filteredSources = computed(() =>
 );
 function apiErrorMessage(error: any): string {
   const code = error?.statusCode || error?.response?.status;
-  if (code === 401) return "管理员密码错误，或管理会话已过期。";
-  if (code === 403) return "请求被安全策略拒绝，请从当前站点重新打开控制台。";
+  if (code === 401) return "请先登录管理员账号。";
+  if (code === 403) return "当前账号没有管理员权限。";
   if (code === 429) return "尝试次数过多，请稍后再试。";
-  if (code === 503) return "服务端尚未配置 ADMIN_PASSWORD。";
   return error?.data?.statusMessage || error?.message || "服务端操作失败。";
 }
 
@@ -359,7 +351,8 @@ async function loadUpstreamCatalog() {
     if (!sources.value.some((source) => source.id === selectedId.value)) selectedId.value = sources.value[0]?.id || "";
   } catch (error: any) {
     configuredUpstreams.value = [];
-    if ((error?.statusCode || error?.response?.status) === 401) {
+    if ([401, 403].includes(error?.statusCode || error?.response?.status)) {
+      adminAuthenticated.value = false;
       adminLocked.value = true;
       detailDrawerOpen.value = false;
       debugDialogOpen.value = false;
@@ -369,17 +362,28 @@ async function loadUpstreamCatalog() {
 }
 async function loadArchivedChannels() {
   try {
-    const response = await $fetch<{ data?: { channels?: ArchivedTelegramChannel[] } }>(
+    const response = await $fetch<{ data?: { sources?: Array<{
+      id?: string;
+      origin?: "builtin" | "custom" | "";
+      enabled?: boolean;
+      trashed?: boolean;
+    }> } }>(
       "/api/monitor?includeDeleted=true",
       { cache: "no-store" },
     );
-    monitorChannels.value = Array.isArray(response.data?.channels)
-      ? response.data.channels
-      : [];
+    monitorChannels.value = (response.data?.sources || [])
+      .filter((source) => source.trashed === true && !!source.id && !!source.origin)
+      .map((source) => ({
+        channel: source.id!,
+        origin: source.origin === "builtin" ? "builtin" : "custom",
+        enabled: source.enabled !== false,
+        deleted: true,
+      }));
   } catch (error: any) {
     monitorChannels.value = [];
     const code = error?.statusCode || error?.response?.status;
-    if (code === 401) {
+    if ([401, 403].includes(code)) {
+      adminAuthenticated.value = false;
       adminLocked.value = true;
       archiveOpen.value = false;
       return;
@@ -389,52 +393,26 @@ async function loadArchivedChannels() {
 }
 async function checkAdminSession() {
   adminChecking.value = true;
+  authError.value = "";
   try {
-    const status = await $fetch<{ configured: boolean; locked: boolean }>(
-      "/api/auth/admin-status",
+    const status = await $fetch<{ authenticated: boolean; user: { role?: string } | null }>(
+      "/api/account/session",
+      { credentials: "include", cache: "no-store", retry: 0 },
     );
-    adminConfigured.value = status.configured;
-    adminLocked.value = status.locked;
-    if (!status.locked) await loadUpstreamCatalog();
+    adminAuthenticated.value = status.authenticated;
+    adminLocked.value = !(status.authenticated && status.user?.role === "admin");
+    if (!adminLocked.value) await loadUpstreamCatalog();
   } catch (error: any) {
-    adminConfigured.value = false;
+    adminAuthenticated.value = false;
     adminLocked.value = true;
     authError.value = apiErrorMessage(error);
   } finally {
     adminChecking.value = false;
   }
 }
-async function unlockAdmin(password: string) {
-  if (!password.trim() || adminUnlocking.value) return;
-  adminUnlocking.value = true;
-  authError.value = "";
-  try {
-    await $fetch("/api/auth/admin-unlock", {
-      method: "POST",
-      body: { password },
-    });
-    adminLocked.value = false;
-    // `useFetch` data is cached by key and the page is remounted when switching
-    // console routes. Keep the cached status in sync with the newly issued cookie,
-    // otherwise a route change reuses the initial locked=true SSR result.
-    authStatus.data.value = {
-      configured: adminConfigured.value,
-      locked: false,
-    };
-    await refreshNuxtData("public-admin-status");
-    await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
-    // The recycle bin is an in-place modal under source management.
-
-    notify("管理员控制台已解锁。");
-  } catch (error: any) {
-    authError.value = apiErrorMessage(error);
-  } finally {
-    adminUnlocking.value = false;
-  }
-}
 async function lockAdmin() {
   try {
-    await $fetch("/api/auth/admin-lock", { method: "POST" });
+    await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 });
   } finally {
     configuredUpstreams.value = [];
     monitorChannels.value = [];
@@ -443,13 +421,10 @@ async function lockAdmin() {
     detailDrawerOpen.value = false;
     debugDialogOpen.value = false;
     archiveOpen.value = false;
+    adminAuthenticated.value = false;
     adminLocked.value = true;
-    authStatus.data.value = {
-      configured: adminConfigured.value,
-      locked: true,
-    };
-    await refreshNuxtData("public-admin-status");
     authError.value = "";
+    await navigateTo("/");
   }
 }
 const SENSITIVE_KEY = /(?:authorization|cookie|token|api[-_]?key|secret|password|passwd|credential|signature)/i;
@@ -508,6 +483,12 @@ function focusTelegramUpstream(channel: string) {
   if (source) openDebug(source);
   else notify(`未找到频道 @${normalized} 的来源配置。`);
 }
+function testSourceById(id: string) {
+  const source = sources.value.find((item) => item.id === id);
+  if (source) openDebug(source);
+  else notify(`未找到资源源 ${id}。`);
+}
+
 function focusUpstream(id: string) {
   const source = sources.value.find((item) => item.id === id);
   if (source) openDetail(source);
@@ -560,12 +541,12 @@ async function testSource(source: UpstreamDefinition) {
   } catch (error: any) {
     if (!disposed) {
       const code = error?.statusCode || error?.response?.status;
-      if (code === 401) adminLocked.value = true;
+      if ([401, 403].includes(code)) { adminAuthenticated.value = false; adminLocked.value = true; }
       notify(
         code === 401
-          ? "管理员会话已过期，请重新验证管理员身份。"
+          ? "请先登录管理员账号。"
           : code === 403
-            ? "请求被安全策略拒绝，请检查来源白名单和同源配置。"
+            ? "当前账号没有管理员权限。"
             : `管理后台请求未完成：${error?.data?.statusMessage || error.message}。未将其记为来源异常。`,
       );
     }

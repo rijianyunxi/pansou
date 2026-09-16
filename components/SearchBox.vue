@@ -88,7 +88,7 @@
 
             <!-- 继续按钮 -->
             <button
-              v-if="loading && paused"
+              v-if="paused"
               class="action-btn resume"
               type="button"
               @click="$emit('continue')"
@@ -114,7 +114,7 @@
 
           <!-- 搜索按钮 -->
           <button
-            v-if="!loading"
+            v-if="!loading && !paused"
             class="action-btn primary"
             type="button"
             :disabled="!ready || searchDisabled || !modelValue.trim()"

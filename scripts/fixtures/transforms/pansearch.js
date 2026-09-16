@@ -43,11 +43,20 @@ export default function transform(payload, $, context) {
     return urls;
   };
   var descriptionOf = function (block, name) {
-    var text = clean(String(block || "").replace(/更多精彩资源[\s\S]*$/g, "").replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, " "));
-    text = text.replace(/^\s*\d+\s*[、.．]\s*/, "");
-    if (name && text.indexOf(name) === 0) text = text.slice(name.length);
-    text = text.replace(/^[\s:：;；]+/, "").trim();
-    return text || null;
+    var source = String(block || "")
+      .replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, " ")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, " ")
+      .replace(/\*\*|__|\x60/g, "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/(?:https?:\/\/|magnet:\?)[^\s<>"')\]]+/gi, " ");
+    var label = /(?:^|[\s\p{Extended_Pictographic}\uFE0F\u200D])(?:【|\[)?(?:资源描述|资源简介|剧情简介|内容简介|描述|简介|剧情介绍|摘要|介绍)(?:】|\])?\s*[:：]\s*/iu;
+    var found = source.match(label);
+    if (found) source = source.slice((found.index || 0) + found[0].length);
+    else return null;
+    var stop = /(?:阿里(?:云盘)?|阿里|夸克(?:网盘)?|百度(?:网盘)?|迅雷(?:云盘)?|115(?:网盘)?|UC(?:网盘)?|天翼云盘|移动云盘|坚果云|蓝奏云|123网盘|网盘|下载地址|下载链接|资源链接|链接|提取码|密码|文件大小|大小|资源类型|类型|资源标签|标签|来源|来自|频道|群组|机器人|订阅|更新时间|上映|导演|主演|制片|评分|豆瓣|TMDB|画质|视频|字幕|分享)\s*[:：]|(?:👇|🔗|📁|📂|🏷|📢|🤖|🙍|👥)/i;
+    var boundary = source.search(stop);
+    if (boundary >= 0) source = source.slice(0, boundary);
+    return clean(source).replace(/^[：:;；|｜,，]+/, "").replace(/[\s\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").trim() || null;
   };
   var parseNumbered = function (raw, item, index) {
     var entries = [], entryMatch;
@@ -87,11 +96,10 @@ export default function transform(payload, $, context) {
     var raw = String((item && item.content) || "");
     var named = raw.match(/(?:^|\n)\s*名称：([\s\S]*?)(?:\n\s*描述：|\n\s*链接：|$)/);
     if (!named && /(?:^|\n)\s*\d+\s*[、.．]/.test(raw)) return parseNumbered(raw, item, index);
-    var descriptionMatch = raw.match(/(?:^|\n)\s*描述：([\s\S]*?)(?:\n\s*链接：|$)/);
     var urls = urlsOf(raw);
     var links = urls.map(linkOf).filter(function (link) { return link.url && link.type !== "others"; });
     var name = clean(named ? named[1] : raw.split(/\n/)[0]);
-    var description = clean(descriptionMatch ? descriptionMatch[1] : "");
+    var description = descriptionOf(raw, name);
     if (!name || !links.length || !matches(name + " " + description + " " + raw)) return [];
     return [{
       id: String((item && item.id) || context.source + "-" + index),

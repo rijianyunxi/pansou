@@ -1,5 +1,51 @@
-import { createError, defineEventHandler, readBody } from "h3";
+import { createError, defineEventHandler, readBody, setHeader } from "h3";
 import { getUserPolicy } from "../../core/services/policyService";
 import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
-import { getStoredChannels, requireSameOriginUserRequest, requireUserSession, updateStoredChannels } from "../../utils/userAuth";
-export default defineEventHandler(async (event) => { requireSameOriginUserRequest(event); const context = requireUserSession(event); const body = await readBody<{ channels?: unknown }>(event); if (!Array.isArray(body?.channels) || body.channels.some((x) => typeof x !== "string")) throw createError({ statusCode: 400, statusMessage: "channels ±ØĞëÊÇ×Ö·û´®Êı×é" }); const channels = normalizeTelegramChannels((body.channels as string[]).map((x) => x.trim()).filter(Boolean)); const policy = getUserPolicy(); const limit = Math.min(MAX_USER_TG_CHANNELS, policy.loggedChannelLimit); if (channels.length > limit || channels.some((x) => !TG_CHANNEL_PATTERN.test(x))) throw createError({ statusCode: 400, statusMessage: `ÆµµÀÊıÁ¿²»ÄÜ³¬¹ı ${limit} ¸ö£¬ÇÒ±ØĞëÎª¹«¿ªÆµµÀÓÃ»§Ãû` }); const user = updateStoredChannels(context.user.id, channels); return { ok: true, channels, limit, count: channels.length, user }; });
+import {
+  getStoredChannels,
+  getUserSession,
+  requireSameOriginUserRequest,
+  updateStoredChannels,
+  updateStoredSessionChannels,
+} from "../../utils/userAuth";
+
+export default defineEventHandler(async (event) => {
+  setHeader(event, "Cache-Control", "private, no-store");
+  requireSameOriginUserRequest(event);
+  const context = getUserSession(event, { createAnonymous: true, allowMustChange: true });
+  const policy = getUserPolicy();
+  if (!context.user && !policy.anonymousCustomChannels) {
+    throw createError({ statusCode: 403, statusMessage: "è‡ªå®šä¹‰é¢‘é“ä»…å¯¹ç™»å½•ç”¨æˆ·å¼€æ”¾ï¼Œè¯·å…ˆç™»å½•æˆ–æ³¨å†Œã€‚" });
+  }
+
+  const body = await readBody<{ channels?: unknown }>(event);
+  if (!Array.isArray(body?.channels) || body.channels.some((x) => typeof x !== "string")) {
+    throw createError({ statusCode: 400, statusMessage: "é¢‘é“åˆ—è¡¨å¿…é¡»æ˜¯å­—ç¬¦ä¸²æ•°ç»„ã€‚" });
+  }
+  const channels = normalizeTelegramChannels((body.channels as string[]).map((x) => x.trim()).filter(Boolean));
+  const limit = Math.min(MAX_USER_TG_CHANNELS, policy.customChannelLimit);
+  if (channels.length > limit || channels.some((x) => !TG_CHANNEL_PATTERN.test(x))) {
+    throw createError({ statusCode: 400, statusMessage: `é¢‘é“æ•°é‡ä¸èƒ½è¶…è¿‡ ${limit} ä¸ªï¼Œä¸”å¿…é¡»ä¸ºæœ‰æ•ˆå…¬å¼€é¢‘é“ã€‚` });
+  }
+
+  if (context.user) {
+    const user = updateStoredChannels(context.user.id, channels);
+    return {
+      ok: true,
+      channels,
+      limit,
+      count: channels.length,
+      anonymousCustomChannels: policy.anonymousCustomChannels,
+      user,
+    };
+  }
+
+  updateStoredSessionChannels(context.session.id, channels);
+  return {
+    ok: true,
+    channels,
+    limit,
+    count: channels.length,
+    anonymousCustomChannels: policy.anonymousCustomChannels,
+  };
+});

@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -22,7 +23,86 @@ export class SqliteDatabase {
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("temp_store = MEMORY");
     this.db.exec(SCHEMA);
+    this.ensureSessionChannelsColumn();
+    this.ensureUserAccountColumns();
+    this.ensureUserRolesAndDefaultAdmin();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
+  }
+
+  private ensureSessionChannelsColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "custom_channels_json")) {
+      // Keep anonymous custom channels on the anonymous session rather than in
+      // localStorage. This ALTER also upgrades databases created before this
+      // column was introduced.
+      this.db.exec("ALTER TABLE sessions ADD COLUMN custom_channels_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
+  private ensureUserAccountColumns(): void {
+    const columns = this.db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "last_login_ip")) {
+      this.db.exec("ALTER TABLE users ADD COLUMN last_login_ip TEXT");
+    }
+    if (!columns.some((column) => column.name === "deleted_at")) {
+      // Keep deleted accounts for audit/history while preventing them from
+      // authenticating or appearing in the active user management list.
+      this.db.exec("ALTER TABLE users ADD COLUMN deleted_at INTEGER");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at)");
+  }
+
+  private randomUserId(): number {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const id = randomInt(100_000_000, 1_000_000_000);
+      if (!this.db.prepare("SELECT 1 FROM users WHERE id = ?").get(id)) return id;
+    }
+    throw new Error("无法生成唯一用户 ID");
+  }
+
+  private ensureUserRolesAndDefaultAdmin(): void {
+    const columns = this.db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "role")) {
+      this.db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)");
+
+    const admin = this.db.prepare("SELECT id, password_hash FROM users WHERE username_normalized = ?").get("admin") as { id: number; password_hash: string } | undefined;
+    if (admin) {
+      this.db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(admin.id);
+      // Migrate the previously seeded admin/admin account to the six-character
+      // default without overwriting an administrator who has already changed it.
+      if (this.passwordMatches(admin.password_hash, "admin")) {
+        this.db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(this.hashPassword("123456"), Date.now(), admin.id);
+      }
+      return;
+    }
+
+    const timestamp = Date.now();
+    const passwordHash = this.hashPassword("123456");
+    this.db.prepare("INSERT INTO users(id,username,username_normalized,password_hash,nickname,role,status,must_change_password,custom_channels_json,custom_channels_updated_at,last_login_ip,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      this.randomUserId(), "admin", "admin", passwordHash, "系统管理员", "admin", "active", 0, "[]", timestamp, null, timestamp, timestamp,
+    );
+  }
+
+  private hashPassword(password: string): string {
+    const salt = randomBytes(16);
+    const derived = scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+    return `scrypt$16384$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+  }
+
+  private passwordMatches(encoded: string, password: string): boolean {
+    try {
+      const [kind, n, r, p, saltText, hashText] = encoded.split("$");
+      if (kind !== "scrypt" || !n || !r || !p || !saltText || !hashText) return false;
+      const expected = Buffer.from(hashText, "base64url");
+      const actual = scryptSync(password, Buffer.from(saltText, "base64url"), expected.length, {
+        N: Number(n), r: Number(r), p: Number(p), maxmem: 64 * 1024 * 1024,
+      });
+      return expected.length === actual.length && timingSafeEqual(expected, actual);
+    } catch {
+      return false;
+    }
   }
 
   private statement(sql: string): Database.Statement {
@@ -58,22 +138,23 @@ CREATE TABLE IF NOT EXISTS tg_channel_states(channel TEXT PRIMARY KEY,enabled IN
 CREATE INDEX IF NOT EXISTS idx_tg_channel_states_deleted ON tg_channel_states(deleted,channel);
 CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last_searched DESC);
-CREATE TABLE IF NOT EXISTS tg_channel_health(id INTEGER PRIMARY KEY,channel TEXT NOT NULL,checked_at INTEGER NOT NULL,ok INTEGER NOT NULL,elapsed_ms INTEGER NOT NULL,results_count INTEGER NOT NULL,source TEXT NOT NULL,failure_kind TEXT,message TEXT);
-CREATE INDEX IF NOT EXISTS idx_tg_channel_health_recent ON tg_channel_health(channel,checked_at DESC);
 CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS users(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER PRIMARY KEY,
   username TEXT NOT NULL,
   username_normalized TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   nickname TEXT,
+  role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin','user')),
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
   must_change_password INTEGER NOT NULL DEFAULT 0,
   custom_channels_json TEXT NOT NULL DEFAULT '[]',
   custom_channels_updated_at INTEGER NOT NULL,
+  last_login_ip TEXT,
   last_login_at INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
@@ -84,7 +165,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   kind TEXT NOT NULL CHECK(kind IN ('anonymous','user')),
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL
+  last_seen_at INTEGER NOT NULL,
+  custom_channels_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);

@@ -32,7 +32,8 @@ export function purgeTgChannel(channel: string): PurgedTgChannel {
   const result = db.transaction(() => {
     const removedSystemEntries = db.run("DELETE FROM system_channels WHERE name=?", name).changes;
     const removedSearchEntries = db.run("DELETE FROM search_setting_channels WHERE channel=?", name).changes;
-    const removedHealthRecords = db.run("DELETE FROM tg_channel_health WHERE channel=?", name).changes;
+    // Health is stored by the unified SourceHealthChecker for every resource source.
+    const removedHealthRecords = db.run("DELETE FROM source_health WHERE source_id=?", name).changes;
     db.run("DELETE FROM resource_sources WHERE id=?", name);
     db.run("DELETE FROM deleted_sources WHERE id=?", name);
     db.run("DELETE FROM tg_channel_states WHERE channel=?", name);

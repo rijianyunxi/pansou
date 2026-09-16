@@ -37,6 +37,5 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
     conc: integer(value.conc, 1, 16, "conc"),
     refresh: value.refresh === true || value.refresh === "true",
     ext: ext as Record<string, any> | undefined,
-    cloud_types: list(value.cloud_types, "cloud_types"),
   };
 }

@@ -9,41 +9,49 @@ import {
   type SourceHealthStatus,
 } from "../core/services/sourceHealth";
 import { getSearchSettings } from "../core/services/searchSettingsService";
-import { getTgChannelStates } from "../core/services/tgChannelSettings"
+import { getTgChannelStates } from "../core/services/tgChannelSettings";
 import { upstreamToSourceDefinition } from "../core/services/configuredSource";
-import { listUnifiedUpstreams } from "../core/services/upstreamCatalog";
-import {
-  getAllTgChannelHealthSummaries,
-  type TgChannelHealthSummary,
-} from "../core/services/tgChannelHealthStore";
-import { tgChannelOrigin } from "../utils/telegramSettings"
+import { buildUserSource, listUnifiedUpstreams } from "../core/services/upstreamCatalog";
+import { tgChannelOrigin } from "../utils/telegramSettings";
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
+import type { UpstreamDefinition } from "../../types/source";
 
-/** /api/monitor 来源行：统一来源目录，附五维健康快照。 */
-export interface MonitorUpstreamEntry {
+/** /api/monitor 的统一资源源行。Telegram 频道也是 ResourceSource，不再单独建模。 */
+export interface MonitorSourceEntry {
   id: string;
   name: string;
-  kind: "code" | "source";
-  /** 来源配置已启用。 */
+  kind: "source";
+  /** 来源配置是否启用。 */
   enabled: boolean;
-  /** 来源目录不包含已删除项，此字段恒为 false。 */
+  /** 是否在回收站中。默认接口不会返回 trashed=true 的资源源。 */
   trashed: boolean;
+  /** 仅 Telegram 资源源有 builtin/custom 来源信息，其他资源源为空。 */
+  origin: "builtin" | "custom" | "";
   version: string;
-  health: MonitorUpstreamHealth | null;
+  health: MonitorSourceHealth | null;
 }
 
-export interface MonitorUpstreamHealth {
+export interface MonitorFailureRecord {
+  at: number;
+  responseTimeMs: number | null;
+  errorCategory: string;
+  message: string;
+}
+
+export interface MonitorSourceHealth {
   healthy: boolean | null;
   circuitState: "closed" | "open" | "half-open";
   requestCount: number;
   successCount: number;
-  /** 累计失败次数（区别于 SourceHealthStatus.failureCount 的连续失败数）。 */
+  /** 累计失败次数；连续失败数只用于熔断，不直接展示。 */
   failureCount: number;
   recent?: string;
   zeroResultCount: number;
   lastSuccessAt: number | null;
   lastFailureAt: number | null;
   lastErrorMessage: string;
+  /** 最近 10 条失败记录，按时间倒序返回。 */
+  recentFailures: MonitorFailureRecord[];
   dimensions: Record<
     SourceDimensionKey,
     { state: string; passRate: number; recent: string; lastMessage: string }
@@ -54,34 +62,12 @@ export interface MonitorUpstreamHealth {
   } | null;
 }
 
-/** /api/monitor 频道行：内置默认 ∪ 自定义清单 ∪ 覆盖状态/策略/健康数据。 */
-export interface MonitorChannelEntry {
-  channel: string;
-  origin: "builtin" | "custom";
-  enabled: boolean;
-  deleted: boolean;
-  health: MonitorChannelHealth | null;
+export interface MonitorData {
+  generatedAt: string;
+  sources: MonitorSourceEntry[];
 }
 
-export interface MonitorChannelHealth {
-  state: "available" | "warning" | "error" | "unknown";
-  failureKind: string | null;
-  lastCheckedAt: number | null;
-  elapsedMs: number | null;
-  resultsCount: number | null;
-  message: string;
-  successRate: number | null;
-  recent: Array<{
-    at: number;
-    ok: boolean;
-    elapsedMs: number;
-    resultsCount: number;
-    failureKind?: string;
-    source: "probe" | "search";
-  }>;
-}
-
-function mapUpstreamHealth(status: SourceHealthStatus | undefined): MonitorUpstreamHealth | null {
+function mapSourceHealth(status: SourceHealthStatus | undefined): MonitorSourceHealth | null {
   if (!status) return null;
   const dimensions = status.dimensions
     ? (Object.fromEntries(
@@ -97,19 +83,42 @@ function mapUpstreamHealth(status: SourceHealthStatus | undefined): MonitorUpstr
             },
           ];
         }),
-      ) as MonitorUpstreamHealth["dimensions"])
+      ) as MonitorSourceHealth["dimensions"])
     : null;
+  const recentFailures = (status.recentOutcomes || [])
+    .filter((event) => event && event.ok === false)
+    .slice(-10)
+    .reverse()
+    .map((event) => ({
+      at: event.at,
+      responseTimeMs: typeof event.responseTimeMs === "number" ? event.responseTimeMs : null,
+      errorCategory: event.errorCategory || "unknown_error",
+      message: event.message || "",
+    }));
+  // Older snapshots may contain counters but no per-request outcomes. Keep one
+  // useful compatibility record instead of making an existing failure invisible.
+  if (!recentFailures.length && status.totalFailureCount > 0 && status.lastFailureTime) {
+    recentFailures.push({
+      at: status.lastFailureTime,
+      responseTimeMs: null,
+      errorCategory: status.lastErrorCategory || "unknown_error",
+      message: status.lastErrorMessage || "",
+    });
+  }
   return {
     healthy: typeof status.isHealthy === "boolean" ? status.isHealthy : null,
     circuitState: status.circuitState,
     requestCount: status.requestCount,
     successCount: status.successCount,
     failureCount: status.totalFailureCount,
-    ...(status.recent || status.recentOutcomes?.length ? { recent: status.recent ?? status.recentOutcomes!.map((event) => event.ok ? "1" : "0").join("") } : {}),
+    ...(status.recent || status.recentOutcomes?.length
+      ? { recent: status.recent ?? status.recentOutcomes!.map((event) => event.ok ? "1" : "0").join("") }
+      : {}),
     zeroResultCount: status.zeroResultCount,
     lastSuccessAt: status.lastSuccessTime ?? null,
     lastFailureAt: status.lastFailureTime ?? null,
     lastErrorMessage: status.lastErrorMessage ?? "",
+    recentFailures,
     dimensions,
     history: status.history
       ? {
@@ -123,88 +132,72 @@ function mapUpstreamHealth(status: SourceHealthStatus | undefined): MonitorUpstr
   };
 }
 
-function mapChannelHealth(summary: TgChannelHealthSummary): MonitorChannelHealth {
+interface SourceOriginContext {
+  custom: Set<string>;
+  builtin: Set<string>;
+}
+
+function sourceOriginContext(config: unknown): SourceOriginContext {
+  const settings = getSearchSettings();
+  const system = getSystemSettings(config);
   return {
-    state: summary.lastState,
-    failureKind: summary.failureKind,
-    lastCheckedAt: summary.lastCheckedAt,
-    elapsedMs: summary.elapsedMs,
-    resultsCount: summary.resultsCount,
-    message: summary.lastMessage,
-    successRate: summary.successRate,
-    recent: summary.recent.map((record) => ({
-      at: record.at,
-      ok: record.ok,
-      elapsedMs: record.elapsedMs,
-      resultsCount: record.resultsCount,
-      ...(record.failureKind ? { failureKind: record.failureKind } : {}),
-      source: record.source,
-    })),
+    custom: new Set(normalizeTelegramChannels(settings.channels ?? [])),
+    builtin: new Set(normalizeTelegramChannels(system.defaultChannels)),
+  };
+}
+
+function channelOrigin(id: string, origins: SourceOriginContext): "builtin" | "custom" | "" {
+  if (!TG_CHANNEL_PATTERN.test(id)) return "";
+  if (origins.custom.has(id)) return "custom";
+  if (origins.builtin.has(id)) return "builtin";
+  return "custom";
+}
+
+function mapSource(
+  source: UpstreamDefinition,
+  healthById: Record<string, SourceHealthStatus>,
+  origins: SourceOriginContext,
+  trashed = false,
+): MonitorSourceEntry {
+  return {
+    id: source.id,
+    name: source.name,
+    kind: "source",
+    enabled: source.enabled !== false && !trashed,
+    trashed,
+    origin: channelOrigin(source.id, origins),
+    version: upstreamToSourceDefinition(source).manifest.version,
+    health: mapSourceHealth(healthById[source.id]),
   };
 }
 
 /**
- * 监控和来源管理必须使用同一份统一来源目录。Telegram 频道已经是来源目录中的
- * ResourceSource，不能再把它们作为第二份 upstream 列表追加，否则同一个频道会出现两次。
+ * 统一来源目录是监控的唯一清单来源。includeDeleted=true 只额外补回被归档的
+ * Telegram 资源源，供后台回收站读取；健康状态仍然只来自 SourceHealthChecker。
  */
-function monitorChannelNames(config: unknown, options: { includeDeleted?: boolean } = {}): Set<string> {
-  const settings = getSearchSettings();
-  const system = getSystemSettings(config);
-  const states = getTgChannelStates();
-  return new Set(
-    [
-      ...normalizeTelegramChannels(settings.channels ?? []),
-      ...normalizeTelegramChannels(system.defaultChannels),
-      ...Object.keys(states),
-    ].filter((name) => TG_CHANNEL_PATTERN.test(name) && (options.includeDeleted === true || !states[name]?.deleted)),
-  );
-}
-
-function buildUpstreams(
+function buildSources(
   healthById: Record<string, SourceHealthStatus>,
-  channelNames: Set<string>,
-): MonitorUpstreamEntry[] {
-  return listUnifiedUpstreams()
-    .filter((source) => !channelNames.has(source.id))
-    .map((source) => ({
-      id: source.id,
-      name: source.name,
-      kind: "source" as const,
-      enabled: source.enabled !== false,
-      trashed: false,
-      version: upstreamToSourceDefinition(source).manifest.version,
-      health: mapUpstreamHealth(healthById[source.id]),
-    }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  config: unknown,
+  includeDeleted: boolean,
+): MonitorSourceEntry[] {
+  const origins = sourceOriginContext(config);
+  const sources = new Map<string, MonitorSourceEntry>();
+  for (const source of listUnifiedUpstreams()) {
+    sources.set(source.id, mapSource(source, healthById, origins));
+  }
+
+  if (includeDeleted) {
+    const states = getTgChannelStates();
+    for (const [id, state] of Object.entries(states)) {
+      if (!state.deleted || sources.has(id) || !TG_CHANNEL_PATTERN.test(id)) continue;
+      sources.set(id, mapSource(buildUserSource(id), healthById, origins, true));
+    }
+  }
+
+  return [...sources.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 
-function buildChannels(config: unknown, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
-  const settings = getSearchSettings();
-  const system = getSystemSettings(config);
-  const states = getTgChannelStates();
-  const healthSummaries = getAllTgChannelHealthSummaries();
-  const names = monitorChannelNames(config, options);
-
-  // 频道清单以统一来源目录对应的当前配置 + 显式覆盖/策略为准，健康记录只负责叠加状态。
-  // 不能把 healthSummaries 反向当成频道清单，否则历史健康数据会制造重复或幽灵来源。
-  return [...names]
-    .sort()
-    .map((channel) => {
-      const state = states[channel];
-      return {
-        channel,
-        origin: tgChannelOrigin(channel, settings.channels, system.defaultChannels),
-        enabled: state ? state.enabled : true,
-        deleted: state ? state.deleted : false,
-        health: healthSummaries[channel] ? mapChannelHealth(healthSummaries[channel]!) : null,
-      };
-    });
-}
-
-/**
- * GET /api/monitor —— 统一监控聚合（来源解析器 + Telegram 频道）。
- * 管理员接口：requireAdminAuth；响应 no-store；默认排除回收站频道；includeDeleted=true 仅供回收站读取。
- */
+/** GET /api/monitor —— 所有可搜索对象统一按资源源返回。 */
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
   setResponseHeader(event, "Cache-Control", "no-store");
@@ -221,9 +214,8 @@ export default defineEventHandler(async (event) => {
       message: "success",
       data: {
         generatedAt: new Date().toISOString(),
-        upstreams: buildUpstreams(healthById, monitorChannelNames(config)),
-        channels: buildChannels(config, { includeDeleted }),
-      },
+        sources: buildSources(healthById, config, includeDeleted),
+      } satisfies MonitorData,
     };
   } catch {
     return { code: -1, message: "获取监控数据失败", data: null };

@@ -2,109 +2,49 @@
   <section class="admin-access-gate" :aria-busy="checking">
     <div v-if="checking" class="admin-access-card admin-access-loading" aria-live="polite">
       <span class="admin-access-icon"><span class="admin-access-spinner"></span></span>
-      <p>正在验证管理会话…</p>
+      <p>正在验证账号权限…</p>
     </div>
-    <form v-else class="admin-access-card" @submit.prevent="submit">
+    <section v-else class="admin-access-card" aria-labelledby="admin-access-title">
       <NuxtLink to="/" class="admin-access-brand">
         <span class="admin-access-brand-icon"><ConsoleIcon name="box" :size="21" /></span>
         <strong>PanHub</strong><small>CONSOLE</small>
       </NuxtLink>
-      <span class="admin-access-icon"><ConsoleIcon name="lock" :size="25" /></span>
+      <span class="admin-access-icon"><ConsoleIcon :name="authenticated ? 'shield' : 'lock'" :size="25" /></span>
       <div class="admin-access-copy">
         <span>RESTRICTED WORKSPACE</span>
-        <h1>{{ title }}</h1>
-        <p v-if="configured">{{ description }}</p>
-        <p v-else>
-          当前服务尚未配置管理密码。请先在部署环境设置
-          <code>ADMIN_PASSWORD</code>，然后重新加载页面。
-        </p>
-      </div>
-      <template v-if="configured">
-        <label for="shared-admin-password">管理密码</label>
-        <span class="admin-access-input">
-          <ConsoleIcon name="key" :size="17" />
-          <input
-            id="shared-admin-password"
-            ref="passwordInput"
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            placeholder="输入管理密码"
-            :disabled="busy || !ready"
-            @input="$emit('clear-error')"
-          />
-        </span>
+        <h1 id="admin-access-title">{{ title }}</h1>
         <p v-if="error" class="admin-access-error" role="alert">
           <ConsoleIcon name="info" :size="15" />{{ error }}
         </p>
-        <button
-          class="admin-access-submit"
-          type="submit"
-          :disabled="!ready || busy || !password.trim()"
-        >
-          <span v-if="busy" class="admin-access-spinner light"></span>
-          <ConsoleIcon v-else name="unlock" :size="17" />
-          {{ busy ? "验证中…" : "进入后台" }}
-        </button>
-      </template>
-      <div class="admin-access-security">
-        <ConsoleIcon name="shield" :size="15" />
-        HttpOnly Cookie · SameSite=Strict · 同源校验 · 登录限流
+        <p v-else-if="authenticated">当前账号没有管理员权限，请使用管理员账号登录后再进入后台。</p>
+        <p v-else>请先登录管理员账号。系统初始管理员账号为 <code>admin</code>，密码为 <code>admin</code>。</p>
       </div>
-      <NuxtLink to="/" class="admin-access-back">
-        <ConsoleIcon name="back" :size="15" />返回搜索
+      <NuxtLink to="/" class="admin-access-submit">
+        <ConsoleIcon name="external" :size="17" />
+        {{ authenticated ? "返回搜索" : "返回搜索 / 登录" }}
       </NuxtLink>
-    </form>
+      <div class="admin-access-security">
+        普通账号会话 · 角色权限校验 · 同源校验 · 登录限流
+      </div>
+    </section>
   </section>
 </template>
 
 <script setup lang="ts">
 import ConsoleIcon from "../upstreams/ConsoleIcon.vue";
 
-const props = withDefaults(
-  defineProps<{
-    checking?: boolean;
-    configured?: boolean;
-    busy?: boolean;
-    ready?: boolean;
-    error?: string;
-    title?: string;
-    description?: string;
-  }>(),
-  {
-    checking: false,
-    configured: true,
-    busy: false,
-    ready: false,
-    error: "",
-    title: "管理后台验证",
-    description: "管理配置和诊断数据属于敏感信息。验证成功后将建立 8 小时管理会话。",
-  },
-);
-
-const emit = defineEmits<{
-  submit: [password: string];
-  "clear-error": [];
-}>();
-const password = ref("");
-const passwordInput = ref<HTMLInputElement | null>(null);
-
-function submit() {
-  const value = password.value;
-  if (!props.ready || props.busy || !value.trim()) return;
-  emit("submit", value);
-  password.value = "";
-}
-
-watch(
-  () => [props.checking, props.configured, props.ready],
-  async ([checking, configured, ready]) => {
-    if (!checking && configured && ready) {
-      await nextTick(() => passwordInput.value?.focus());
-    }
-  },
-  { immediate: true },
-);
+const props = withDefaults(defineProps<{
+  checking?: boolean;
+  authenticated?: boolean;
+  error?: string;
+  title?: string;
+}>(), {
+  checking: false,
+  authenticated: false,
+  error: "",
+  title: "进入管理后台",
+});
+const { checking, authenticated, error, title } = toRefs(props);
 </script>
 
 <style scoped>
@@ -194,40 +134,6 @@ watch(
   background: #eff6ff;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
-.admin-access-card > label {
-  display: block;
-  margin-bottom: 8px;
-  color: #374151;
-  font-size: 11px;
-  font-weight: 650;
-}
-.admin-access-input {
-  height: 46px;
-  box-sizing: border-box;
-  padding: 0 13px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #6b7280;
-  border: 1px solid #d1d5db;
-  border-radius: 9px;
-  background: #fff;
-  transition: border-color 150ms, box-shadow 150ms;
-}
-.admin-access-input:focus-within {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-.admin-access-input input {
-  min-width: 0;
-  height: 100%;
-  flex: 1;
-  border: 0;
-  outline: 0;
-  color: #111827;
-  background: transparent;
-  font: inherit;
-}
 .admin-access-submit {
   width: 100%;
   min-height: 46px;
@@ -244,7 +150,6 @@ watch(
   cursor: pointer;
 }
 .admin-access-submit:hover:not(:disabled) { background: #1d4ed8; }
-.admin-access-submit:disabled { cursor: not-allowed; opacity: 0.48; }
 .admin-access-error {
   margin: 10px 0 0;
   display: flex;
@@ -284,10 +189,6 @@ watch(
   border-top-color: #2563eb;
   border-radius: 50%;
   animation: admin-spin 0.8s linear infinite;
-}
-.admin-access-spinner.light {
-  border-color: rgba(255,255,255,.4);
-  border-top-color: #fff;
 }
 @keyframes admin-spin { to { transform: rotate(360deg); } }
 @media (max-width: 520px) {

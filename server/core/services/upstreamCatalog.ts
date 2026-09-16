@@ -132,7 +132,26 @@ export function saveUnifiedUpstream(raw: unknown): UpstreamDefinition {
 }
 export function deleteUnifiedUpstream(id: string): void {
   const key = normalizeId(id);
-  if (!getUnifiedUpstream(key)) throw new Error("Unknown source");
+  const source = getUnifiedUpstream(key);
+  if (!source) throw new Error("Unknown source");
+
+  // Telegram sources use the same catalog but retain their lifecycle state in
+  // tg_channel_states so a generated template source does not get persisted as
+  // a duplicate resource_sources row.
+  if (TG_CHANNEL_PATTERN.test(key)) {
+    const settings = getSearchSettings();
+    const system = getSystemSettings(useRuntimeConfig());
+    if (settings.channels?.includes(key)) {
+      saveSearchSettings({ channels: settings.channels.filter((channel) => channel !== key) });
+      clearTgChannelState(key);
+      return;
+    }
+    if (normalizeTelegramChannels(system.defaultChannels).includes(key)) {
+      setTgChannelState(key, { deleted: true });
+      return;
+    }
+  }
+
   const db = getSqliteDatabase();
   db.transaction(() => {
     db.run("DELETE FROM resource_sources WHERE id=?", key);
@@ -141,11 +160,25 @@ export function deleteUnifiedUpstream(id: string): void {
 }
 export function setUnifiedUpstreamEnabled(id: string, enabled: boolean): UpstreamDefinition {
   const key = normalizeId(id);
-  const source = getUnifiedUpstream(key);
+  let source = getUnifiedUpstream(key);
+
+  // A deleted built-in Telegram source is intentionally absent from the active
+  // catalog. Rehydrate its template so the same resource-source endpoint can
+  // restore it without introducing a second channel-specific monitor path.
+  if (!source && TG_CHANNEL_PATTERN.test(key) && configuredChannels().includes(key)) {
+    source = buildUserSource(key);
+  }
   if (!source) throw new Error("Unknown source");
+
   const next = { ...source, enabled: !!enabled };
+  if (TG_CHANNEL_PATTERN.test(key)) {
+    setTgChannelState(key, { enabled: !!enabled, deleted: false });
+    // A Telegram source may also have an explicitly persisted custom
+    // definition. Keep that row's enabled flag in sync when it exists.
+    if (getConfiguredUpstream(key)) writeSource(next);
+    return clone(next);
+  }
   writeSource(next);
-  if (TG_CHANNEL_PATTERN.test(key)) setTgChannelState(key, { enabled: !!enabled, deleted: false });
   return clone(next);
 }
 export function getConfiguredUpstreamVersion(): string { return String(getSqliteDatabase().getRow<any>("SELECT revision FROM config_revisions WHERE scope='sources'")?.revision || 0); }

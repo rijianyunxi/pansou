@@ -28,6 +28,13 @@ const cases = [
   { title: "测试资源", text: `名称：\n测试资源\n描述：内容\n${url}` },
   { title: "测试资源", text: `**名称：测试资源**\n描述：内容\n[阿里云盘](${url})` },
   { title: "测试资源", text: `名称：测试资源 描述：内容 链接：${url}` },
+  { title: "测试资源", expectedDescription: "带表情前缀的简介", text: `名称：测试资源\n🔥资源简介：带表情前缀的简介\n🔥资源链接：${url}` },
+  {
+    title: "新神榜：杨戬 (2022) 1080P",
+    expectedDescription: "商周之战一千五百年后，天界衰落，蒙冤落魄的杨戬以赏银捕手为业谋生。一日，杨戬接受了一位神秘访客的赏银去追捕一位少年，意外发现少年竟是自己的亲外甥沉香。沉香立志要寻回宝莲灯，劈山救母，却将酿成大祸。杨戬踏上追寻沉香并揭开尘封往事的旅程……",
+    expectedLinkCount: 2,
+    text: `名称：新神榜：杨戬 (2022) 1080P 描述：商周之战一千五百年后，天界衰落，蒙冤落魄的杨戬以赏银捕手为业谋生。一日，杨戬接受了一位神秘访客的赏银去追捕一位少年，意外发现少年竟是自己的亲外甥沉香。沉香立志要寻回宝莲灯，劈山救母，却将酿成大祸。杨戬踏上追寻沉香并揭开尘封往事的旅程…… 阿里：[${url}](${url}) 夸克：[https://pan.quark.cn/s/example](https://pan.quark.cn/s/example) 📁 大小：14.7GB 🏷 标签：#动画 📢频道：@example`
+  },
   { title: "测试资源 4K", text: `测试资源 4K\n${url}` },
 ];
 for (const source of sources) {
@@ -40,8 +47,9 @@ for (const source of sources) {
         const raw = `<div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="example/123"><div class="tgme_widget_message_text">${html}${c.href ? `<a href="${c.href}">123网盘</a>` : ""}</div><time datetime="2026-09-15T08:00:00Z"></time></div></div>`;
         const result = run(raw);
         assert.equal(result.length, 1); assert.equal(result[0]!.name, c.title);
-        assert.equal(result[0]!.links.length, 1); assert.equal(result[0]!.links[0]!.url, c.href || url);
+        assert.equal(result[0]!.links.length, c.expectedLinkCount || 1); assert.equal(result[0]!.links[0]!.url, c.href || url);
         assert.equal(result[0]!.links[0]!.type, c.href ? "123" : "aliyun");
+        if ("expectedDescription" in c) assert.equal(result[0]!.description, c.expectedDescription);
         if (c.text.includes("提取码：aB12")) assert.equal(result[0]!.links[0]!.password, "aB12");
         assert.equal(run(raw, "完全不匹配").length, 0);
       });
@@ -58,7 +66,7 @@ for (const source of sources) {
   } else if (source.id === "hunhepan") {
     check(`${source.id} contract`, () => {
       const results = run(JSON.stringify({ data: { list: [{ disk_id: 12, disk_name: "<em>测试</em>资源", files: "文件描述", link: url, disk_pass: "a123", update_time: "2026-08-07 13:09:03" }, { disk_name: "坏链接", link: "javascript:alert(1)" }] } }));
-      assert.equal(results.length, 1); assert.equal(results[0]!.name, "测试资源"); assert.equal(results[0]!.links[0]!.password, "a123"); assert.ok(results[0]!.datetime);
+      assert.equal(results.length, 1); assert.equal(results[0]!.name, "测试资源"); assert.equal(results[0]!.description, "文件描述"); assert.equal(results[0]!.links[0]!.password, "a123"); assert.ok(results[0]!.datetime);
     });
     check(`${source.id} empty`, () => assert.equal(run('{}').length, 0));
     check(`${source.id} business error`, () => assert.throws(() => run('{"code":0,"msg":"参数错误","data":null}'), /参数错误/));
@@ -70,6 +78,7 @@ for (const source of sources) {
             data: {
               data: [
                 { id: "single-1", time: "2026-09-15 12:34:56", content: "名称：测试电影\n描述：一条测试资源\n链接：https://pan.baidu.com/s/abc123" },
+                { id: "inline-1", time: "2026-09-15 12:45:00", content: "名称：测试宝莲灯\n描述：只保留剧情简介 阿里：https://www.alipan.com/s/example 📁 大小：1GB" },
                 { id: "numbered-1", time: "2026-09-15 13:00:00", content: "1、测试剧集\nhttps://pan.quark.cn/s/quark123\n2、无效广告\nhttps://example.com/ad" },
                 { id: "unsupported-1", time: "2026-09-15 14:00:00", content: "名称：无效资源\n链接：https://example.com/not-a-cloud-link" },
               ],
@@ -79,10 +88,13 @@ for (const source of sources) {
       };
       const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(payload)}</script>`;
       const results = run(html, "测试");
-      assert.equal(results.length, 2);
-      assert.equal(JSON.stringify(results.map((item) => item.name)), JSON.stringify(["测试电影", "测试剧集"]));
+      assert.equal(results.length, 3);
+      assert.equal(JSON.stringify(results.map((item) => item.name)), JSON.stringify(["测试电影", "测试宝莲灯", "测试剧集"]));
       assert.equal(results[0]!.links[0]!.type, "baidu");
-      assert.equal(results[1]!.links[0]!.type, "quark");
+      assert.equal(results[0]!.description, "一条测试资源");
+      assert.equal(results[1]!.description, "只保留剧情简介");
+      assert.equal(results[2]!.links[0]!.type, "quark");
+      assert.equal(results[2]!.description, null);
     });
     check(`${source.id} empty`, () => {
       const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { data: { data: [] } } } })}</script>`;

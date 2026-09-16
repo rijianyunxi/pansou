@@ -6,18 +6,18 @@
 
     <section class="metric-grid" aria-label="运行状态概览">
       <article class="metric-card">
-        <div class="metric-label">管理来源<ConsoleIcon name="grid" /></div>
+        <div class="metric-label">管理资源源<ConsoleIcon name="grid" /></div>
         <div class="metric-value">
           {{ summary.total }}<span>个</span>
-          <small class="metric-pill">来源总数 {{ summary.total }}</small>
+          <small class="metric-pill">资源源总数 {{ summary.total }}</small>
         </div>
-        <p>已纳入管理的来源</p>
+        <p>已纳入管理的资源源</p>
       </article>
       <article class="metric-card">
         <div class="metric-label">正常<ConsoleIcon name="check" /></div>
         <div class="metric-value green">
           {{ summary.healthy }}<span>个</span>
-          <small class="metric-pill">正常来源 {{ summary.healthy }}</small>
+          <small class="metric-pill">正常资源源 {{ summary.healthy }}</small>
         </div>
         <p><span class="status-dot warning"></span>另有需关注 {{ summary.warning }} 个</p>
       </article>
@@ -25,7 +25,7 @@
         <div class="metric-label">异常<ConsoleIcon name="activity" /></div>
         <div class="metric-value">
           {{ summary.error }}<span>个</span>
-          <small class="metric-pill">异常来源 {{ summary.error }}</small>
+          <small class="metric-pill">异常资源源 {{ summary.error }}</small>
         </div>
         <p><span class="status-dot error"></span>最近检查存在失败</p>
       </article>
@@ -33,7 +33,7 @@
         <div class="metric-label">已关闭<ConsoleIcon name="sliders" /></div>
         <div class="metric-value">
           {{ summary.inactive }}<span>个</span>
-          <small class="metric-pill">关闭来源 {{ summary.inactive }}</small>
+          <small class="metric-pill">关闭资源源 {{ summary.inactive }}</small>
         </div>
         <p><span class="status-dot warning"></span>已移除 {{ summary.trashed }} 个，可在回收站恢复</p>
       </article>
@@ -51,7 +51,7 @@
         </div>
       </header>
       <div class="source-toolbar">
-        <div class="filter-tabs" aria-label="按来源或状态筛选">
+        <div class="filter-tabs" aria-label="按资源源或状态筛选">
           <button
             v-for="option in FILTERS"
             :key="option.value"
@@ -66,8 +66,8 @@
           <ConsoleIcon name="search" :size="16" /><input
             v-model="search"
             type="search"
-            aria-label="搜索名称、ID 或错误信息"
-            placeholder="搜索名称、ID 或错误信息…"
+            aria-label="搜索资源源名称、ID 或错误信息"
+            placeholder="搜索资源源名称、ID 或错误信息…"
           />
         </label>
         <div class="monitor-heading-actions">
@@ -97,7 +97,7 @@
             @click="openSourceSettings"
           >
             <ConsoleIcon name="sliders" :size="15" />
-            <span>来源设置</span>
+            <span>资源源设置</span>
           </button>
       <dialog
         v-if="sourceSettingsOpen"
@@ -110,18 +110,18 @@
       <section class="source-settings-panel">
         <header class="monitor-settings-header">
           <div>
-            <h3 id="monitor-search-settings-title">来源与性能</h3>
+            <h3 id="monitor-search-settings-title">资源源设置</h3>
             <p>勾选即参与搜索，取消勾选即可移出搜索范围。</p>
           </div>
           <span v-if="settingsLoading" class="tiny-muted">正在读取…</span>
-          <button class="icon-button" type="button" aria-label="关闭来源设置" @click="sourceSettingsDialog?.close()">
+          <button class="icon-button" type="button" aria-label="关闭资源源设置" @click="sourceSettingsDialog?.close()">
             <ConsoleIcon name="close" :size="16" />
           </button>
         </header>
         <div class="monitor-settings-content">
           <div class="section-label settings-source-heading">
             <div class="settings-source-heading-copy">
-              搜索来源 <span class="source-scope-tag">勾选即生效</span>
+              搜索资源源 <span class="source-scope-tag">勾选即生效</span>
             </div>
             <div class="source-selection-actions" aria-label="批量选择来源">
               <button
@@ -157,43 +157,6 @@
           </div>
           <p class="field-hint">只搜索已勾选的来源；取消勾选后，该来源会从搜索范围移除。</p>
 
-          <div class="section-label settings-section-gap">
-            运行参数 <span class="tiny-muted">留空使用服务端默认值</span>
-          </div>
-          <div class="editor-grid">
-            <label class="settings-field">
-              并发请求数
-              <input
-                v-model="settingsDraft.concurrency"
-                type="number"
-                min="1"
-                max="16"
-                placeholder="默认 10"
-                :disabled="settingsSaving || settingsLoading" />
-            </label>
-            <label class="settings-field">
-              统一请求 / transform 超时（ms）
-              <input
-                v-model="settingsDraft.requestTimeoutMs"
-                type="number"
-                min="1000"
-                step="500"
-                placeholder="默认 5000"
-                :disabled="settingsSaving || settingsLoading" />
-            </label>
-            <label class="settings-field">
-              搜索缓存时长（分钟）
-              <input
-                v-model="settingsDraft.cacheTtlMinutes"
-                type="number"
-                min="1"
-                max="10"
-                step="1"
-                placeholder="默认 10"
-                :disabled="settingsSaving || settingsLoading" />
-              <span class="field-hint">相同关键词的完整搜索结果在服务端复用，默认 10 分钟，可在此调整。</span>
-            </label>
-          </div>
           <div class="mapping-actions">
             <button
               class="button primary"
@@ -229,12 +192,9 @@
           <header class="monitor-card-header">
             <div class="monitor-card-identity">
               <span class="card-checkbox" aria-hidden="true"></span>
-              <!-- <span class="source-avatar monitor-avatar monitor-card-avatar" :data-kind="row.kind">
-                {{ row.kind === "channel" ? "T" : row.name.charAt(0).toUpperCase() }}
-              </span> -->
               <div class="source-text">
                 <div class="monitor-card-name">
-                  <span class="monitor-kind-tag">来源</span>
+                  <span class="monitor-kind-tag">资源源</span>
                   <strong>{{ row.name }}</strong>
                 </div>
                 <div class="monitor-card-id" :title="row.id">{{ row.detail || row.id }}</div>
@@ -282,10 +242,16 @@
             <button
               class="monitor-action-label"
               type="button"
-              @click="row.kind === 'channel' ? emit('debug-channel', row.id) : emit('focus-upstream', row.id)"
+              @click="emit('test-source', row.id)"
             ><ConsoleIcon name="grid" :size="16" />{{ "测试" }}</button>
-            <button class="monitor-icon-action" type="button" :aria-label="`刷新 ${row.name}`" title="刷新" :disabled="loading" @click="loadMonitor()">
-              <ConsoleIcon name="refresh" :size="18" />
+            <button
+              class="monitor-icon-action"
+              type="button"
+              :aria-label="`查看 ${row.name} 最近失败记录`"
+              :title="`查看最近 10 条失败记录（当前 ${row.recentFailures.length} 条）`"
+              @click="openFailureLog(row)"
+            >
+              <ConsoleIcon name="activity" :size="18" />
             </button>
             <button
               class="monitor-icon-action danger"
@@ -293,7 +259,7 @@
               :aria-label="`删除 ${row.name}`"
               title="删除"
               :disabled="busyKey === row.key || deleteBusy"
-              @click="row.kind === 'channel' ? requestDeleteChannel(row) : requestDeleteUpstream(row)"
+              @click="requestDeleteSource(row)"
             ><ConsoleIcon name="trash" :size="17" /></button>
             <span class="monitor-enable-label">开启</span>
             <button
@@ -304,74 +270,91 @@
               :aria-checked="row.enabled && !row.trashed"
               :aria-label="`${row.enabled && !row.trashed ? '关闭' : '开启'} ${row.name}`"
               :disabled="busyKey === row.key || deleteBusy"
-              @click="row.kind === 'channel' ? toggleChannel(row) : toggleUpstream(row)"
+              @click="toggleSource(row)"
             ><span></span></button>
           </footer>
         </article>
       </div>
       <footer class="table-footer">
-        <span><span class="status-dot neutral"></span>{{ filteredRows.length }} / {{ rows.length }} 个对象</span>
-        <span>数据来自服务端正常快照；操作会立即同步配置状态</span>
+        <span><span class="status-dot neutral"></span>{{ filteredRows.length }} / {{ rows.length }} 个资源源</span>
+        <span>数据来自服务端正常快照；操作会立即同步资源源配置状态</span>
       </footer>
     </section>
 
-    <div v-if="upstreamDeleteTarget" class="modal-backdrop confirmation-backdrop" @click.self="closeUpstreamDelete">
+    <div v-if="failureLogTarget" class="modal-backdrop confirmation-backdrop" @click.self="closeFailureLog">
+      <section
+        class="failure-log-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="monitor-failure-log-title"
+      >
+        <header class="failure-log-header">
+          <div>
+            <span class="eyebrow">RESOURCE SOURCE HEALTH</span>
+            <h2 id="monitor-failure-log-title">最近失败记录</h2>
+            <p>{{ failureLogTarget.name }} · 最多显示最近 10 条</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="关闭失败记录" @click="closeFailureLog">
+            <ConsoleIcon name="close" :size="16" />
+          </button>
+        </header>
+        <div v-if="!failureLogTarget.recentFailures.length" class="failure-log-empty">
+          <ConsoleIcon name="check" :size="24" />
+          <strong>暂无失败记录</strong>
+          <p>当前资源源还没有可展示的失败请求。</p>
+        </div>
+        <ol v-else class="failure-log-list">
+          <li v-for="(record, index) in failureLogTarget.recentFailures" :key="`${failureLogTarget.key}-failure-${record.at}-${index}`">
+            <div class="failure-log-item-head">
+              <strong>#{{ index + 1 }}</strong>
+              <span>{{ failureRecordTime(record) }}</span>
+              <span v-if="record.responseTimeMs !== null && record.responseTimeMs !== undefined">{{ record.responseTimeMs }} ms</span>
+            </div>
+            <div class="failure-log-item-category">{{ record.errorCategory || "unknown_error" }}</div>
+            <p>{{ failureRecordMessage(record) }}</p>
+          </li>
+        </ol>
+        <footer class="failure-log-footer">
+          <span>按最新失败时间倒序</span>
+          <button class="button secondary" type="button" @click="closeFailureLog">关闭</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="sourceDeleteTarget" class="modal-backdrop confirmation-backdrop" @click.self="closeSourceDelete">
       <form
         class="confirm-dialog"
         role="alertdialog"
         aria-modal="true"
-        aria-labelledby="monitor-delete-upstream-title"
-        @submit.prevent="confirmDeleteUpstream"
+        aria-labelledby="monitor-delete-source-title"
+        @submit.prevent="confirmDeleteSource"
       >
         <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
-        <h2 id="monitor-delete-upstream-title">
-          删除此来源？
+        <h2 id="monitor-delete-source-title">
+          删除此资源源？
         </h2>
         <p>
-          <strong>{{ upstreamDeleteTarget.name }}</strong>
-          的来源配置将被删除，下一次搜索立即停止加载。
+          <strong>{{ sourceDeleteTarget.name }}</strong>
+          的资源源配置将被删除，下一次搜索立即停止加载。
         </p>
-          <label for="monitor-delete-confirmation">输入来源 ID <code>{{ upstreamDeleteTarget.id }}</code> 以确认</label>
+          <label for="monitor-delete-confirmation">输入资源源 ID <code>{{ sourceDeleteTarget.id }}</code> 以确认</label>
           <input
             id="monitor-delete-confirmation"
-            v-model="upstreamDeleteConfirm"
+            v-model="sourceDeleteConfirm"
             autocomplete="off"
             spellcheck="false"
-            :placeholder="upstreamDeleteTarget.id"
+            :placeholder="sourceDeleteTarget.id"
           />
 
         <div class="confirm-actions">
-          <button class="button secondary" type="button" @click="closeUpstreamDelete">取消</button>
+          <button class="button secondary" type="button" @click="closeSourceDelete">取消</button>
           <button
             class="button destructive"
             type="submit"
-            :disabled="deleteBusy || upstreamDeleteConfirm !== upstreamDeleteTarget.id"
+            :disabled="deleteBusy || sourceDeleteConfirm !== sourceDeleteTarget.id"
           >
             <span v-if="deleteBusy" class="spinner"></span>
             确认删除
-          </button>
-        </div>
-      </form>
-    </div>
-
-    <div v-if="channelDeleteTarget" class="modal-backdrop confirmation-backdrop" @click.self="channelDeleteTarget = null">
-      <form
-        class="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="monitor-delete-channel-title"
-        @submit.prevent="confirmDeleteChannel"
-      >
-        <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
-        <h2 id="monitor-delete-channel-title">移除来源 @{{ channelDeleteTarget.id }}？</h2>
-        <p v-if="channelDeleteTarget.origin === 'builtin'">
-          来源将从生效清单中移除，之后可以重新开启。
-        </p>
-        <p v-else>该自定义来源将从清单中永久移除。</p>
-        <div class="confirm-actions">
-          <button class="button secondary" type="button" @click="channelDeleteTarget = null">取消</button>
-          <button class="button destructive" type="submit" :disabled="deleteBusy">
-            <span v-if="deleteBusy" class="spinner"></span>确认删除
           </button>
         </div>
       </form>
@@ -391,26 +374,25 @@ import {
   buildMonitorRows,
   checkedAtText,
   extractMonitorData,
+  failureRecordMessage,
+  failureRecordTime,
   filterRows,
   summarizeRows,
-  withChannelEnabled,
   withRowRemoved,
   withRowRestored,
-  withUpstreamEnabled,
+  withSourceEnabled,
   type MonitorFilter,
   type MonitorRow,
 } from "./monitorView";
 
 const emit = defineEmits<{
   (event: "unauthorized"): void;
-  (event: "focus-upstream", id: string): void;
-  (event: "debug-channel", channel: string): void;
+  (event: "test-source", id: string): void;
 }>();
 
 const FILTERS: Array<{ label: string; value: MonitorFilter }> = [
   { label: "全部", value: "all" },
-  { label: "来源", value: "upstream" },
-  { label: "来源", value: "channel" },
+  { label: "资源源", value: "source" },
   { label: "异常", value: "error" },
   { label: "已关闭", value: "inactive" },
 ];
@@ -420,10 +402,7 @@ const AUTO_REFRESH_SECONDS = AUTO_REFRESH_MS / 1_000;
 interface SearchSettingsState {
   sources: string[] | null;
   channels: string[] | null;
-  concurrency: number | null;
-  requestTimeoutMs: number | null;
   trashedSources: string[];
-  cacheTtlMinutes: number;
 }
 
 const rows = ref<MonitorRow[]>([]);
@@ -436,6 +415,7 @@ const search = ref("");
 const busyKey = ref("");
 const deleteBusy = ref(false);
 const notice = ref("");
+const failureLogTarget = ref<MonitorRow | null>(null);
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
 const summary = computed(() => summarizeRows(rows.value));
@@ -447,9 +427,8 @@ const generatedAtLabel = computed(() => {
     : "";
 });
 
-const upstreamDeleteTarget = ref<MonitorRow | null>(null);
-const upstreamDeleteConfirm = ref("");
-const channelDeleteTarget = ref<MonitorRow | null>(null);
+const sourceDeleteTarget = ref<MonitorRow | null>(null);
+const sourceDeleteConfirm = ref("");
 
 const autoRefresh = ref(true);
 const sourceSettingsOpen = ref(false);
@@ -461,20 +440,14 @@ let countdownTimer: ReturnType<typeof setInterval> | undefined;
 const searchSettings = ref<SearchSettingsState>({
   sources: null,
   channels: null,
-  concurrency: null,
-  requestTimeoutMs: null,
   trashedSources: [],
-  cacheTtlMinutes: 10,
 });
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
 const settingsError = ref("");
 const settingsDraft = ref<{
   sources: string[];
-  concurrency: number | "";
-  requestTimeoutMs: number | "";
-  cacheTtlMinutes: number | "";
-}>({ sources: [], concurrency: "", requestTimeoutMs: "", cacheTtlMinutes: "" });
+}>({ sources: [] });
 const sourceOptions = computed(() =>
   rows.value
     .filter((row) => !row.trashed)
@@ -482,11 +455,7 @@ const sourceOptions = computed(() =>
 );
 
 function sourceSelectionKey(row: MonitorRow): string {
-  return row.kind === "channel" ? `channel:${row.id}` : `upstream:${row.id}`;
-}
-
-function sourceSelectionKeys(options = sourceOptions.value): string[] {
-  return options.filter((row) => row.enabled && !row.trashed).map(sourceSelectionKey);
+  return `source:${row.id}`;
 }
 
 function selectAllSources() {
@@ -512,10 +481,9 @@ function onSourceSettingsBackdrop(event: MouseEvent) {
 
 function apiErrorMessage(error: any): string {
   const code = error?.statusCode || error?.response?.status;
-  if (code === 401) return "管理员密码错误，或管理会话已过期。";
-  if (code === 403) return "请求被安全策略拒绝，请从当前站点重新打开页面。";
+  if (code === 401) return "请先登录管理员账号。";
+  if (code === 403) return "当前账号没有管理员权限。";
   if (code === 429) return "尝试次数过多，请稍后再试。";
-  if (code === 503) return "服务端尚未配置 ADMIN_PASSWORD。";
   return error?.data?.statusMessage || error?.message || "服务端操作失败。";
 }
 
@@ -572,26 +540,18 @@ async function loadSearchSettings() {
     searchSettings.value = {
       sources: data.sources ?? null,
       channels: data.channels ?? null,
-      concurrency: data.concurrency ?? null,
-      requestTimeoutMs: data.requestTimeoutMs ?? null,
       trashedSources: data.trashedSources ?? [],
-      cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
-    const enabledKeys = sourceSelectionKeys();
+    const enabledRows = sourceOptions.value.filter((row) => row.enabled && !row.trashed);
     const selectedSources = [
       ...(searchSettings.value.sources === null
-        ? enabledKeys.filter((key) => key.startsWith("upstream:"))
-        : (searchSettings.value.sources || []).map((id) => `upstream:${id}`)),
+        ? enabledRows.filter((row) => !row.origin).map(sourceSelectionKey)
+        : (searchSettings.value.sources || []).map((id) => `source:${id}`)),
       ...(searchSettings.value.channels === null
-        ? enabledKeys.filter((key) => key.startsWith("channel:"))
-        : (searchSettings.value.channels || []).map((id) => `channel:${id}`)),
+        ? enabledRows.filter((row) => !!row.origin).map(sourceSelectionKey)
+        : (searchSettings.value.channels || []).map((id) => `source:${id}`)),
     ];
-    settingsDraft.value = {
-      sources: selectedSources,
-      concurrency: searchSettings.value.concurrency ?? "",
-      requestTimeoutMs: searchSettings.value.requestTimeoutMs ?? "",
-      cacheTtlMinutes: searchSettings.value.cacheTtlMinutes ?? 10,
-    };
+    settingsDraft.value = { sources: selectedSources };
     settingsError.value = "";
   } catch (error: any) {
     settingsError.value = apiErrorMessage(error);
@@ -601,7 +561,7 @@ async function loadSearchSettings() {
   }
 }
 
-async function setUpstreamEnabled(row: MonitorRow, enabled: boolean) {
+async function setSourceEnabled(row: MonitorRow, enabled: boolean) {
   const response = await $fetch<{ code?: number; message?: string }>(
     `/api/settings/upstreams/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
     { method: "POST" },
@@ -615,59 +575,21 @@ async function saveSearchSettingsUi() {
   settingsError.value = "";
   try {
     const selectedKeys = new Set(settingsDraft.value.sources);
-    const desiredSources = new Set(
-      sourceOptions.value
-        .filter((row) => row.kind === "upstream" && selectedKeys.has(sourceSelectionKey(row)))
-        .map((row) => row.id),
-    );
-    const desiredChannels = new Set(
-      sourceOptions.value
-        .filter((row) => row.kind === "channel" && selectedKeys.has(sourceSelectionKey(row)))
-        .map((row) => row.id),
-    );
+    const selectedRows = sourceOptions.value.filter((row) => selectedKeys.has(sourceSelectionKey(row)));
+    const desiredChannels = selectedRows.filter((row) => !!row.origin).map((row) => row.id);
+    const desiredSources = selectedRows.filter((row) => !row.origin).map((row) => row.id);
     for (const row of sourceOptions.value) {
       const shouldBeEnabled = selectedKeys.has(sourceSelectionKey(row));
-      if (row.kind === "upstream" && row.enabled !== shouldBeEnabled) {
-        await setUpstreamEnabled(row, shouldBeEnabled);
-      }
-      if (row.kind === "channel" && row.enabled !== shouldBeEnabled) {
-        const action = shouldBeEnabled ? "enable" : "disable";
-        const response = await $fetch<{ code?: number; message?: string }>(
-          `/api/tg/channels/${encodeURIComponent(row.id)}/${action}`, { method: "POST" },
-        );
-        if ((response.code ?? 0) !== 0) throw new Error(response.message || "来源状态更新失败");
-      }
+      if (row.enabled !== shouldBeEnabled) await setSourceEnabled(row, shouldBeEnabled);
     }
 
-    const concurrency = Number(settingsDraft.value.concurrency);
-    const requestTimeoutMs = Number(settingsDraft.value.requestTimeoutMs);
-    const cacheTtlMinutes = Number(settingsDraft.value.cacheTtlMinutes);
     const response = await $fetch<{ data?: SearchSettingsState }>(
       "/api/settings/search",
       {
         method: "PUT",
         body: {
-          sources: [...desiredSources],
-          channels: [...desiredChannels],
-          concurrency:
-            settingsDraft.value.concurrency !== "" &&
-            Number.isFinite(concurrency) &&
-            concurrency > 0
-              ? concurrency
-              : null,
-          requestTimeoutMs:
-            settingsDraft.value.requestTimeoutMs !== "" &&
-            Number.isFinite(requestTimeoutMs) &&
-            requestTimeoutMs > 0
-              ? requestTimeoutMs
-              : null,
-          cacheTtlMinutes:
-            settingsDraft.value.cacheTtlMinutes !== "" &&
-            Number.isFinite(cacheTtlMinutes) &&
-            cacheTtlMinutes >= 1 &&
-            cacheTtlMinutes <= 10
-              ? cacheTtlMinutes
-              : 10,
+          sources: desiredSources,
+          channels: desiredChannels,
         },
       },
     );
@@ -675,18 +597,14 @@ async function saveSearchSettingsUi() {
     searchSettings.value = {
       sources: data.sources ?? null,
       channels: data.channels ?? null,
-      concurrency: data.concurrency ?? null,
-      requestTimeoutMs: data.requestTimeoutMs ?? null,
       trashedSources: data.trashedSources ?? [],
-      cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
     settingsDraft.value.sources = [
-      ...(searchSettings.value.sources || []).map((id) => `upstream:${id}`),
-      ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
+      ...(searchSettings.value.sources || []).map((id) => `source:${id}`),
+      ...(searchSettings.value.channels || []).map((id) => `source:${id}`),
     ];
-    settingsDraft.value.cacheTtlMinutes = searchSettings.value.cacheTtlMinutes ?? 10;
     await loadMonitor({ silent: true });
-    notify("搜索来源设置已保存。");
+    notify("搜索资源源设置已保存。");
     sourceSettingsDialog.value?.close();
   } catch (error: any) {
     settingsError.value = apiErrorMessage(error);
@@ -727,56 +645,21 @@ function syncAutoRefresh() {
 
 watch(autoRefresh, () => syncAutoRefresh());
 
-
-/** 来源启停：乐观更新 → 调用端点 → 重新拉取；失败回滚。 */
-async function toggleUpstream(row: MonitorRow) {
-  if (busyKey.value || deleteBusy.value) return;
-  const next = !row.enabled;
-  const snapshot = rows.value;
-  busyKey.value = row.key;
-  rows.value = withUpstreamEnabled(rows.value, row.id, next);
-  try {
-    await setUpstreamEnabled(row, next);
-    const sources = new Set(settingsDraft.value.sources);
-    const key = sourceSelectionKey(row);
-    if (next) sources.add(key);
-    else sources.delete(key);
-    settingsDraft.value.sources = [...sources];
-    searchSettings.value.sources = [...sources]
-      .filter((value) => value.startsWith("upstream:"))
-      .map((value) => value.slice(9));
-    notify(`${row.name} 已${next ? "开启" : "关闭"}，来源设置已同步。`);
-    await loadMonitor({ silent: true });
-  } catch (error: any) {
-    rows.value = snapshot;
-    if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
-    else notify(`操作失败：${apiErrorMessage(error)}`);
-  } finally {
-    busyKey.value = "";
-  }
-}
-
-/** 频道开关（已移除频道通过开启恢复）；乐观更新，失败回滚。 */
-async function toggleChannel(row: MonitorRow) {
+/** 统一资源源启停：乐观更新 → 调用统一端点 → 重新拉取；失败回滚。 */
+async function toggleSource(row: MonitorRow) {
   if (busyKey.value || deleteBusy.value) return;
   const next = !(row.enabled && !row.trashed);
   const snapshot = rows.value;
   busyKey.value = row.key;
-  rows.value = next
-    ? withRowRestored(rows.value, row.key)
-    : withChannelEnabled(rows.value, row.id, false);
+  rows.value = next ? withRowRestored(rows.value, row.key) : withSourceEnabled(rows.value, row.id, false);
   try {
-    const response = await $fetch<{ code?: number; message?: string }>(
-      `/api/tg/channels/${encodeURIComponent(row.id)}/${next ? "enable" : "disable"}`,
-      { method: "POST" },
-    );
-    if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
+    await setSourceEnabled(row, next);
     const sources = new Set(settingsDraft.value.sources);
     const key = sourceSelectionKey(row);
     if (next) sources.add(key);
     else sources.delete(key);
     settingsDraft.value.sources = [...sources];
-    notify(`@${row.id} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
+    notify(`${row.name} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
     rows.value = snapshot;
@@ -787,23 +670,29 @@ async function toggleChannel(row: MonitorRow) {
   }
 }
 
-function requestDeleteUpstream(row: MonitorRow) {
-  if (row.kind !== "upstream" || busyKey.value || deleteBusy.value) return;
-  upstreamDeleteTarget.value = row;
-  upstreamDeleteConfirm.value = "";
+function openFailureLog(row: MonitorRow) {
+  failureLogTarget.value = row;
 }
 
-function closeUpstreamDelete() {
+function closeFailureLog() {
+  failureLogTarget.value = null;
+}
+
+function requestDeleteSource(row: MonitorRow) {
+  if (busyKey.value || deleteBusy.value) return;
+  sourceDeleteTarget.value = row;
+  sourceDeleteConfirm.value = "";
+}
+
+function closeSourceDelete() {
   if (deleteBusy.value) return;
-  upstreamDeleteTarget.value = null;
-  upstreamDeleteConfirm.value = "";
+  sourceDeleteTarget.value = null;
+  sourceDeleteConfirm.value = "";
 }
 
-
-async function confirmDeleteUpstream() {
-  const target = upstreamDeleteTarget.value;
-  if (!target || deleteBusy.value) return;
-  if (upstreamDeleteConfirm.value !== target.id) return;
+async function confirmDeleteSource() {
+  const target = sourceDeleteTarget.value;
+  if (!target || deleteBusy.value || sourceDeleteConfirm.value !== target.id) return;
   deleteBusy.value = true;
   const snapshot = rows.value;
   try {
@@ -811,47 +700,10 @@ async function confirmDeleteUpstream() {
       method: "DELETE",
       body: { confirmation: target.id, actor: "monitor-console" },
     });
-    notify(`${target.name} 已删除。`);
-    upstreamDeleteTarget.value = null;
-    upstreamDeleteConfirm.value = "";
-    await loadMonitor({ silent: true });
-  } catch (error: any) {
-    rows.value = snapshot;
-    if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
-    else notify(`删除失败：${apiErrorMessage(error)}`);
-  } finally {
-    deleteBusy.value = false;
-  }
-}
-
-function requestDeleteChannel(row: MonitorRow) {
-  if (busyKey.value || deleteBusy.value) return;
-  channelDeleteTarget.value = row;
-}
-
-async function confirmDeleteChannel() {
-  const target = channelDeleteTarget.value;
-  if (!target || deleteBusy.value) return;
-  deleteBusy.value = true;
-  const snapshot = rows.value;
-  try {
-    const response = await $fetch<{ code?: number; message?: string }>(
-      `/api/tg/channels/${encodeURIComponent(target.id)}`,
-      { method: "DELETE" },
-    );
-    // 自定义频道删除成功后 deleted 会回到 false（已从清单移除），只看业务码。
-    if ((response.code ?? 0) !== 0) {
-      rows.value = snapshot;
-      notify(response.message || "删除未生效，请稍后重试。");
-      return;
-    }
     rows.value = withRowRemoved(rows.value, target.key);
-    channelDeleteTarget.value = null;
-    notify(
-      target.origin === "builtin"
-        ? `@${target.id} 已从生效清单移除，可重新开启恢复。`
-        : `@${target.id} 已删除。`,
-    );
+    sourceDeleteTarget.value = null;
+    sourceDeleteConfirm.value = "";
+    notify(`${target.name} 已移除。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
     rows.value = snapshot;
@@ -1086,30 +938,6 @@ onBeforeUnmount(() => {
 .settings-source-empty {
   grid-column: 1 / -1;
 }
-.monitor-channel-settings {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-.monitor-channel-setting {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  padding: 9px 11px;
-  border: 1px solid #e5eaf1;
-  border-radius: 9px;
-  background: #f8fafc;
-}
-.monitor-channel-setting-name {
-  min-width: 0;
-  overflow: hidden;
-  color: #475569;
-  font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .refresh-control {
   display: flex;
   align-items: center;
@@ -1215,6 +1043,74 @@ onBeforeUnmount(() => {
 .monitor-health-footer strong { color: #0daf73; font-size: 18px; font-weight: 700; }
 .monitor-card-meta { gap: 14px; margin-top: 22px; padding-top: 16px; border-top: 1px solid #edf0ee; color: #aaa9a3; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .monitor-card-meta span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure-log-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(78dvh, 720px);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid #dfe7f1;
+  border-radius: 18px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 34px 110px rgba(15, 23, 42, .28);
+}
+.failure-log-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px 15px;
+  border-bottom: 1px solid #edf1f6;
+}
+.failure-log-header h2 { margin: 4px 0 0; color: #111827; font-size: 18px; }
+.failure-log-header p { margin: 6px 0 0; color: #7b8790; font-size: 12px; }
+.failure-log-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(52dvh, 470px);
+  overflow-y: auto;
+  margin: 0;
+  padding: 16px 22px;
+  list-style: none;
+}
+.failure-log-list li {
+  padding: 12px 14px;
+  border: 1px solid #edf0f2;
+  border-radius: 12px;
+  background: #fbfcfc;
+}
+.failure-log-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #7b8790;
+  font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.failure-log-item-head strong { color: #c95749; font-size: 12px; }
+.failure-log-item-head span:last-child { margin-left: auto; }
+.failure-log-item-category {
+  display: inline-flex;
+  margin-top: 8px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #fff0ed;
+  color: #c95749;
+  font: 10px ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.failure-log-list li p { margin: 8px 0 0; color: #414c53; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.failure-log-empty { padding: 40px 22px 34px; text-align: center; color: #0c9a65; }
+.failure-log-empty strong { display: block; margin-top: 10px; color: #34413b; font-size: 14px; }
+.failure-log-empty p { margin: 6px 0 0; color: #8c9891; font-size: 12px; }
+.failure-log-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px 16px;
+  border-top: 1px solid #edf1f6;
+  color: #9aa39e;
+  font-size: 11px;
+}
 .monitor-card-actions { gap: 8px; margin-top: 16px; }
 .monitor-action-label, .monitor-icon-action { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #e0e4e2; background: #fff; color: #545957; }
 .monitor-action-label { gap: 8px; min-height: 42px; padding: 0 17px; border-radius: 13px; font-size: 15px; font-weight: 700; }
@@ -1228,7 +1124,7 @@ onBeforeUnmount(() => {
   .source-settings-dialog {
     width: calc(100vw - 28px);
   }
-  .monitor-channel-settings, .settings-source-grid { grid-template-columns: 1fr; }
+  .settings-source-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   .monitor-card-grid { padding: 16px 14px 20px; }
@@ -1266,9 +1162,6 @@ onBeforeUnmount(() => {
 .monitor-table .action-column .button,
 .monitor-table .action-column .text-button {
   margin-left: 0;
-}
-.monitor-avatar[data-kind="channel"] {
-  --source-color: #7c8790;
 }
 .monitor-metric {
   display: block;
