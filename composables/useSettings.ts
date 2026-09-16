@@ -1,19 +1,27 @@
-import { onMounted, type Ref } from "vue";
+import { computed, onMounted, type Ref } from "vue";
 import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../utils/telegramChannels";
+import { useAuth } from "./useAuth";
 
 const USER_SETTINGS_STORAGE_KEY = "panhub.settings";
 
 export interface UserSettings {
   /** 用户添加的 Telegram 频道：仅在首页选择“自定义频道”时使用 */
   userTgChannels: string[];
-  /** 首页视觉风格：classic 保留原始风格，geometric 使用明快几何风格 */
+  /** 首页视觉风格 */
   theme: "classic" | "geometric";
 }
 
 export interface UseSettingsReturn {
   settings: Ref<UserSettings>;
   loadSettings: () => void;
+  syncWithSession: () => Promise<void>;
   saveSettings: () => boolean;
+  saveChannels: (channels?: string[]) => Promise<boolean>;
+  importLocalChannels: () => Promise<boolean>;
+  applyChannels: (channels: string[]) => void;
+  localChannels: Ref<string[]>;
+  channelLimit: Ref<number>;
+  isServerManaged: Ref<boolean>;
   storageError: Ref<string>;
   settingsReady: Ref<boolean>;
   resetToDefault: () => void;
@@ -30,65 +38,134 @@ function sanitizeTheme(value: unknown): UserSettings["theme"] {
 }
 
 export function useSettings(): UseSettingsReturn {
-  // Nuxt request-scoped state avoids sharing user preferences across SSR requests.
+  const auth = useAuth();
   const settings = useState<UserSettings>("user-search-settings", () => ({ userTgChannels: [], theme: "classic" }));
-
+  const localChannels = useState<string[]>("user-search-local-channels", () => []);
+  const channelLimit = useState<number>("user-search-channel-limit", () => MAX_USER_TG_CHANNELS);
+  const serverManaged = useState<boolean>("user-search-channels-server-managed", () => false);
   const settingsReady = useState<boolean>("user-search-settings-ready", () => false);
   const storageError = useState<string>("user-search-settings-error", () => "");
 
-  // Load once per browser session: page remounts must not replace in-memory edits.
-  // 加载设置
-  function loadSettings(): void {
-    if (typeof window === "undefined" || settingsReady.value) return;
-
+  function readLocalSettings(): void {
+    if (typeof window === "undefined") return;
     try {
       const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
-      if (!raw) return;
-
+      if (!raw) {
+        localChannels.value = [];
+        return;
+      }
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return;
-
-      settings.value = {
-        userTgChannels: sanitizeChannels(parsed.userTgChannels),
-        theme: sanitizeTheme(parsed.theme),
-      };
-    } catch (_error) {
+      const channels = sanitizeChannels((parsed as { userTgChannels?: unknown }).userTgChannels);
+      localChannels.value = channels;
+      settings.value = { userTgChannels: channels, theme: sanitizeTheme((parsed as { theme?: unknown }).theme) };
+    } catch {
       storageError.value = "无法读取浏览器设置，当前使用默认配置。";
-    } finally {
-      settingsReady.value = true;
     }
   }
 
-  // 保存失败不丢弃内存设置，本次搜索仍然可用。
+  function loadSettings(): void {
+    if (typeof window === "undefined" || settingsReady.value) return;
+    readLocalSettings();
+    settingsReady.value = true;
+  }
+
+  function applyChannels(channels: string[]): void {
+    settings.value = { ...settings.value, userTgChannels: sanitizeChannels(channels).slice(0, channelLimit.value) };
+  }
+
+  async function syncWithSession(): Promise<void> {
+    if (!settingsReady.value) loadSettings();
+    if (!auth.user.value) {
+      serverManaged.value = false;
+      channelLimit.value = MAX_USER_TG_CHANNELS;
+      applyChannels(localChannels.value);
+      return;
+    }
+    try {
+      const result = await $fetch<{ channels: string[]; limit: number }>("/api/account/channels", {
+        credentials: "include", cache: "no-store", retry: 0,
+      });
+      serverManaged.value = true;
+      channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Math.max(0, Number(result.limit) || MAX_USER_TG_CHANNELS));
+      applyChannels(result.channels || []);
+      storageError.value = "";
+    } catch (error: any) {
+      const status = error?.statusCode || error?.response?.status;
+      if (status === 401) auth.handleSessionExpired("登录已过期，已切换为匿名会话。");
+      serverManaged.value = false;
+      channelLimit.value = MAX_USER_TG_CHANNELS;
+      applyChannels(localChannels.value);
+      storageError.value = status === 403 ? "当前账号暂时不能管理自定义频道。" : "无法读取账号频道，当前使用本地频道。";
+    }
+  }
+
   function saveSettings(): boolean {
     if (typeof window === "undefined" || !settingsReady.value) return false;
     try {
+      const channels = serverManaged.value ? localChannels.value : settings.value.userTgChannels;
+      if (!serverManaged.value) localChannels.value = sanitizeChannels(channels);
       localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({
-        userTgChannels: settings.value.userTgChannels,
+        userTgChannels: sanitizeChannels(channels),
         theme: settings.value.theme,
       }));
       storageError.value = "";
       return true;
     } catch {
-      storageError.value = "无法保存到浏览器：当前页面仍可使用这些频道，刷新后可能丢失。请检查浏览器存储权限。";
+      storageError.value = "无法保存到浏览器：刷新后可能丢失本地设置，请检查浏览器存储权限。";
       return false;
     }
   }
 
-  function resetToDefault(): void {
-    settings.value = { ...settings.value, userTgChannels: [] };
-    saveSettings();
+  async function saveChannels(channels = settings.value.userTgChannels): Promise<boolean> {
+    const next = sanitizeChannels(channels).slice(0, channelLimit.value);
+    if (!auth.user.value || !serverManaged.value) {
+      applyChannels(next);
+      localChannels.value = next;
+      return saveSettings();
+    }
+    try {
+      const result = await $fetch<{ channels: string[]; limit: number }>("/api/account/channels", {
+        method: "POST", body: { channels: next }, credentials: "include", retry: 0,
+      });
+      channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Number(result.limit) || channelLimit.value);
+      applyChannels(result.channels || next);
+      storageError.value = "";
+      return true;
+    } catch (error: any) {
+      const status = error?.statusCode || error?.response?.status;
+      if (status === 401) auth.handleSessionExpired();
+      storageError.value = status === 403
+        ? "当前账号无权保存频道，请重新登录或联系管理员。"
+        : error?.data?.statusMessage || error?.message || "频道保存失败，请稍后重试。";
+      return false;
+    }
   }
 
-  // 页面加载时自动加载设置
+  async function importLocalChannels(): Promise<boolean> {
+    const merged = sanitizeChannels([...settings.value.userTgChannels, ...localChannels.value]);
+    return saveChannels(merged);
+  }
+
+  function resetToDefault(): void {
+    void saveChannels([]);
+  }
+
   onMounted(loadSettings);
 
   return {
     settings,
-    settingsReady,
-    storageError,
     loadSettings,
+    syncWithSession,
     saveSettings,
+    saveChannels,
+    importLocalChannels,
+    applyChannels,
+    localChannels,
+    channelLimit,
+    isServerManaged: computed(() => serverManaged.value),
+    storageError,
+    settingsReady,
     resetToDefault,
   };
 }

@@ -2,6 +2,7 @@
   <div class="home">
     <!-- 简洁大标题 -->
     <header class="hero">
+      <div class="hero-account"><UserAccountPanel /></div>
       <h1 class="hero-title">全网网盘资源搜索</h1>
       <p class="hero-description">
         网盘、磁力、公开频道，一个搜索框直达。
@@ -10,8 +11,8 @@
 
     <section class="search-workspace" aria-label="资源搜索">
       <div class="search-toolbar">
-        <SearchScopeControl v-model="onlyUserTg" :count="settings.userTgChannels.length" :disabled="searchState.loading || !settingsReady" />
-        <button type="button" class="manage-channels" :disabled="!settingsReady" @click="openChannelSettings">
+        <SearchScopeControl v-model="onlyUserTg" :count="settings.userTgChannels.length" :disabled="searchState.loading || !settingsReady || !auth.sessionReady" />
+        <button type="button" class="manage-channels" :disabled="!settingsReady || !auth.sessionReady" @click="openChannelSettings">
           <span aria-hidden="true">+</span> {{ settings.userTgChannels.length ? '管理频道' : '添加频道' }}
         </button>
       </div>
@@ -20,7 +21,7 @@
         :loading="searchState.loading"
         :paused="searchState.paused"
         :searched="searched"
-        :search-disabled="!settingsReady || needsChannelConfiguration"
+        :search-disabled="!settingsReady || !auth.sessionReady || needsChannelConfiguration"
         :disabled-description-id="needsChannelConfiguration && !searchState.loading ? 'channel-configuration-hint' : undefined"
         :placeholder="onlyUserTg ? '搜索自定义频道…' : placeholder"
         @search="onSearch"
@@ -45,8 +46,10 @@
         <p v-if="searchState.paused">继续时使用本次搜索的原始参数；频道修改将在下一次搜索生效。</p>
       </div>
     </section>
+    <p v-if="auth.sessionError" class="search-notice" role="alert">{{ auth.sessionError }}</p>
     <p v-if="storageError" class="search-notice" role="alert">{{ storageError }}</p>
     <p v-if="searchState.warning" class="search-notice" role="status">{{ searchState.warning }}</p>
+    <p class="privacy-notice" role="note">搜索关键词、会话和 IP 仅用于搜索治理、故障排查与安全审计；登录不会绕过站点搜索密码。</p>
 
     <!-- 热门搜索：仅未搜索时展示 -->
     <div v-if="!searched" class="hot-search-section">
@@ -125,15 +128,16 @@
 
     <!-- 页面工具：排序和回顶部固定在右下角，不占用结果区域布局。 -->
     <div v-if="hasResults || showBackToTop" class="floating-tools" aria-label="页面工具">
-      <label v-if="hasResults" class="floating-sort">
-        <span class="floating-tool-icon" aria-hidden="true">↕</span>
-        <span class="floating-sort-label">排序</span>
-        <select v-model="sortType" aria-label="结果排序">
+      <label v-if="hasResults" class="floating-sort" title="按时间排序">
+        <svg class="floating-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M12 7v5l3 2"></path>
+        </svg>
+        <span class="floating-sort-label">按时间排序：</span>
+        <select v-model="sortType" aria-label="按时间排序">
           <option value="default">默认顺序</option>
           <option value="date-desc">最新发布</option>
           <option value="date-asc">最早发布</option>
-          <option value="name-asc">名称 A→Z</option>
-          <option value="name-desc">名称 Z→A</option>
         </select>
       </label>
       <button
@@ -143,8 +147,10 @@
         aria-label="回到顶部"
         title="回到顶部"
         @click="scrollToTop">
-        <span aria-hidden="true">↑</span>
-        <span>顶部</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+          <path d="M12 19V5"></path>
+          <path d="m6 11 6-6 6 6"></path>
+        </svg>
       </button>
     </div>
   </div>
@@ -175,6 +181,8 @@ function scrollToTop() {
 onMounted(async () => {
   window.addEventListener("scroll", updateScrollState, { passive: true });
   updateScrollState();
+  await auth.initializeSession();
+  await settingsApi.syncWithSession();
   await new Promise((resolve) => setTimeout(resolve, 100));
   if (hotSearchRef.value) await hotSearchRef.value.init();
 });
@@ -236,7 +244,7 @@ const placeholder =
   "搜索电影、剧集、资料等资源…";
 
 // 排序和过滤
-const sortType = ref<"default" | "date-desc" | "date-asc" | "name-asc" | "name-desc">("default");
+const sortType = ref<"default" | "date-desc" | "date-asc">("default");
 const filterPlatform = ref<string>("all");
 
 // 使用搜索 composable
@@ -250,7 +258,8 @@ const {
   continueSearch,
   hasResults,
 } = useSearch();
-const { settings, settingsReady, storageError } = useSettings();
+const settingsApi = useSettings();
+const { settings, settingsReady, storageError } = settingsApi;
 const needsChannelConfiguration = computed(() => onlyUserTg.value && settings.value.userTgChannels.length === 0);
 const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
 const auth = useAuth();
@@ -268,19 +277,20 @@ function getSearchOptions() {
 
 // 执行实际搜索逻辑（供 requestUnlock 回调复用）
 async function doSearch() {
-  if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
+  if (!settingsReady.value || !auth.sessionReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
   // 新搜索从全量结果视图开始，避免沿用上一次平台筛选状态。
   filterPlatform.value = "all";
   await performSearch({
     ...getSearchOptions(),
     onAuthRequired: requestUnlock ?? undefined,
+    onSessionExpired: () => { if (auth.user.value) { auth.handleSessionExpired(); void settingsApi.syncWithSession(); } },
   });
 }
 
 // 搜索执行
 async function onSearch() {
-  if (!settingsReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
+  if (!settingsReady.value || !auth.sessionReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   if (auth.locked.value && requestUnlock) {
     requestUnlock(doSearch);
     return;
@@ -302,6 +312,7 @@ async function handleContinueSearch() {
       await continueSearch({
         ...getSearchOptions(),
         onAuthRequired: requestUnlock ?? undefined,
+        onSessionExpired: () => { if (auth.user.value) { auth.handleSessionExpired(); void settingsApi.syncWithSession(); } },
       });
     });
     return;
@@ -309,6 +320,7 @@ async function handleContinueSearch() {
   await continueSearch({
     ...getSearchOptions(),
     onAuthRequired: requestUnlock ?? undefined,
+    onSessionExpired: () => { if (auth.user.value) { auth.handleSessionExpired(); void settingsApi.syncWithSession(); } },
   });
 }
 
@@ -372,14 +384,6 @@ function sortItems(items: SearchResult[]) {
           new Date(a.datetime || "1970-01-01").getTime() -
           new Date(b.datetime || "1970-01-01").getTime()
       );
-    case "name-asc":
-      return arr.sort((a, b) =>
-        String(a.name || "").localeCompare(String(b.name || ""), "zh-CN")
-      );
-    case "name-desc":
-      return arr.sort((a, b) =>
-        String(b.name || "").localeCompare(String(a.name || ""), "zh-CN")
-      );
     default:
       return arr;
   }
@@ -406,6 +410,8 @@ function sortItems(items: SearchResult[]) {
 .channel-chip { max-width: 100%; overflow-wrap: anywhere; padding: 3px 9px; background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); }
 .channel-preview button { border: 0; color: var(--primary); background: transparent; cursor: pointer; }
 .search-notice { margin: 0; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: var(--text-secondary); background: var(--bg-secondary); border-radius: 10px; }
+.privacy-notice { margin: 0; color: var(--text-tertiary); font-size: 11px; line-height: 1.6; text-align: center; }
+.privacy-notice::before { content: "ⓘ "; color: var(--primary); }
 .search-workspace :deep(.search-box) { box-shadow: none; background: var(--bg-secondary); border-radius: 14px; }
 .search-workspace :deep(.search-box.focused) { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 @media (max-width: 480px) {
@@ -427,8 +433,17 @@ function sortItems(items: SearchResult[]) {
 
 /* 大标题 */
 .hero {
+  position: relative;
   text-align: center;
   padding: 56px 16px 8px;
+}
+
+.hero-account {
+  position: absolute;
+  top: 18px;
+  right: 0;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .hero-title {
@@ -585,7 +600,7 @@ function sortItems(items: SearchResult[]) {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  width: 156px;
+  width: min(220px, calc(100vw - 48px));
 }
 
 .floating-sort,
@@ -608,10 +623,9 @@ function sortItems(items: SearchResult[]) {
 
 .floating-tool-icon {
   flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
   color: var(--primary);
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .floating-sort-label {
@@ -637,8 +651,10 @@ function sortItems(items: SearchResult[]) {
 .back-to-top {
   justify-content: center;
   gap: 6px;
-  width: 100%;
-  padding: 8px 12px;
+  width: 42px;
+  height: 42px;
+  justify-content: center;
+  padding: 0;
   color: var(--primary);
   font-size: 12px;
   font-weight: 700;
@@ -646,9 +662,9 @@ function sortItems(items: SearchResult[]) {
   transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
 }
 
-.back-to-top span:first-child {
-  font-size: 18px;
-  line-height: 1;
+.back-to-top svg {
+  width: 18px;
+  height: 18px;
 }
 
 .floating-sort:hover,
@@ -768,12 +784,30 @@ function sortItems(items: SearchResult[]) {
   .floating-tools {
     right: 14px;
     bottom: max(14px, env(safe-area-inset-bottom));
-    width: min(156px, calc(100vw - 28px));
+    width: auto;
   }
 
   .floating-sort,
   .back-to-top {
+    width: 40px;
+    height: 40px;
     min-height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .floating-sort-label {
+    display: none;
+  }
+
+  .floating-sort select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
   }
 
   .empty-card {

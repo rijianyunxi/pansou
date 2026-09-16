@@ -61,6 +61,54 @@ CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last
 CREATE TABLE IF NOT EXISTS tg_channel_health(id INTEGER PRIMARY KEY,channel TEXT NOT NULL,checked_at INTEGER NOT NULL,ok INTEGER NOT NULL,elapsed_ms INTEGER NOT NULL,results_count INTEGER NOT NULL,source TEXT NOT NULL,failure_kind TEXT,message TEXT);
 CREATE INDEX IF NOT EXISTS idx_tg_channel_health_recent ON tg_channel_health(channel,checked_at DESC);
 CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  username_normalized TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  nickname TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  custom_channels_json TEXT NOT NULL DEFAULT '[]',
+  custom_channels_updated_at INTEGER NOT NULL,
+  last_login_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE TABLE IF NOT EXISTS sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('anonymous','user')),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS search_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER,
+  user_id INTEGER,
+  keyword TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  search_scope TEXT NOT NULL,
+  channels_json TEXT NOT NULL DEFAULT '[]',
+  source_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_logs_created_at ON search_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_search_logs_user_id ON search_logs(user_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_search_logs_session_id ON search_logs(session_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS policy_settings(
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 DROP TRIGGER IF EXISTS trg_resource_sources_revision_insert;
 CREATE TRIGGER trg_resource_sources_revision_insert AFTER INSERT ON resource_sources BEGIN UPDATE config_revisions SET revision=revision+1 WHERE scope='sources'; END;
 DROP TRIGGER IF EXISTS trg_resource_sources_revision_update;

@@ -67,6 +67,9 @@ export default defineNuxtConfig({
     "/api/hot-searches": { swr: false, cache: false },
     // 密码门接口不缓存，确保 POST body 正常处理
     "/api/auth/**": { swr: false, cache: false },
+    // 普通用户会话与账号写接口必须保留 Cookie 和请求体，禁止全局 SWR 接管
+    "/api/account/**": { swr: false, cache: false },
+    "/api/admin/**": { swr: false, cache: false },
     // 搜索接口依赖 Cookie 鉴权，禁止缓存避免 401 被缓存；
     // POST 搜索必须保留请求体，不能被通用 SWR 包装器接管。
     "/api/search": { swr: false, cache: false },

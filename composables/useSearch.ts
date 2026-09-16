@@ -14,6 +14,7 @@ export interface SearchOptions {
   userTgChannels?: string[];
   onlyUserTg?: boolean;
   onAuthRequired?: () => void;
+  onSessionExpired?: () => void;
 }
 export interface SearchState {
   loading: boolean;
@@ -124,8 +125,17 @@ export function useSearch() {
     } catch (error: any) {
       if (mySeq !== seq || ac.signal.aborted) return;
       const status = error?.statusCode ?? error?.status ?? error?.response?.status;
-      state.value.error = status === 401 ? "请先解锁搜索，再重新搜索。" : error?.data?.statusMessage || error?.message || "搜索请求失败，请重试。";
-      if (status === 401) options.onAuthRequired?.();
+      if (status === 401) {
+        state.value.error = "搜索授权已失效，请重新解锁搜索或重新登录后再试。此次请求未计入搜索配额；系统会保留必要的关键词、会话和 IP 日志用于审计。";
+        options.onSessionExpired?.();
+        options.onAuthRequired?.();
+      } else if (status === 403) {
+        state.value.error = "搜索范围或自定义频道当前无权限（403）。请登录账号、检查频道权限或联系管理员；拒绝请求不会计入搜索配额。";
+      } else if (status === 429) {
+        state.value.error = "搜索请求过于频繁或并发已达上限（429）。请稍候再试；系统会按当前浏览器会话限流，不按 IP 汇总。";
+      } else {
+        state.value.error = error?.data?.statusMessage || error?.message || "搜索请求失败，请重试。";
+      }
     } finally {
       if (mySeq === seq) {
         stopElapsedTimer();

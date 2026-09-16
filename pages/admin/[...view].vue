@@ -15,6 +15,15 @@
           <NuxtLink to="/admin/sources" :class="['console-nav-link', { active: view === 'sources' }]">
             <ConsoleIcon name="box" />来源管理
           </NuxtLink>
+          <NuxtLink to="/admin/users" class="console-nav-link">
+            <ConsoleIcon name="user" />用户管理
+          </NuxtLink>
+          <NuxtLink to="/admin/logs" class="console-nav-link">
+            <ConsoleIcon name="activity" />搜索日志
+          </NuxtLink>
+          <NuxtLink to="/admin/policies" class="console-nav-link">
+            <ConsoleIcon name="sliders" />搜索策略
+          </NuxtLink>
         </nav>
       </aside>
 

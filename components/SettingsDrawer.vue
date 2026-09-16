@@ -22,13 +22,19 @@
         <section class="drawer__section">
           <div class="section__title">
             <strong>已添加的公开频道</strong>
-            <span class="tiny-hint">{{ inner.userTgChannels.length }}/50</span>
+            <span class="tiny-hint">{{ inner.userTgChannels.length }}/{{ channelLimit }}</span>
           </div>
           <p class="hint">
             添加公开频道用户名或链接。本站搜索不会使用这些频道；选择首页「自定义频道」后，只搜索这里的频道。
+            <template v-if="isServerManaged">当前已同步到账号，可在其他设备继续使用。</template>
+            <template v-else>未登录时保存在当前浏览器；登录后可导入到账号。</template>
           </p>
 
           <p v-if="storageError" class="feedback feedback--error" role="alert">{{ storageError }}</p>
+          <p v-if="isServerManaged && localChannels.length" class="import-hint" role="status">
+            发现本地还有 {{ localChannels.length }} 个频道，可合并导入账号。
+            <button type="button" class="inline-action" :disabled="checking" @click="importLocal">导入本地频道</button>
+          </p>
           <form class="channel-add" @submit.prevent="addChannel">
             <input
               ref="channelInput"
@@ -74,7 +80,7 @@
         </section>
       </div>
 
-      <footer class="drawer__footer">
+          <footer class="drawer__footer">
         <button class="btn btn--subtle" type="button" @click="$emit('reset-default')">清空频道列表</button>
       </footer>
     </div>
@@ -83,7 +89,6 @@
 
 <script setup lang="ts">
 import { parseTelegramChannelInput } from "../utils/telegramChannelInput";
-import { MAX_USER_TG_CHANNELS } from "../utils/telegramChannels";
 import type { UserSettings } from "~/composables/useSettings";
 
 const props = defineProps<{
@@ -99,6 +104,8 @@ const emit = defineEmits<{
 }>();
 
 const inner = computed(() => props.modelValue);
+const auth = useAuth();
+const { channelLimit, isServerManaged, localChannels, saveChannels, importLocalChannels } = useSettings();
 const newChannel = ref("");
 const channelError = ref("");
 const channelStatus = ref("");
@@ -151,8 +158,8 @@ async function addChannel() {
     newChannel.value = "";
     return;
   }
-  if (inner.value.userTgChannels.length >= MAX_USER_TG_CHANNELS) {
-    channelError.value = "最多可添加 50 个公开频道。";
+  if (inner.value.userTgChannels.length >= channelLimit.value) {
+    channelError.value = `当前账号最多可添加 ${channelLimit.value} 个公开频道。`;
     return;
   }
 
@@ -161,18 +168,24 @@ async function addChannel() {
     const validation = await $fetch<{ ok: boolean; message?: string }>("/api/tg/validate-channel", {
       method: "POST",
       body: { channel: name },
+      credentials: "include",
       retry: 0,
     });
     if (!validation.ok) {
       channelError.value = validation.message || "该频道不可用或不是公开频道，未添加。";
       return;
     }
-    emit("update:modelValue", {
-      ...inner.value,
-      userTgChannels: [...inner.value.userTgChannels, name],
-    });
+    const nextChannels = [...inner.value.userTgChannels, name];
+    emit("update:modelValue", { ...inner.value, userTgChannels: nextChannels });
+    const saved = await saveChannels(nextChannels);
+    if (!saved) {
+      channelError.value = "频道已在当前页面加入，但服务端保存失败；请稍后重试。";
+      return;
+    }
     newChannel.value = "";
-    channelStatus.value = `已验证 @${name}，已加入自定义频道列表。`;
+    channelStatus.value = isServerManaged.value
+      ? `已验证 @${name}，已保存到账号。`
+      : `已验证 @${name}，已加入当前浏览器的自定义频道列表。`;
     await nextTick();
     channelInput.value?.focus();
   } catch (reason: any) {
@@ -182,12 +195,28 @@ async function addChannel() {
   }
 }
 
+async function importLocal() {
+  if (!auth.user.value || checking.value) return;
+  checking.value = true;
+  channelError.value = "";
+  try {
+    const saved = await importLocalChannels();
+    if (saved) {
+      emit("update:modelValue", { ...inner.value });
+      channelStatus.value = "本地频道已合并到账号。";
+    } else {
+      channelError.value = "本地频道导入失败，请检查账号状态后重试。";
+    }
+  } finally {
+    checking.value = false;
+  }
+}
+
 async function removeChannel(name: string) {
-  channelStatus.value = `已移除 @${name}。`;
-  emit("update:modelValue", {
-    ...inner.value,
-    userTgChannels: inner.value.userTgChannels.filter((c) => c !== name),
-  });
+  const nextChannels = inner.value.userTgChannels.filter((c) => c !== name);
+  emit("update:modelValue", { ...inner.value, userTgChannels: nextChannels });
+  const saved = await saveChannels(nextChannels);
+  channelStatus.value = saved ? `已移除 @${name}。` : "频道已从当前页面移除，但服务端保存失败，请稍后重试。";
   await nextTick();
   channelInput.value?.focus();
 }
@@ -325,6 +354,29 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
   font-weight: 600;
   color: var(--text-primary);
 }
+
+.import-hint {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.inline-action {
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.inline-action:disabled { opacity: 0.55; cursor: wait; }
 
 .tiny-hint {
   font-size: 12px;

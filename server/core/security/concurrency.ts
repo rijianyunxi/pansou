@@ -1,43 +1,36 @@
-import { createError, getHeader, getRequestIP, setHeader, type H3Event } from "h3";
-import { MemoryRateLimiter } from "./rateLimit";
+import { createError, setHeader, type H3Event } from "h3";
 
 export interface SearchGovernanceLimits {
-  /** Concurrent in-flight searches allowed per client. */
+  /** Concurrent in-flight searches allowed per session. */
   perClientInFlight: number;
-  /** Fixed window length for the per-client admitted-search rate. */
+  /** Fixed window length for the per-session admitted-search rate. */
   perClientWindowMs: number;
-  /** Admitted searches per client within perClientWindowMs. */
+  /** Admitted searches per session within perClientWindowMs. */
   perClientWindowLimit: number;
   /** Instance-wide cap on concurrent in-flight searches. */
   globalInFlight: number;
+  /** Instance-wide admitted-search limit within globalWindowMs. */
+  globalWindowMs: number;
+  globalWindowLimit: number;
   /** Best-effort Retry-After hint (seconds) when slots are unavailable. */
   inFlightRetryAfterSeconds: number;
 }
 
-/**
- * Instance-level search governance thresholds (single process, in-memory;
- * distributed deployments need a shared store, mirroring rateLimit.ts).
- *
- * - perClientInFlight 3 of a suggested 2-4: a search may run 30-120s, three
- *   slots let a normal browser page (search + refresh + prefetch) proceed
- *   while still bounding per-client amplification.
- * - perClientWindowLimit 30 / 30s: caps completed searches (each fanning out
- *   to every source) without throttling interactive use.
- * - globalInFlight 16: hard instance ceiling that holds even when client
- *   identities are spoofed, sized so resource-source shared concurrency slots are
- *   not starved by a single flood.
- */
+/** Defaults mirror the initial policy values. Request handling reads policyService on every request. */
 export const SEARCH_GOVERNANCE_LIMITS: SearchGovernanceLimits = {
-  perClientInFlight: 3,
-  perClientWindowMs: 30_000,
+  perClientInFlight: 2,
+  perClientWindowMs: 60_000,
   perClientWindowLimit: 30,
   globalInFlight: 16,
+  globalWindowMs: 60_000,
+  globalWindowLimit: 120,
   inFlightRetryAfterSeconds: 2,
 };
 
 export type SearchRejectionReason =
   | "client_rate_limited"
   | "client_concurrency"
+  | "global_rate_limited"
   | "global_capacity";
 
 export interface SearchLease {
@@ -59,20 +52,30 @@ interface InFlightEntry {
   lastSeenAt: number;
 }
 
+interface WindowEntry {
+  startedAt: number;
+  count: number;
+}
+
+function readWindow(entry: WindowEntry | undefined, windowMs: number, now: number): WindowEntry {
+  if (!entry || now - entry.startedAt >= windowMs) return { startedAt: now, count: 0 };
+  return entry;
+}
+
 /**
- * Tracks per-client and instance-wide in-flight searches plus a per-client
- * admitted-request window. Slots are only handed out through tryBegin and are
- * always freed by the returned lease, so aborts and errors cannot leak counts.
+ * Single-process search governance. The key supplied by the caller is the
+ * internal session id, never an IP address or user id.
  */
 export class SearchGovernor {
-  private readonly rateLimiter = new MemoryRateLimiter();
+  private readonly perSessionWindows = new Map<string, WindowEntry>();
+  private globalWindow: WindowEntry | undefined;
   private readonly inFlight = new Map<string, InFlightEntry>();
   private inFlightCount = 0;
 
   tryBegin(
     key: string,
     limits: SearchGovernanceLimits,
-    now = Date.now()
+    now = Date.now(),
   ): SearchGovernanceDecision {
     const held = this.inFlight.get(key)?.count ?? 0;
     if (held >= limits.perClientInFlight) {
@@ -91,21 +94,31 @@ export class SearchGovernor {
         retryAfterSeconds: limits.inFlightRetryAfterSeconds,
       };
     }
-    // Only admitted searches consume window tokens: requests rejected for
-    // concurrency stay retryable without burning the rate budget.
-    const rate = this.rateLimiter.check(
-      key,
-      { limit: limits.perClientWindowLimit, windowMs: limits.perClientWindowMs },
-      now
-    );
-    if (!rate.allowed) {
+
+    const sessionWindow = readWindow(this.perSessionWindows.get(key), limits.perClientWindowMs, now);
+    const globalWindow = readWindow(this.globalWindow, limits.globalWindowMs, now);
+    if (sessionWindow.count >= limits.perClientWindowLimit) {
       return {
         allowed: false,
         reason: "client_rate_limited",
         statusCode: 429,
-        retryAfterSeconds: Math.max(1, Math.ceil(rate.retryAfterMs / 1000)),
+        retryAfterSeconds: Math.max(1, Math.ceil((limits.perClientWindowMs - (now - sessionWindow.startedAt)) / 1000)),
       };
     }
+    if (globalWindow.count >= limits.globalWindowLimit) {
+      return {
+        allowed: false,
+        reason: "global_rate_limited",
+        statusCode: 429,
+        retryAfterSeconds: Math.max(1, Math.ceil((limits.globalWindowMs - (now - globalWindow.startedAt)) / 1000)),
+      };
+    }
+
+    sessionWindow.count++;
+    globalWindow.count++;
+    this.perSessionWindows.set(key, sessionWindow);
+    this.globalWindow = globalWindow;
+    if (this.perSessionWindows.size > 10_000) this.prune(now, Math.max(limits.perClientWindowMs, limits.globalWindowMs));
 
     const entry = this.inFlight.get(key) ?? { count: 0, lastSeenAt: now };
     entry.count++;
@@ -116,7 +129,10 @@ export class SearchGovernor {
     let released = false;
     return {
       allowed: true,
-      remainingInWindow: rate.remaining,
+      remainingInWindow: Math.min(
+        limits.perClientWindowLimit - sessionWindow.count,
+        limits.globalWindowLimit - globalWindow.count,
+      ),
       lease: {
         release: () => {
           if (released) return;
@@ -141,37 +157,35 @@ export class SearchGovernor {
   }
 
   reset(): void {
+    this.perSessionWindows.clear();
+    this.globalWindow = undefined;
     this.inFlight.clear();
     this.inFlightCount = 0;
-    this.rateLimiter.reset();
+  }
+
+  private prune(now: number, windowMs: number): void {
+    for (const [key, entry] of this.perSessionWindows) {
+      if (now - entry.startedAt > windowMs) this.perSessionWindows.delete(key);
+    }
   }
 }
 
 export const searchGovernor = new SearchGovernor();
 
-/**
- * Conservative client identity: the socket peer address, or cf-connecting-ip
- * which only the operator's edge may set. x-forwarded-for is deliberately
- * ignored — clients can forge it when the app is exposed directly, letting a
- * single client rotate identities past per-IP limits. Spoofed keys still hit
- * the global in-flight ceiling.
- */
-export function searchClientKey(event: H3Event): string {
-  return getHeader(event, "cf-connecting-ip") || getRequestIP(event) || "unknown";
+export function searchSessionKey(sessionId: number): string {
+  return `session:${sessionId}`;
 }
 
 /**
- * Admits one search request or throws an h3 error carrying Retry-After.
- * Ops endpoints (health, hot-searches, admin) never call this and stay
- * unlimited. Overrides exist for future config wiring; defaults are the
- * centralized constants above.
+ * Admit one search using the internal session id. Callers should resolve the
+ * user/session and policy before calling this function; it never consults IP.
  */
 export function beginSearchLease(
   event: H3Event,
-  overrides?: Partial<SearchGovernanceLimits>
+  sessionId: number,
+  limits: SearchGovernanceLimits = SEARCH_GOVERNANCE_LIMITS,
 ): SearchLease {
-  const limits = { ...SEARCH_GOVERNANCE_LIMITS, ...overrides };
-  const decision = searchGovernor.tryBegin(searchClientKey(event), limits);
+  const decision = searchGovernor.tryBegin(searchSessionKey(sessionId), limits);
   if (!decision.allowed) {
     setHeader(event, "Retry-After", Math.max(1, decision.retryAfterSeconds));
     throw createError({
@@ -179,9 +193,11 @@ export function beginSearchLease(
       statusMessage:
         decision.reason === "global_capacity"
           ? "search capacity temporarily exhausted"
-          : decision.reason === "client_rate_limited"
-            ? "too many search requests"
-            : "too many concurrent searches",
+          : decision.reason === "global_rate_limited"
+            ? "search capacity temporarily limited"
+            : decision.reason === "client_rate_limited"
+              ? "too many search requests"
+              : "too many concurrent searches",
     });
   }
   setHeader(event, "X-RateLimit-Remaining", String(decision.remainingInWindow));
