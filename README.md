@@ -109,3 +109,22 @@ git diff --check
 ```
 
 当前重构不提供旧 API、旧 Plugin 兼容机制或旧数据库迁移。数据库应使用当前资源源结构初始化；如需重置本地开发数据，请停止服务后删除 `data/panhub.sqlite` 再启动。
+
+## 搜索压力测试
+
+脚本会为每次搜索先调用 `/api/account/session` 获取新的匿名 `panhub_session` Cookie，再调用搜索接口，避免复用同一会话触发会话级限流。默认使用 `/api/search/json`，因为该接口会返回每个资源源的 `elapsedMs`、`transformMs` 和 warnings；每次测试会把明细追加到 JSONL，并生成汇总 JSON。
+
+```bash
+# 默认：300 次搜索，20 个客户端并发，180 秒内完成
+pnpm test:stress-search
+
+# 指定部署地址、并发度和报告目录
+pnpm test:stress-search -- \
+  --base-url http://111.119.233.153:3000 \
+  --requests 300 \
+  --concurrency 20 \
+  --duration-seconds 180 \
+  --output .tmp/my-search-stress
+```
+
+报告包含每轮的接口状态、失败资源源、源接口失败、transform 失败、transform 总耗时、上游耗时和 warnings。若部署版本没有返回 `meta.sources[].transformMs`，transform 总耗时会显示为 0，表示服务端未上报该字段，不代表 transform 实际耗时为 0。需要模拟浏览器 SSE 时可追加 `--mode sse`，但 SSE 接口不会暴露源级 transform 诊断。
