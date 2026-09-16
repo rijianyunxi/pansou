@@ -127,8 +127,11 @@ export interface SourceHealthStatus {
   avgResponseTime: number;
   p50ResponseTime: number;
   p95ResponseTime: number;
-  /** Consecutive failures. Reset after a successful execution. */
+  /** Failures accumulated in the breaker window; successful calls do not hide intermittent upstream failures. */
   failureCount: number;
+  /** Number of failures and start timestamp for the rolling breaker window. */
+  failureWindowCount?: number;
+  failureWindowStartedAt?: number;
   totalFailureCount: number;
   successCount: number;
   requestCount: number;
@@ -161,6 +164,8 @@ export interface SourceHealthStatus {
 export interface SourceHealthConfig {
   maxFailures: number;
   circuitBreakerTimeoutMs: number;
+  /** Failures within this window can open the circuit even when successes are interleaved. */
+  failureWindowMs?: number;
   responseTimeThresholdMs: number;
   sampleSize?: number;
 }
@@ -349,6 +354,9 @@ export function sanitizeSourceHealthSnapshot(
     out[name.slice(0, 128)] = {
       ...status,
       name: name.slice(0, 128),
+      failureCount: Math.max(0, Math.floor(Number(status.failureCount) || 0)),
+      failureWindowCount: Math.max(0, Math.floor(Number(status.failureWindowCount ?? status.failureCount) || 0)),
+      failureWindowStartedAt: toTimestamp(status.failureWindowStartedAt ?? status.lastFailureTime),
       errorCounts: sanitizeCategoryCounts(status.errorCounts),
       dimensions: sanitizeDimensions(status.dimensions),
       history: sanitizeHistory(status.history),
@@ -407,6 +415,8 @@ export class SourceHealthChecker {
       p50ResponseTime: 0,
       p95ResponseTime: 0,
       failureCount: 0,
+      failureWindowCount: 0,
+      failureWindowStartedAt: undefined,
       totalFailureCount: 0,
       successCount: 0,
       requestCount: 0,
@@ -551,6 +561,7 @@ export class SourceHealthChecker {
     options: SourceSuccessOptions = {}
   ): void {
     const current = this.healthMap.get(sourceName) || this.createStatus(sourceName);
+    const wasHalfOpen = current.circuitState === "half-open";
     const now = Date.now();
     current.requestCount++;
     current.successCount++;
@@ -599,7 +610,19 @@ export class SourceHealthChecker {
       now
     );
 
-    current.failureCount = 0;
+    // A request admitted while the circuit was closed can finish after a
+    // different request has opened the circuit. Its late success must not
+    // silently re-close the breaker; only a half-open recovery probe may do so.
+    if (current.circuitState === "open" && !wasHalfOpen) {
+      this.healthMap.set(sourceName, current);
+      return;
+    }
+    const failureWindowMs = Math.max(1_000, this.config.failureWindowMs || 5 * 60 * 1000);
+    if (wasHalfOpen || !current.failureWindowStartedAt || now - current.failureWindowStartedAt >= failureWindowMs) {
+      current.failureWindowCount = 0;
+      current.failureWindowStartedAt = undefined;
+    }
+    current.failureCount = current.failureWindowCount || 0;
     current.isHealthy = true;
     current.circuitState = "closed";
     current.halfOpenProbeInFlight = false;
@@ -613,8 +636,14 @@ export class SourceHealthChecker {
     const current = this.healthMap.get(sourceName) || this.createStatus(sourceName);
     const wasHalfOpen = current.circuitState === "half-open";
     const now = Date.now();
+    const failureWindowMs = Math.max(1_000, this.config.failureWindowMs || 5 * 60 * 1000);
+    if (!current.failureWindowStartedAt || now - current.failureWindowStartedAt >= failureWindowMs) {
+      current.failureWindowStartedAt = now;
+      current.failureWindowCount = 0;
+    }
+    current.failureWindowCount = (current.failureWindowCount || 0) + 1;
+    current.failureCount = current.failureWindowCount;
     current.requestCount++;
-    current.failureCount++;
     current.totalFailureCount++;
     current.lastFailureTime = now;
     current.halfOpenProbeInFlight = false;
@@ -680,7 +709,7 @@ export class SourceHealthChecker {
     current.recentOutcomes!.at(-1)!.responseTimeMs = typeof options.responseTimeMs === "number" ? Math.max(0, Math.floor(options.responseTimeMs)) : undefined;
     current.recentOutcomes!.at(-1)!.message = options.errorMessage;
 
-    if (wasHalfOpen || current.failureCount >= this.config.maxFailures) {
+    if (wasHalfOpen || (current.failureWindowCount || 0) >= this.config.maxFailures) {
       current.isHealthy = false;
       current.circuitState = "open";
     }
@@ -780,6 +809,8 @@ export class SourceHealthChecker {
         ...this.createStatus(name),
         ...status,
         name,
+        failureWindowCount: Math.max(0, Math.floor(Number(status.failureWindowCount ?? status.failureCount) || 0)),
+        failureWindowStartedAt: toTimestamp(status.failureWindowStartedAt ?? status.lastFailureTime),
         errorCounts: { ...(status.errorCounts || {}) },
         recent: typeof status.recent === "string" ? status.recent.slice(-100).replace(/[^01]/g, "") : "",
         recentOutcomes: Array.isArray(status.recentOutcomes) ? status.recentOutcomes.slice(-100) : [],

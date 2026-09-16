@@ -75,6 +75,7 @@ type RoundReport = {
   sourceCount: number;
   successfulSourceCount: number;
   failedSources: JsonRecord[];
+  skippedSources: JsonRecord[];
   sourceInterfaceFailures: Failure[];
   transformFailures: Failure[];
   transformMetricsReportedSourceCount: number;
@@ -231,10 +232,12 @@ function warningsForSource(warnings: JsonRecord[], source: SourceDiagnostic): Js
 
 function classifySourceFailures(sources: SourceDiagnostic[], warnings: JsonRecord[]): {
   failedSources: JsonRecord[];
+  skippedSources: JsonRecord[];
   sourceInterfaceFailures: Failure[];
   transformFailures: Failure[];
 } {
   const failedSources: JsonRecord[] = [];
+  const skippedSources: JsonRecord[] = [];
   const sourceInterfaceFailures: Failure[] = [];
   const transformFailures: Failure[] = [];
   for (const source of sources) {
@@ -249,6 +252,10 @@ function classifySourceFailures(sources: SourceDiagnostic[], warnings: JsonRecor
       transformMs: source.transformMs ?? null,
       warnings: sourceWarnings,
     };
+    if (source.status === "skipped") {
+      skippedSources.push(detail);
+      continue;
+    }
     failedSources.push(detail);
     const failure: Failure = {
       stage: source.transformMs === null || source.transformMs === undefined ? "source-interface" : "transform",
@@ -259,7 +266,7 @@ function classifySourceFailures(sources: SourceDiagnostic[], warnings: JsonRecor
     if (failure.stage === "transform") transformFailures.push(failure);
     else sourceInterfaceFailures.push(failure);
   }
-  return { failedSources, sourceInterfaceFailures, transformFailures };
+  return { failedSources, skippedSources, sourceInterfaceFailures, transformFailures };
 }
 
 async function runRound(round: number, options: Options, deadline: number, reportPath: string): Promise<RoundReport> {
@@ -283,6 +290,7 @@ async function runRound(round: number, options: Options, deadline: number, repor
     sourceCount: 0,
     successfulSourceCount: 0,
     failedSources: [],
+    skippedSources: [],
     sourceInterfaceFailures: [],
     transformFailures: [],
     transformMetricsReportedSourceCount: 0,
@@ -393,6 +401,7 @@ async function runRound(round: number, options: Options, deadline: number, repor
     report.sourceCount = sources.length;
     report.successfulSourceCount = sources.filter((source) => source.status === "success").length;
     report.failedSources = classified.failedSources;
+    report.skippedSources = classified.skippedSources;
     report.sourceInterfaceFailures = classified.sourceInterfaceFailures;
     report.transformFailures = classified.transformFailures;
     report.transformMetricsReportedSourceCount = sources.filter((source) => typeof source.transformMs === "number").length;
@@ -450,7 +459,7 @@ function aggregateFailures(reports: RoundReport[], field: "sourceInterfaceFailur
 }
 
 function compactFailureCount(report: RoundReport): string {
-  return `sourceFail=${report.failedSources.length} sourceIface=${report.sourceInterfaceFailures.length} transform=${report.transformFailures.length} transformReported=${report.transformMetricsReportedSourceCount}`;
+  return `sourceFail=${report.failedSources.length} skipped=${report.skippedSources.length} sourceIface=${report.sourceInterfaceFailures.length} transform=${report.transformFailures.length} transformReported=${report.transformMetricsReportedSourceCount}`;
 }
 
 async function main(): Promise<void> {
@@ -479,7 +488,7 @@ async function main(): Promise<void> {
       if (round > options.requests) return;
       const report = await runRound(round, options, deadline, reportPath);
       reports.push(report);
-      const status = !report.completed || report.interfaceFailures.length > 0 ? "FAIL" : report.failedSources.length > 0 ? "PARTIAL" : "OK";
+      const status = !report.completed || report.interfaceFailures.length > 0 ? "FAIL" : report.failedSources.length > 0 || report.skippedSources.length > 0 ? "PARTIAL" : "OK";
       console.log(`[${String(round).padStart(String(options.requests).length, "0")}/${options.requests}] ${status} ${report.keyword} ${report.totalMs.toFixed(0)}ms results=${report.resultTotal ?? "-"} transformTotal=${report.transformTotalMs}ms ${compactFailureCount(report)}`);
     }
   };
@@ -514,6 +523,7 @@ async function main(): Promise<void> {
     roundsSuccessful: successful.length,
     roundsFailed: reports.length - successful.length,
     roundsWithSourceFailures: reports.filter((report) => report.failedSources.length > 0).length,
+    roundsWithCircuitSkips: reports.filter((report) => report.skippedSources.length > 0).length,
     roundsWithWarnings: reports.filter((report) => report.warnings.length > 0).length,
     sessionCookieSuccess: reports.filter((report) => report.sessionCookie).length,
     responseBytes: reports.reduce((sum, report) => sum + report.responseBytes, 0),
@@ -526,6 +536,16 @@ async function main(): Promise<void> {
     totalResults: reports.reduce((sum, report) => sum + (report.resultTotal || 0), 0),
     sourceInterfaceFailures: aggregateFailures(reports, "sourceInterfaceFailures"),
     transformFailures: aggregateFailures(reports, "transformFailures"),
+    skippedSourceCounts: [...reports.reduce((counts, report) => {
+      for (const source of report.skippedSources) {
+        const key = String(source.id || source.name || "unknown");
+        const current = counts.get(key) || { source: key, count: 0, rounds: [] as number[] };
+        current.count++;
+        current.rounds.push(report.round);
+        counts.set(key, current);
+      }
+      return counts;
+    }, new Map<string, JsonRecord>()).values()].sort((a, b) => b.count - a.count),
     failedSourceCounts: [...reports.reduce((counts, report) => {
       for (const source of report.failedSources) {
         const key = String(source.id || source.name || "unknown");
@@ -546,9 +566,10 @@ async function main(): Promise<void> {
     rounds: reports.length,
     completed: completed.length,
     successful: successful.length,
-    partial: completed.filter((report) => report.failedSources.length > 0 && report.interfaceFailures.length === 0).length,
+    partial: completed.filter((report) => (report.failedSources.length > 0 || report.skippedSources.length > 0) && report.interfaceFailures.length === 0).length,
     failed: reports.length - successful.length,
     roundsWithSourceFailures: reports.filter((report) => report.failedSources.length > 0).length,
+    roundsWithCircuitSkips: reports.filter((report) => report.skippedSources.length > 0).length,
     statusCounts,
     roundLatency: summary.roundLatency,
     searchLatency: summary.searchLatency,
@@ -558,6 +579,7 @@ async function main(): Promise<void> {
     sourceInterfaceFailures: summary.sourceInterfaceFailures,
     transformFailures: summary.transformFailures,
     failedSourceCounts: summary.failedSourceCounts,
+    skippedSourceCounts: summary.skippedSourceCounts,
     interfaceFailures: summary.interfaceFailures.slice(0, 20),
   }, null, 2));
   console.log(`\nReports written to ${outputDir}`);

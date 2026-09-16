@@ -161,6 +161,20 @@ provide('showToast', showToast);
 /* 全局样式：干净扁平的浅色设计系统 */
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap");
 
+html {
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
 :root {
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
@@ -514,6 +528,7 @@ button {
 .layout {
   min-height: 100vh;
   min-width: 0;
+  overflow-x: clip;
   display: flex;
   flex-direction: column;
 }
@@ -552,6 +567,10 @@ button {
 }
 
 .brand-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -560,7 +579,10 @@ button {
 .topnav-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .theme-switcher {
@@ -717,8 +739,24 @@ button {
 /* 移动端优化 */
 @media (max-width: 640px) {
   .topnav {
-    padding: 0 16px;
+    gap: 8px;
+    padding: 0 12px;
     height: 56px;
+  }
+
+  .topnav-actions {
+    gap: 6px;
+  }
+
+  .brand {
+    flex: 0 1 auto;
+    min-width: 0;
+    gap: 7px;
+  }
+
+  .brand-text {
+    max-width: 82px;
+    font-size: 15px;
   }
 
   .main {

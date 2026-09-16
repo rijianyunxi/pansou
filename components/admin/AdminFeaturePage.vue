@@ -214,7 +214,7 @@
                     </div>
                     <div class="policy-guide-item">
                       <span class="policy-guide-icon">断</span>
-                      <div><div class="policy-guide-title"><strong>来源连续失败多少次后熔断</strong><code>circuitBreakerMaxFailures</code></div><p>同一来源连续失败达到此次数后暂时停止请求，范围为 1–20 次，默认 5 次。</p></div>
+                      <div><div class="policy-guide-title"><strong>来源失败多少次后熔断</strong><code>circuitBreakerMaxFailures</code></div><p>同一来源在 5 分钟失败达到此次数后暂时停止请求，范围为 1–20 次，默认 5 次；成功请求不会让突发失败绕过熔断。</p></div>
                     </div>
                     <div class="policy-guide-item">
                       <span class="policy-guide-icon">总</span>

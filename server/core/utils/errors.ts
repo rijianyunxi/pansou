@@ -4,6 +4,7 @@
 export enum ErrorType {
   NETWORK_ERROR = "network_error",
   TIMEOUT_ERROR = "timeout_error",
+  HTTP_ERROR = "http_error",
   PARSE_ERROR = "parse_error",
   SOURCE_ERROR = "source_error",
   VALIDATION_ERROR = "validation_error",
@@ -67,6 +68,22 @@ export function classifyError(error: any, source?: string): ErrorDetail {
       source,
       timestamp,
       code: `tg_${error.tgKind}`,
+    };
+  }
+
+  // 上游 HTTP 状态错误（例如 429 限流）。
+  const httpError = typeof error?.message === "string"
+    ? error.message.match(/(?:来源 )?HTTP 错误[:：]?\s*(\d{3})/u)
+    : null;
+  if (httpError?.[1]) {
+    const status = Number(httpError[1]);
+    return {
+      type: ErrorType.HTTP_ERROR,
+      severity: status === 429 ? ErrorSeverity.MEDIUM : ErrorSeverity.HIGH,
+      message: error.message,
+      source,
+      timestamp,
+      code: `http_${status}`,
     };
   }
 

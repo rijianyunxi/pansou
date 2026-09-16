@@ -16,7 +16,7 @@ export default defineNuxtConfig({
         {
           name: "viewport",
           content:
-            "width=device-width, initial-scale=1, viewport-fit=cover",
+            "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover",
         },
         {
           name: "description",

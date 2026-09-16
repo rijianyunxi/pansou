@@ -27,7 +27,8 @@
     "test:transforms": "pnpm exec jiti scripts/test-transforms.ts",
     "test:transforms:configured": "pnpm exec jiti scripts/test-transforms.ts --configured",
     "test:transforms:live": "pnpm exec jiti scripts/test-transforms-live.ts",
-    "test:stress-search": "pnpm exec jiti scripts/stress-search.ts"
+    "test:stress-search": "pnpm exec jiti scripts/stress-search.ts",
+    "test:source-health": "pnpm exec jiti scripts/test-source-health.ts"
   },
   "dependencies": {
     "TagCloud": "^2.5.0",

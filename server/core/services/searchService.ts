@@ -194,19 +194,20 @@ export class SearchService {
             if (cached.warning) cachedWarnings.push(clone(cached.warning));
           } else {
             const health = this.health.getStatus(source.id);
-            if (health?.lastErrorMessage) {
-              const type = Object.values(ErrorType).includes(health.lastErrorCategory as ErrorType)
-                ? health.lastErrorCategory as ErrorType
-                : ErrorType.UNKNOWN_ERROR;
-              const warning: WarningInfo = {
-                type,
-                message: health.lastErrorMessage,
-                source: source.id,
-                count: 1,
-              };
-              nextStates[sourceKey(source)]!.warning = warning;
-              cachedWarnings.push(warning);
-            }
+            const type = Object.values(ErrorType).includes(health?.lastErrorCategory as ErrorType)
+              ? health!.lastErrorCategory as ErrorType
+              : ErrorType.SOURCE_ERROR;
+            const warning: WarningInfo = {
+              type,
+              code: "circuit_open",
+              message: health?.lastErrorMessage
+                ? `来源已熔断，已跳过本次请求（最近失败：${health.lastErrorMessage}）`
+                : "来源已熔断，已跳过本次请求",
+              source: source.id,
+              count: 1,
+            };
+            nextStates[sourceKey(source)]!.warning = warning;
+            cachedWarnings.push(warning);
           }
           return [];
         }

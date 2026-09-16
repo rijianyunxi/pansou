@@ -6,7 +6,7 @@
     </button>
     <button v-else-if="currentUser" class="account-trigger account-trigger--signed" type="button" :aria-expanded="openState" @click="toggleAccountMenu">
       <span class="account-avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
-      <span>{{ displayName }}</span>
+      <span class="account-label">{{ displayName }}</span>
       <span class="account-chevron">⌄</span>
     </button>
 
@@ -114,14 +114,15 @@ async function signOut() {
 </script>
 
 <style scoped>
-.account-control { display: inline-flex; min-width: 0; }
-.account-trigger { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 6px 11px; border: 1px solid var(--border-light); border-radius: 999px; background: var(--bg-primary); color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; transition: border-color .15s, color .15s, background-color .15s; }
+.account-control { display: inline-flex; min-width: 0; flex: 0 1 auto; }
+.account-trigger { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; min-height: 36px; padding: 6px 11px; border: 1px solid var(--border-light); border-radius: 999px; background: var(--bg-primary); color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; transition: border-color .15s, color .15s, background-color .15s; }
 .account-trigger:hover:not(:disabled) { border-color: var(--primary); color: var(--text-primary); background: var(--primary-soft); }
 .account-trigger:disabled { opacity: .65; cursor: wait; }
 .account-trigger--signed { color: var(--text-primary); }
-.account-avatar { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 11px; font-weight: 800; }
+.account-avatar { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 21px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 11px; font-weight: 800; }
+.account-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-chevron { font-size: 15px; line-height: 1; }
-.account-mask { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, .48); backdrop-filter: blur(5px); }
+.account-mask { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 18px; overflow-y: auto; overscroll-behavior: contain; background: rgba(15, 23, 42, .48); backdrop-filter: blur(5px); }
 .account-menu-layer { position: fixed; inset: 0; z-index: 1200; }
 .account-menu { position: absolute; top: 62px; right: 18px; width: min(220px, calc(100vw - 36px)); padding: 13px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-primary); box-shadow: var(--shadow-xl); }
 .account-menu-summary { display: flex; flex-direction: column; gap: 3px; padding: 3px 4px 12px; }
@@ -150,5 +151,11 @@ async function signOut() {
 .account-error, .account-warning, .account-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
 .account-error { color: var(--error, #dc2626); }
 .account-note { color: var(--text-secondary); }
+@media (max-width: 640px) {
+  .account-trigger { min-height: 34px; padding: 5px 8px; gap: 5px; }
+  .account-trigger:not(.account-trigger--signed) .account-label { max-width: 58px; }
+  .account-trigger--signed .account-label { max-width: 62px; }
+  .account-chevron { font-size: 14px; }
+}
 @media (max-width: 520px) { .account-modal { padding: 19px; } .account-menu { top: 58px; right: 12px; } }
 </style>
