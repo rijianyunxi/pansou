@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
-import { TELEGRAM_DEFAULT_TRANSFORM } from "../server/core/source-runtime/defaults";
+import { DEFAULT_CHANNEL_TRANSFORM } from "../server/core/source-runtime/defaults";
 
 const configured = process.argv.includes("--configured");
 const db = configured ? new Database(process.env.PANHUB_SQLITE_DB || "data/panhub.sqlite", { readonly: true }) : null;
-const sources: any[] = db ? db.prepare("SELECT * FROM upstream_definitions ORDER BY id").all() : [
-  { id: "tg-fixture", source_kind: "telegram", format: "html", transform: TELEGRAM_DEFAULT_TRANSFORM },
-  ...["hunhepan", "nyaa"].map(id => ({ id, source_kind: "http", format: id === "hunhepan" ? "json" : "html", transform: readFileSync(`scripts/fixtures/transforms/${id}.js`, "utf8").replace(/^export default /, "").replace(/;\s*$/, "") })),
+const sources: any[] = db ? db.prepare("SELECT * FROM resource_sources ORDER BY id").all().map((source: any) => ({ ...source, channelSource: /t\.me\/s\//.test(source.url) })) : [
+  { id: "channel-fixture", channelSource: true, format: "html", transform: DEFAULT_CHANNEL_TRANSFORM },
+  ...["hunhepan", "pansearch", "nyaa"].map(id => ({ id, channelSource: false, format: id === "hunhepan" ? "json" : "html", transform: readFileSync(`scripts/fixtures/transforms/${id}.js`, "utf8").replace(/^export default /, "").replace(/;\s*$/, "") })),
 ];
 db?.close();
 if (!configured) process.env.PANHUB_SQLITE_DB = ":memory:";
@@ -31,14 +31,14 @@ const cases = [
   { title: "测试资源 4K", text: `测试资源 4K\n${url}` },
 ];
 for (const source of sources) {
-  const run = (raw: string, keyword = "", route = "direct") => executeSourceTransform({ id: source.id, version: "test", format: source.format, maxResults: 200, code: source.transform }, raw, { rawBody: raw, format: source.format, keyword, channel: source.channel, source: source.id, route });
-  if (source.source_kind === "telegram") {
-    for (const [i, c] of cases.entries()) for (const mode of ["br", "newline", "paragraph", "jina"]) {
+  const run = (raw: string, keyword = "") => executeSourceTransform({ id: source.id, version: "test", format: source.format, maxResults: 200, code: source.transform }, raw, { rawBody: raw, format: source.format, keyword, source: source.id });
+  if (source.channelSource) {
+    for (const [i, c] of cases.entries()) for (const mode of ["br", "newline", "paragraph"]) {
       check(`${source.id} case ${i} ${mode}`, () => {
         const body = escape(c.text).split("\n");
         const html = mode === "paragraph" ? body.map(line => `<p>${line}</p>`).join("") : body.join(mode === "br" ? "<br>" : "\n");
-        const raw = mode === "jina" ? `Markdown Content:\n[](https://t.me/example/123)\n${c.text}\n${c.href ? `[123网盘](${c.href})` : ""}` : `<div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="example/123"><div class="tgme_widget_message_text">${html}${c.href ? `<a href="${c.href}">123网盘</a>` : ""}</div><time datetime="2026-09-15T08:00:00Z"></time></div></div>`;
-        const result = run(raw, "", mode === "jina" ? "jina" : "direct");
+        const raw = `<div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="example/123"><div class="tgme_widget_message_text">${html}${c.href ? `<a href="${c.href}">123网盘</a>` : ""}</div><time datetime="2026-09-15T08:00:00Z"></time></div></div>`;
+        const result = run(raw);
         assert.equal(result.length, 1); assert.equal(result[0]!.name, c.title);
         assert.equal(result[0]!.links.length, 1); assert.equal(result[0]!.links[0]!.url, c.href || url);
         assert.equal(result[0]!.links[0]!.type, c.href ? "123" : "aliyun");
@@ -55,11 +55,6 @@ for (const source of sources) {
       const result = run(wrap(`名称：测试一<br>${url}`, 1) + wrap(`名称：测试二<br>https://pan.quark.cn/s/example`, 2));
       assert.deepEqual(Array.from(result, r => r.name), ['测试一', '测试二']); assert.notEqual(result[0]!.id, result[1]!.id);
     });
-    check(`${source.id} Jina post isolation`, () => {
-      const raw = `Markdown Content:\n[](https://t.me/example/1)\n名称：测试一\n${url}\n[](https://t.me/example/2)\n名称：测试二\nhttps://pan.quark.cn/s/example`;
-      const result = run(raw, '', 'jina');
-      assert.deepEqual(Array.from(result, r => r.name), ['测试一', '测试二']); assert.equal(result[1]!.links[0]!.type, 'quark');
-    });
   } else if (source.id === "hunhepan") {
     check(`${source.id} contract`, () => {
       const results = run(JSON.stringify({ data: { list: [{ disk_id: 12, disk_name: "<em>测试</em>资源", files: "文件描述", link: url, disk_pass: "a123", update_time: "2026-08-07 13:09:03" }, { disk_name: "坏链接", link: "javascript:alert(1)" }] } }));
@@ -67,6 +62,32 @@ for (const source of sources) {
     });
     check(`${source.id} empty`, () => assert.equal(run('{}').length, 0));
     check(`${source.id} business error`, () => assert.throws(() => run('{"code":0,"msg":"参数错误","data":null}'), /参数错误/));
+  } else if (source.id === "pansearch") {
+    check(`${source.id} contract`, () => {
+      const payload = {
+        props: {
+          pageProps: {
+            data: {
+              data: [
+                { id: "single-1", time: "2026-09-15 12:34:56", content: "名称：测试电影\n描述：一条测试资源\n链接：https://pan.baidu.com/s/abc123" },
+                { id: "numbered-1", time: "2026-09-15 13:00:00", content: "1、测试剧集\nhttps://pan.quark.cn/s/quark123\n2、无效广告\nhttps://example.com/ad" },
+                { id: "unsupported-1", time: "2026-09-15 14:00:00", content: "名称：无效资源\n链接：https://example.com/not-a-cloud-link" },
+              ],
+            },
+          },
+        },
+      };
+      const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(payload)}</script>`;
+      const results = run(html, "测试");
+      assert.equal(results.length, 2);
+      assert.equal(JSON.stringify(results.map((item) => item.name)), JSON.stringify(["测试电影", "测试剧集"]));
+      assert.equal(results[0]!.links[0]!.type, "baidu");
+      assert.equal(results[1]!.links[0]!.type, "quark");
+    });
+    check(`${source.id} empty`, () => {
+      const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { data: { data: [] } } } })}</script>`;
+      assert.equal(run(html, "测试").length, 0);
+    });
   } else if (source.id === "nyaa") {
     check(`${source.id} title vs comments`, () => {
       const result = run('<table class="torrent-list"><tbody><tr><td></td><td><a class="comments" href="/view/123#comments">99</a><a href="/view/123" title="Test 1080p">Test</a></td><td><a href="magnet:?xt=urn:btih:123&amp;dn=Test">link</a></td><td>1 GB</td><td data-timestamp="1700000000"></td></tr></tbody></table>', 'Test');

@@ -4,19 +4,19 @@ import { getOrCreateSearchService } from "../core/services";
 import { getSystemSettings } from "../core/services/systemSettingsService";
 import {
   DIMENSION_KEYS,
-  type PluginDimensionKey,
-  type PluginHealthHourlyBucket,
-  type PluginHealthStatus,
-} from "../core/plugins/pluginHealth";
+  type SourceDimensionKey,
+  type SourceHealthHourlyBucket,
+  type SourceHealthStatus,
+} from "../core/services/sourceHealth";
 import { getSearchSettings } from "../core/services/searchSettingsService";
-import { getTgChannelPolicies, getTgChannelStates } from "../core/services/tgChannelSettings";
-import { upstreamToSourceDefinition } from "../core/services/configuredSourcePlugin";
-import { listConfiguredUpstreams } from "../core/services/upstreamCatalog";
+import { getTgChannelStates } from "../core/services/tgChannelSettings"
+import { upstreamToSourceDefinition } from "../core/services/configuredSource";
+import { listUnifiedUpstreams } from "../core/services/upstreamCatalog";
 import {
   getAllTgChannelHealthSummaries,
   type TgChannelHealthSummary,
 } from "../core/services/tgChannelHealthStore";
-import { tgChannelOrigin, type TgChannelPolicy } from "../utils/telegramSettings";
+import { tgChannelOrigin } from "../utils/telegramSettings"
 import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
 
 /** /api/monitor 来源行：统一来源目录，附五维健康快照。 */
@@ -37,7 +37,7 @@ export interface MonitorUpstreamHealth {
   circuitState: "closed" | "open" | "half-open";
   requestCount: number;
   successCount: number;
-  /** 累计失败次数（区别于 PluginHealthStatus.failureCount 的连续失败数）。 */
+  /** 累计失败次数（区别于 SourceHealthStatus.failureCount 的连续失败数）。 */
   failureCount: number;
   recent?: string;
   zeroResultCount: number;
@@ -45,12 +45,12 @@ export interface MonitorUpstreamHealth {
   lastFailureAt: number | null;
   lastErrorMessage: string;
   dimensions: Record<
-    PluginDimensionKey,
+    SourceDimensionKey,
     { state: string; passRate: number; recent: string; lastMessage: string }
   > | null;
   history: {
     windowHours: number;
-    buckets: PluginHealthHourlyBucket[];
+    buckets: SourceHealthHourlyBucket[];
   } | null;
 }
 
@@ -60,7 +60,6 @@ export interface MonitorChannelEntry {
   origin: "builtin" | "custom";
   enabled: boolean;
   deleted: boolean;
-  policy: TgChannelPolicy | null;
   health: MonitorChannelHealth | null;
 }
 
@@ -82,7 +81,7 @@ export interface MonitorChannelHealth {
   }>;
 }
 
-function mapUpstreamHealth(status: PluginHealthStatus | undefined): MonitorUpstreamHealth | null {
+function mapUpstreamHealth(status: SourceHealthStatus | undefined): MonitorUpstreamHealth | null {
   if (!status) return null;
   const dimensions = status.dimensions
     ? (Object.fromEntries(
@@ -144,42 +143,51 @@ function mapChannelHealth(summary: TgChannelHealthSummary): MonitorChannelHealth
   };
 }
 
-/** Monitoring reads the same catalog as source management and search. */
+/**
+ * 监控和来源管理必须使用同一份统一来源目录。Telegram 频道已经是来源目录中的
+ * ResourceSource，不能再把它们作为第二份 upstream 列表追加，否则同一个频道会出现两次。
+ */
+function monitorChannelNames(config: unknown, options: { includeDeleted?: boolean } = {}): Set<string> {
+  const settings = getSearchSettings();
+  const system = getSystemSettings(config);
+  const states = getTgChannelStates();
+  return new Set(
+    [
+      ...normalizeTelegramChannels(settings.channels ?? []),
+      ...normalizeTelegramChannels(system.defaultChannels),
+      ...Object.keys(states),
+    ].filter((name) => TG_CHANNEL_PATTERN.test(name) && (options.includeDeleted === true || !states[name]?.deleted)),
+  );
+}
+
 function buildUpstreams(
-  healthById: Record<string, PluginHealthStatus>,
+  healthById: Record<string, SourceHealthStatus>,
+  channelNames: Set<string>,
 ): MonitorUpstreamEntry[] {
-  return listConfiguredUpstreams().map((source) => ({
-    id: source.id,
-    name: source.name,
-    kind: "source" as const,
-    enabled: source.enabled !== false,
-    trashed: false,
-    version: upstreamToSourceDefinition(source).manifest.version,
-    health: mapUpstreamHealth(healthById[source.id]),
-  })).sort((a, b) => a.id.localeCompare(b.id));
+  return listUnifiedUpstreams()
+    .filter((source) => !channelNames.has(source.id))
+    .map((source) => ({
+      id: source.id,
+      name: source.name,
+      kind: "source" as const,
+      enabled: source.enabled !== false,
+      trashed: false,
+      version: upstreamToSourceDefinition(source).manifest.version,
+      health: mapUpstreamHealth(healthById[source.id]),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function buildChannels(config: unknown, options: { includeDeleted?: boolean } = {}): MonitorChannelEntry[] {
   const settings = getSearchSettings();
   const system = getSystemSettings(config);
-  const builtinDefaults = normalizeTelegramChannels(system.defaultChannels);
   const states = getTgChannelStates();
-  const policies = getTgChannelPolicies();
   const healthSummaries = getAllTgChannelHealthSummaries();
+  const names = monitorChannelNames(config, options);
 
-  // 频道清单以“当前配置 + 显式覆盖/策略”为准，健康记录只负责给已纳管频道叠加状态。
-  // 不能把 healthSummaries 反向当成频道清单：健康数据是历史缓存，频道被删除/移除后
-  // 仍可能保留一段时间；否则一次测试或旧配置留下的历史记录会把监控对象膨胀成几百个。
-  // 默认不返回回收站频道，只有后台回收站通过 includeDeleted=true 查询它们。
-  const names = new Set<string>([
-    ...normalizeTelegramChannels(settings.channels ?? []),
-    ...builtinDefaults,
-    ...Object.keys(states),
-    ...Object.keys(policies),
-  ]);
-
+  // 频道清单以统一来源目录对应的当前配置 + 显式覆盖/策略为准，健康记录只负责叠加状态。
+  // 不能把 healthSummaries 反向当成频道清单，否则历史健康数据会制造重复或幽灵来源。
   return [...names]
-    .filter((name) => TG_CHANNEL_PATTERN.test(name) && (options.includeDeleted === true || !states[name]?.deleted))
     .sort()
     .map((channel) => {
       const state = states[channel];
@@ -188,7 +196,6 @@ function buildChannels(config: unknown, options: { includeDeleted?: boolean } = 
         origin: tgChannelOrigin(channel, settings.channels, system.defaultChannels),
         enabled: state ? state.enabled : true,
         deleted: state ? state.deleted : false,
-        policy: policies[channel] ?? null,
         health: healthSummaries[channel] ? mapChannelHealth(healthSummaries[channel]!) : null,
       };
     });
@@ -206,7 +213,7 @@ export default defineEventHandler(async (event) => {
     const includeDeleted = String(getQuery(event).includeDeleted || "") === "true";
     const service = getOrCreateSearchService(config);
     const healthById = Object.fromEntries(
-      service.getPluginHealthStatus().map((status) => [status.name, status]),
+      service.getSourceHealthStatus().map((status) => [status.id || status.name, status]),
     );
 
     return {
@@ -214,7 +221,7 @@ export default defineEventHandler(async (event) => {
       message: "success",
       data: {
         generatedAt: new Date().toISOString(),
-        upstreams: buildUpstreams(healthById),
+        upstreams: buildUpstreams(healthById, monitorChannelNames(config)),
         channels: buildChannels(config, { includeDeleted }),
       },
     };

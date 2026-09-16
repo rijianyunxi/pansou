@@ -6,7 +6,8 @@ export interface DnsLookupRecord {
 }
 
 export type HostResolver = (
-  hostname: string
+  hostname: string,
+  signal?: AbortSignal,
 ) => Promise<DnsLookupRecord[]>;
 
 const DOH_ENDPOINTS = [
@@ -96,9 +97,35 @@ async function fetchDohRecords(
   return dohAnswerRecords(await response.json());
 }
 
-async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  throw reason instanceof Error ? reason : new Error("操作已取消");
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        const reason = signal.reason;
+        reject(reason instanceof Error ? reason : new Error("操作已取消"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => undefined);
+    }),
+  ]);
+}
+
+async function resolveViaDoh(hostname: string, signal?: AbortSignal): Promise<DnsLookupRecord[] | null> {
   for (const endpoint of DOH_ENDPOINTS) {
+    throwIfAborted(signal);
     const controller = new AbortController();
+    const onAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), DOH_TIMEOUT_MS);
     try {
       // Prefer IPv4: the pinned transport currently connects the first
@@ -113,6 +140,7 @@ async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null
       if (ipv6.length) return ipv6;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
   return null;
@@ -143,6 +171,7 @@ async function resolveViaDoh(hostname: string): Promise<DnsLookupRecord[] | null
  */
 export async function resolveSafeHostAddresses(
   hostname: string,
+  signal?: AbortSignal,
 ): Promise<DnsLookupRecord[] | null> {
   if (isIpLiteral(hostname)) {
     const address = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -151,13 +180,14 @@ export async function resolveSafeHostAddresses(
     }
     return [{ address, family: address.includes(":") ? 6 : 4 }];
   }
-  const active = await loadDefaultResolver();
+  const active = await awaitWithAbort(loadDefaultResolver(), signal);
   if (!active) return null;
 
   let records: DnsLookupRecord[];
   try {
-    records = await active(hostname);
-  } catch {
+    records = await awaitWithAbort(active(hostname, signal), signal);
+  } catch (error) {
+    throwIfAborted(signal);
     return null;
   }
   if (records.length === 0) return null;
@@ -171,7 +201,7 @@ export async function resolveSafeHostAddresses(
     blocked.length === records.length &&
     records.every((record) => isSyntheticResolverAddress(record.address))
   ) {
-    const dohRecords = await resolveViaDoh(hostname);
+    const dohRecords = await resolveViaDoh(hostname, signal);
     if (dohRecords?.length) return validateResolvedRecords(hostname, dohRecords);
   }
 

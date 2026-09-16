@@ -13,12 +13,9 @@ import {
   validateSourceDefinition,
 } from "./validation";
 import { executeSafeHttp, type SafeHttpResponse } from "../http/safeHttpExecutor";
-import { runWithRetry } from "../utils/retry";
 import { getUnifiedRequestTimeoutMs } from "../services/timeoutPolicy";
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024;
-/** Shared request-attempt budget for the main request and retries. */
-const DEFAULT_MAX_TOTAL_REQUESTS = 4;
 /** Cumulative request and response payload budget. */
 const DEFAULT_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const RAW_PREVIEW_LIMIT = 100_000;
@@ -31,7 +28,7 @@ const text = (value: unknown): string =>
 export class ExecutionBudgetError extends Error {
   constructor(
     message: string,
-    readonly path: "budget.maxTotalRequests" | "budget.maxTotalBytes"
+    readonly path: "budget.maxTotalBytes"
   ) {
     super(message);
     this.name = "ExecutionBudgetError";
@@ -105,30 +102,30 @@ export async function executeSource(
   options: {
     signal?: AbortSignal;
     limit?: number;
-    /** Per-call resource budget; defaults keep today's worst case admissible. */
+    /** Per-source response size budget. */
     budget?: SourceExecutionBudgetOptions;
-    /** Receives each completed request attempt, including failures. */
+    /** Receives the completed request trace, including failures. */
     onTrace?: (trace: SourceExecutionTrace) => void;
+    /** Template values supplied by the caller, e.g. a validated channel. */
+    variables?: Record<string, string | number>;
+    /** Additional context exposed to the transform without granting network access. */
+    context?: Record<string, unknown>;
   } = {}
 ): Promise<SourceExecutionResult> {
   const definition = validateSourceDefinition(rawDefinition);
   const request = definition.request;
   const response = definition.response;
   // The persisted system setting is the only timeout source. Callers cannot
-  // override it through per-request options or source manifests.
+  // override it through per-request options or source configuration.
   const requestTimeoutMs = getUnifiedRequestTimeoutMs();
-  const baseVariables = {
+  const baseVariables: Record<string, string | number> = {
     keyword,
-    // Legacy template values remain available; automatic pagination is disabled.
-    page: 1,
-    cursor: "",
     limit: options.limit ?? definition.manifest.maxResults,
+    ...(options.variables || {}),
   };
+  const allowedVariables = new Set([...RESERVED_VARIABLES, ...Object.keys(options.variables || {})]);
 
-  const runtimeVariables = (): Record<string, string | number> => {
-    const variables: Record<string, string | number> = { ...baseVariables };
-    return variables;
-  };
+  const runtimeVariables = (): Record<string, string | number> => ({ ...baseVariables });
 
   const buildRendered = (
     spec: {
@@ -141,7 +138,7 @@ export async function executeSource(
     },
     variables: Record<string, string | number>,
     allowedNames: ReadonlySet<string>,
-    acceptFor: "json" | "html"
+    acceptFor: "json" | "html" | "text"
   ): RenderedRequest => {
     const requestUrl = new URL(interpolateTemplate(spec.url, variables, allowedNames) as string);
     const applyQuery = (requestUrl: URL): void => {
@@ -183,25 +180,12 @@ export async function executeSource(
     options.onTrace?.(trace);
   };
 
-  // ---- Per-call budget shared by the main request and retries ----
-  const maxRequests = Math.max(
-    1,
-    Math.floor(options.budget?.maxTotalRequests ?? DEFAULT_MAX_TOTAL_REQUESTS)
-  );
+  // ---- Per-source budget for the single request ----
   const maxBytes = Math.max(
     1,
     Math.floor(options.budget?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES)
   );
-  let requestsUsed = 0;
   let bytesUsed = 0;
-  const assertRequestBudget = (): void => {
-    if (requestsUsed >= maxRequests) {
-      throw new ExecutionBudgetError(
-        `解析器请求预算超限: budget.maxTotalRequests=${maxRequests}，本次调用已发起 ${requestsUsed} 个请求`,
-        "budget.maxTotalRequests"
-      );
-    }
-  };
   const recordTransfer = (responseBytes: number, requestBody?: string): void => {
     bytesUsed += responseBytes + (requestBody ? Buffer.byteLength(requestBody) : 0);
     if (bytesUsed > maxBytes) {
@@ -215,70 +199,56 @@ export async function executeSource(
   const fetchRequest = async (
     rendered: RenderedRequest,
     stage: string,
-    format: "json" | "html"
+    format: "json" | "html" | "text"
   ): Promise<SafeHttpResponse> => {
     const started = Date.now();
     try {
       const url = rendered.url.toString();
-      return await runWithRetry(
-        url,
-        async (attemptUrl) => {
-          assertRequestBudget();
-          requestsUsed++;
-          const attemptStarted = Date.now();
-          try {
-            const payload = await executeSafeHttp({
-              method: rendered.method,
-              url: attemptUrl,
-              headers: rendered.headers,
-              body: rendered.body,
-              signal: options.signal,
-              timeoutMs: requestTimeoutMs,
-              maxRequestBodyBytes:
-                request.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES,
-              maxResponseBytes: request.maxResponseBytes ?? 2 * 1024 * 1024,
-              maxRedirects: 3,
-              followRedirects: request.redirect === "follow",
-              expectedContentTypes: format === "json"
-                ? JSON_CONTENT_TYPES
-                : definition.manifest.id.startsWith("tg-")
-                  ? [...HTML_CONTENT_TYPES, "text/plain", "text/markdown"]
-                  : HTML_CONTENT_TYPES,
-              allowedDomains: request.allowedDomains,
-              allowHttp: request.allowInsecureHttp,
-            });
-            recordTransfer(payload.bytes, rendered.body);
-            recordTrace({
-              stage,
-              url: payload.url.toString(),
-              method: rendered.method,
-              status: payload.response.status,
-              elapsedMs: payload.elapsedMs,
-              bytes: payload.bytes,
-              contentType: payload.contentType,
-              request: requestDebugSnapshot(attemptUrl, rendered),
-            });
-            return payload;
-          } catch (error) {
-            recordTrace({
-              stage,
-              url: attemptUrl,
-              method: rendered.method,
-              status: null,
-              elapsedMs: Date.now() - attemptStarted,
-              bytes: 0,
-              request: requestDebugSnapshot(attemptUrl, rendered),
-              error: error instanceof Error ? error.message : String(error),
-            });
-            throw error;
-          }
-        },
-        {
-          maxRetries: request.retry?.maxRetries,
-          delayMs: request.retry?.delayMs,
+      const attemptStarted = Date.now();
+      try {
+        const payload = await executeSafeHttp({
+          method: rendered.method,
+          url,
+          headers: rendered.headers,
+          body: rendered.body,
           signal: options.signal,
-        },
-      );
+          timeoutMs: requestTimeoutMs,
+          maxRequestBodyBytes:
+            request.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES,
+          maxResponseBytes: request.maxResponseBytes ?? 2 * 1024 * 1024,
+          maxRedirects: 3,
+          followRedirects: request.redirect === "follow",
+          expectedContentTypes: format === "json"
+            ? JSON_CONTENT_TYPES
+            : [...HTML_CONTENT_TYPES, "text/plain", "text/markdown"],
+          allowedDomains: request.allowedDomains,
+          allowHttp: request.allowInsecureHttp,
+        });
+        recordTransfer(payload.bytes, rendered.body);
+        recordTrace({
+          stage,
+          url: payload.url.toString(),
+          method: rendered.method,
+          status: payload.response.status,
+          elapsedMs: payload.elapsedMs,
+          bytes: payload.bytes,
+          contentType: payload.contentType,
+          request: requestDebugSnapshot(url, rendered),
+        });
+        return payload;
+      } catch (error) {
+        recordTrace({
+          stage,
+          url,
+          method: rendered.method,
+          status: null,
+          elapsedMs: Date.now() - attemptStarted,
+          bytes: 0,
+          request: requestDebugSnapshot(url, rendered),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     } catch (error) {
       // Preserve the original request timing for callers that display diagnostics.
       if (!traces.some((trace) => trace.stage === stage)) {
@@ -299,7 +269,7 @@ export async function executeSource(
 
 
   // ---- Single main request and response transform ----
-  const rendered = buildRendered(request, runtimeVariables(), RESERVED_VARIABLES, response.format);
+  const rendered = buildRendered(request, runtimeVariables(), allowedVariables, response.format);
   const payload = await fetchRequest(rendered, "request", response.format);
   const raw = payload.body.slice(0, RAW_PREVIEW_LIMIT);
   const rawTruncated = payload.body.length > RAW_PREVIEW_LIMIT;
@@ -314,14 +284,9 @@ export async function executeSource(
     rawBody: payload.body,
     format: response.format,
     source: definition.manifest.id,
-    ...(definition.manifest.id.startsWith("tg-")
-      ? { channel: definition.manifest.id.slice(3) }
-      : {}),
     keyword,
     url: payload.url.toString(),
-    // Compatibility context only; this executor never fetches subsequent pages.
-    page: 1,
-    route: /(^|\.)r\.jina\.ai$/i.test(payload.url.hostname) ? "jina" : "direct",
+    ...(options.context || {}),
   }).slice(0, definition.manifest.maxResults);
 
   return { results, traces, raw, rawTruncated };

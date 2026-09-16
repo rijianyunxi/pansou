@@ -1,10 +1,10 @@
 import type {
-  PluginHealthHourlyBucket,
-  PluginHealthStatus,
-} from "../../server/core/plugins/pluginHealth";
+  SourceHealthHourlyBucket,
+  SourceHealthStatus,
+} from "../../server/core/services/sourceHealth";
 
 /**
- * 服务端健康面板的纯视图模型：把 /api/plugin-health 的五维状态、
+ * 服务端健康面板的纯视图模型：把 /api/source-health 的五维状态、
  * 小时级趋势桶与失败分类计数转换为可渲染的行数据。
  * 保持无副作用，便于 Vitest 直接覆盖。
  * 响应载荷类型由监控接口直接提供。
@@ -35,7 +35,7 @@ export const FAILURE_CATEGORY_LABELS: Record<string, string> = {
   parse_error: "解析失败",
   validation_error: "业务校验失败",
   business_error: "业务状态异常",
-  plugin_error: "解析器内部错误",
+  source_error: "解析器内部错误",
   unknown_error: "未知错误",
   other: "其他",
 };
@@ -88,7 +88,7 @@ function hourLabelOf(timestamp: number): string {
 
 /** 每小时趋势柱：高度按最大桶归一，三段分别为成功/零结果/失败占比。 */
 export function buildTrendRows(
-  buckets: PluginHealthHourlyBucket[]
+  buckets: SourceHealthHourlyBucket[]
 ): ServerHealthTrendRow[] {
   if (!buckets.length) return [];
   const maxTotal = Math.max(...buckets.map((bucket) => bucket.n)) || 1;
@@ -114,7 +114,7 @@ export function buildTrendRows(
  * 累计 errorCounts（旧快照或刚启动的场景）。只展示前 6 项。
  */
 export function buildFailureRows(
-  buckets: PluginHealthHourlyBucket[],
+  buckets: SourceHealthHourlyBucket[],
   fallbackCounts: Record<string, number> = {}
 ): ServerHealthFailureRow[] {
   const counts: Record<string, number> = {};
@@ -143,7 +143,7 @@ export function buildFailureRows(
 
 /** 五维状态行：pass/fail/empty/unknown + 有界窗口通过率。 */
 export function buildDimensionRows(
-  status?: PluginHealthStatus
+  status?: SourceHealthStatus
 ): ServerHealthDimensionRow[] {
   if (!status) return [];
   return SERVER_DIMENSIONS.map(({ key, label }) => {
@@ -164,7 +164,7 @@ export function buildOverviewSummary(
   payload: {
     healthy: number;
     total: number;
-    trend?: { windowHours?: number; buckets?: PluginHealthHourlyBucket[] } | null;
+    trend?: { windowHours?: number; buckets?: SourceHealthHourlyBucket[] } | null;
   } | null
 ): ServerHealthOverviewSummary | null {
   if (!payload) return null;

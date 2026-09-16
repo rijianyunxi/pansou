@@ -63,7 +63,7 @@ export function isBlockedIp(address: string): boolean {
 export interface OutboundUrlOptions {
   allowedDomains?: readonly string[];
   baseUrl?: string;
-  /** HTTP is denied by default and must be explicitly enabled per plugin. */
+  /** HTTP is denied by default and must be explicitly enabled per source. */
   allowHttp?: boolean;
 }
 

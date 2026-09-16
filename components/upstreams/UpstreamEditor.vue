@@ -65,17 +65,6 @@
 
           <div class="editor-grid editor-connection-grid">
             <label>
-              来源类型
-              <select v-model="form.sourceKind" :disabled="readonly">
-                <option value="http">HTTP 来源</option>
-                <option value="telegram">Telegram 频道</option>
-              </select>
-            </label>
-            <label v-if="form.sourceKind === 'telegram'">
-              Telegram 频道
-              <input v-model="form.channel" placeholder="@channel_username" pattern="@?[A-Za-z0-9_]{5,64}" :readonly="readonly" />
-            </label>
-            <label>
               请求方式
               <select v-model="form.method" :disabled="readonly">
                 <option>GET</option>
@@ -154,7 +143,7 @@
         <summary>结果解析</summary>
         <div class="function-field">
           <p id="transform-help" class="editor-help transform-help">
-            <code>payload</code> 是接口响应内容；<code>$</code> 是 HTML 查询工具；<code>context</code> 提供 <code>keyword</code>、分页等请求上下文。
+            <code>payload</code> 是接口响应内容；<code>$</code> 是 HTML 查询工具；<code>context</code> 提供 <code>keyword</code>、来源标识和响应格式等上下文。
             函数必须返回标准结果 JSON 数组，例如 <code>[{ title, links: [{ url }] }]</code>。请粘贴纯 JavaScript，不要包含 Markdown 链接标记。
           </p>
           <div class="function-toolbar">
@@ -205,7 +194,7 @@
 
       <details v-if="!readonly" class="editor-debugger" open>
         <summary>在线调试</summary>
-        <p class="editor-help debugger-help">输入关键词后发送测试，查看来源返回的统一结果或原始响应。</p>
+        <p class="editor-help debugger-help">保存来源后输入关键词发送测试，查看来源返回的统一结果或原始响应。</p>
         <UpstreamDebugPanel
           :source="debugDraft.source"
           :report="debugReport"
@@ -290,7 +279,6 @@ function cloneJson<T>(value: T): T {
 function createBlankSource(): EditableUpstreamDefinition {
   return {
     id: "",
-    sourceKind: "http",
     name: "",
     url: "",
     description: "",
@@ -345,10 +333,9 @@ const debugDraft = computed<{ source: EditableUpstreamDefinition; error: string 
       !headers || typeof headers !== "object" || Array.isArray(headers)
       || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string")
     )) throw new Error("Headers 必须是字符串键值 JSON。");
-    draft.id ||= draft.sourceKind === "telegram" && draft.channel
-      ? `tg-${draft.channel.replace(/^@/, "").toLowerCase()}`
-      : "debug-draft";
-    draft.name ||= "未保存来源";
+    if (!props.source?.id) throw new Error("请先保存来源后再测试。");
+    draft.id = props.source.id;
+    draft.name ||= "已保存来源";
     draft.request = {
       ...(draft.request || {}),
       query: query as Record<string, unknown> | undefined,
@@ -373,9 +360,9 @@ async function testDraftSource() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 16_000);
   try {
-    debugReport.value = await $fetch<UpstreamProbe>("/api/upstreams/probe", {
+    debugReport.value = await $fetch<UpstreamProbe>("/api/upstreams/test", {
       method: "POST",
-      body: { source: debugDraft.value.source, keyword: debugKeyword.value.trim() },
+      body: { sourceId: props.source!.id, kw: debugKeyword.value.trim() },
       signal: controller.signal,
       retry: 0,
     });

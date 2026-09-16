@@ -1,5 +1,5 @@
 <template>
-  <div v-if="isUpstreamConsole" class="upstream-console-layout"><NuxtPage /></div>
+  <div v-if="isAdminConsole" class="upstream-console-layout"><NuxtPage /></div>
   <div v-else class="layout" :class="`theme-${settings.theme}`">
     <!-- 顶部导航：左侧 Logo，右侧接口文档 / 设置 -->
     <header class="topnav" :inert="openSettings">
@@ -81,18 +81,8 @@
 import ConsoleIcon from "./components/upstreams/ConsoleIcon.vue";
 
 const route = useRoute();
-const isUpstreamConsole = computed(
-  () =>
-    route.path === "/admin" ||
-    route.path.startsWith("/admin/") ||
-    route.path === "/upstreams" ||
-    route.path.startsWith("/upstreams/") ||
-    route.path === "/telegram" ||
-    route.path.startsWith("/telegram/") ||
-    route.path === "/tg-accounts" ||
-    route.path.startsWith("/tg-accounts/") ||
-    route.path === "/monitor" ||
-    route.path.startsWith("/monitor/"),
+const isAdminConsole = computed(
+  () => route.path === "/admin" || route.path.startsWith("/admin/"),
 );
 const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
@@ -111,7 +101,7 @@ function setTheme(theme: "classic" | "geometric") {
 
 watch(() => route.path, () => {
   openSettings.value = false;
-  if (!isUpstreamConsole.value) void adminStatus.refresh();
+  if (!isAdminConsole.value) void adminStatus.refresh();
 });
 provide("openChannelSettings", () => { openSettings.value = true; });
 const showPasswordGate = ref(false);

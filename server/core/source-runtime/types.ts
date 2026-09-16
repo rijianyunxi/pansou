@@ -1,4 +1,13 @@
-import type { PluginManifest } from "../plugins/manager";
+export interface SourceManifest {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly kind: "source";
+  readonly maxResults: number;
+  readonly schemaVersion: number;
+  readonly outputTypes: readonly string[];
+  readonly capabilities?: Readonly<Record<string, boolean>>;
+}
 
 export type SourceInputFormat = "html" | "json" | "text";
 export type SourceScalar = string | number | boolean | null;
@@ -7,17 +16,9 @@ export type SourceValue =
   | SourceValue[]
   | { [key: string]: SourceValue };
 
-export interface SourceRetryConfig {
-  /** Retries after the first request to the same URL (0-3). */
-  maxRetries?: number;
-  /** Delay before retrying the same URL (0-5000ms). */
-  delayMs?: number;
-}
-
 export interface SourceRequest {
   method: "GET" | "POST";
   url: string;
-  retry?: SourceRetryConfig;
   query?: Record<string, SourceValue>;
   headers?: Record<string, string>;
   bodyType?: "json" | "form";
@@ -30,14 +31,14 @@ export interface SourceRequest {
 }
 
 export interface SourceResponse {
-  format: "json" | "html";
+  format: "json" | "html" | "text";
   /** Synchronous transform that returns canonical SearchResult records. */
   transform: string;
 }
 
 export interface SourceDefinition {
   schemaVersion: 1;
-  manifest: PluginManifest;
+  manifest: SourceManifest;
   request: SourceRequest;
   response: SourceResponse;
 }
@@ -51,15 +52,12 @@ export interface SourceTransformDefinition {
 }
 
 export interface SourceTransformContext {
-  channel?: string;
   keyword?: string;
   source?: string;
   url?: string;
-  page?: number;
-  /** Route selected by a source request (for example telegram or jina). */
-  route?: string;
   rawBody: string;
   format: SourceInputFormat;
+  [key: string]: unknown;
 }
 
 export interface SourceExecutionTrace {
@@ -88,8 +86,6 @@ export interface SourceExecutionResult {
 }
 
 export interface SourceExecutionBudgetOptions {
-  /** Total HTTP requests per call; the main request and retries share it. */
-  maxTotalRequests?: number;
-  /** Cumulative request + response payload bytes per call. */
+  /** Cumulative request + response payload bytes per source execution. */
   maxTotalBytes?: number;
 }

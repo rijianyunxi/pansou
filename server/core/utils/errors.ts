@@ -5,7 +5,7 @@ export enum ErrorType {
   NETWORK_ERROR = "network_error",
   TIMEOUT_ERROR = "timeout_error",
   PARSE_ERROR = "parse_error",
-  PLUGIN_ERROR = "plugin_error",
+  SOURCE_ERROR = "source_error",
   VALIDATION_ERROR = "validation_error",
   UNKNOWN_ERROR = "unknown_error",
 }
@@ -50,7 +50,7 @@ export interface WarningInfo {
 export function classifyError(error: any, source?: string): ErrorDetail {
   const timestamp = Date.now();
 
-  // Telegram 频道抓取的五种失败（TgChannelError.tgKind）：网络失败 / 结构变化 /
+  // 来源请求的失败分类（TgChannelError.tgKind）：网络失败 / 结构变化 /
   // 频道不存在 / 频道私有，用现有 ErrorType 承载并用 code 细分。
   if (typeof error?.tgKind === "string" && error.tgKind) {
     const typeByKind: Record<string, ErrorType> = {

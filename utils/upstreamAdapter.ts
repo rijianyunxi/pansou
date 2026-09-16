@@ -104,7 +104,7 @@ export function normalizeCloudType(value: unknown): CloudType | undefined {
 
 /**
  * Determines the canonical cloud type exclusively from the resource URL. A
- * plugin-provided label cannot manufacture a cloud type for an unknown host.
+ * source-provided label cannot manufacture a cloud type for an unknown host.
  */
 export function inferDriveType(url: string, _value = ""): CloudType {
   if (/^magnet:/i.test(url)) return "magnet";

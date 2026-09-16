@@ -62,6 +62,25 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    const reason = signal.reason;
+    throw reason instanceof Error ? reason : new Error("操作已取消");
+  }
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        const reason = signal.reason;
+        reject(reason instanceof Error ? reason : new Error("操作已取消"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => undefined);
+    }),
+  ]);
+}
+
 async function readResponseBody(
   response: Response,
   maxBytes: number
@@ -160,7 +179,7 @@ export async function executeSafeHttp(
   try {
     // Node 专属：能把 socket 钉在已校验 IP 上的传输。Cloudflare Workers
     // （无自定义 DNS/socket 能力）或解析器不可用时为 null，降级为原生 fetch。
-    const transport = await loadPinnedHttpTransport();
+    const transport = await awaitWithAbort(loadPinnedHttpTransport(), controller.signal);
     let response: Response;
     let redirects = 0;
     for (;;) {
@@ -172,7 +191,7 @@ export async function executeSafeHttp(
       // (Cloudflare Workers) or when DNS verification is unavailable
       // (fail-open policy) this returns null and we degrade to native fetch
       // with static per-hop validation only.
-      const pinned = await resolveSafeHostAddresses(requestUrl.hostname);
+      const pinned = await resolveSafeHostAddresses(requestUrl.hostname, controller.signal);
       response = transport && pinned
         ? await transport.request(
             requestUrl,

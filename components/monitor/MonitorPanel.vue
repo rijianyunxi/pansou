@@ -111,7 +111,7 @@
         <header class="monitor-settings-header">
           <div>
             <h3 id="monitor-search-settings-title">来源与性能</h3>
-            <p>管理来源和运行参数；所有来源的开启状态会和运行状态保持一致。</p>
+            <p>勾选即参与搜索，取消勾选即可移出搜索范围。</p>
           </div>
           <span v-if="settingsLoading" class="tiny-muted">正在读取…</span>
           <button class="icon-button" type="button" aria-label="关闭来源设置" @click="sourceSettingsDialog?.close()">
@@ -119,26 +119,43 @@
           </button>
         </header>
         <div class="monitor-settings-content">
-          <div class="section-label">
-            来源范围 <span class="tiny-muted">统一管理</span>
+          <div class="section-label settings-source-heading">
+            <div class="settings-source-heading-copy">
+              搜索来源 <span class="source-scope-tag">勾选即生效</span>
+            </div>
+            <div class="source-selection-actions" aria-label="批量选择来源">
+              <button
+                type="button"
+                class="source-selection-button"
+                :disabled="settingsSaving || settingsLoading || !sourceOptions.length"
+                @click="selectAllSources"
+              >全选</button>
+              <button
+                type="button"
+                class="source-selection-button muted"
+                :disabled="settingsSaving || settingsLoading || !settingsDraft.sources.length"
+                @click="clearAllSources"
+              >全不选</button>
+            </div>
           </div>
-          <label class="settings-plugin-item">
-            <input v-model="useAllSources" type="checkbox" :disabled="settingsSaving || settingsLoading" @change="onUseAllSourcesChange" />
-            使用全部已开启来源
-          </label>
-          <div v-if="!useAllSources" class="settings-plugin-grid">
-            <label v-for="row in sourceOptions" :key="row.key" class="settings-plugin-item">
+          <div class="settings-source-grid">
+            <label
+              v-for="row in sourceOptions"
+              :key="row.key"
+              class="settings-source-item"
+              :class="{ 'is-selected': settingsDraft.sources.includes(sourceSelectionKey(row)) }"
+            >
               <input
                 type="checkbox"
                 :value="sourceSelectionKey(row)"
                 v-model="settingsDraft.sources"
                 :disabled="settingsSaving || settingsLoading" />
-              <span>{{ row.name }}</span>
-              <small class="tiny-muted">{{ row.id }}</small>
+              <span class="settings-source-name">{{ row.name }}</span>
+              <small class="source-id-tag">{{ row.id }}</small>
             </label>
-            <p v-if="!sourceOptions.length" class="field-hint">暂无可用来源。</p>
+            <p v-if="!sourceOptions.length" class="field-hint settings-source-empty">暂无可用来源。</p>
           </div>
-          <p class="field-hint">关闭后仅使用勾选的来源；来源启停与搜索范围会保持一致。</p>
+          <p class="field-hint">只搜索已勾选的来源；取消勾选后，该来源会从搜索范围移除。</p>
 
           <div class="section-label settings-section-gap">
             运行参数 <span class="tiny-muted">留空使用服务端默认值</span>
@@ -401,11 +418,11 @@ const AUTO_REFRESH_MS = 30_000;
 const AUTO_REFRESH_SECONDS = AUTO_REFRESH_MS / 1_000;
 
 interface SearchSettingsState {
-  plugins: string[] | null;
+  sources: string[] | null;
   channels: string[] | null;
   concurrency: number | null;
   requestTimeoutMs: number | null;
-  trashedPlugins: string[];
+  trashedSources: string[];
   cacheTtlMinutes: number;
 }
 
@@ -442,11 +459,11 @@ let autoTimer: ReturnType<typeof setInterval> | undefined;
 let countdownTimer: ReturnType<typeof setInterval> | undefined;
 
 const searchSettings = ref<SearchSettingsState>({
-  plugins: null,
+  sources: null,
   channels: null,
   concurrency: null,
   requestTimeoutMs: null,
-  trashedPlugins: [],
+  trashedSources: [],
   cacheTtlMinutes: 10,
 });
 const settingsLoading = ref(false);
@@ -458,7 +475,6 @@ const settingsDraft = ref<{
   requestTimeoutMs: number | "";
   cacheTtlMinutes: number | "";
 }>({ sources: [], concurrency: "", requestTimeoutMs: "", cacheTtlMinutes: "" });
-const useAllSources = ref(true);
 const sourceOptions = computed(() =>
   rows.value
     .filter((row) => !row.trashed)
@@ -473,8 +489,12 @@ function sourceSelectionKeys(options = sourceOptions.value): string[] {
   return options.filter((row) => row.enabled && !row.trashed).map(sourceSelectionKey);
 }
 
-function onUseAllSourcesChange() {
-  if (!useAllSources.value) settingsDraft.value.sources = sourceSelectionKeys();
+function selectAllSources() {
+  settingsDraft.value.sources = sourceOptions.value.map(sourceSelectionKey);
+}
+
+function clearAllSources() {
+  settingsDraft.value.sources = [];
 }
 
 function openSourceSettings() {
@@ -550,20 +570,22 @@ async function loadSearchSettings() {
     );
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
-      plugins: data.plugins ?? null,
+      sources: data.sources ?? null,
       channels: data.channels ?? null,
       concurrency: data.concurrency ?? null,
       requestTimeoutMs: data.requestTimeoutMs ?? null,
-      trashedPlugins: data.trashedPlugins ?? [],
+      trashedSources: data.trashedSources ?? [],
       cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
-    useAllSources.value = searchSettings.value.plugins === null && searchSettings.value.channels === null;
-    const selectedSources = useAllSources.value
-      ? sourceSelectionKeys()
-      : [
-          ...(searchSettings.value.plugins || []).map((id) => `upstream:${id}`),
-          ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
-        ];
+    const enabledKeys = sourceSelectionKeys();
+    const selectedSources = [
+      ...(searchSettings.value.sources === null
+        ? enabledKeys.filter((key) => key.startsWith("upstream:"))
+        : (searchSettings.value.sources || []).map((id) => `upstream:${id}`)),
+      ...(searchSettings.value.channels === null
+        ? enabledKeys.filter((key) => key.startsWith("channel:"))
+        : (searchSettings.value.channels || []).map((id) => `channel:${id}`)),
+    ];
     settingsDraft.value = {
       sources: selectedSources,
       concurrency: searchSettings.value.concurrency ?? "",
@@ -592,30 +614,28 @@ async function saveSearchSettingsUi() {
   settingsSaving.value = true;
   settingsError.value = "";
   try {
-    const desiredSources = new Set(settingsDraft.value.sources);
-    const desiredPlugins = new Set(
+    const selectedKeys = new Set(settingsDraft.value.sources);
+    const desiredSources = new Set(
       sourceOptions.value
-        .filter((row) => row.kind === "upstream" && desiredSources.has(sourceSelectionKey(row)))
+        .filter((row) => row.kind === "upstream" && selectedKeys.has(sourceSelectionKey(row)))
         .map((row) => row.id),
     );
     const desiredChannels = new Set(
       sourceOptions.value
-        .filter((row) => row.kind === "channel" && desiredSources.has(sourceSelectionKey(row)))
+        .filter((row) => row.kind === "channel" && selectedKeys.has(sourceSelectionKey(row)))
         .map((row) => row.id),
     );
-    if (!useAllSources.value) {
-      for (const row of sourceOptions.value) {
-        const shouldBeEnabled = desiredSources.has(sourceSelectionKey(row));
-        if (row.kind === "upstream" && row.enabled !== shouldBeEnabled) {
-          await setUpstreamEnabled(row, shouldBeEnabled);
-        }
-        if (row.kind === "channel" && row.enabled !== shouldBeEnabled) {
-          const action = shouldBeEnabled ? "enable" : "disable";
-          const response = await $fetch<{ code?: number; message?: string }>(
-            `/api/tg/channels/${encodeURIComponent(row.id)}/${action}`, { method: "POST" },
-          );
-          if ((response.code ?? 0) !== 0) throw new Error(response.message || "来源状态更新失败");
-        }
+    for (const row of sourceOptions.value) {
+      const shouldBeEnabled = selectedKeys.has(sourceSelectionKey(row));
+      if (row.kind === "upstream" && row.enabled !== shouldBeEnabled) {
+        await setUpstreamEnabled(row, shouldBeEnabled);
+      }
+      if (row.kind === "channel" && row.enabled !== shouldBeEnabled) {
+        const action = shouldBeEnabled ? "enable" : "disable";
+        const response = await $fetch<{ code?: number; message?: string }>(
+          `/api/tg/channels/${encodeURIComponent(row.id)}/${action}`, { method: "POST" },
+        );
+        if ((response.code ?? 0) !== 0) throw new Error(response.message || "来源状态更新失败");
       }
     }
 
@@ -627,8 +647,8 @@ async function saveSearchSettingsUi() {
       {
         method: "PUT",
         body: {
-          plugins: useAllSources.value ? null : [...desiredPlugins],
-          channels: useAllSources.value ? null : [...desiredChannels],
+          sources: [...desiredSources],
+          channels: [...desiredChannels],
           concurrency:
             settingsDraft.value.concurrency !== "" &&
             Number.isFinite(concurrency) &&
@@ -653,23 +673,20 @@ async function saveSearchSettingsUi() {
     );
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
-      plugins: data.plugins ?? null,
+      sources: data.sources ?? null,
       channels: data.channels ?? null,
       concurrency: data.concurrency ?? null,
       requestTimeoutMs: data.requestTimeoutMs ?? null,
-      trashedPlugins: data.trashedPlugins ?? [],
+      trashedSources: data.trashedSources ?? [],
       cacheTtlMinutes: data.cacheTtlMinutes ?? 10,
     };
-    useAllSources.value = searchSettings.value.plugins === null && searchSettings.value.channels === null;
-    settingsDraft.value.sources = useAllSources.value
-      ? sourceSelectionKeys()
-      : [
-          ...(searchSettings.value.plugins || []).map((id) => `upstream:${id}`),
-          ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
-        ];
+    settingsDraft.value.sources = [
+      ...(searchSettings.value.sources || []).map((id) => `upstream:${id}`),
+      ...(searchSettings.value.channels || []).map((id) => `channel:${id}`),
+    ];
     settingsDraft.value.cacheTtlMinutes = searchSettings.value.cacheTtlMinutes ?? 10;
     await loadMonitor({ silent: true });
-    notify("来源设置已保存，来源开启状态已与运行状态统一。");
+    notify("搜索来源设置已保存。");
     sourceSettingsDialog.value?.close();
   } catch (error: any) {
     settingsError.value = apiErrorMessage(error);
@@ -720,14 +737,14 @@ async function toggleUpstream(row: MonitorRow) {
   rows.value = withUpstreamEnabled(rows.value, row.id, next);
   try {
     await setUpstreamEnabled(row, next);
-    if (!useAllSources.value) {
-      const sources = new Set(settingsDraft.value.sources);
-      const key = sourceSelectionKey(row);
-      if (next) sources.add(key);
-      else sources.delete(key);
-      settingsDraft.value.sources = [...sources];
-      searchSettings.value.plugins = [...sources].filter((value) => value.startsWith("upstream:")).map((value) => value.slice(9));
-    }
+    const sources = new Set(settingsDraft.value.sources);
+    const key = sourceSelectionKey(row);
+    if (next) sources.add(key);
+    else sources.delete(key);
+    settingsDraft.value.sources = [...sources];
+    searchSettings.value.sources = [...sources]
+      .filter((value) => value.startsWith("upstream:"))
+      .map((value) => value.slice(9));
     notify(`${row.name} 已${next ? "开启" : "关闭"}，来源设置已同步。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
@@ -754,13 +771,11 @@ async function toggleChannel(row: MonitorRow) {
       { method: "POST" },
     );
     if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
-    if (!useAllSources.value) {
-      const sources = new Set(settingsDraft.value.sources);
-      const key = sourceSelectionKey(row);
-      if (next) sources.add(key);
-      else sources.delete(key);
-      settingsDraft.value.sources = [...sources];
-    }
+    const sources = new Set(settingsDraft.value.sources);
+    const key = sourceSelectionKey(row);
+    if (next) sources.add(key);
+    else sources.delete(key);
+    settingsDraft.value.sources = [...sources];
     notify(`@${row.id} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
@@ -948,6 +963,129 @@ onBeforeUnmount(() => {
 .monitor-settings-content {
   padding: 16px 20px 20px;
 }
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-source-heading {
+  justify-content: space-between;
+  gap: 14px;
+}
+.settings-source-heading-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.source-selection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.source-selection-button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #cfe9dc;
+  border-radius: 8px;
+  background: #f0faf5;
+  color: #16845a;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.source-selection-button:hover:not(:disabled) {
+  border-color: #8fc9aa;
+  background: #e5f7ed;
+}
+.source-selection-button.muted {
+  border-color: #e2e7e4;
+  background: #fff;
+  color: #718078;
+}
+.source-selection-button.muted:hover:not(:disabled) {
+  border-color: #c5cfca;
+  background: #f7faf8;
+}
+.source-selection-button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.source-scope-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid #cfe9dc;
+  border-radius: 999px;
+  background: #f0faf5;
+  color: #16845a;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .02em;
+}
+.settings-source-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+.settings-source-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid #e4ebe7;
+  border-radius: 12px;
+  background: #fbfdfc;
+  color: #34413b;
+  cursor: pointer;
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+.settings-source-item:hover {
+  border-color: #b9dcca;
+  background: #f8fcfa;
+}
+.settings-source-item.is-selected {
+  border-color: #a9d8bf;
+  background: #f1faf5;
+  box-shadow: inset 3px 0 0 #27a66b;
+}
+.settings-source-item input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  margin: 0;
+  accent-color: #168b5b;
+}
+.settings-source-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #27352e;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-id-tag {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid #dce9e1;
+  border-radius: 999px;
+  background: #eef5f1;
+  color: #6e8478;
+  font: 10px ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-source-empty {
+  grid-column: 1 / -1;
+}
 .monitor-channel-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1090,7 +1228,7 @@ onBeforeUnmount(() => {
   .source-settings-dialog {
     width: calc(100vw - 28px);
   }
-  .monitor-channel-settings { grid-template-columns: 1fr; }
+  .monitor-channel-settings, .settings-source-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   .monitor-card-grid { padding: 16px 14px 20px; }

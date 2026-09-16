@@ -1,3 +1,5 @@
+import type { WarningInfo } from "../utils/errors";
+
 export type CloudType =
   | "baidu"
   | "quark"
@@ -19,8 +21,6 @@ export interface Link {
   password: string | null;
 }
 
-export type SearchResultSource = "telegram" | "plugin";
-
 /** Canonical resource-level result used internally and returned by search APIs. */
 export interface SearchResult {
   id: string;
@@ -31,17 +31,21 @@ export interface SearchResult {
   links: Link[];
   tags?: string[];
   images?: string[];
-  /** Only returned when debug=1. */
-  source?: SearchResultSource;
-  channel?: string;
-  pluginId?: string;
-  pluginVersion?: string;
-  registryVersion?: number;
+}
+
+export type SourceExecutionStatus = "success" | "failed" | "skipped";
+
+export interface SearchSourceMeta {
+  id: string;
+  name: string;
+  status: SourceExecutionStatus;
+  resultCount: number;
+  elapsedMs: number;
 }
 
 export interface SearchResponseMeta {
-  registryVersion: number;
-  pluginVersions: Record<string, string>;
+  sources: SearchSourceMeta[];
+  warnings: WarningInfo[];
 }
 
 /** Response assembled from source adapters. Results already use the public contract. */
@@ -59,16 +63,9 @@ export interface SearchResponse {
 }
 
 export interface SearchSourceUpdate {
-  /** Source execution details are returned only when debug=1. */
-  source?: {
-    kind: SearchResultSource;
-    id: string;
-    version?: string;
-    cached?: boolean;
-  };
   request: {
     keyword: string;
-    phase: "shallow" | "deep" | "variant" | "cache";
+    phase: "source";
   };
   results: SearchResult[];
 }
@@ -79,7 +76,6 @@ export interface SearchStreamResultData {
 
 export interface SearchStreamCompleteData {
   total: number;
-  meta?: SearchResponseMeta;
 }
 
 export interface GenericResponse<T> {
@@ -89,14 +85,11 @@ export interface GenericResponse<T> {
 }
 
 export interface SearchRequest {
-  /** Search only server-configured sources. User channel searches use /api/search/channels. */
   kw: string;
+  channels?: string[];
+  sourceIds?: string[];
   conc?: number;
   refresh?: boolean;
-  /** Include warnings, response metadata, and result provenance fields. */
-  debug?: boolean;
-  src?: "all" | "tg" | "plugin";
-  plugins?: string[];
   ext?: Record<string, any>;
   cloud_types?: string[];
 }

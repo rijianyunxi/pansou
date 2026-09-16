@@ -46,7 +46,7 @@ function validateAndLimitResults(value: unknown, definition: SourceTransformDefi
     if (!Array.isArray(input.cloud_types) || !input.cloud_types.length || input.cloud_types.some((type) => typeof type !== "string") || !Array.isArray(input.links)) return [];
     const links = input.links.map(normalizeLink).filter((link): link is Link => !!link);
     if (!links.length) return [];
-    const id = text(input.id, 200) || `${context.channel || context.source || definition.id}-${index}`;
+    const id = text(input.id, 200) || `${context.source || definition.id}-${index}`;
     const description = text(input.description);
     const needle = compact(context.keyword);
     if (needle && !compact(`${input.name} ${description}`).includes(needle)) return [];
@@ -60,9 +60,6 @@ function validateAndLimitResults(value: unknown, definition: SourceTransformDefi
       links,
       ...(Array.isArray(input.tags) ? { tags: input.tags.map((tag) => text(tag, 80)).filter(Boolean).slice(0, 20) } : {}),
       ...(Array.isArray(input.images) ? { images: input.images.map((image) => text(image, MAX_URL)).filter(Boolean).slice(0, 10) } : {}),
-      source: "plugin",
-      pluginId: definition.id,
-      pluginVersion: definition.version,
     } satisfies SearchResult];
   });
 }

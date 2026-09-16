@@ -2,92 +2,55 @@ import { getOrCreateSearchService } from "../core/services";
 import { getOrCreateHotSearchService } from "../core/services/hotSearchService";
 import type { SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
-import { parseSearchRequest, parseUserChannelSearchRequest } from "./searchRequest";
-import {
-  hideSearchResponseDebugFields,
-  hideSearchUpdateDebugFields,
-} from "./searchResponseVisibility";
+import { parseSearchRequest } from "./searchRequest";
+import { listUnifiedUpstreams, buildUserSource } from "../core/services/upstreamCatalog";
+import { hideSearchResponseDebugFields } from "./searchResponseVisibility";
 
 export interface PreparedSearch {
-  kind: "system";
   request: ReturnType<typeof parseSearchRequest>;
   effective: ReturnType<typeof applySearchDefaults>;
+  /** Internal response mode; never populated from a client request parameter. */
+  includeMeta: boolean;
 }
+export type PreparedSearchRequest = PreparedSearch;
 
-export interface PreparedUserChannelSearch {
-  kind: "user-channels";
-  request: ReturnType<typeof parseUserChannelSearchRequest>;
-}
-
-export type PreparedSearchRequest = PreparedSearch | PreparedUserChannelSearch;
-
-export function prepareSearch(raw: unknown): PreparedSearch {
+export function prepareSearch(raw: unknown, options: { includeMeta?: boolean } = {}): PreparedSearch {
   const request = parseSearchRequest(raw);
-  return {
-    kind: "system",
-    request,
-    effective: applySearchDefaults(request),
-  };
+  return { request, effective: applySearchDefaults(request), includeMeta: options.includeMeta === true };
 }
 
-export function prepareUserChannelSearch(raw: unknown): PreparedUserChannelSearch {
-  return {
-    kind: "user-channels",
-    request: parseUserChannelSearchRequest(raw),
-  };
-}
-
-export async function executePreparedSearch(
-  prepared: PreparedSearchRequest,
-  signal?: AbortSignal,
-  onSourceSuccess?: (update: SearchSourceUpdate) => void,
-) {
+export async function executePreparedSearch(prepared: PreparedSearchRequest, signal?: AbortSignal, onSourceSuccess?: (update: SearchSourceUpdate) => void) {
   const service = getOrCreateSearchService(useRuntimeConfig());
-  const sourceCallback = onSourceSuccess
-    ? (update: SearchSourceUpdate) => {
-        const debug = prepared.request.debug;
-        onSourceSuccess(debug ? update : hideSearchUpdateDebugFields(update));
-      }
-    : undefined;
-
-  const { response, warnings } = prepared.kind === "user-channels"
-    ? await service.searchWithWarnings(
-        prepared.request.kw,
-        prepared.request.channels,
-        prepared.request.conc,
-        !!prepared.request.refresh,
-        "tg",
-        undefined,
-        prepared.request.cloud_types,
-        prepared.request.ext,
-        { signal, onSourceSuccess: sourceCallback },
-        "user",
-      )
-    : await service.searchWithWarnings(
-        prepared.request.kw,
-        prepared.effective.channels,
-        prepared.effective.conc,
-        !!prepared.request.refresh,
-        prepared.effective.src,
-        prepared.effective.plugins,
-        prepared.request.cloud_types,
-        prepared.effective.ext,
-        { signal, onSourceSuccess: sourceCallback },
-        "configured",
-      );
-
-  // 热搜记录由服务端统一处理，避免客户端额外发起一次 POST 请求。
-  // 只记录本站搜索；自定义频道搜索仍保持原来的私有范围语义。
-  if (prepared.kind === "system") {
-    await getOrCreateHotSearchService().recordSearch(prepared.request.kw);
-  }
-
+  const sourceCallback = onSourceSuccess;
+  const configured = listUnifiedUpstreams();
+  // The presence of channels selects custom-channel mode. It never mixes
+  // configured site sources; every requested channel is instantiated from the
+  // persisted system Telegram source template. Without channels, search uses
+  // only the sources selected in the site settings.
+  const requestedChannels = prepared.request.channels;
+  const customChannelMode = requestedChannels !== undefined;
+  const selected = customChannelMode
+    ? []
+    : prepared.effective.sourceIds?.length
+      ? configured.filter((source) => prepared.effective.sourceIds!.includes(source.id))
+      : configured;
+  const ephemeral = customChannelMode
+    ? (requestedChannels ?? []).map((channel) => buildUserSource(channel))
+    : [];
+  const { response, warnings } = await service.searchWithWarnings(
+    prepared.request.kw,
+    selected,
+    prepared.effective.conc,
+    !!prepared.request.refresh,
+    prepared.request.cloud_types,
+    prepared.effective.ext,
+    { signal, onSourceSuccess: sourceCallback },
+    ephemeral,
+  );
+  await getOrCreateHotSearchService().recordSearch(prepared.request.kw);
   return {
     code: 0,
     message: warnings.length ? "partial_success" : "success",
-    data: prepared.request.debug
-      ? response
-      : hideSearchResponseDebugFields(response),
-    ...(prepared.request.debug && warnings.length ? { warnings } : {}),
+    data: prepared.includeMeta ? response : hideSearchResponseDebugFields(response),
   };
 }

@@ -2818,28 +2818,6 @@
   }
 }
 
-/* Telegram account message search uses the same fixed query pattern. */
-.upstream-app .tg-account-page .search-form {
-  position: sticky;
-  top: 72px;
-  z-index: 7;
-  margin-top: 0;
-  padding: 14px 0;
-  background: rgba(255, 255, 255, 0.97);
-  border-bottom: 1px solid #edf1f6;
-  box-shadow: 0 8px 18px rgba(30, 64, 110, 0.04);
-  backdrop-filter: blur(12px);
-}
-.upstream-app .tg-account-page .message-list {
-  max-height: min(580px, calc(100vh - 360px));
-  overflow: auto;
-  padding-right: 6px;
-}
-@media (max-width: 700px) {
-  .upstream-app .tg-account-page .search-form { top: 56px; }
-  .upstream-app .tg-account-page .message-list { max-height: calc(100vh - 350px); }
-}
-
 /* Reduce workspace chrome so the content area starts sooner and fits more rows. */
 .upstream-app .console-main {
   padding: 28px 28px 40px;

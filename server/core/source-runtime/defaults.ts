@@ -1,5 +1,5 @@
 /** Built-in parser used for user-supplied Telegram channels and as the initial value for managed sources. */
-export const TELEGRAM_DEFAULT_TRANSFORM = String.raw`function transform(payload, $, context) {
+export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, $, context) {
   const keyword = String(context.keyword || "").trim().toLowerCase();
   const normalize = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   const needle = normalize(keyword);
@@ -37,7 +37,7 @@ export const TELEGRAM_DEFAULT_TRANSFORM = String.raw`function transform(payload,
   const passwordOf = (value) => String(value || "").match(/(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,8})/i)?.[1] || "";
   const isResource = (value) => {
     const url = String(value || "").trim();
-    return /^(?:magnet:\?[^\s<>"')\]]+|https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?!r\.jina\.ai(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.(?:com|cn)|123684\.com|123865\.com|drive\.uc\.cn|115\.com|jianguoyun\.com|yun\.139\.com|pan\.xunlei\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+)$/i.test(url);
+    return /^(?:magnet:\?[^\s<>"')\]]+|https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.(?:com|cn)|123684\.com|123865\.com|drive\.uc\.cn|115\.com|jianguoyun\.com|yun\.139\.com|pan\.xunlei\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+)$/i.test(url);
   };
   const linksOf = (value, hrefs) => {
     const links = [];
@@ -53,7 +53,7 @@ export const TELEGRAM_DEFAULT_TRANSFORM = String.raw`function transform(payload,
     return links;
   };
   const output = [];
-  if (context.format === "html" && $ && (context.route !== "jina" || /tgme_widget_message/.test(String(payload || "")))) {
+  if (context.format === "html" && $) {
     $(".tgme_widget_message_wrap").each((index, element) => {
       const root = $(element);
       const message = root.find(".tgme_widget_message_text").clone();
@@ -66,23 +66,7 @@ export const TELEGRAM_DEFAULT_TRANSFORM = String.raw`function transform(payload,
       const links = linksOf(text, hrefs);
       const postId = root.find(".tgme_widget_message").attr("data-post") || "";
       const datetime = root.find("time").attr("datetime") || "";
-      if (title && matches(text) && links.length) output.push({ id: "tg-" + (context.channel || "channel") + "-" + (postId || index), name: title, description: content, datetime, cloud_types: [...new Set(links.map((link) => link.type))], links });
-    });
-  } else {
-    const source = String(payload || "");
-    const start = source.search(/^Markdown Content:\s*$/im);
-    const content = start >= 0 ? source.slice(source.indexOf("\n", start) + 1) : source;
-    const markers = [...content.matchAll(/\[\]\(\s*(https?:\/\/(?:www\.)?t\.me\/(?:s\/)?[^\s/)]+\/(\d+)(?:\?[^)]*)?)\s*\)/gi)];
-    markers.forEach((marker, index) => {
-      const markerText = marker[0];
-      const blockStart = (marker.index || 0) + markerText.length;
-      const blockEnd = markers[index + 1]?.index || content.length;
-      const block = content.slice(blockStart, blockEnd).trim();
-      const title = titleOf(block);
-      const hrefs = [...block.matchAll(/\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi)].map((item) => item[1]);
-      const links = linksOf(block, hrefs);
-      const postId = marker[2] || "";
-      if (title && matches(block) && links.length) output.push({ id: "tg-" + (context.channel || "channel") + "-" + postId, name: title, description: clean(block), datetime: "", cloud_types: [...new Set(links.map((link) => link.type))], links });
+      if (title && matches(text) && links.length) output.push({ id: String(context.source || "source") + "-" + (postId || index), name: title, description: content, datetime, cloud_types: [...new Set(links.map((link) => link.type))], links });
     });
   }
   return output;

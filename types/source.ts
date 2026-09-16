@@ -9,16 +9,9 @@ export interface UpstreamRequestConfig {
   maxRequestBodyBytes?: number;
 }
 
-export type UpstreamSourceKind = "http" | "telegram";
-
-/**
- * Unified source configuration. A source is request + transform; display
- * metadata and field mapping are deliberately not part of this contract.
- */
+/** Every searchable source is the same request + response transform contract. */
 export interface UpstreamDefinition {
   id: string;
-  sourceKind?: UpstreamSourceKind;
-  channel?: string;
   name: string;
   description: string;
   url: string;
@@ -58,6 +51,5 @@ export interface UpstreamProbe {
   traces: ProbeTrace[];
   raw: string;
   rawTruncated: boolean;
-  /** Final resource-level shape, identical to /api/search output. */
   results: import("../server/core/types/models").SearchResult[];
 }

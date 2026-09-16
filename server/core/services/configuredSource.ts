@@ -1,9 +1,7 @@
 import type { UpstreamDefinition } from "../../../types/source";
 import type { SourceDefinition } from "../source-runtime/types";
-import { ConfiguredSourcePlugin } from "../source-runtime/source-plugin";
-import type { SearchPlugin } from "../plugins/manager";
 
-function configurationVersion(source: UpstreamDefinition): string {
+export function getSourceConfigurationVersion(source: UpstreamDefinition): string {
   const input = JSON.stringify({
     url: source.url,
     method: source.method,
@@ -37,9 +35,8 @@ export function upstreamToSourceDefinition(source: UpstreamDefinition): SourceDe
     manifest: {
       id: source.id,
       name: source.name,
-      version: configurationVersion(source),
+      version: getSourceConfigurationVersion(source),
       kind: "source",
-      priority: 2,
       maxResults: 200,
       schemaVersion: 1,
       outputTypes: [],
@@ -62,8 +59,4 @@ export function upstreamToSourceDefinition(source: UpstreamDefinition): SourceDe
       transform,
     },
   };
-}
-
-export function createConfiguredSourcePlugin(source: UpstreamDefinition): SearchPlugin {
-  return new ConfiguredSourcePlugin(upstreamToSourceDefinition(source));
 }

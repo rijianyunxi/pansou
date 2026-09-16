@@ -43,7 +43,6 @@ export default defineNuxtConfig({
   // 开发期预打包动态引入的依赖，避免首次使用时才触发
   // "new dependencies optimized" 导致的整页重载与模块加载失败
   vite: {
-    ssr: { noExternal: ["telegram", "qrcode"] },
     optimizeDeps: {
       include: ["p-limit", "TagCloud"],
     },
@@ -56,19 +55,11 @@ export default defineNuxtConfig({
     // 管理控制台及其路径页面（含旧入口重定向）依赖管理员 Cookie 鉴权，禁止缓存
     "/admin": { swr: false, cache: false },
     "/admin/**": { swr: false, cache: false },
-    "/upstreams": { swr: false, cache: false },
-    // 健康监控重定向页禁止缓存
-    "/monitor": { swr: false, cache: false },
     "/api/monitor": { swr: false, cache: false },
     "/api/upstreams/**": { swr: false, cache: false },
-    "/api/plugins/**": { swr: false, cache: false },
-    "/telegram": { swr: false, cache: false },
-    "/tg-accounts": { swr: false, cache: false },
     "/api/tg/**": { swr: false, cache: false },
-    "/api/tg/accounts/**": { swr: false, cache: false },
-    "/api/tg/mtproto/**": { swr: false, cache: false },
     // 健康接口反映实时运行状态，禁止缓存
-    "/api/plugin-health": { swr: false, cache: false },
+    "/api/source-health": { swr: false, cache: false },
     "/api/health": { swr: false, cache: false },
     // 管理端搜索设置不缓存
     "/api/settings/**": { swr: false, cache: false },
@@ -80,8 +71,6 @@ export default defineNuxtConfig({
     // POST 搜索必须保留请求体，不能被通用 SWR 包装器接管。
     "/api/search": { swr: false, cache: false },
     "/api/search/**": { swr: false, cache: false },
-    "/api/searchHttp": { swr: false, cache: false },
-    "/api/searchHttp/**": { swr: false, cache: false },
     "/**": { swr: 3600 },
   },
   runtimeConfig: {

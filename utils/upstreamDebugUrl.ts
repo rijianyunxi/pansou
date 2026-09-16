@@ -65,13 +65,10 @@ function appendBodyPreview(url: URL, body: unknown, variables: DebugVariables): 
   url.searchParams.set("_body", parameterText(rendered));
 }
 
-function debugVariables(source: UpstreamDefinition, keyword: string, page: number): DebugVariables {
+function debugVariables(_source: UpstreamDefinition, keyword: string): DebugVariables {
   return {
     keyword: keyword.trim(),
-    page,
-    cursor: "",
     limit: 200,
-    channel: source.channel?.replace(/^@/, "") || "",
   };
 }
 
@@ -96,9 +93,8 @@ function queryRecord(url: URL): Record<string, string | string[]> {
 export function buildSourceRequestPreview(
   source: UpstreamDefinition,
   keyword: string,
-  page = 1,
 ): ProbeRequestDetails {
-  const variables = debugVariables(source, keyword, page);
+  const variables = debugVariables(source, keyword);
   const renderedUrl = renderedSourceUrl(source, variables);
   const url = new URL(renderedUrl);
   for (const key of [...url.searchParams.keys()]) {
@@ -134,12 +130,11 @@ export function buildSourceRequestPreview(
 export function buildSourceDebugUrl(
   source: UpstreamDefinition,
   keyword: string,
-  page = 1,
 ): string {
   try {
-    const preview = buildSourceRequestPreview(source, keyword, page);
+    const preview = buildSourceRequestPreview(source, keyword);
     const url = new URL(preview.url);
-    if (source.method === "POST") appendBodyPreview(url, preview.body, debugVariables(source, keyword, page));
+    if (source.method === "POST") appendBodyPreview(url, preview.body, debugVariables(source, keyword));
     return url.toString();
   } catch {
     return source.url;

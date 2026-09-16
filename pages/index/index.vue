@@ -65,10 +65,6 @@
             <span class="stat-label">用时</span>
             <span class="stat-value">{{ searchState.elapsedMs }}ms</span>
           </span>
-          <span v-if="searchState.deepLoading && !searchState.paused" class="loading-indicator">
-            <span class="pulse-dot"></span>
-            <span class="loading-text">持续搜索中…</span>
-          </span>
           <span v-if="searchState.paused" class="paused-indicator-bar">
             <span class="pause-icon">⏸</span>
             <span class="paused-text">搜索已暂停</span>
@@ -123,7 +119,7 @@
     </section>
 
     <!-- 空状态：仅当搜索完全结束且无结果时显示，搜索进行中不显示 -->
-    <section v-else-if="searched && !searchState.error && !searchState.loading && !searchState.deepLoading && !searchState.paused" class="empty-state">
+    <section v-else-if="searched && !searchState.error && !searchState.loading && !searchState.paused" class="empty-state">
       <div class="empty-card">
         <div class="empty-icon">🔍</div>
         <h3>未找到相关资源</h3>

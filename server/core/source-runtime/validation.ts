@@ -4,7 +4,7 @@ import { validateOutboundUrl } from "../security/outboundUrl";
 import { isForbiddenOutboundHeader } from "../http/safeHttpExecutor";
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor", "eval", "function", "script"]);
-export const RESERVED_VARIABLES = new Set(["keyword", "page", "cursor", "limit"]);
+export const RESERVED_VARIABLES = new Set(["keyword", "limit"]);
 const DEFAULT_ALLOWED_VARIABLES = RESERVED_VARIABLES;
 const VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]{0,31}$/;
 
@@ -42,12 +42,6 @@ function assertNoForbiddenKeys(value: unknown, path = "definition"): void {
   }
 }
 
-function validateTemplates(value: unknown, allowedNames: ReadonlySet<string>): void {
-  // interpolateTemplate performs the single source of truth validation for
-  // template variables without evaluating any expression.
-  interpolateTemplate(value as SourceValue, {}, allowedNames);
-}
-
 export function validateSourceDefinition(input: unknown): SourceDefinition {
   assertNoForbiddenKeys(input);
   const definition = input as Partial<SourceDefinition>;
@@ -56,17 +50,8 @@ export function validateSourceDefinition(input: unknown): SourceDefinition {
   if (!manifest?.id || !manifest.name || !manifest.version || manifest.kind !== "source") {
     throw new Error("manifest 必须包含 id、name、version，且 kind 必须为 source");
   }
-  if (!Number.isInteger(manifest.priority) || manifest.priority < 0 || manifest.priority > 1000) {
-    throw new Error("manifest.priority 必须是 0 到 1000 的整数");
-  }
   if (!Number.isInteger(manifest.maxResults) || manifest.maxResults < 1 || manifest.maxResults > 1000) {
     throw new Error("manifest.maxResults 必须是 1 到 1000 的整数");
-  }
-  if (manifest.upstreamGroup !== undefined && (typeof manifest.upstreamGroup !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(manifest.upstreamGroup))) {
-    throw new Error("manifest.upstreamGroup 必须是 1 到 64 位字母、数字、下划线或连字符");
-  }
-  if (manifest.upstreamWeight !== undefined && (!Number.isInteger(manifest.upstreamWeight) || manifest.upstreamWeight < 1 || manifest.upstreamWeight > 100)) {
-    throw new Error("manifest.upstreamWeight 必须是 1 到 100 的整数");
   }
   const request = definition.request;
   if (!request || !["GET", "POST"].includes(request.method) || !request.url) {
@@ -77,18 +62,6 @@ export function validateSourceDefinition(input: unknown): SourceDefinition {
     allowHttp: request.allowInsecureHttp,
   };
   validateOutboundUrl(request.url, urlOptions);
-  const retry = request.retry;
-  if (retry !== undefined) {
-    if (!retry || typeof retry !== "object" || Array.isArray(retry)) {
-      throw new Error("request.retry 必须是对象");
-    }
-    if (retry.maxRetries !== undefined && (!Number.isInteger(retry.maxRetries) || retry.maxRetries < 0 || retry.maxRetries > 3)) {
-      throw new Error("request.retry.maxRetries 必须是 0 到 3 的整数");
-    }
-    if (retry.delayMs !== undefined && (!Number.isInteger(retry.delayMs) || retry.delayMs < 0 || retry.delayMs > 5000)) {
-      throw new Error("request.retry.delayMs 必须是 0 到 5000 的整数");
-    }
-  }
   for (const name of Object.keys(request.headers || {})) {
     if (isForbiddenOutboundHeader(name)) {
       throw new Error(`request.headers.${name} 不允许设置`);
@@ -97,8 +70,8 @@ export function validateSourceDefinition(input: unknown): SourceDefinition {
   if ((request.maxResponseBytes ?? 0) > 10 * 1024 * 1024) throw new Error("request.maxResponseBytes 不能超过 10MB");
   if ((request.maxRequestBodyBytes ?? 0) > 256 * 1024) throw new Error("request.maxRequestBodyBytes 不能超过 256KB");
   const response = definition.response;
-  if (!response || !["json", "html"].includes(response.format)) {
-    throw new Error("response.format 必须是 json 或 html");
+  if (!response || !["json", "html", "text"].includes(response.format)) {
+    throw new Error("response.format 必须是 json、html 或 text");
   }
   if (typeof response.transform !== "string" || !response.transform.trim()) {
     throw new Error("response.transform 必须是返回统一资源结果数组的字符串");

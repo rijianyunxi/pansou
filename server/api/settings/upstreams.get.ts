@@ -9,7 +9,7 @@ export default defineEventHandler((event) => {
     data: listUnifiedUpstreams(),
     version: getUnifiedUpstreamVersion(),
     meta: {
-      sourceKinds: ["http", "telegram"],
+      sourceModel: "resource",
     },
   };
 });

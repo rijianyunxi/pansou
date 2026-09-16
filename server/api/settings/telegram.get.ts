@@ -2,7 +2,6 @@ import { defineEventHandler, setResponseHeader } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
 import { getSearchSettings } from "../../core/services/searchSettingsService";
 import { getSystemSettings } from "../../core/services/systemSettingsService";
-import { getTgChannelPolicies } from "../../core/services/tgChannelSettings";
 import { telegramSettingsView } from "../../utils/telegramSettings";
 export default defineEventHandler((event) => {
   requireAdminAuth(event);
@@ -12,7 +11,6 @@ export default defineEventHandler((event) => {
     data: telegramSettingsView(
       getSearchSettings().channels,
       getSystemSettings(useRuntimeConfig()).defaultChannels,
-      getTgChannelPolicies(),
     ),
   };
 });

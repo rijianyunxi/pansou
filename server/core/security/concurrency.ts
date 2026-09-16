@@ -24,7 +24,7 @@ export interface SearchGovernanceLimits {
  * - perClientWindowLimit 30 / 30s: caps completed searches (each fanning out
  *   to every source) without throttling interactive use.
  * - globalInFlight 16: hard instance ceiling that holds even when client
- *   identities are spoofed, sized so TG/plugin shared concurrency slots are
+ *   identities are spoofed, sized so resource-source shared concurrency slots are
  *   not starved by a single flood.
  */
 export const SEARCH_GOVERNANCE_LIMITS: SearchGovernanceLimits = {

@@ -1,21 +1,21 @@
 import Database from 'better-sqlite3';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { executeSource } from '../server/core/source-runtime/executor';
-import { upstreamToSourceDefinition } from '../server/core/services/configuredSourcePlugin';
+import { upstreamToSourceDefinition } from '../server/core/services/configuredSource';
 const db = new Database(process.env.PANHUB_SQLITE_DB || 'data/panhub.sqlite', { readonly: true });
-const rows: any[] = db.prepare('SELECT * FROM upstream_definitions WHERE enabled=1 ORDER BY id').all(); db.close();
+const rows: any[] = db.prepare('SELECT * FROM resource_sources WHERE enabled=1 ORDER BY id').all(); db.close();
 const reports: any[] = [];
 mkdirSync('.genflow_tmp/transform-live', { recursive: true });
 let next = 0;
 await Promise.all(Array.from({ length: 4 }, async () => {
   while (next < rows.length) {
     const row = rows[next++];
-    const source = { ...row, sourceKind: row.source_kind, request: row.request_json ? JSON.parse(row.request_json) : undefined };
+    const source = { ...row, request: row.request_json ? JSON.parse(row.request_json) : undefined };
     const keyword = row.id === 'nyaa' ? 'One Piece' : row.id === 'hunhepan' ? 'python' : '斗破苍穹';
     try {
       let result = await executeSource(upstreamToSourceDefinition(source), keyword);
       let sampleMode = 'keyword';
-      if (!result.results.length && row.source_kind === 'telegram') {
+      if (!result.results.length && row.url.includes('t.me/s/')) {
         result = await executeSource(upstreamToSourceDefinition(source), '');
         sampleMode = 'recent';
       }

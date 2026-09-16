@@ -87,14 +87,12 @@ export function sendSearchStream(
     await queue.finish();
     const completeData: SearchStreamCompleteData = {
       total: response.data?.total ?? 0,
-      ...(response.data?.meta ? { meta: response.data.meta } : {}),
     };
     await push("complete", {
       code: response.code,
       message: response.message,
       data: completeData,
-      ...(response.warnings ? { warnings: response.warnings } : {}),
-    } satisfies GenericResponse<SearchStreamCompleteData> & { warnings?: unknown[] });
+    } satisfies GenericResponse<SearchStreamCompleteData>);
   }).catch(async (error) => {
     if (event.node.res.destroyed || event.node.res.writableEnded) return;
     try {

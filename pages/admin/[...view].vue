@@ -15,9 +15,6 @@
           <NuxtLink to="/admin/sources" :class="['console-nav-link', { active: view === 'sources' }]">
             <ConsoleIcon name="box" />来源管理
           </NuxtLink>
-          <NuxtLink to="/admin/accounts" :class="['console-nav-link', { active: view === 'accounts' }]">
-            <ConsoleIcon name="user" />Telegram 账户
-          </NuxtLink>
         </nav>
       </aside>
 
@@ -48,19 +45,12 @@
           </div>
 
           <template v-if="view === 'sources'">
+            <SourceTemplateEditor />
             <section class="sources-panel directory-panel" aria-label="来源管理目录">
               <div class="source-toolbar directory-toolbar" aria-label="来源查询与操作">
                 <label class="source-search">
                   <ConsoleIcon name="search" :size="17" /><input v-model="search" type="search" aria-label="搜索来源名称或地址"
                     placeholder="搜索来源名称、地址或标签…" />
-                </label>
-                <label class="source-type-filter">
-                  <span>来源类型</span>
-                  <select v-model="sourceTypeFilter" aria-label="按来源类型筛选">
-                    <option value="all">全部类型</option>
-                    <option value="http">HTTP 来源</option>
-                    <option value="telegram">Telegram 来源</option>
-                  </select>
                 </label>
                 <button class="button secondary directory-trash-button" type="button" @click="openArchive">
                   <ConsoleIcon name="trash" :size="15" />回收站
@@ -95,11 +85,11 @@
                         </div>
                       </td>
                       <td class="source-kind-cell" data-label="接入方式">
-                        <span class="source-kind-badge" :class="source.sourceKind === 'telegram' ? 'telegram' : 'http'">
-                          <ConsoleIcon :name="source.sourceKind === 'telegram' ? 'channel' : 'globe'" :size="13" />
-                          {{ source.sourceKind === 'telegram' ? 'Telegram' : 'HTTP' }}
+                        <span class="source-kind-badge resource-source-badge">
+                          <ConsoleIcon name="globe" :size="13" />
+                          资源源
                         </span>
-                        <!-- <span class="source-kind-meta">{{ source.sourceKind === 'telegram' ? '频道订阅' : `${source.method} · ${source.format.toUpperCase()}` }}</span> -->
+                        <span class="source-kind-meta">{{ source.method }} · {{ source.format.toUpperCase() }}</span>
                       </td>
                       <td class="source-endpoint-cell" data-label="请求地址">
                         <a class="source-endpoint mono" :href="buildSourceDebugUrl(source, keyword)" target="_blank"
@@ -133,15 +123,14 @@
                 <div v-if="!filteredSources.length" class="empty-sources">
                   <ConsoleIcon name="search" :size="28" />
                   <h3>没有匹配的来源</h3>
-                  <p>修改关键词或类型筛选。</p><button class="button secondary small" type="button"
-                    @click="search = ''; sourceTypeFilter = 'all'">重置筛选</button>
+                  <p>修改关键词。</p><button class="button secondary small" type="button"
+                    @click="search = ''">重置筛选</button>
                 </div>
               </div>
               <footer class="table-footer"><span><span class="status-dot neutral"></span>{{ filteredSources.length }} /
                   {{ sources.length }} 个来源</span></footer>
             </section>
           </template>
-          <TgAccountManager v-else-if="view === 'accounts'" @unauthorized="adminLocked = true" />
           <MonitorPanel v-else-if="view === 'monitor'" @unauthorized="adminLocked = true"
             @focus-upstream="focusUpstream" @debug-channel="focusTelegramUpstream" />
         </main>
@@ -231,7 +220,7 @@
 <script setup lang="ts">
 import AdminAccessGate from "../../components/admin/AdminAccessGate.vue";
 import ConsoleIcon from "../../components/upstreams/ConsoleIcon.vue";
-import TgAccountManager from "../../components/admin/TgAccountManager.vue";
+import SourceTemplateEditor from "../../components/upstreams/SourceTemplateEditor.vue";
 import MonitorPanel from "../../components/monitor/MonitorPanel.vue";
 import UpstreamEditor from "../../components/upstreams/UpstreamEditor.vue";
 import UpstreamDetailDrawer from "../../components/upstreams/UpstreamDetailDrawer.vue";
@@ -255,9 +244,6 @@ const authStatus = await useFetch<{ configured: boolean; locked: boolean }>(
   { key: "admin-auth-status", server: true },
 );
 const configuredUpstreams = ref<UpstreamDefinition[]>([]);
-function isTelegramSource(source: UpstreamDefinition | null | undefined): boolean {
-  return source?.sourceKind === "telegram";
-}
 type ArchivedTelegramChannel = {
   channel: string;
   origin: "builtin" | "custom";
@@ -273,7 +259,6 @@ const trashCount = computed(() => archivedChannels.value.length);
 const selectedId = ref("");
 const defaultUnifiedSource: UpstreamDefinition = {
   id: "",
-  sourceKind: "http",
   name: "",
   description: "",
   url: "https://example.invalid",
@@ -290,37 +275,23 @@ const selected = computed<UpstreamDefinition>(
 );
 const selectedReport = computed(() => selected.value ? reports.value[selected.value.id] : undefined);
 const route = useRoute();
-type ConsoleView = "sources" | "accounts" | "monitor";
+type ConsoleView = "sources" | "monitor";
 const rawRouteView = Array.isArray(route.params.view) ? route.params.view[0] : route.params.view;
-const legacyView = typeof route.query.view === "string" ? route.query.view : "";
-if (legacyView) {
-  const legacyTarget = legacyView === "monitor" || legacyView === "settings"
-    ? "/admin/monitor"
-    : legacyView === "accounts"
-      ? "/admin/accounts"
-      : legacyView === "telegram"
-        ? "/admin/telegram"
-        : "/admin/sources";
-  const legacyQuery = { ...route.query };
-  delete legacyQuery.view;
-  await navigateTo({ path: legacyTarget, query: legacyQuery }, { replace: true });
-} else if (!rawRouteView || !["sources", "monitor", "accounts"].includes(String(rawRouteView))) {
-  await navigateTo({ path: rawRouteView === "settings" ? "/admin/monitor" : "/admin/sources", query: route.query }, { replace: true });
+if (!rawRouteView || !["sources", "monitor"].includes(String(rawRouteView))) {
+  await navigateTo({ path: "/admin/sources", query: route.query }, { replace: true });
 }
 const view = computed<ConsoleView>(() => {
   const routeView = Array.isArray(route.params.view) ? route.params.view[0] : route.params.view;
-  return routeView === "monitor" || routeView === "accounts" ? routeView : "sources";
+  return routeView === "monitor" ? routeView : "sources";
 });
 const viewTitle = computed(
   () =>
     ({
       sources: "来源管理",
-      accounts: "Telegram 账户",
       monitor: "运行监控",
     } as Record<ConsoleView, string>)[view.value],
 );
 const search = ref("");
-const sourceTypeFilter = ref<"all" | "http" | "telegram">("all");
 const runningId = ref("");
 const keyword = ref("三体");
 const editorOpen = ref(false);
@@ -358,9 +329,8 @@ function sourceColor(source: UpstreamDefinition): string {
 
 const filteredSources = computed(() =>
   sources.value.filter((s) => {
-    const matchesType = sourceTypeFilter.value === "all" || s.sourceKind === sourceTypeFilter.value;
-    const haystack = `${s.name} ${s.url} ${s.sourceKind} ${s.channel || ""}`.toLowerCase();
-    return matchesType && haystack.includes(search.value.trim().toLowerCase());
+    const haystack = `${s.id} ${s.name} ${s.url} ${s.description}`.toLowerCase();
+    return haystack.includes(search.value.trim().toLowerCase());
   }),
 );
 function apiErrorMessage(error: any): string {
@@ -525,7 +495,7 @@ function openDebug(source: UpstreamDefinition) {
 }
 function focusTelegramUpstream(channel: string) {
   const normalized = String(channel || "").replace(/^@/, "").toLowerCase();
-  const source = sources.value.find((item) => item.sourceKind === "telegram" && item.channel === normalized);
+  const source = sources.value.find((item) => item.id === normalized);
   if (source) openDebug(source);
   else notify(`未找到频道 @${normalized} 的来源配置。`);
 }
@@ -541,7 +511,7 @@ function openEditor(source: UpstreamDefinition | null = null) {
 async function saveSource(source: UpstreamDefinition) {
   try {
     // All sources are catalog configuration now. The page no longer creates a
-    // second "draft plugin" representation for a new upstream; saving is the
+    // second "draft source" representation for a new upstream; saving is the
     // activation boundary and the next request reads the SQLite row directly.
     await $fetch("/api/settings/upstreams", {
       method: "PUT",
@@ -569,9 +539,9 @@ async function testSource(source: UpstreamDefinition) {
   activeController = new AbortController();
   const timer = setTimeout(() => activeController?.abort(), 16000);
   try {
-    const result = await $fetch<UpstreamProbe>("/api/upstreams/probe", {
+    const result = await $fetch<UpstreamProbe>("/api/upstreams/test", {
       method: "POST",
-      body: { source, keyword: keyword.value.trim() },
+      body: { sourceId: source.id, kw: keyword.value.trim() },
       signal: activeController.signal,
       retry: 0,
     });

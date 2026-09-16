@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { load } from 'cheerio';
 import { executeSourceTransform } from '../server/core/source-runtime/runtime';
 const db = new Database(process.env.PANHUB_SQLITE_DB || 'data/panhub.sqlite', { readonly: true });
-const rows: any[] = db.prepare('SELECT * FROM upstream_definitions ORDER BY id').all(); db.close();
+const rows: any[] = db.prepare('SELECT * FROM resource_sources ORDER BY id').all(); db.close();
 const reports = rows.map(row => {
   const path = `.genflow_tmp/transform-live/${row.id}.raw`;
   if (!existsSync(path)) return { id: row.id, status: 'missing-sample', count: 0 };

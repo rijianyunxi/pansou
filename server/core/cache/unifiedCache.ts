@@ -5,8 +5,6 @@ import type { SearchResult } from "../types/models";
  * 缓存命名空间
  */
 export enum CacheNamespace {
-  TG_SEARCH = "tg",
-  PLUGIN_SEARCH = "plugin",
   HOT_SEARCH = "hot_search",
   SEARCH = "search",
 }
