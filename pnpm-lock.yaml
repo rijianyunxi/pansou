@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      TagCloud:
-        specifier: ^2.5.0
-        version: 2.5.0
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -20,12 +17,12 @@ importers:
       h3:
         specifier: ^1.15.5
         version: 1.15.5
+      ipaddr.js:
+        specifier: ^2.5.0
+        version: 2.5.0
       nuxt:
         specifier: ^4.0.3
         version: 4.3.1(@parcel/watcher@2.5.6)(@types/node@22.20.2)(@vue/compiler-sfc@3.5.29)(better-sqlite3@13.0.3)(bufferutil@4.1.0)(cac@6.7.14)(db0@0.3.4(better-sqlite3@13.0.3))(ioredis@5.10.0)(magicast@0.5.2)(rollup@4.59.0)(terser@5.46.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(vite@7.3.1(@types/node@22.20.2)(jiti@2.6.1)(terser@5.46.0)(yaml@2.8.2))(vue-tsc@3.3.11(typescript@5.9.3))(yaml@2.8.2)
-      ofetch:
-        specifier: ^1.4.1
-        version: 1.5.1
       p-limit:
         specifier: ^7.2.0
         version: 7.3.0
@@ -1327,9 +1324,6 @@ packages:
   '@vue/shared@3.5.29':
     resolution: {integrity: sha512-w7SR0A5zyRByL9XUkCfdLs7t9XOHUyJ67qPGQjOou3p6GvBeBW+AVjUUmlxtZ4PIYaRvE+1LmK44O4uajlZwcg==}
 
-  TagCloud@2.5.0:
-    resolution: {integrity: sha512-lMr8UCbOLOyP9iKc/lJalpNTm25rjmplbQ20ljw02tyx4ITBxDh4TRBhSpayC6QGjtRtvslUljfr2SGoPOGnXw==}
-
   abbrev@3.0.1:
     resolution: {integrity: sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg==}
     engines: {node: ^18.17.0 || >=20.5.0}
@@ -2065,6 +2059,10 @@ packages:
   ioredis@5.10.0:
     resolution: {integrity: sha512-HVBe9OFuqs+Z6n64q09PQvP1/R4Bm+30PAyyD4wIEqssh3v9L21QjCVk4kRLucMBcDokJTcLjsGeVRlq/nH6DA==}
     engines: {node: '>=12.22.0'}
+
+  ipaddr.js@2.5.0:
+    resolution: {integrity: sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w==}
+    engines: {node: '>= 10'}
 
   iron-webcrypto@1.2.1:
     resolution: {integrity: sha512-feOM6FaSr6rEABp/eDfVseKyTMDt+KGpeB35SkVn9Tyn0CqvVsY3EwI0v5i8nMHyJnzCIQf7nsy3p41TPkJZhg==}
@@ -4663,8 +4661,6 @@ snapshots:
 
   '@vue/shared@3.5.29': {}
 
-  TagCloud@2.5.0: {}
-
   abbrev@3.0.1: {}
 
   abort-controller@3.0.0:
@@ -5414,6 +5410,8 @@ snapshots:
       standard-as-callback: 2.1.0
     transitivePeerDependencies:
       - supports-color
+
+  ipaddr.js@2.5.0: {}
 
   iron-webcrypto@1.2.1: {}
 

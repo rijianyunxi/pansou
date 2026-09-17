@@ -1,10 +1,10 @@
-import { createError, type H3Event } from "h3";
+import { createError, setHeader, type H3Event } from "h3";
 import { cleanupUserData, getUserPolicy, type UserPolicy } from "../core/services/policyService";
 import { listUnifiedUpstreams } from "../core/services/upstreamCatalog";
 import { getSqliteDatabase } from "../core/storage/sqlite";
 import { getStoredChannels, getStoredSessionChannels, getUserSession, type UserSessionContext } from "./userAuth";
+import { searchRateLimiter } from "../core/security/rateLimit";
 import { prepareSearch, type PreparedSearchRequest } from "./executeSearch";
-import { requireSearchAuth } from "./requireAuth";
 import { normalizeTelegramChannels } from "../../utils/telegramChannels";
 import { getClientIp } from "./clientIp";
 
@@ -19,6 +19,30 @@ export interface AuthorizedSearch {
 
 function deny(message: string, statusCode = 403): never {
   throw createError({ statusCode, statusMessage: message });
+}
+
+function authorizeSearchRateLimit(event: H3Event, context: UserSessionContext, policy: UserPolicy): void {
+  const windowMs = policy.searchRateLimitWindowSeconds * 1000;
+  const ip = getClientIp(event);
+  const sessionDecision = searchRateLimiter.check(`search:session:${context.session.id}`, {
+    limit: policy.searchRateLimitPerSession,
+    windowMs,
+  });
+  const ipDecision = searchRateLimiter.check(`search:ip:${ip}`, {
+    limit: policy.searchRateLimitPerIp,
+    windowMs,
+  });
+  const remaining = Math.min(sessionDecision.remaining, ipDecision.remaining);
+  setHeader(event, "X-RateLimit-Remaining", String(remaining));
+  setHeader(event, "X-RateLimit-Session-Limit", String(policy.searchRateLimitPerSession));
+  setHeader(event, "X-RateLimit-Session-Remaining", String(sessionDecision.remaining));
+  setHeader(event, "X-RateLimit-IP-Limit", String(policy.searchRateLimitPerIp));
+  setHeader(event, "X-RateLimit-IP-Remaining", String(ipDecision.remaining));
+
+  if (sessionDecision.allowed && ipDecision.allowed) return;
+  const retryAfterMs = Math.max(sessionDecision.retryAfterMs, ipDecision.retryAfterMs);
+  setHeader(event, "Retry-After", Math.max(1, Math.ceil(retryAfterMs / 1000)));
+  throw createError({ statusCode: 429, statusMessage: "搜索请求过于频繁，请稍后再试" });
 }
 
 function sourceSnapshot(prepared: PreparedSearchRequest): string[] {
@@ -91,10 +115,10 @@ export function authorizeSearch(
   // Parse before creating an anonymous session so malformed requests do not
   // create identities or execute a search.
   let prepared = prepareSearch(raw, options);
-  requireSearchAuth(event);
   cleanupUserData();
   const context = getUserSession(event, { createAnonymous: true });
   const policy = getUserPolicy();
+  authorizeSearchRateLimit(event, context, policy);
   const resolved = searchScopeAndChannels(prepared, context, policy);
   prepared = resolved.prepared;
   const sourceIds = sourceSnapshot(prepared);

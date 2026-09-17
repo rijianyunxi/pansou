@@ -32,8 +32,6 @@ function errorMessage(error: ApiError | undefined, fallback: string): string {
 }
 
 export function useAuth() {
-  const locked = useState("auth-locked", () => false);
-  const loading = useState("auth-loading", () => true);
   const error = useState("auth-error", () => "");
   const user = useState<AuthUser | null>("auth-user", () => null);
   const sessionReady = useState("auth-session-ready", () => false);
@@ -44,19 +42,6 @@ export function useAuth() {
   const sessionError = useState("auth-session-error", () => "");
   const initialized = useState("auth-session-initialized", () => false);
   let initializePromise: Promise<boolean> | undefined;
-
-  async function fetchStatus() {
-    loading.value = true;
-    error.value = "";
-    try {
-      const data = await $fetch<{ locked: boolean }>(`${API_BASE}/auth/status`, { credentials: "include" });
-      locked.value = !!data.locked;
-    } catch (e: any) {
-      error.value = errorMessage(e, "获取搜索状态失败");
-    } finally {
-      loading.value = false;
-    }
-  }
 
   async function initializeSession(force = false): Promise<boolean> {
     if (initializePromise && !force) return initializePromise;
@@ -92,25 +77,6 @@ export function useAuth() {
     user.value = next;
     sessionReady.value = true;
     initialized.value = true;
-  }
-
-  async function unlock(password: string): Promise<boolean> {
-    error.value = "";
-    const pwd = (password || "").trim();
-    if (!pwd) return false;
-    try {
-      await $fetch<{ ok: boolean }>(`${API_BASE}/auth/unlock`, {
-        method: "POST",
-        body: { password: pwd },
-        credentials: "include",
-        retry: 0,
-      });
-      locked.value = false;
-      return true;
-    } catch (e: any) {
-      error.value = errorMessage(e, "解锁失败");
-      return false;
-    }
   }
 
   async function login(username: string, password: string): Promise<AuthUser | null> {
@@ -196,8 +162,8 @@ export function useAuth() {
   }
 
   return {
-    locked, loading, error, user, sessionReady, sessionId, anonymousCustomChannels, showAuthButtons, registrationEnabled, sessionError, initialized,
-    fetchStatus, initializeSession, unlock, login, register, logout, updateProfile,
+    error, user, sessionReady, sessionId, anonymousCustomChannels, showAuthButtons, registrationEnabled, sessionError, initialized,
+    initializeSession, login, register, logout, updateProfile,
     changePassword, handleSessionExpired,
   };
 }

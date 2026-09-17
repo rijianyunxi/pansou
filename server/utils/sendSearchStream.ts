@@ -21,6 +21,7 @@ function searchResultKey(result: SearchSourceUpdate["results"][number]): string 
 
 function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate {
   const sentLinks = new Map<string, Set<string>>();
+  const sentLinkKeys = new Set<string>();
   return (update) => ({
     ...update,
     results: update.results.flatMap((result) => {
@@ -28,8 +29,9 @@ function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate
       const seen = sentLinks.get(key) ?? new Set<string>();
       const freshLinks = result.links.filter((link) => {
         const linkKey = `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`;
-        if (seen.has(linkKey)) return false;
+        if (seen.has(linkKey) || sentLinkKeys.has(linkKey)) return false;
         seen.add(linkKey);
+        sentLinkKeys.add(linkKey);
         return true;
       });
       sentLinks.set(key, seen);
@@ -81,7 +83,7 @@ export function sendSearchStream(
       message: "started",
       data: { intervalMs: SEARCH_SSE_INTERVAL_MS },
     });
-    const response = await executePreparedSearch(prepared, signal, (update) => queue.enqueue(update));
+    const response = await executePreparedSearch(prepared, signal, (update) => queue.enqueueAndWait(update));
     await queue.finish();
     const completeData: SearchStreamCompleteData = {
       total: response.data?.total ?? 0,

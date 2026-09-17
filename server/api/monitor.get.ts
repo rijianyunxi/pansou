@@ -206,7 +206,7 @@ export default defineEventHandler(async (event) => {
   try {
     const config = useRuntimeConfig();
     const includeDeleted = String(getQuery(event).includeDeleted || "") === "true";
-    const service = getOrCreateSearchService(config);
+    const service = getOrCreateSearchService();
     const healthById = Object.fromEntries(
       service.getSourceHealthStatus().map((status) => [status.id || status.name, status]),
     );

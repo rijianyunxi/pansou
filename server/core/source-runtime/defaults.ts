@@ -8,7 +8,7 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
     const url = String(value || "").toLowerCase();
     if (/^magnet:/.test(url)) return "magnet";
     const host = url.replace(/^https?:\/\//, "").split(/[/?#]/)[0].replace(/^www\./, "");
-    const pairs = [["pan.baidu.com", "baidu"], ["pan.quark.cn", "quark"], ["aliyundrive.com", "aliyun"], ["alipan.com", "aliyun"], ["yun.139.com", "mobile"], ["cloud.189.cn", "tianyi"], ["115.com", "115"], ["123pan.com", "123"], ["123pan.cn", "123"], ["123684.com", "123"], ["123865.com", "123"], ["drive.uc.cn", "others"], ["jianguoyun.com", "jianguoyun"], ["pan.xunlei.com", "xunlei"]];
+    const pairs = [["pan.baidu.com", "baidu"], ["pan.quark.cn", "quark"], ["aliyundrive.com", "aliyun"], ["alipan.com", "aliyun"], ["yun.139.com", "mobile"], ["cloud.189.cn", "tianyi"], ["115.com", "115"], ["123pan.com", "123"], ["123pan.cn", "123"], ["123684.com", "123"], ["123865.com", "123"], ["drive.uc.cn", "uc"], ["jianguoyun.com", "jianguoyun"], ["pan.xunlei.com", "xunlei"]];
     const pair = pairs.find((entry) => host === entry[0] || host.endsWith("." + entry[0]));
     return pair ? pair[1] : /(^|\.)lanzou[a-z0-9-]*\.com$/.test(host) ? "lanzou" : "others";
   };

@@ -1,64 +1,14 @@
+import { isBlockedIp, normalizeIpAddress } from "./ipAddress";
+
+// Preserve the original public imports while keeping IP policy independent of URLs.
+export { isBlockedIp, isIpLiteral } from "./ipAddress";
+
 const BLOCKED_HOSTS = new Set([
   "localhost",
   "localhost.localdomain",
   "metadata.google.internal",
   "metadata.google.com",
 ]);
-
-function isBlockedIpv4(host: string): boolean {
-  const parts = host.split(".").map(Number);
-  if (
-    parts.length !== 4 ||
-    parts.some(
-      (part) => !Number.isInteger(part) || part < 0 || part > 255
-    )
-  ) {
-    return false;
-  }
-  const [a, b, c] = parts;
-  if (a === undefined || b === undefined || c === undefined) return false;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 0 && c === 0) ||
-    (a === 192 && b === 0 && c === 2) ||
-    (a === 192 && b === 88 && c === 99) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    (a === 198 && b === 51 && c === 100) ||
-    (a === 203 && b === 0 && c === 113) ||
-    a >= 224
-  );
-}
-
-function isBlockedIpv6(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return (
-    normalized === "::1" ||
-    normalized === "::" ||
-    normalized.startsWith("fe80:") ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("ff") ||
-    normalized.startsWith("2001:db8:") ||
-    normalized.startsWith("::ffff:")
-  );
-}
-
-/**
- * Single entry point for "is this resolved address a private/reserved IP?".
- * Accepts bare IPv4/IPv6 addresses (with optional brackets) as returned by
- * URL.hostname or DNS resolvers.
- */
-export function isBlockedIp(address: string): boolean {
-  const bare = address.toLowerCase().replace(/^\[|\]$/g, "");
-  if (bare.includes(":")) return isBlockedIpv6(bare);
-  return isBlockedIpv4(bare);
-}
 
 export interface OutboundUrlOptions {
   allowedDomains?: readonly string[];
@@ -91,16 +41,12 @@ export function validateOutboundUrl(
     throw new Error(`禁止访问非标准端口: ${url.port}`);
   }
 
-  const host = url.hostname
-    .toLowerCase()
-    .replace(/^\[|\]$/g, "")
-    .replace(/\.$/, "");
+  const host = normalizeIpAddress(url.hostname).replace(/\.$/, "");
   if (
     !host ||
     BLOCKED_HOSTS.has(host) ||
     host.endsWith(".local") ||
-    isBlockedIpv4(host) ||
-    isBlockedIpv6(host)
+    isBlockedIp(host)
   ) {
     throw new Error(`禁止访问内网或保留地址: ${host}`);
   }

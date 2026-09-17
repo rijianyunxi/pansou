@@ -56,5 +56,5 @@ export class MemoryRateLimiter {
 
 export const adminRateLimiter = new MemoryRateLimiter();
 
-/** Shared per-user search limiter. The policy controls the allowed count. */
+/** Shared search limiter for session and IP buckets. The policy controls the allowed count. */
 export const searchRateLimiter = new MemoryRateLimiter();

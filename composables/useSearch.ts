@@ -1,4 +1,4 @@
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import type {
   GenericResponse,
   SearchResult,
@@ -13,7 +13,6 @@ export interface SearchOptions {
   keyword: string;
   userTgChannels?: string[];
   onlyUserTg?: boolean;
-  onAuthRequired?: () => void;
   onSessionExpired?: () => void;
 }
 export interface SearchState {
@@ -124,9 +123,8 @@ export function useSearch() {
       if (mySeq !== seq || ac.signal.aborted) return;
       const status = error?.statusCode ?? error?.status ?? error?.response?.status;
       if (status === 401) {
-        state.value.error = "搜索授权已失效，请重新解锁搜索或重新登录后再试。此次请求未计入搜索配额；系统会保留必要的关键词、会话和 IP 日志用于审计。";
+        state.value.error = "搜索会话已失效，请刷新页面后重试。此次请求未计入搜索配额。";
         options.onSessionExpired?.();
-        options.onAuthRequired?.();
       } else if (status === 403) {
         state.value.error = "搜索范围或自定义频道当前无权限（403）。请登录账号、检查频道权限或联系管理员；拒绝请求不会计入搜索配额。";
       } else if (status === 429) {
@@ -162,6 +160,9 @@ export function useSearch() {
   async function continueSearch(_options?: SearchOptions) { if (!state.value.paused || !snapshot) return; await run(snapshot); }
   function resetSearch() { cancelActiveRequests(); snapshot = undefined; accumulated = 0; state.value = initial(); }
   async function copyLink(url: string) { try { await navigator.clipboard.writeText(url); } catch {} }
+  // Leaving the home page should abort the SSE request immediately instead of
+  // letting the server continue querying upstreams for an abandoned search.
+  onBeforeUnmount(cancelActiveRequests);
   return {
     state, loading: computed(() => state.value.loading), paused: computed(() => state.value.paused), error: computed(() => state.value.error), searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs), total: computed(() => state.value.total), results: computed(() => state.value.results), hasResults: computed(() => state.value.results.length > 0),
     performSearch, resetSearch, copyLink, cancelActiveRequests, pauseSearch, continueSearch,

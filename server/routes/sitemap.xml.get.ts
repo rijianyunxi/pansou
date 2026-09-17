@@ -1,12 +1,12 @@
 export default defineEventHandler((event) => {
-  const config = useRuntimeConfig();
+  const config = useRuntimeConfig(event);
   const siteUrl = (config.public?.siteUrl as string) || "";
   const base = siteUrl.replace(/\/$/, "");
   const today = new Date().toISOString().split("T")[0];
 
-  const urls = [
+  const urls = base ? [
     { loc: `${base}/`, priority: 0.9 },
-  ];
+  ] : [];
 
   const body =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +

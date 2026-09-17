@@ -10,13 +10,14 @@
             <path d="m20.5 20.5-4-4"></path>
           </svg>
         </span>
-        <span class="brand-text">PanHub</span>
+        <span class="brand-text">{{ siteName }}</span>
       </NuxtLink>
       <nav class="topnav-actions" aria-label="主导航">
         <NuxtLink
           v-if="adminSessionActive"
           class="admin-console-entry"
           to="/admin"
+          :prefetch="false"
           aria-label="打开管理控制台"
           title="管理控制台">
           <ConsoleIcon name="shield" :size="16" />
@@ -61,14 +62,6 @@
       {{ toast.message }}
     </div>
 
-    <!-- 密码门（仅在用户发起搜索时弹出） -->
-    <ClientOnly>
-      <PasswordGate
-        :show="showPasswordGate"
-        :error="auth.error.value || ''"
-        :submitting="unlockSubmitting"
-        @unlock="onUnlock" />
-    </ClientOnly>
   </div>
 </template>
 
@@ -79,6 +72,45 @@ const route = useRoute();
 const isAdminConsole = computed(
   () => route.path === "/admin" || route.path.startsWith("/admin/"),
 );
+const runtimeConfig = useRuntimeConfig();
+const publicConfig = runtimeConfig.public as Record<string, unknown>;
+function publicText(key: string): string {
+  const value = publicConfig[key];
+  return typeof value === "string" ? value : "";
+}
+
+const siteName = publicText("siteName");
+const siteTitle = publicText("siteTitle");
+const siteDescription = publicText("siteDescription");
+const siteKeywords = publicText("siteKeywords");
+const siteImageAlt = publicText("siteImageAlt");
+
+useHead(() => ({
+  title: siteTitle || siteName,
+  meta: [
+    {
+      name: "robots",
+      content: isAdminConsole.value ? "noindex,nofollow" : "index,follow",
+    },
+    { name: "description", content: siteDescription },
+    { name: "keywords", content: siteKeywords },
+    { name: "application-name", content: siteName },
+    { property: "og:type", content: "website" },
+    { property: "og:locale", content: "zh_CN" },
+    { property: "og:site_name", content: siteName },
+    { property: "og:title", content: siteTitle },
+    { property: "og:description", content: siteDescription },
+    { property: "og:image:type", content: "image/svg+xml" },
+    { property: "og:image:width", content: "1200" },
+    { property: "og:image:height", content: "630" },
+    { property: "og:image:alt", content: siteImageAlt },
+    { name: "twitter:card", content: "summary_large_image" },
+    { name: "twitter:title", content: siteTitle },
+    { name: "twitter:description", content: siteDescription },
+    { name: "twitter:image:alt", content: siteImageAlt },
+  ],
+}));
+
 const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
 const adminSessionActive = computed(() => auth.user.value?.role === "admin");
@@ -91,30 +123,6 @@ function setTheme(theme: "classic" | "geometric") {
 watch(() => route.path, () => {
   openSettings.value = false;
 });
-const showPasswordGate = ref(false);
-const unlockSubmitting = ref(false);
-const pendingOnUnlock = ref<(() => void) | null>(null);
-
-function requestUnlock(onSuccess?: () => void) {
-  pendingOnUnlock.value = onSuccess ?? null;
-  showPasswordGate.value = true;
-}
-
-async function onUnlock(password: string) {
-  unlockSubmitting.value = true;
-  const ok = await auth.unlock(password);
-  unlockSubmitting.value = false;
-  if (ok) {
-    showPasswordGate.value = false;
-    const cb = pendingOnUnlock.value;
-    pendingOnUnlock.value = null;
-    if (cb) {
-      nextTick(() => cb());
-    }
-  }
-}
-
-provide("requestUnlock", requestUnlock);
 
 // Toast 状态
 const toast = ref({
@@ -150,7 +158,6 @@ watch(() => JSON.stringify(settings.value), (newVal, oldVal) => {
 
 onMounted(() => {
   loadSettings();
-  auth.fetchStatus();
 });
 
 // 暴露给子组件使用
@@ -159,8 +166,6 @@ provide('showToast', showToast);
 
 <style>
 /* 全局样式：干净扁平的浅色设计系统 */
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap");
-
 html {
   -webkit-text-size-adjust: 100%;
   touch-action: manipulation;
@@ -223,7 +228,8 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* 使用系统字体，避免请求 Google Fonts 的 CSS 和字体文件。 */
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   background: #ffffff;
   color: var(--text-primary);
 

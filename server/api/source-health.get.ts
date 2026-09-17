@@ -3,7 +3,7 @@ import { getOrCreateSearchService } from "../core/services";
 
 export default defineEventHandler(() => {
   try {
-    const service = getOrCreateSearchService(useRuntimeConfig());
+    const service = getOrCreateSearchService();
     const sources = service.getSourceHealthStatus();
     return {
       code: 0,

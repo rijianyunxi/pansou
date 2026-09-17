@@ -1,7 +1,7 @@
 <template>
   <div class="upstream-app" :data-ready="clientReady ? 'true' : 'false'">
     <AdminAccessGate v-if="adminChecking || adminLocked" :checking="adminChecking" :authenticated="adminAuthenticated"
-      :error="authError" title="进入管理后台" />
+      :error="authError" title="进入管理后台" @authenticated="checkAdminSession" />
     <template v-else>
       <aside class="console-sidebar">
         <NuxtLink to="/" class="console-brand"><span class="brand-symbol">
@@ -13,6 +13,9 @@
           </NuxtLink>
           <NuxtLink to="/admin/sources" :class="['console-nav-link', { active: view === 'sources' }]">
             <ConsoleIcon name="box" />来源管理
+          </NuxtLink>
+          <NuxtLink to="/admin/resources" :class="['console-nav-link', { active: (view as string) === 'resources' }]">
+            <ConsoleIcon name="box" />网盘资源
           </NuxtLink>
           <NuxtLink to="/admin/users" class="console-nav-link">
             <ConsoleIcon name="user" />用户管理

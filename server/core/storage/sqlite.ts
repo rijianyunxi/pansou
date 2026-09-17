@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { normalizeSearchKeyword } from "../utils/searchKeyword";
 
 const DEFAULT_PATH = process.env.PANHUB_SQLITE_DB || "./data/panhub.sqlite";
 const connections = new Map<string, SqliteDatabase>();
@@ -26,6 +27,7 @@ export class SqliteDatabase {
     this.ensureSessionChannelsColumn();
     this.ensureResourceSourceColumns();
     this.ensureUserAccountColumns();
+    this.ensureManagedResourceColumns();
     this.ensureUserRolesAndDefaultAdmin();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
   }
@@ -69,6 +71,34 @@ export class SqliteDatabase {
       if (!this.db.prepare("SELECT 1 FROM users WHERE id = ?").get(id)) return id;
     }
     throw new Error("无法生成唯一用户 ID");
+  }
+
+  private ensureManagedResourceColumns(): void {
+    const columns = this.db.prepare("PRAGMA table_info(managed_resources)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "search_text")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN search_text TEXT NOT NULL DEFAULT ''");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_managed_resources_search_text ON managed_resources(search_text)");
+
+    // Backfill the normalized search projection once for databases created
+    // before the projection existed. The projection is maintained by the
+    // managed-resource service for all subsequent writes.
+    const rows = this.db.prepare("SELECT id,name,description,tags_json FROM managed_resources WHERE search_text = '' OR search_text IS NULL").all() as Array<{ id: string; name: string; description: string | null; tags_json: string | null }>;
+    if (!rows.length) return;
+    const update = this.db.prepare("UPDATE managed_resources SET search_text = ? WHERE id = ?");
+    const backfill = this.db.transaction(() => {
+      for (const row of rows) {
+        let tags: string[] = [];
+        try {
+          const parsed = JSON.parse(row.tags_json || "[]");
+          tags = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+        } catch {
+          tags = [];
+        }
+        update.run(normalizeSearchKeyword([row.name, row.description || "", ...tags].join(" ")), row.id);
+      }
+    });
+    backfill();
   }
 
   private ensureUserRolesAndDefaultAdmin(): void {
@@ -150,6 +180,21 @@ CREATE INDEX IF NOT EXISTS idx_tg_channel_states_deleted ON tg_channel_states(de
 CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last_searched DESC);
 CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS managed_resources(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  datetime TEXT,
+  cloud_types_json TEXT NOT NULL,
+  links_json TEXT NOT NULL,
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  images_json TEXT NOT NULL DEFAULT '[]',
+  search_text TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_managed_resources_updated_at ON managed_resources(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_managed_resources_name ON managed_resources(name);
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL,

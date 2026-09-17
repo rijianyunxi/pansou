@@ -23,9 +23,6 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   if (typeof value.kw !== "string" || !value.kw.trim() || value.kw.trim().length > 100) return invalid("kw must contain 1 to 100 characters");
   if (Object.prototype.hasOwnProperty.call(value, "res")) return invalid("res is no longer supported; search APIs always return normalized results");
   if (Object.prototype.hasOwnProperty.call(value, "debug")) return invalid("debug is not a request parameter");
-  let ext = value.ext;
-  if (typeof ext === "string") { try { ext = JSON.parse(ext); } catch { return invalid("ext must be valid JSON"); } }
-  if (ext !== undefined && (!ext || typeof ext !== "object" || Array.isArray(ext))) return invalid("ext must be an object");
   const channels = list(value.channels, "channels", MAX_USER_TG_CHANNELS);
   const sourceIds = list(value.sourceIds, "sourceIds");
   if (channels) {
@@ -36,6 +33,5 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
     kw: value.kw.trim(), channels: channels ? normalizeTelegramChannels(channels) : undefined, sourceIds,
     conc: integer(value.conc, 1, 16, "conc"),
     refresh: value.refresh === true || value.refresh === "true",
-    ext: ext as Record<string, any> | undefined,
   };
 }

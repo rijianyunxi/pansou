@@ -9,7 +9,7 @@ type PushUpdate = (update: SearchSourceUpdate) => Promise<void>;
  * in FIFO order and emits exactly one result event per 300ms interval.
  */
 export class SearchSseQueue {
-  private readonly pending: SearchSourceUpdate[] = [];
+  private readonly pending: Array<{ update: SearchSourceUpdate; resolve: () => void; reject: (error: unknown) => void }> = [];
   private draining?: Promise<void>;
   private timer?: ReturnType<typeof setTimeout>;
   private resolveTimer?: () => void;
@@ -23,9 +23,16 @@ export class SearchSseQueue {
   ) {}
 
   enqueue(update: SearchSourceUpdate): void {
-    if (this.cancelled || this.failure) return;
-    this.pending.push(update);
-    this.startDrain();
+    void this.enqueueAndWait(update).catch(() => undefined);
+  }
+
+  /** Enqueue an update and resolve only after it has been pushed to SSE. */
+  enqueueAndWait(update: SearchSourceUpdate): Promise<void> {
+    if (this.cancelled || this.failure) return Promise.reject(this.failure || new Error("search stream cancelled"));
+    return new Promise((resolve, reject) => {
+      this.pending.push({ update, resolve, reject });
+      this.startDrain();
+    });
   }
 
   async finish(): Promise<void> {
@@ -39,6 +46,8 @@ export class SearchSseQueue {
 
   cancel(): void {
     this.cancelled = true;
+    const reason = new Error("search stream cancelled");
+    for (const item of this.pending) item.reject(reason);
     this.pending.length = 0;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
@@ -51,6 +60,7 @@ export class SearchSseQueue {
     this.draining = this.drain()
       .catch((error) => {
         this.failure = error;
+        for (const item of this.pending) item.reject(error);
         this.pending.length = 0;
       })
       .finally(() => {
@@ -66,9 +76,10 @@ export class SearchSseQueue {
         if (remaining > 0) await this.wait(remaining);
       }
       if (this.cancelled) return;
-      const update = this.pending.shift();
-      if (!update) continue;
-      await this.pushUpdate(update);
+      const item = this.pending.shift();
+      if (!item) continue;
+      await this.pushUpdate(item.update);
+      item.resolve();
       this.lastSentAt = Date.now();
     }
   }

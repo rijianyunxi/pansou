@@ -1,6 +1,6 @@
 import { getSqliteDatabase } from "../storage/sqlite";
 import { validateOutboundUrl } from "../security/outboundUrl";
-import { validateSourceTransformCode } from "../source-runtime/validation";
+import { validateSourceRequestConfig, validateSourceTransformCode } from "../source-runtime/validation";
 import { DEFAULT_CHANNEL_TRANSFORM } from "../source-runtime/defaults";
 
 export interface SourceTemplateSettings {
@@ -28,6 +28,10 @@ function normalize(raw: unknown): SourceTemplateSettings {
   const format = value.format === "json" ? "json" : "html";
   const request = value.request && typeof value.request === "object" && !Array.isArray(value.request)
     ? structuredClone(value.request as Record<string, unknown>) : structuredClone(DEFAULTS.request);
+  // Validate template requests with the same complexity and type limits as
+  // normal sources. The template URL is forced back in after spreading the
+  // user object so request fields cannot replace the required method/URL.
+  validateSourceRequestConfig({ ...request, method, url: urlTemplate });
   const transform = String(value.transform || DEFAULTS.transform).trim();
   validateSourceTransformCode(transform);
   return { urlTemplate, method, format, request, transform };

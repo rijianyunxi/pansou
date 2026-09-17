@@ -1,61 +1,51 @@
-/** A disposable deadline that also follows caller cancellation. */
+/** Shared cancellation primitives for DNS, transport loading and body reads. */
+export function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("操作已取消");
+}
+
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+export function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(abortReason(signal));
+    };
+    // Handle late rejections even if the caller has already stopped waiting.
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** One total deadline, with explicit ownership of the timer and parent listener. */
 export function createAbortScope(
+  parent: AbortSignal | undefined,
   timeoutMs: number,
-  message: string,
-  parent?: AbortSignal,
-) {
+  timeoutError = new Error("操作超时"),
+): { signal: AbortSignal; dispose(): void } {
   const controller = new AbortController();
-  const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
-
-  const timer = signal.aborted || !Number.isFinite(timeoutMs) || timeoutMs <= 0 ? undefined : setTimeout(() => {
-    const error = new Error(message);
-    error.name = "TimeoutError";
-    controller.abort(error);
-  }, timeoutMs);
-
+  const onAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(timeoutError), timeoutMs);
   return {
-    signal,
-    abort(reason: unknown) { controller.abort(reason); },
+    signal: controller.signal,
     dispose() {
       clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
     },
   };
-}
-
-/** Stop waiting even for a non-cooperative source, without unhandled rejections. */
-export async function runWithSignal<T>(
-  operation: () => Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  signal.throwIfAborted();
-  let onAbort: () => void = () => {};
-  const aborted = new Promise<never>((_, reject) => {
-    onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    const result = await Promise.race([
-      Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); }),
-      aborted,
-    ]);
-    signal.throwIfAborted();
-    return result;
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
-export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

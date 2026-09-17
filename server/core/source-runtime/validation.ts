@@ -1,7 +1,7 @@
 import { Script } from "node:vm";
 import type { SourceDefinition, SourceValue } from "./types";
 import { validateOutboundUrl } from "../security/outboundUrl";
-import { isForbiddenOutboundHeader } from "../http/safeHttpExecutor";
+import { isForbiddenOutboundHeader } from "../security/outboundHeaders";
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor", "eval", "function", "script"]);
 export const RESERVED_VARIABLES = new Set(["keyword", "limit"]);
@@ -33,6 +33,157 @@ export function interpolateTemplate(
   return value;
 }
 
+const MAX_SOURCE_REQUEST_URL_LENGTH = 4_096;
+const MAX_SOURCE_REQUEST_DEPTH = 8;
+const MAX_SOURCE_REQUEST_KEYS = 100;
+const MAX_SOURCE_REQUEST_ARRAY_ITEMS = 100;
+const MAX_SOURCE_REQUEST_STRING_LENGTH = 8_192;
+const MAX_SOURCE_REQUEST_TOTAL_BYTES = 256 * 1024;
+const MAX_SOURCE_REQUEST_HEADERS = 50;
+const MAX_SOURCE_REQUEST_HEADER_NAME_LENGTH = 128;
+const MAX_SOURCE_REQUEST_HEADER_VALUE_LENGTH = 8_192;
+const MAX_SOURCE_REQUEST_DOMAINS = 50;
+const MAX_SOURCE_REQUEST_DOMAIN_LENGTH = 253;
+
+interface RequestComplexityState {
+  bytes: number;
+  seen: WeakSet<object>;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function addRequestBytes(state: RequestComplexityState, value: string, path: string): void {
+  state.bytes += new TextEncoder().encode(value).byteLength;
+  if (state.bytes > MAX_SOURCE_REQUEST_TOTAL_BYTES) {
+    throw new Error(`${path} 序列化后不能超过 ${MAX_SOURCE_REQUEST_TOTAL_BYTES} bytes`);
+  }
+}
+
+function validateSourceValueComplexity(
+  value: unknown,
+  path: string,
+  depth: number,
+  state: RequestComplexityState,
+): void {
+  if (depth > MAX_SOURCE_REQUEST_DEPTH) throw new Error(`${path} 嵌套层级不能超过 ${MAX_SOURCE_REQUEST_DEPTH}`);
+  if (value === null) {
+    addRequestBytes(state, "null", path);
+    return;
+  }
+  if (typeof value === "string") {
+    if ([...value].length > MAX_SOURCE_REQUEST_STRING_LENGTH) {
+      throw new Error(`${path} 字符串长度不能超过 ${MAX_SOURCE_REQUEST_STRING_LENGTH}`);
+    }
+    addRequestBytes(state, value, path);
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${path} 必须是有限数字`);
+    addRequestBytes(state, String(value), path);
+    return;
+  }
+  if (typeof value === "boolean") {
+    addRequestBytes(state, value ? "true" : "false", path);
+    return;
+  }
+  if (typeof value !== "object") throw new Error(`${path} 只能包含 JSON 值`);
+  if (state.seen.has(value)) throw new Error(`${path} 不能包含循环引用`);
+  state.seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > MAX_SOURCE_REQUEST_ARRAY_ITEMS) {
+        throw new Error(`${path} 数组元素不能超过 ${MAX_SOURCE_REQUEST_ARRAY_ITEMS}`);
+      }
+      for (const [index, child] of value.entries()) {
+        validateSourceValueComplexity(child, `${path}[${index}]`, depth + 1, state);
+      }
+      return;
+    }
+    if (!isPlainRecord(value)) throw new Error(`${path} 只能是普通对象`);
+    const entries = Object.entries(value);
+    if (entries.length > MAX_SOURCE_REQUEST_KEYS) {
+      throw new Error(`${path} 字段不能超过 ${MAX_SOURCE_REQUEST_KEYS} 个`);
+    }
+    for (const [key, child] of entries) {
+      if (FORBIDDEN_KEYS.has(key.toLowerCase())) throw new Error(`${path}.${key} 不允许使用`);
+      if ([...key].length > MAX_SOURCE_REQUEST_STRING_LENGTH) {
+        throw new Error(`${path}.${key} 字段名过长`);
+      }
+      addRequestBytes(state, key, `${path}.${key}`);
+      validateSourceValueComplexity(child, `${path}.${key}`, depth + 1, state);
+    }
+  } finally {
+    state.seen.delete(value);
+  }
+}
+
+function validateFiniteInteger(value: unknown, path: string, min: number, max: number): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${path} 必须是 ${min} 到 ${max} 的整数`);
+  }
+}
+
+/** Validate the declarative request separately so templates and persisted sources share the same limits. */
+export function validateSourceRequestConfig(input: unknown): void {
+  if (!isPlainRecord(input)) throw new Error("request 必须是普通对象");
+  const request = input;
+  if (typeof request.url !== "string" || !request.url.trim() || [...request.url].length > MAX_SOURCE_REQUEST_URL_LENGTH) {
+    throw new Error(`request.url 必须是 1 到 ${MAX_SOURCE_REQUEST_URL_LENGTH} 个字符的字符串`);
+  }
+  if (request.method !== "GET" && request.method !== "POST") throw new Error("request.method 必须是 GET 或 POST");
+  if (request.bodyType !== undefined && request.bodyType !== "json" && request.bodyType !== "form") {
+    throw new Error("request.bodyType 必须是 json 或 form");
+  }
+  if (request.redirect !== undefined && request.redirect !== "error" && request.redirect !== "follow") {
+    throw new Error("request.redirect 必须是 error 或 follow");
+  }
+  if (request.allowInsecureHttp !== undefined && typeof request.allowInsecureHttp !== "boolean") {
+    throw new Error("request.allowInsecureHttp 必须是布尔值");
+  }
+  validateFiniteInteger(request.maxResponseBytes, "request.maxResponseBytes", 1, 10 * 1024 * 1024);
+  validateFiniteInteger(request.maxRequestBodyBytes, "request.maxRequestBodyBytes", 1, 256 * 1024);
+
+  const state: RequestComplexityState = { bytes: 0, seen: new WeakSet() };
+  if (request.query !== undefined) {
+    if (!isPlainRecord(request.query)) throw new Error("request.query 必须是普通对象");
+    validateSourceValueComplexity(request.query, "request.query", 0, state);
+  }
+  if (request.body !== undefined) validateSourceValueComplexity(request.body, "request.body", 0, state);
+
+  if (request.headers !== undefined) {
+    if (!isPlainRecord(request.headers)) throw new Error("request.headers 必须是普通对象");
+    const headers = request.headers;
+    const entries = Object.entries(headers);
+    if (entries.length > MAX_SOURCE_REQUEST_HEADERS) throw new Error(`request.headers 不能超过 ${MAX_SOURCE_REQUEST_HEADERS} 个`);
+    for (const [name, value] of entries) {
+      if ([...name].length > MAX_SOURCE_REQUEST_HEADER_NAME_LENGTH) throw new Error(`request.headers.${name} 名称过长`);
+      if (isForbiddenOutboundHeader(name)) throw new Error(`request.headers.${name} 不允许设置`);
+      if (typeof value !== "string" || [...value].length > MAX_SOURCE_REQUEST_HEADER_VALUE_LENGTH) {
+        throw new Error(`request.headers.${name} 必须是长度不超过 ${MAX_SOURCE_REQUEST_HEADER_VALUE_LENGTH} 的字符串`);
+      }
+      addRequestBytes(state, name, `request.headers.${name}`);
+      addRequestBytes(state, value, `request.headers.${name}`);
+    }
+  }
+
+  if (request.allowedDomains !== undefined) {
+    if (!Array.isArray(request.allowedDomains) || request.allowedDomains.length > MAX_SOURCE_REQUEST_DOMAINS) {
+      throw new Error(`request.allowedDomains 必须是最多 ${MAX_SOURCE_REQUEST_DOMAINS} 项的字符串数组`);
+    }
+    for (const domain of request.allowedDomains) {
+      if (typeof domain !== "string" || !domain.trim() || [...domain].length > MAX_SOURCE_REQUEST_DOMAIN_LENGTH) {
+        throw new Error(`request.allowedDomains 中包含无效域名`);
+      }
+      addRequestBytes(state, domain, "request.allowedDomains");
+    }
+  }
+}
+
 function assertNoForbiddenKeys(value: unknown, path = "definition"): void {
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
@@ -57,6 +208,7 @@ export function validateSourceDefinition(input: unknown): SourceDefinition {
   if (!request || !["GET", "POST"].includes(request.method) || !request.url) {
     throw new Error("request.method 和 request.url 是必填项");
   }
+  validateSourceRequestConfig(request);
   const urlOptions = {
     allowedDomains: request.allowedDomains,
     allowHttp: request.allowInsecureHttp,
@@ -67,8 +219,6 @@ export function validateSourceDefinition(input: unknown): SourceDefinition {
       throw new Error(`request.headers.${name} 不允许设置`);
     }
   }
-  if ((request.maxResponseBytes ?? 0) > 10 * 1024 * 1024) throw new Error("request.maxResponseBytes 不能超过 10MB");
-  if ((request.maxRequestBodyBytes ?? 0) > 256 * 1024) throw new Error("request.maxRequestBodyBytes 不能超过 256KB");
   const response = definition.response;
   if (!response || !["json", "html", "text"].includes(response.format)) {
     throw new Error("response.format 必须是 json、html 或 text");

@@ -28,3 +28,5 @@ logs/
 
 # Local GenFlow diagnostics and temporary artifacts
 .genflow_tmp/
+*.sqlite-shm
+*.sqlite-wal

@@ -187,6 +187,11 @@ export class MemoryCache<T = unknown> {
   set(key: string, value: T, ttlMs: number): void {
     this.smartCleanup();
 
+    const size = this.estimateSize(value);
+    // A single entry must not violate the cache's global memory contract. Keep
+    // the previous value when an oversized replacement is rejected.
+    if (size > this.options.maxMemoryBytes) return;
+
     // 如果 key 已存在，先删除（更新内存占用）
     if (this.store.has(key)) {
       const oldRec = this.store.get(key);
@@ -197,7 +202,6 @@ export class MemoryCache<T = unknown> {
       }
     }
 
-    const size = this.estimateSize(value);
     const record: CacheRecord<T> = {
       value,
       expireAt: Date.now() + Math.max(0, ttlMs),

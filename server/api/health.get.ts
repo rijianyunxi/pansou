@@ -6,7 +6,7 @@ import { getSourceConfigurationVersion } from "../core/services/configuredSource
 
 export default defineEventHandler(() => {
   const config = useRuntimeConfig();
-  const service = getOrCreateSearchService(config);
+  const service = getOrCreateSearchService();
   const system = getSystemSettings(config);
   const health = service.getSourceHealthStatus() as Array<any>;
   const healthById = new Map(health.map((item) => [item.id || item.name, item]));

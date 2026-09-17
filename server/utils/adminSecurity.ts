@@ -3,7 +3,6 @@ import {
   createError,
   getHeader,
   getMethod,
-  getRequestIP,
   setHeader,
 } from "h3";
 import {
@@ -12,6 +11,7 @@ import {
 } from "../core/security/rateLimit";
 
 import { isAllowedAdminOrigin } from "../core/security/adminOrigin";
+import { getClientIp } from "./clientIp";
 
 export function requireSameOriginAdminRequest(event: H3Event): void {
   if (
@@ -34,8 +34,7 @@ export function enforceAdminRateLimit(
   scope: string,
   options: RateLimitOptions
 ): void {
-  const address =
-    getHeader(event, "cf-connecting-ip") || getRequestIP(event) || "unknown";
+  const address = getClientIp(event);
   const decision = adminRateLimiter.check(`${scope}:${address}`, options);
   setHeader(event, "X-RateLimit-Remaining", String(decision.remaining));
   if (!decision.allowed) {

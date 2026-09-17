@@ -1,8 +1,8 @@
 <template>
   <div class="account-control">
-    <button v-if="!currentUser && auth.showAuthButtons" class="account-trigger" type="button" :disabled="!auth.sessionReady" @click="openLogin">
+    <button v-if="!currentUser && (auth.showAuthButtons || forceVisible)" class="account-trigger" type="button" :disabled="!auth.sessionReady && !forceVisible" @click="openLogin">
       <span class="account-avatar">◌</span>
-      {{ auth.sessionReady ? (auth.registrationEnabled ? '登录 / 注册' : '登录') : '会话初始化中…' }}
+      {{ auth.sessionReady || forceVisible ? (auth.registrationEnabled ? '登录 / 注册' : '登录') : '会话初始化中…' }}
     </button>
     <button v-else-if="currentUser" class="account-trigger account-trigger--signed" type="button" :aria-expanded="openState" @click="toggleAccountMenu">
       <span class="account-avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
@@ -45,7 +45,7 @@
               {{ busy ? '处理中…' : mode === 'login' ? '登录' : '注册并登录' }}
             </button>
           </form>
-          <p class="account-note">账号登录和搜索密码是两套独立验证：登录账号后，仍需按站点配置通过搜索密码验证。</p>
+          <p class="account-note">匿名用户和登录用户均可按当前站点策略使用搜索；登录后可获得对应的账号权限。</p>
         </section>
       </div>
     </Teleport>
@@ -53,8 +53,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import type { AuthUser } from "../composables/useAuth";
 
+const props = withDefaults(defineProps<{ forceVisible?: boolean }>(), { forceVisible: false });
+const emit = defineEmits<{ authenticated: [user: AuthUser] }>();
 const auth = useAuth();
 const settings = useSettings();
 const openState = ref(false);
@@ -67,7 +70,7 @@ const currentUser = computed(() => auth.user.value);
 const displayName = computed(() => currentUser.value?.nickname || currentUser.value?.username || "用户");
 
 watch(() => auth.showAuthButtons.value, (visible) => {
-  if (!visible && !currentUser.value) openState.value = false;
+  if (!visible && !props.forceVisible && !currentUser.value) openState.value = false;
 });
 watch(() => auth.registrationEnabled.value, (enabled) => {
   if (!enabled) mode.value = "login";
@@ -98,6 +101,7 @@ async function submitAuth() {
     : await auth.register(username.value, password.value, nickname.value);
   if (result) {
     await settings.syncWithSession();
+    emit("authenticated", result);
     clearForm();
     close();
   }
@@ -111,6 +115,9 @@ async function signOut() {
   busy.value = false;
   close();
 }
+onMounted(() => {
+  if (props.forceVisible) void auth.initializeSession();
+});
 </script>
 
 <style scoped>

@@ -133,13 +133,24 @@ export function listUnifiedUpstreams(): UpstreamDefinition[] {
   return Object.values(catalog).sort(compareSources).map(clone);
 }
 export function getUnifiedUpstream(id: string): UpstreamDefinition | undefined { return effectiveSource(id, read()); }
+function prepareUnifiedUpstream(raw: unknown, index?: number): UpstreamDefinition {
+  try {
+    assertSourceObject(raw);
+    const id = normalizeId(raw.id);
+    const next = sanitize({ [id]: { ...raw, id } })[id];
+    if (!next) throw new Error("请检查 ID、HTTPS 地址、请求方式、响应格式和 transform");
+    validateSourceTransformCode(next.transform);
+    validateSourceDefinition(upstreamToSourceDefinition(next));
+    return clone(next);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (index === undefined) throw new Error(`来源配置无效：${message}`);
+    throw new Error(`第 ${index + 1} 条来源配置无效：${message}`);
+  }
+}
+
 export function saveUnifiedUpstream(raw: unknown): UpstreamDefinition {
-  assertSourceObject(raw);
-  const id = normalizeId(raw.id);
-  const next = sanitize({ [id]: { ...raw, id } })[id];
-  if (!next) throw new Error("来源配置无效：请检查 ID、HTTPS 地址、请求方式、响应格式和 transform");
-  validateSourceTransformCode(next.transform);
-  validateSourceDefinition(upstreamToSourceDefinition(next));
+  const next = prepareUnifiedUpstream(raw);
   writeSource(next);
   return clone(next);
 }
@@ -209,9 +220,16 @@ export function importConfiguredUpstreams(raw: unknown, actor = "admin"): Upstre
   const payload = parseUpstreamConfigExport(raw);
   const entries = Array.isArray(payload) ? payload : payload && typeof payload === "object" && Array.isArray((payload as any).upstreams) ? (payload as any).upstreams : [];
   if (!entries.length || entries.length > 100) throw new Error("upstreams 必须包含 1-100 个配置");
-  const imported = entries.map((entry: unknown) => saveUnifiedUpstream(entry));
+
+  // Validate every entry before opening the write transaction. A malformed
+  // later entry must not leave earlier sources partially imported.
+  const prepared = entries.map((entry: unknown, index: number) => prepareUnifiedUpstream(entry, index));
+  const db = getSqliteDatabase();
+  db.transaction(() => {
+    for (const source of prepared) writeSource(source);
+  });
   void actor;
-  return imported;
+  return prepared.map(clone);
 }
 
 // Channel management uses the same source catalog. These names remain local to

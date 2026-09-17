@@ -5,14 +5,12 @@ import { normalizeTelegramChannels } from "../../../utils/telegramChannels";
 import { validateTgChannel, type TgChannelValidationResult } from "../../core/services/tg";
 import { MemoryRateLimiter } from "../../core/security/rateLimit";
 import { getStoredChannels, getStoredSessionChannels, getUserSession } from "../../utils/userAuth";
-import { requireSearchAuth } from "../../utils/requireAuth";
 
 const limiter = new MemoryRateLimiter();
 let active = 0;
 
 export default defineEventHandler(async (event): Promise<TgChannelValidationResult> => {
   setHeader(event, "Cache-Control", "private, no-store");
-  requireSearchAuth(event);
   const body = await readBody(event);
   const channel = parseTelegramChannelInput(typeof body?.channel === "string" ? body.channel : "");
   if (!channel) {

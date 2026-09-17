@@ -15,6 +15,9 @@ export interface UserPolicy {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
+  searchRateLimitWindowSeconds: number;
+  searchRateLimitPerSession: number;
+  searchRateLimitPerIp: number;
 }
 
 export const DEFAULT_USER_POLICY: UserPolicy = {
@@ -28,6 +31,9 @@ export const DEFAULT_USER_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
+  searchRateLimitWindowSeconds: 60,
+  searchRateLimitPerSession: 30,
+  searchRateLimitPerIp: 120,
 };
 
 const integerRanges: Record<string, [number, number]> = {
@@ -38,6 +44,9 @@ const integerRanges: Record<string, [number, number]> = {
   circuitBreakerMaxFailures: [1, 20],
   searchTimeoutMs: [1000, 120000],
   cacheTtlMinutes: [1, 10],
+  searchRateLimitWindowSeconds: [10, 3600],
+  searchRateLimitPerSession: [1, 300],
+  searchRateLimitPerIp: [1, 1000],
 };
 
 const legacyPolicyKeys = [
@@ -99,7 +108,7 @@ function readLegacyPerformanceValues(): Record<string, unknown> {
 }
 
 function persistMigratedValues(values: Record<string, unknown>, result: UserPolicy): void {
-  const keys = ["showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes"] as const;
+  const keys = ["showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "searchRateLimitWindowSeconds", "searchRateLimitPerSession", "searchRateLimitPerIp"] as const;
   const missing = keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key));
   const hasLegacy = legacyPolicyKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
   if (!missing.length && !hasLegacy) return;
@@ -131,6 +140,9 @@ export function getUserPolicy(): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", values.circuitBreakerMaxFailures, DEFAULT_USER_POLICY.circuitBreakerMaxFailures) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", values.searchTimeoutMs, DEFAULT_USER_POLICY.searchTimeoutMs) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", values.cacheTtlMinutes ?? legacy.cacheTtlMinutes, DEFAULT_USER_POLICY.cacheTtlMinutes) as number,
+    searchRateLimitWindowSeconds: parseValue("searchRateLimitWindowSeconds", values.searchRateLimitWindowSeconds, DEFAULT_USER_POLICY.searchRateLimitWindowSeconds) as number,
+    searchRateLimitPerSession: parseValue("searchRateLimitPerSession", values.searchRateLimitPerSession, DEFAULT_USER_POLICY.searchRateLimitPerSession) as number,
+    searchRateLimitPerIp: parseValue("searchRateLimitPerIp", values.searchRateLimitPerIp, DEFAULT_USER_POLICY.searchRateLimitPerIp) as number,
   };
   persistMigratedValues(values, result);
   return result;
@@ -154,6 +166,9 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", Object.prototype.hasOwnProperty.call(input, "circuitBreakerMaxFailures") ? input.circuitBreakerMaxFailures : current.circuitBreakerMaxFailures, undefined) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", Object.prototype.hasOwnProperty.call(input, "searchTimeoutMs") ? input.searchTimeoutMs : current.searchTimeoutMs, undefined) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", Object.prototype.hasOwnProperty.call(input, "cacheTtlMinutes") ? input.cacheTtlMinutes : current.cacheTtlMinutes, undefined) as number,
+    searchRateLimitWindowSeconds: parseValue("searchRateLimitWindowSeconds", Object.prototype.hasOwnProperty.call(input, "searchRateLimitWindowSeconds") ? input.searchRateLimitWindowSeconds : current.searchRateLimitWindowSeconds, undefined) as number,
+    searchRateLimitPerSession: parseValue("searchRateLimitPerSession", Object.prototype.hasOwnProperty.call(input, "searchRateLimitPerSession") ? input.searchRateLimitPerSession : current.searchRateLimitPerSession, undefined) as number,
+    searchRateLimitPerIp: parseValue("searchRateLimitPerIp", Object.prototype.hasOwnProperty.call(input, "searchRateLimitPerIp") ? input.searchRateLimitPerIp : current.searchRateLimitPerIp, undefined) as number,
   };
   if (Object.values(next).some((value) => value === undefined)) throw new Error("策略配置项无效");
 

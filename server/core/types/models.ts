@@ -1,18 +1,7 @@
 import type { WarningInfo } from "../utils/errors";
+import type { CloudType } from "../../../shared/cloudTypes";
 
-export type CloudType =
-  | "baidu"
-  | "quark"
-  | "aliyun"
-  | "mobile"
-  | "tianyi"
-  | "115"
-  | "123"
-  | "jianguoyun"
-  | "lanzou"
-  | "xunlei"
-  | "magnet"
-  | "others";
+export type { CloudType } from "../../../shared/cloudTypes";
 
 export interface Link {
   /** Stable cloud provider identifier inferred from the share URL. */
@@ -93,5 +82,4 @@ export interface SearchRequest {
   sourceIds?: string[];
   conc?: number;
   refresh?: boolean;
-  ext?: Record<string, any>;
 }

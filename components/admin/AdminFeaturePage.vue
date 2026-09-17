@@ -5,7 +5,8 @@
       :checking="checking"
       :authenticated="authenticated"
       :error="authError"
-      title="进入管理后台" />
+      title="进入管理后台"
+      @authenticated="checkStatus" />
 
     <template v-else>
       <aside class="console-sidebar">
@@ -16,6 +17,7 @@
         <nav aria-label="后台导航">
           <NuxtLink to="/admin/monitor" class="console-nav-link"><ConsoleIcon name="activity" />运行监控</NuxtLink>
           <NuxtLink to="/admin/sources" class="console-nav-link"><ConsoleIcon name="box" />来源管理</NuxtLink>
+          <NuxtLink to="/admin/resources" :class="['console-nav-link', { active: (feature as string) === 'resources' }]" ><ConsoleIcon name="box" />网盘资源</NuxtLink>
           <NuxtLink to="/admin/users" :class="['console-nav-link', { active: feature === 'users' }]"><ConsoleIcon name="user" />用户管理</NuxtLink>
           <NuxtLink to="/admin/logs" :class="['console-nav-link', { active: feature === 'logs' }]"><ConsoleIcon name="activity" />搜索日志</NuxtLink>
           <NuxtLink to="/admin/policies" :class="['console-nav-link', { active: feature === 'policies' }]"><ConsoleIcon name="sliders" />搜索策略</NuxtLink>
@@ -170,7 +172,7 @@
                     <h2>策略配置</h2>
                   </div>
                   <div class="policy-card-actions">
-                    <span class="policy-count">10 个配置项</span>
+                    <span class="policy-count">13 个配置项</span>
                     <button class="refresh-button" type="button" :disabled="loading" @click="loadData">
                       <ConsoleIcon name="refresh" :size="14" />{{ loading ? '读取中…' : '刷新数据' }}
                     </button>
@@ -178,7 +180,7 @@
                   </div>
                 </div>
                 <div class="policy-editor">
-                  <div class="policy-editor-toolbar"><span>JSON 配置</span><span>仅支持 10 个字段</span></div>
+                  <div class="policy-editor-toolbar"><span>JSON 配置</span><span>仅支持 13 个字段</span></div>
                   <textarea v-model="policyText" spellcheck="false" wrap="off" aria-label="搜索策略 JSON 配置"></textarea>
                 </div>
                 <div class="policy-field-guide" aria-label="搜索策略字段说明">
@@ -224,9 +226,21 @@
                       <span class="policy-guide-icon">缓</span>
                       <div><div class="policy-guide-title"><strong>搜索缓存时长（分钟）</strong><code>cacheTtlMinutes</code></div><p>相同关键词的完整搜索结果在服务端复用，范围为 1–10 分钟。</p></div>
                     </div>
+                    <div class="policy-guide-item">
+                      <span class="policy-guide-icon">窗</span>
+                      <div><div class="policy-guide-title"><strong>搜索限流窗口（秒）</strong><code>searchRateLimitWindowSeconds</code></div><p>Session 和 IP 限流共用的固定窗口，范围为 10–3600 秒。</p></div>
+                    </div>
+                    <div class="policy-guide-item">
+                      <span class="policy-guide-icon">会</span>
+                      <div><div class="policy-guide-title"><strong>单 Session 搜索次数上限</strong><code>searchRateLimitPerSession</code></div><p>同一会话在一个限流窗口内最多搜索次数，范围为 1–300 次。</p></div>
+                    </div>
+                    <div class="policy-guide-item">
+                      <span class="policy-guide-icon">IP</span>
+                      <div><div class="policy-guide-title"><strong>单 IP 搜索次数上限</strong><code>searchRateLimitPerIp</code></div><p>同一 IP 在一个限流窗口内最多搜索次数，范围为 1–1000 次。</p></div>
+                    </div>
                   </div>
                 </div>
-                <p class="field-help">字段说明放在编辑器外，JSON 内容保持合法且只包含以上 10 个字段。</p>
+                <p class="field-help">字段说明放在编辑器外，JSON 内容保持合法且只包含以上 13 个字段。</p>
               </section>
             </template>
           </section>
@@ -257,6 +271,9 @@ type UserPolicy = {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
+  searchRateLimitWindowSeconds: number;
+  searchRateLimitPerSession: number;
+  searchRateLimitPerIp: number;
 };
 
 const DEFAULT_POLICY: UserPolicy = {
@@ -270,6 +287,9 @@ const DEFAULT_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
+  searchRateLimitWindowSeconds: 60,
+  searchRateLimitPerSession: 30,
+  searchRateLimitPerIp: 120,
 };
 
 const props = defineProps<{ feature: Feature }>();
@@ -349,7 +369,10 @@ async function loadData() {
       const data = result?.data ?? result; logs.value = data.logs || data.items || []; total.value = Number(data.total || logs.value.length); page.value = Number(data.page || page.value);
     } else {
       const result = await $fetch<any>("/api/settings/user-policy", { cache: "no-store" });
-      policyText.value = JSON.stringify(normalizePolicy(unwrap<Partial<UserPolicy>>(result, "policy")), null, 2);
+      const loadedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(result, "policy"));
+      policyText.value = JSON.stringify(loadedPolicy, null, 2);
+      auth.showAuthButtons.value = loadedPolicy.showAuthButtons;
+      auth.registrationEnabled.value = loadedPolicy.registrationEnabled;
     }
   } catch (error: any) { if ([401, 403].includes(statusOf(error))) { authenticated.value = false; locked.value = true; } show(apiError(error), true); }
   finally { loading.value = false; }
@@ -397,8 +420,8 @@ async function deleteUser(item: AdminUser) {
   await userAction(item, "delete");
 }
 async function disableSelectedUsers() { if (!selectedCount.value || !import.meta.client || !window.confirm(`确定禁用选中的 ${selectedCount.value} 个用户吗？`)) return; busy.value = true; try { await Promise.all(selectedKeys.value.map((id) => $fetch(`/api/admin/users/${encodeURIComponent(id)}/disable`, { method: "POST" }))); clearSelection(); show("选中用户已禁用。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
-async function deleteSelectedLogs() { if (!selectedCount.value || !import.meta.client || !window.confirm(`确定删除选中的 ${selectedCount.value} 条日志吗？删除后不可恢复。`)) return; busy.value = true; try { await $fetch("/api/admin/search-logs", { method: "DELETE", body: { ids: selectedKeys.value.map(Number) } }); clearSelection(); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - selectedCount.value) / pageSize.value))); show("选中日志已删除。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
-async function deleteLog(item: AdminLog) { if (busy.value || !import.meta.client || !window.confirm("确定删除这条搜索日志吗？删除后不可恢复。")) return; busy.value = true; try { await $fetch("/api/admin/search-logs", { method: "DELETE", body: { ids: [item.id] } }); clearSelection(); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - 1) / pageSize.value))); show("日志已删除。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
+async function deleteSelectedLogs() { if (!selectedCount.value || !import.meta.client || !window.confirm(`确定删除选中的 ${selectedCount.value} 条日志吗？删除后不可恢复。`)) return; busy.value = true; try { await $fetch<unknown>("/api/admin/search-logs" as string, { method: "DELETE", body: { ids: selectedKeys.value.map(Number) } }); clearSelection(); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - selectedCount.value) / pageSize.value))); show("选中日志已删除。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
+async function deleteLog(item: AdminLog) { if (busy.value || !import.meta.client || !window.confirm("确定删除这条搜索日志吗？删除后不可恢复。")) return; busy.value = true; try { await $fetch<unknown>("/api/admin/search-logs" as string, { method: "DELETE", body: { ids: [item.id] } }); clearSelection(); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - 1) / pageSize.value))); show("日志已删除。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
 
 function normalizePolicy(value: unknown): UserPolicy {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value as Partial<UserPolicy> : {};
@@ -413,6 +436,9 @@ function normalizePolicy(value: unknown): UserPolicy {
     circuitBreakerMaxFailures: typeof input.circuitBreakerMaxFailures === "number" && Number.isInteger(input.circuitBreakerMaxFailures) ? input.circuitBreakerMaxFailures : DEFAULT_POLICY.circuitBreakerMaxFailures,
     searchTimeoutMs: typeof input.searchTimeoutMs === "number" && Number.isInteger(input.searchTimeoutMs) ? input.searchTimeoutMs : DEFAULT_POLICY.searchTimeoutMs,
     cacheTtlMinutes: typeof input.cacheTtlMinutes === "number" && Number.isInteger(input.cacheTtlMinutes) ? input.cacheTtlMinutes : DEFAULT_POLICY.cacheTtlMinutes,
+    searchRateLimitWindowSeconds: typeof input.searchRateLimitWindowSeconds === "number" && Number.isInteger(input.searchRateLimitWindowSeconds) ? input.searchRateLimitWindowSeconds : DEFAULT_POLICY.searchRateLimitWindowSeconds,
+    searchRateLimitPerSession: typeof input.searchRateLimitPerSession === "number" && Number.isInteger(input.searchRateLimitPerSession) ? input.searchRateLimitPerSession : DEFAULT_POLICY.searchRateLimitPerSession,
+    searchRateLimitPerIp: typeof input.searchRateLimitPerIp === "number" && Number.isInteger(input.searchRateLimitPerIp) ? input.searchRateLimitPerIp : DEFAULT_POLICY.searchRateLimitPerIp,
   };
 }
 
@@ -436,6 +462,9 @@ function policyPayload(): UserPolicy {
   if (!Number.isInteger(input.circuitBreakerMaxFailures) || Number(input.circuitBreakerMaxFailures) < 1 || Number(input.circuitBreakerMaxFailures) > 20) throw new Error("circuitBreakerMaxFailures 必须是 1 到 20 之间的整数。");
   if (!Number.isInteger(input.searchTimeoutMs) || Number(input.searchTimeoutMs) < 1000 || Number(input.searchTimeoutMs) > 120000) throw new Error("searchTimeoutMs 必须是 1000 到 120000 之间的整数。");
   if (!Number.isInteger(input.cacheTtlMinutes) || Number(input.cacheTtlMinutes) < 1 || Number(input.cacheTtlMinutes) > 10) throw new Error("cacheTtlMinutes 必须是 1 到 10 之间的整数。");
+  if (!Number.isInteger(input.searchRateLimitWindowSeconds) || Number(input.searchRateLimitWindowSeconds) < 10 || Number(input.searchRateLimitWindowSeconds) > 3600) throw new Error("searchRateLimitWindowSeconds 必须是 10 到 3600 之间的整数。");
+  if (!Number.isInteger(input.searchRateLimitPerSession) || Number(input.searchRateLimitPerSession) < 1 || Number(input.searchRateLimitPerSession) > 300) throw new Error("searchRateLimitPerSession 必须是 1 到 300 之间的整数。");
+  if (!Number.isInteger(input.searchRateLimitPerIp) || Number(input.searchRateLimitPerIp) < 1 || Number(input.searchRateLimitPerIp) > 1000) throw new Error("searchRateLimitPerIp 必须是 1 到 1000 之间的整数。");
   return input as UserPolicy;
 }
 

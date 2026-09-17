@@ -61,6 +61,8 @@ interface HotSearchItem {
 }
 
 const props = defineProps<Props>();
+const config = useRuntimeConfig();
+const apiBase = (config.public?.apiBase as string) || "/api";
 const loading = ref(false);
 const searches = ref<HotSearchItem[]>([]);
 const hasInitialized = ref(false);
@@ -73,12 +75,12 @@ function truncateTerm(term: string) {
 async function fetchHotSearches() {
   loading.value = true;
   try {
-    const response = await fetch("/api/hot-searches?limit=25");
+    const response = await fetch(`${apiBase}/hot-searches?limit=10`);
     const data = await response.json();
     if (data.code === 0 && data.data?.hotSearches) {
       searches.value = data.data.hotSearches
         .sort((a: HotSearchItem, b: HotSearchItem) => b.score - a.score)
-        .slice(0, 25);
+        .slice(0, 10);
     } else {
       searches.value = [];
     }
@@ -95,11 +97,8 @@ async function init() {
   await fetchHotSearches();
 }
 
-async function refresh() {
-  await fetchHotSearches();
-}
 
-defineExpose({ init, refresh });
+defineExpose({ init });
 </script>
 
 <style scoped>

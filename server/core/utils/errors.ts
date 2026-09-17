@@ -71,6 +71,40 @@ export function classifyError(error: any, source?: string): ErrorDetail {
     };
   }
 
+  const message = typeof error?.message === "string" ? error.message : String(error ?? "未知错误");
+  // SSRF/DNS guard errors are security or network failures, never response
+  // parsing failures. Keep a machine-readable code for health and admin UI.
+  if (message.includes("DNS 解析失败") || message.includes("DNS 未返回可用地址")) {
+    return {
+      type: ErrorType.NETWORK_ERROR,
+      severity: ErrorSeverity.MEDIUM,
+      message,
+      source,
+      timestamp,
+      code: "dns_resolution_failed",
+    };
+  }
+  if (message.includes("安全 DNS 校验") || message.includes("安全出站传输")) {
+    return {
+      type: ErrorType.NETWORK_ERROR,
+      severity: ErrorSeverity.HIGH,
+      message,
+      source,
+      timestamp,
+      code: "pinned_transport_unavailable",
+    };
+  }
+  if (message.includes("内网或保留地址") || message.includes("DNS 解析到内网或保留地址") || message.includes("禁止跨域重定向")) {
+    return {
+      type: ErrorType.VALIDATION_ERROR,
+      severity: ErrorSeverity.HIGH,
+      message,
+      source,
+      timestamp,
+      code: "ssrf_blocked",
+    };
+  }
+
   // 上游 HTTP 状态错误（例如 429 限流）。
   const httpError = typeof error?.message === "string"
     ? error.message.match(/(?:来源 )?HTTP 错误[:：]?\s*(\d{3})/u)

@@ -1,19 +1,77 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">PanHub · 网盘资源聚合搜索</title>
+  <desc id="desc">网盘、磁力、公开频道，一个搜索框直达。深色放大镜标识搭配蓝色与奶油黄色几何图形。</desc>
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0f172a"/>
-      <stop offset="100%" stop-color="#111827"/>
-    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#dce3ee"/>
+    </pattern>
   </defs>
-  <rect width="1200" height="630" fill="url(#g)"/>
-  <g fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial">
-    <text x="80" y="180" font-size="64" opacity="0.9">PanHub</text>
-    <text x="80" y="260" font-size="40" opacity="0.85">全网最全的网盘搜索工具</text>
-    <text x="80" y="340" font-size="28" opacity="0.7">聚合 阿里云盘 · 夸克 · 百度网盘 · 115 · 迅雷 等平台</text>
-    <a href="https://panhub.shenzjd.com/" target="_blank" rel="noopener noreferrer">
-      <text x="80" y="430" font-size="26" fill="#93c5fd">panhub.shenzjd.com</text>
-    </a>
+  <rect width="1200" height="630" fill="#f8fafc"/>
+  <rect x="760" width="440" height="630" fill="url(#grid)"/>
+  <circle cx="1070" cy="210" r="220" fill="#fff0b8"/>
+  <circle cx="1174" cy="565" r="128" fill="#e6edff"/>
+  <path d="M0 3H1200" stroke="#2563eb" stroke-width="6"/>
+
+  <!-- The same high-contrast search mark used by the site navigation and favicon. -->
+  <rect x="64" y="54" width="56" height="56" rx="17" fill="#111827"/>
+  <g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round">
+    <circle cx="89" cy="79" r="12"/>
+    <path d="m98 88 10 10"/>
+  </g>
+  <g font-family="'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif">
+    <text x="136" y="94" fill="#111827" font-size="38" font-weight="750" letter-spacing="-1">PanHub</text>
+    <path d="M303 69V97" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="323" y="91" fill="#64748b" font-size="20">网盘资源聚合搜索</text>
+
+    <rect x="64" y="159" width="174" height="32" rx="16" fill="#e8efff"/>
+    <circle cx="83" cy="175" r="4" fill="#2563eb"/>
+    <text x="97" y="181" fill="#1d4ed8" font-size="13" font-weight="700" letter-spacing="1.4">ONE SEARCH HUB</text>
+
+    <text x="60" y="266" fill="#111827" font-size="58" font-weight="800" letter-spacing="-1">资源散落各处，</text>
+    <text x="60" y="343" fill="#2563eb" font-size="58" font-weight="800" letter-spacing="-1">搜索只需一处。</text>
+    <text x="64" y="393" fill="#475569" font-size="23">网盘、磁力、公开频道，一个搜索框直达。</text>
+
+    <g font-size="18" font-weight="600" fill="#334155">
+      <rect x="64" y="429" width="112" height="42" rx="12" fill="#fff" stroke="#dbe2ea"/>
+      <text x="120" y="457" text-anchor="middle">网盘资源</text>
+      <rect x="188" y="429" width="112" height="42" rx="12" fill="#fff" stroke="#dbe2ea"/>
+      <text x="244" y="457" text-anchor="middle">磁力链接</text>
+      <rect x="312" y="429" width="112" height="42" rx="12" fill="#fff" stroke="#dbe2ea"/>
+      <text x="368" y="457" text-anchor="middle">公开频道</text>
+    </g>
+
+    <!-- A small resource graph: multiple resource types, one central search. -->
+    <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 7">
+      <path d="M880 185V271H959"/>
+      <path d="M1090 267H1000"/>
+      <path d="M985 349V430H879"/>
+    </g>
+    <rect x="787" y="125" width="180" height="88" rx="18" fill="#e1d49d"/>
+    <rect x="781" y="119" width="180" height="88" rx="18" fill="#fff" stroke="#111827" stroke-width="2"/>
+    <path d="M802 148h15l6 6h21v24h-42z" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round"/>
+    <text x="859" y="172" fill="#111827" font-size="21" font-weight="650">网盘</text>
+
+    <rect x="1008" y="218" width="143" height="90" rx="18" fill="#e1d49d"/>
+    <rect x="1002" y="212" width="143" height="90" rx="18" fill="#fff" stroke="#111827" stroke-width="2"/>
+    <g fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round">
+      <path d="m1022 253 6-6a8 8 0 0 1 12 12l-5 5m-6-11-6 6a8 8 0 0 0 12 12l6-6"/>
+    </g>
+    <text x="1060" y="265" fill="#111827" font-size="21" font-weight="650">磁力</text>
+
+    <rect x="909" y="281" width="128" height="128" rx="35" fill="#c8d4ef"/>
+    <rect x="901" y="273" width="128" height="128" rx="35" fill="#111827"/>
+    <g fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round">
+      <circle cx="958" cy="330" r="28"/>
+      <path d="m979 351 24 24"/>
+    </g>
+
+    <rect x="769" y="414" width="186" height="86" rx="18" fill="#dbe4f3"/>
+    <rect x="763" y="408" width="186" height="86" rx="18" fill="#fff" stroke="#111827" stroke-width="2"/>
+    <path d="m785 449 32-13-9 31-7-11-16-7 19-4-3 11" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round"/>
+    <text x="834" y="460" fill="#111827" font-size="21" font-weight="650">公开频道</text>
+
+    <path d="M64 517H1136" stroke="#dbe2ea"/>
+    <text x="64" y="560" fill="#64748b" font-size="17">百度网盘 · 夸克 · 阿里云盘 · 115 · 迅雷等</text>
+    <text x="64" y="591" fill="#94a3b8" font-size="12" letter-spacing="2">FIND MORE. SEARCH LESS.</text>
   </g>
 </svg>
-
-

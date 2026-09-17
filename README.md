@@ -28,6 +28,32 @@ node .output/server/index.mjs
 
 默认 SQLite 文件为 `data/panhub.sqlite`，可通过 `PANHUB_SQLITE_DB` 覆盖。运行数据不应提交到 Git。
 
+### 生产环境变量与部署
+
+`.env.production` 不是必需文件，也不会因为这个文件名自动加载。可以通过进程管理器或服务器环境变量配置生产环境；需要文件管理时，可复制 `.env.example` 为服务器上的 `.env.production`，再修改数据库路径和站点地址。
+
+使用支持 `--env-file` 的 Node.js（例如 Node 22），在项目根目录启动：
+
+```bash
+node --env-file=.env.production .output/server/index.mjs
+```
+
+Nuxt 生产服务器不会自动读取 `.env`。构建使用默认的 production mode，会自动读取 `.env.production`；这不能代替启动时注入数据库路径等运行参数。代理功能目前只是 [proxy.md](./proxy.md) 中的方案，无需添加尚未实现的代理环境变量。
+
+项目的 `ecosystem.config.cjs` 已提供 PM2 配置，并统一通过 `node_args: "--env-file=.env.production"` 读取生产配置，可用 `pm2 start ecosystem.config.cjs` 启动。修改 `.env.production` 后执行 `pm2 restart panhub --update-env` 重启即可。
+
+建议生产环境设置：
+
+- `NODE_ENV=production`。
+- `PANHUB_SQLITE_DB` 指向持久化数据库的绝对路径，发布时保留已有数据库。
+- `NUXT_PUBLIC_SITE_URL` 为实际对外站点地址，`NUXT_PUBLIC_API_BASE=/api` 通常无需改动。
+- `NITRO_HOST=127.0.0.1`、`NITRO_PORT=3000` 适用于同机反向代理；需要外部直接访问时按部署网络调整监听地址。
+- `NUXT_TRUST_PROXY=true` 仅用于应用只接受可信反向代理访问的环境，否则保留 `false`。
+
+当前 `better-sqlite3 13.0.3` 要求 Node.js 22 或更高版本，并自带多平台预编译模块。本次 `.output/server/node_modules/better-sqlite3/prebuilds` 包含 Linux、Linux musl、Windows 和 macOS 的 x64/arm64 文件，上传时应保留完整 `.output`（包括内部的 `node_modules`）。构建及运行冒烟测试在 Windows / Node 22.22.2 完成，尚未验证目标 Linux 系统的原生模块兼容性；部署后先检查 `/api/health`。若目标系统不兼容，应在匹配的服务器或 CI/容器中执行 `pnpm install --frozen-lockfile` 和 `pnpm build`。不要把根目录开发用 `node_modules` 或本地开发数据库覆盖到线上。
+
+参考：[Nuxt 环境变量说明](https://nuxt.com/docs/4.x/directory-structure/env)、[Node 环境变量文件](https://nodejs.org/api/cli.html#--env-fileconfig)。
+
 ## 搜索示例
 
 POST `/api/search`：
@@ -104,8 +130,7 @@ utils/                 前端/通用工具
 ## 验证
 
 ```bash
-pnpm typecheck
-pnpm run test:transforms
+pnpm build
 git diff --check
 ```
 

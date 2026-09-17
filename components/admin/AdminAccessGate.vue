@@ -23,6 +23,10 @@
         <ConsoleIcon name="external" :size="17" />
         {{ authenticated ? "返回搜索" : "返回搜索 / 登录" }}
       </NuxtLink>
+      <div class="admin-access-login">
+        <span>{{ authenticated ? "当前账号没有管理员权限，可先退出当前账号再登录管理员账号。" : "首页登录入口已隐藏，后台仍保留管理员登录入口。" }}</span>
+        <UserAccountPanel force-visible @authenticated="emit('authenticated')" />
+      </div>
       <div class="admin-access-security">
         普通账号会话 · 角色权限校验 · 同源校验 · 登录限流
       </div>
@@ -45,6 +49,7 @@ const props = withDefaults(defineProps<{
   title: "进入管理后台",
 });
 const { checking, authenticated, error, title } = toRefs(props);
+const emit = defineEmits<{ authenticated: [] }>();
 </script>
 
 <style scoped>
@@ -168,6 +173,16 @@ const { checking, authenticated, error, title } = toRefs(props);
   color: #6b7280;
   font-size: 9px;
 }
+.admin-access-login {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  color: #6b7280;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.admin-access-login :deep(.account-control) { display: block; }
+.admin-access-login :deep(.account-trigger) { width: 100%; justify-content: center; min-height: 42px; border-color: #dbeafe; color: #1d4ed8; background: #eff6ff; }
 .admin-access-back {
   min-height: 40px;
   display: inline-flex;
