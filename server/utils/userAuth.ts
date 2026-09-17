@@ -12,11 +12,12 @@ const MAX_NICKNAME_LENGTH = 32;
 
 type SessionRow = {
   id: number; token_hash: string; user_id: number | null; kind: "anonymous" | "user";
+  transport: "cookie" | "bearer";
   created_at: number; expires_at: number; last_seen_at: number; custom_channels_json: string;
 };
-type UserRow = {
+export type UserRow = {
   id: number; username: string; username_normalized: string; password_hash: string; nickname: string | null;
-  status: "active" | "disabled"; role: "admin" | "user"; must_change_password: number; custom_channels_json: string;
+  status: "active" | "disabled"; role: "admin" | "user"; custom_channels_json: string;
   custom_channels_updated_at: number; last_login_ip: string | null; last_login_at: number | null; created_at: number; updated_at: number; deleted_at: number | null;
 };
 
@@ -28,7 +29,6 @@ export interface UserSessionContext {
 
 function now(): number { return Date.now(); }
 function tokenHash(token: string): string { return createHash("sha256").update(token, "utf8").digest("hex"); }
-function normalizeUsername(username: string): string { return username.trim().toLowerCase(); }
 function cookieSecure(event: H3Event): string { return getRequestURL(event).protocol === "https:" ? "; Secure" : ""; }
 function setSessionCookie(event: H3Event, token: string, maxAgeSeconds: number): void {
   setHeader(event, "Set-Cookie", `${USER_SESSION_COOKIE}=${token}; Path=${COOKIE_PATH}; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${cookieSecure(event)}`);
@@ -38,16 +38,16 @@ export function clearUserSessionCookie(event: H3Event): void {
 }
 
 export function validateUsername(username: unknown): string {
-  if (typeof username !== "string" || !USERNAME_PATTERN.test(username.trim())) throw createError({ statusCode: 400, statusMessage: "ÓÃ»§ÃûĞèÎª 4-32 Î»×ÖÄ¸¡¢Êı×Ö»òÏÂ»®Ïß" });
+  if (typeof username !== "string" || !USERNAME_PATTERN.test(username.trim())) throw createError({ statusCode: 400, statusMessage: "ç”¨æˆ·åéœ€ä¸º 4-32 ä½å­—æ¯ã€æ•°å­—æˆ–ä¸‹åˆ’çº¿" });
   return username.trim();
 }
 export function validatePassword(password: unknown): string {
-  if (typeof password !== "string" || password.length < 6 || password.length > 128) throw createError({ statusCode: 400, statusMessage: "ÃÜÂë³¤¶ÈĞèÎª 6-128 ¸ö×Ö·û" });
+  if (typeof password !== "string" || password.length < 6 || password.length > 128) throw createError({ statusCode: 400, statusMessage: "å¯†ç é•¿åº¦éœ€ä¸º 6-128 ä¸ªå­—ç¬¦" });
   return password;
 }
 export function validateNickname(nickname: unknown): string | null {
   if (nickname === undefined || nickname === null || nickname === "") return null;
-  if (typeof nickname !== "string" || [...nickname].length > MAX_NICKNAME_LENGTH) throw createError({ statusCode: 400, statusMessage: "êÇ³Æ×î¶à 32 ¸ö×Ö·û" });
+  if (typeof nickname !== "string" || [...nickname].length > MAX_NICKNAME_LENGTH) throw createError({ statusCode: 400, statusMessage: "æ˜µç§°æœ€å¤š 32 ä¸ªå­—ç¬¦" });
   return nickname;
 }
 
@@ -74,11 +74,11 @@ export function createRandomUserId(): number {
     const id = randomInt(100_000_000, 1_000_000_000);
     if (!db.getRow("SELECT 1 FROM users WHERE id = ?", id)) return id;
   }
-  throw new Error("ÎŞ·¨Éú³ÉÎ¨Ò»ÓÃ»§ ID");
+  throw new Error("æ— æ³•ç”Ÿæˆå”¯ä¸€ç”¨æˆ· ID");
 }
-function sessionExpiry(kind: "anonymous" | "user"): number {
-  const policy = getUserPolicy();
-  return now() + policy.sessionDays * 86400000;
+/** Session lifetime is policy-driven and identical for anonymous and account sessions. */
+function sessionExpiry(): number {
+  return now() + getUserPolicy().sessionDays * 86400000;
 }
 
 function findSession(token: string): SessionRow | undefined {
@@ -90,39 +90,41 @@ function userForSession(session: SessionRow): UserRow | null {
 
 export function createAnonymousSession(event: H3Event): UserSessionContext {
   const db = getSqliteDatabase(); const token = createToken(); const timestamp = now();
-  const result = db.run("INSERT INTO sessions(token_hash,user_id,kind,created_at,expires_at,last_seen_at,custom_channels_json) VALUES(?,?,?,?,?,?,?)", tokenHash(token), null, "anonymous", timestamp, sessionExpiry("anonymous"), timestamp, "[]");
+  const result = db.run("INSERT INTO sessions(token_hash,user_id,kind,created_at,expires_at,last_seen_at,custom_channels_json) VALUES(?,?,?,?,?,?,?)", tokenHash(token), null, "anonymous", timestamp, sessionExpiry(), timestamp, "[]");
   const session = db.getRow<SessionRow>("SELECT * FROM sessions WHERE id = ?", result.lastInsertRowid as number)!;
   setSessionCookie(event, token, getUserPolicy().sessionDays * 86400);
   return { session, user: null, token };
 }
 
-export function getUserSession(event: H3Event, options: { createAnonymous?: boolean; allowMustChange?: boolean } = {}): UserSessionContext {
-  const token = getCookie(event, USER_SESSION_COOKIE);
+export function getUserSession(event: H3Event, options: { createAnonymous?: boolean } = {}): UserSessionContext {
+  const authorization = getHeader(event, "authorization");
+  const bearer = authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/i)?.[1];
+  if (authorization && !bearer) throw createError({ statusCode: 401, statusMessage: "Invalid authorization" });
+  const token = bearer || getCookie(event, USER_SESSION_COOKIE);
   if (!token) {
     if (options.createAnonymous) return createAnonymousSession(event);
-    throw createError({ statusCode: 401, statusMessage: "µÇÂ¼»á»°²»´æÔÚ" });
+    throw createError({ statusCode: 401, statusMessage: "ç™»å½•ä¼šè¯ä¸å­˜åœ¨" });
   }
   const session = findSession(token);
-  if (!session || session.expires_at <= now()) throw createError({ statusCode: 401, statusMessage: "µÇÂ¼»á»°ÒÑÊ§Ğ§£¬ÇëÖØĞÂµÇÂ¼" });
+  if (!session || session.transport !== (bearer ? "bearer" : "cookie") || session.expires_at <= now()) throw createError({ statusCode: 401, statusMessage: "ç™»å½•ä¼šè¯å·²å¤±æ•ˆï¼Œè¯·é‡æ–°ç™»å½•" });
   const user = userForSession(session);
-  if (session.kind === "user" && (!user || user.status !== "active" || user.deleted_at)) throw createError({ statusCode: 401, statusMessage: "µÇÂ¼»á»°ÒÑÊ§Ğ§£¬ÇëÖØĞÂµÇÂ¼" });
+  if (session.kind === "user" && (!user || user.status !== "active" || user.deleted_at)) throw createError({ statusCode: 401, statusMessage: "ç™»å½•ä¼šè¯å·²å¤±æ•ˆï¼Œè¯·é‡æ–°ç™»å½•" });
   getSqliteDatabase().run("UPDATE sessions SET last_seen_at = ? WHERE id = ?", now(), session.id);
-  if (user && user.must_change_password && !options.allowMustChange) throw createError({ statusCode: 403, statusMessage: "ÇëÏÈĞŞ¸ÄÃÜÂë" });
   return { session, user, token };
 }
 
-export function requireUserSession(event: H3Event, options: { allowMustChange?: boolean } = {}): UserSessionContext & { user: UserRow } {
-  const context = getUserSession(event, options);
-  if (!context.user) throw createError({ statusCode: 401, statusMessage: "ÇëÏÈµÇÂ¼" });
+export function requireUserSession(event: H3Event): UserSessionContext & { user: UserRow } {
+  const context = getUserSession(event);
+  if (!context.user) throw createError({ statusCode: 401, statusMessage: "è¯·å…ˆç™»å½•" });
   return context as UserSessionContext & { user: UserRow };
 }
 
 export function rotateSession(context: UserSessionContext, event: H3Event, user: UserRow | null): UserSessionContext {
   const token = createToken(); const kind = user ? "user" : "anonymous";
-  const expiresAt = sessionExpiry(kind); const timestamp = now(); const db = getSqliteDatabase();
+  const expiresAt = sessionExpiry(); const timestamp = now(); const db = getSqliteDatabase();
 
   // If an anonymous session was allowed to manage channels, carry those
-  // channels into the account on login/register. The account remains the
+  // channels into the account on login. The account remains the
   // canonical store after the session becomes authenticated.
   if (user && !context.user) {
     const anonymousChannels = getStoredChannelsFromJson(context.session.custom_channels_json);
@@ -144,15 +146,38 @@ export function rotateSession(context: UserSessionContext, event: H3Event, user:
   return { session, user, token };
 }
 
-export function revokeUserSessions(userId: number): void { getSqliteDatabase().run("DELETE FROM sessions WHERE user_id = ?", userId); }
-export function revokeSession(context: UserSessionContext, event: H3Event): void {
-  if (context.user) {
-    const replacement = rotateSession(context, event, null);
-    void replacement;
-  } else clearUserSessionCookie(event);
+/** Native mini programs use an opaque bearer token, isolated from browser cookies. */
+export function createMiniProgramSession(event: H3Event, user: UserRow): UserSessionContext {
+  const db = getSqliteDatabase();
+  const token = createToken();
+  const timestamp = now();
+  const result = db.run("INSERT INTO sessions(token_hash,user_id,kind,created_at,expires_at,last_seen_at,custom_channels_json,transport) VALUES(?,?,?,?,?,?,?,?)",
+    tokenHash(token), user.id, "user", timestamp, sessionExpiry(), timestamp, "[]", "bearer");
+  const session = db.getRow<SessionRow>("SELECT * FROM sessions WHERE id = ?", result.lastInsertRowid as number)!;
+  setHeader(event, "Cache-Control", "no-store");
+  return { session, user, token };
 }
 
-export function getStoredChannelsFromJson(valueJson: string | null | undefined): string[] {
+export function revokeUserSessions(userId: number): void { getSqliteDatabase().run("DELETE FROM sessions WHERE user_id = ?", userId); }
+
+/**
+ * End the current session.
+ *
+ * A bearer session is deleted outright. A cookie session that belongs to an
+ * account is rotated back to an anonymous one so the browser keeps a usable
+ * session id; an already-anonymous cookie is simply cleared.
+ */
+export function revokeSession(context: UserSessionContext, event: H3Event): void {
+  if (context.session.transport === "bearer") {
+    getSqliteDatabase().run("DELETE FROM sessions WHERE id = ?", context.session.id);
+    return;
+  }
+  if (context.user) rotateSession(context, event, null);
+  else clearUserSessionCookie(event);
+}
+
+/** Channel lists are stored as a JSON array of public usernames; anything else reads as empty. */
+function getStoredChannelsFromJson(valueJson: string | null | undefined): string[] {
   try {
     const value = JSON.parse(valueJson || "[]");
     return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
@@ -175,15 +200,23 @@ export function updateStoredSessionChannels(sessionId: number, channels: string[
   return db.getRow<SessionRow>("SELECT * FROM sessions WHERE id = ?", sessionId)!;
 }
 export function publicUser(user: UserRow) {
-  return { id: user.id, username: user.username, nickname: user.nickname, role: user.role, status: user.status, mustChangePassword: !!user.must_change_password, channels: getStoredChannels(user), lastLoginIp: user.last_login_ip, lastLoginAt: user.last_login_at, createdAt: user.created_at };
+  return { id: user.id, username: user.username, nickname: user.nickname, role: user.role, status: user.status, channels: getStoredChannels(user), lastLoginIp: user.last_login_ip, lastLoginAt: user.last_login_at, createdAt: user.created_at };
 }
 
+/**
+ * Reject a cross-site write. A request without an `Origin` header (same-origin
+ * navigations, native clients) is allowed; a present Origin must match the host.
+ */
 export function requireSameOriginUserRequest(event: H3Event): void {
   const origin = getHeader(event, "origin");
   if (!origin) return;
-  try {
-    if (new URL(origin).host !== getRequestURL(event).host) throw createError({ statusCode: 403, statusMessage: "¿çÕ¾ÇëÇóÒÑ¾Ü¾ø" });
-  } catch (error) { if ((error as any)?.statusCode) throw error; throw createError({ statusCode: 403, statusMessage: "¿çÕ¾ÇëÇóÒÑ¾Ü¾ø" }); }
+  const crossOrigin = (() => {
+    try {
+      return new URL(origin).host !== getRequestURL(event).host;
+    } catch {
+      // A malformed Origin is never trustworthy.
+      return true;
+    }
+  })();
+  if (crossOrigin) throw createError({ statusCode: 403, statusMessage: "è·¨ç«™è¯·æ±‚å·²æ‹’ç»" });
 }
-
-export function sessionCookieName(): string { return USER_SESSION_COOKIE; }

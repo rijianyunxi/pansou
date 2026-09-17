@@ -5,9 +5,10 @@ import { getSqliteDatabase } from "../storage/sqlite";
  * 运行参数也归入这里，避免在资源源选择弹窗中分散配置。
  */
 export interface UserPolicy {
-  registrationEnabled: boolean;
-  showAuthButtons: boolean;
+  showHotSearch: boolean;
   anonymousCustomChannels: boolean;
+  /** Controls the homepage sign-in entry. The entry itself is WeChat QR login. */
+  showAuthButtons: boolean;
   sessionDays: number;
   customChannelLimit: number;
   defaultConcurrency: number;
@@ -15,15 +16,18 @@ export interface UserPolicy {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
-  searchRateLimitWindowSeconds: number;
-  searchRateLimitPerSession: number;
-  searchRateLimitPerIp: number;
+  anonymousSearchRateLimitWindowSeconds: number;
+  anonymousSearchRateLimitPerSession: number;
+  anonymousSearchRateLimitPerIp: number;
+  loggedSearchRateLimitWindowSeconds: number;
+  loggedSearchRateLimitPerSession: number;
+  loggedSearchRateLimitPerIp: number;
 }
 
 export const DEFAULT_USER_POLICY: UserPolicy = {
-  registrationEnabled: true,
-  showAuthButtons: true,
+  showHotSearch: true,
   anonymousCustomChannels: false,
+  showAuthButtons: true,
   sessionDays: 30,
   customChannelLimit: 10,
   defaultConcurrency: 4,
@@ -31,9 +35,12 @@ export const DEFAULT_USER_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
-  searchRateLimitWindowSeconds: 60,
-  searchRateLimitPerSession: 30,
-  searchRateLimitPerIp: 120,
+  anonymousSearchRateLimitWindowSeconds: 60,
+  anonymousSearchRateLimitPerSession: 20,
+  anonymousSearchRateLimitPerIp: 60,
+  loggedSearchRateLimitWindowSeconds: 60,
+  loggedSearchRateLimitPerSession: 60,
+  loggedSearchRateLimitPerIp: 240,
 };
 
 const integerRanges: Record<string, [number, number]> = {
@@ -44,9 +51,12 @@ const integerRanges: Record<string, [number, number]> = {
   circuitBreakerMaxFailures: [1, 20],
   searchTimeoutMs: [1000, 120000],
   cacheTtlMinutes: [1, 10],
-  searchRateLimitWindowSeconds: [10, 3600],
-  searchRateLimitPerSession: [1, 300],
-  searchRateLimitPerIp: [1, 1000],
+  anonymousSearchRateLimitWindowSeconds: [10, 3600],
+  anonymousSearchRateLimitPerSession: [1, 300],
+  anonymousSearchRateLimitPerIp: [1, 1000],
+  loggedSearchRateLimitWindowSeconds: [10, 3600],
+  loggedSearchRateLimitPerSession: [1, 300],
+  loggedSearchRateLimitPerIp: [1, 1000],
 };
 
 const legacyPolicyKeys = [
@@ -55,11 +65,6 @@ const legacyPolicyKeys = [
   "anonymousSessionDays",
   "loggedChannelLimit",
   "anonymousChannelLimit",
-  "searchWindowSeconds",
-  "anonymousSearchLimit",
-  "loggedSearchLimit",
-  "globalSearchLimit",
-  "searchLimitPerMinute",
   "anonymousConcurrent",
   "loggedConcurrent",
   "globalConcurrent",
@@ -70,7 +75,7 @@ const legacyPolicyKeys = [
 ] as const;
 
 function parseValue(key: string, value: unknown, fallback: unknown): unknown {
-  if (key === "registrationEnabled" || key === "showAuthButtons" || key === "anonymousCustomChannels") {
+  if (key === "showHotSearch" || key === "anonymousCustomChannels" || key === "showAuthButtons") {
     return typeof value === "boolean" ? value : fallback;
   }
   const range = integerRanges[key];
@@ -108,7 +113,7 @@ function readLegacyPerformanceValues(): Record<string, unknown> {
 }
 
 function persistMigratedValues(values: Record<string, unknown>, result: UserPolicy): void {
-  const keys = ["showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "searchRateLimitWindowSeconds", "searchRateLimitPerSession", "searchRateLimitPerIp"] as const;
+  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
   const missing = keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key));
   const hasLegacy = legacyPolicyKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
   if (!missing.length && !hasLegacy) return;
@@ -129,9 +134,9 @@ export function getUserPolicy(): UserPolicy {
   const values = readStoredValues();
   const legacy = readLegacyPerformanceValues();
   const result: UserPolicy = {
-    registrationEnabled: parseValue("registrationEnabled", values.registrationEnabled, DEFAULT_USER_POLICY.registrationEnabled) as boolean,
-    showAuthButtons: parseValue("showAuthButtons", values.showAuthButtons, DEFAULT_USER_POLICY.showAuthButtons) as boolean,
+    showHotSearch: parseValue("showHotSearch", values.showHotSearch, DEFAULT_USER_POLICY.showHotSearch) as boolean,
     anonymousCustomChannels: parseValue("anonymousCustomChannels", values.anonymousCustomChannels, DEFAULT_USER_POLICY.anonymousCustomChannels) as boolean,
+    showAuthButtons: parseValue("showAuthButtons", values.showAuthButtons, DEFAULT_USER_POLICY.showAuthButtons) as boolean,
     // Read the old names as a one-time compatibility fallback for existing installs.
     sessionDays: parseValue("sessionDays", values.sessionDays ?? values.loginSessionDays ?? values.anonymousSessionDays, DEFAULT_USER_POLICY.sessionDays) as number,
     customChannelLimit: parseValue("customChannelLimit", values.customChannelLimit ?? values.loggedChannelLimit ?? values.anonymousChannelLimit, DEFAULT_USER_POLICY.customChannelLimit) as number,
@@ -140,9 +145,12 @@ export function getUserPolicy(): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", values.circuitBreakerMaxFailures, DEFAULT_USER_POLICY.circuitBreakerMaxFailures) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", values.searchTimeoutMs, DEFAULT_USER_POLICY.searchTimeoutMs) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", values.cacheTtlMinutes ?? legacy.cacheTtlMinutes, DEFAULT_USER_POLICY.cacheTtlMinutes) as number,
-    searchRateLimitWindowSeconds: parseValue("searchRateLimitWindowSeconds", values.searchRateLimitWindowSeconds, DEFAULT_USER_POLICY.searchRateLimitWindowSeconds) as number,
-    searchRateLimitPerSession: parseValue("searchRateLimitPerSession", values.searchRateLimitPerSession, DEFAULT_USER_POLICY.searchRateLimitPerSession) as number,
-    searchRateLimitPerIp: parseValue("searchRateLimitPerIp", values.searchRateLimitPerIp, DEFAULT_USER_POLICY.searchRateLimitPerIp) as number,
+    anonymousSearchRateLimitWindowSeconds: parseValue("anonymousSearchRateLimitWindowSeconds", values.anonymousSearchRateLimitWindowSeconds, DEFAULT_USER_POLICY.anonymousSearchRateLimitWindowSeconds) as number,
+    anonymousSearchRateLimitPerSession: parseValue("anonymousSearchRateLimitPerSession", values.anonymousSearchRateLimitPerSession, DEFAULT_USER_POLICY.anonymousSearchRateLimitPerSession) as number,
+    anonymousSearchRateLimitPerIp: parseValue("anonymousSearchRateLimitPerIp", values.anonymousSearchRateLimitPerIp, DEFAULT_USER_POLICY.anonymousSearchRateLimitPerIp) as number,
+    loggedSearchRateLimitWindowSeconds: parseValue("loggedSearchRateLimitWindowSeconds", values.loggedSearchRateLimitWindowSeconds, DEFAULT_USER_POLICY.loggedSearchRateLimitWindowSeconds) as number,
+    loggedSearchRateLimitPerSession: parseValue("loggedSearchRateLimitPerSession", values.loggedSearchRateLimitPerSession, DEFAULT_USER_POLICY.loggedSearchRateLimitPerSession) as number,
+    loggedSearchRateLimitPerIp: parseValue("loggedSearchRateLimitPerIp", values.loggedSearchRateLimitPerIp, DEFAULT_USER_POLICY.loggedSearchRateLimitPerIp) as number,
   };
   persistMigratedValues(values, result);
   return result;
@@ -156,9 +164,9 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
   if (unknownKey) throw new Error(`不支持的策略项: ${unknownKey}`);
 
   const next: UserPolicy = {
-    registrationEnabled: parseValue("registrationEnabled", Object.prototype.hasOwnProperty.call(input, "registrationEnabled") ? input.registrationEnabled : current.registrationEnabled, undefined) as boolean,
-    showAuthButtons: parseValue("showAuthButtons", Object.prototype.hasOwnProperty.call(input, "showAuthButtons") ? input.showAuthButtons : current.showAuthButtons, undefined) as boolean,
+    showHotSearch: parseValue("showHotSearch", Object.prototype.hasOwnProperty.call(input, "showHotSearch") ? input.showHotSearch : current.showHotSearch, undefined) as boolean,
     anonymousCustomChannels: parseValue("anonymousCustomChannels", Object.prototype.hasOwnProperty.call(input, "anonymousCustomChannels") ? input.anonymousCustomChannels : current.anonymousCustomChannels, undefined) as boolean,
+    showAuthButtons: parseValue("showAuthButtons", Object.prototype.hasOwnProperty.call(input, "showAuthButtons") ? input.showAuthButtons : current.showAuthButtons, undefined) as boolean,
     sessionDays: parseValue("sessionDays", Object.prototype.hasOwnProperty.call(input, "sessionDays") ? input.sessionDays : current.sessionDays, undefined) as number,
     customChannelLimit: parseValue("customChannelLimit", Object.prototype.hasOwnProperty.call(input, "customChannelLimit") ? input.customChannelLimit : current.customChannelLimit, undefined) as number,
     defaultConcurrency: parseValue("defaultConcurrency", Object.prototype.hasOwnProperty.call(input, "defaultConcurrency") ? input.defaultConcurrency : current.defaultConcurrency, undefined) as number,
@@ -166,9 +174,12 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", Object.prototype.hasOwnProperty.call(input, "circuitBreakerMaxFailures") ? input.circuitBreakerMaxFailures : current.circuitBreakerMaxFailures, undefined) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", Object.prototype.hasOwnProperty.call(input, "searchTimeoutMs") ? input.searchTimeoutMs : current.searchTimeoutMs, undefined) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", Object.prototype.hasOwnProperty.call(input, "cacheTtlMinutes") ? input.cacheTtlMinutes : current.cacheTtlMinutes, undefined) as number,
-    searchRateLimitWindowSeconds: parseValue("searchRateLimitWindowSeconds", Object.prototype.hasOwnProperty.call(input, "searchRateLimitWindowSeconds") ? input.searchRateLimitWindowSeconds : current.searchRateLimitWindowSeconds, undefined) as number,
-    searchRateLimitPerSession: parseValue("searchRateLimitPerSession", Object.prototype.hasOwnProperty.call(input, "searchRateLimitPerSession") ? input.searchRateLimitPerSession : current.searchRateLimitPerSession, undefined) as number,
-    searchRateLimitPerIp: parseValue("searchRateLimitPerIp", Object.prototype.hasOwnProperty.call(input, "searchRateLimitPerIp") ? input.searchRateLimitPerIp : current.searchRateLimitPerIp, undefined) as number,
+    anonymousSearchRateLimitWindowSeconds: parseValue("anonymousSearchRateLimitWindowSeconds", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitWindowSeconds") ? input.anonymousSearchRateLimitWindowSeconds : current.anonymousSearchRateLimitWindowSeconds, undefined) as number,
+    anonymousSearchRateLimitPerSession: parseValue("anonymousSearchRateLimitPerSession", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitPerSession") ? input.anonymousSearchRateLimitPerSession : current.anonymousSearchRateLimitPerSession, undefined) as number,
+    anonymousSearchRateLimitPerIp: parseValue("anonymousSearchRateLimitPerIp", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitPerIp") ? input.anonymousSearchRateLimitPerIp : current.anonymousSearchRateLimitPerIp, undefined) as number,
+    loggedSearchRateLimitWindowSeconds: parseValue("loggedSearchRateLimitWindowSeconds", Object.prototype.hasOwnProperty.call(input, "loggedSearchRateLimitWindowSeconds") ? input.loggedSearchRateLimitWindowSeconds : current.loggedSearchRateLimitWindowSeconds, undefined) as number,
+    loggedSearchRateLimitPerSession: parseValue("loggedSearchRateLimitPerSession", Object.prototype.hasOwnProperty.call(input, "loggedSearchRateLimitPerSession") ? input.loggedSearchRateLimitPerSession : current.loggedSearchRateLimitPerSession, undefined) as number,
+    loggedSearchRateLimitPerIp: parseValue("loggedSearchRateLimitPerIp", Object.prototype.hasOwnProperty.call(input, "loggedSearchRateLimitPerIp") ? input.loggedSearchRateLimitPerIp : current.loggedSearchRateLimitPerIp, undefined) as number,
   };
   if (Object.values(next).some((value) => value === undefined)) throw new Error("策略配置项无效");
 

@@ -84,8 +84,3 @@ export interface SourceExecutionResult {
   raw: string;
   rawTruncated: boolean;
 }
-
-export interface SourceExecutionBudgetOptions {
-  /** Cumulative request + response payload bytes per source execution. */
-  maxTotalBytes?: number;
-}

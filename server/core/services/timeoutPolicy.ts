@@ -1,6 +1,6 @@
 import { getUserPolicy } from "./policyService";
 
-/** Single timeout policy for every upstream request and transform execution. */
+/** Single timeout policy for every source request and transform execution. */
 export const MIN_UNIFIED_TIMEOUT_MS = 1_000;
 export const MAX_UNIFIED_TIMEOUT_MS = 60_000;
 

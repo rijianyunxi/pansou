@@ -1,5 +1,6 @@
-import { defineEventHandler, readBody, createError } from "h3";
+import { defineEventHandler, readBody } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
+import { toHttpError } from "../../utils/apiResponse";
 import { parseSystemChannels } from "../../utils/telegramSettings";
 import { getSearchSettingsVersion, saveSearchSettings } from "../../core/services/searchSettingsService";
 
@@ -12,15 +13,10 @@ export default defineEventHandler(async (event) => {
     return {
       code: 0,
       message: "success",
-      data: {
-        ...data,
-      },
+      data,
       version: getSearchSettingsVersion(),
     };
-  } catch (error: any) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: error?.message || "failed to save search settings",
-    });
+  } catch (error) {
+    throw toHttpError(error, 500, "failed to save search settings");
   }
 });

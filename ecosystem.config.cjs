@@ -13,7 +13,7 @@ module.exports = {
       autorestart: true,
       restart_delay: 3000,
       max_restarts: 10,
-      max_memory_restart: "512M",
+      max_memory_restart: "1024M",
 
       kill_timeout: 30000,
       listen_timeout: 10000,

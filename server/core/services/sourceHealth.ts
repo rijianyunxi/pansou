@@ -127,7 +127,7 @@ export interface SourceHealthStatus {
   avgResponseTime: number;
   p50ResponseTime: number;
   p95ResponseTime: number;
-  /** Failures accumulated in the breaker window; successful calls do not hide intermittent upstream failures. */
+  /** Failures accumulated in the breaker window; successful calls do not hide intermittent source failures. */
   failureCount: number;
   /** Number of failures and start timestamp for the rolling breaker window. */
   failureWindowCount?: number;
@@ -388,7 +388,7 @@ function cloneHistory(history: SourceHealthHistory): SourceHealthHistory {
 /**
  * Tracks source health and implements a closed → open → half-open circuit.
  * A cooled-down open circuit grants exactly one probe until that probe records
- * success or failure, preventing a traffic burst while an upstream recovers.
+ * success or failure, preventing a traffic burst while an source recovers.
  *
  * 除熔断与延迟统计外，还为每次检查维护：
  * - 五维健康模型（dimensions）：网络可达 / HTTP 正常 / 业务状态正常 / 结构可解析 / 搜索有结果；

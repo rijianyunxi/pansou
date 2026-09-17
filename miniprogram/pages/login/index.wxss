@@ -1,0 +1,6 @@
+page { background: #f5f7fa; color: #172033; }
+.page { padding: 64rpx 40rpx; }
+.title { font-size: 44rpx; font-weight: 600; margin-bottom: 32rpx; }
+.hint { font-size: 28rpx; line-height: 1.7; color: #596579; margin: 28rpx 0; }
+button { margin-top: 24rpx; }
+.error { color: #b42318; font-size: 28rpx; margin-top: 28rpx; }

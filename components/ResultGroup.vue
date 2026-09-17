@@ -40,7 +40,13 @@
 
         <div class="resource-links" aria-label="资源链接">
           <div v-for="link in resource.links" :key="linkKey(link)" class="link-row">
-            <span class="link-provider-icon" aria-hidden="true">{{ typeIcon(link.type) }}</span>
+            <span class="link-provider-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path v-if="link.type === 'magnet'" d="m13 2-9 12h7l-1 8 10-12h-7z" />
+                <path v-else-if="link.type === 'others'" d="M7 17 17 7M7 7h10v10" />
+                <path v-else d="M6 19a4 4 0 0 1-.5-8A6.5 6.5 0 0 1 18 9a5 5 0 0 1 0 10Z" />
+              </svg>
+            </span>
             <div class="link-main">
               <span class="link-provider">{{ platformLabel(link.type) }}</span>
               <span v-if="link.password" class="password-badge">
@@ -126,12 +132,6 @@ function linkKey(link: Link): string {
   return `${link.type}|${link.url}|${link.password || ""}`;
 }
 
-function typeIcon(type: string): string {
-  if (type === "magnet") return "⚡";
-  if (type === "others") return "↗";
-  return "☁";
-}
-
 function copy(url: string, key: string) {
   copiedKey.value = key;
   emit("copy", url);
@@ -204,10 +204,12 @@ function copy(url: string, key: string) {
 .resource-description { display: -webkit-box; overflow: hidden; margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .resource-date { flex-shrink: 0; padding-top: 3px; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
 
-.resource-meta { margin-top: 12px; }
-.meta-tags { display: flex; flex-wrap: wrap; min-width: 0; gap: 6px; }
-.meta-tag { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border-light); border-radius: 999px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 11px; line-height: 1; }
-button.meta-tag { cursor: pointer; font-family: inherit; }
+.resource-meta { margin-top: 8px; }
+.meta-tags { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px 8px; padding: 6px 0; }
+.meta-tag { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 8px; border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 11px; line-height: 18px; }
+button.meta-tag { position: relative; min-height: 32px; cursor: pointer; font-family: inherit; font-weight: 600; color: var(--primary); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 20%, var(--bg-primary)); }
+button.meta-tag::after { content: ""; position: absolute; inset: -6px 0; }
+button.meta-tag:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 button.meta-tag:hover, button.meta-tag.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--border-light)); color: var(--primary); background: var(--primary-soft); }
 .tag-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
@@ -215,7 +217,7 @@ button.meta-tag:hover, button.meta-tag.active { border-color: color-mix(in srgb,
 .link-row { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); overflow: hidden; }
 .link-provider-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; border-radius: 9px; background: var(--bg-primary); color: var(--primary); font-size: 14px; }
 .link-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; flex-wrap: wrap; }
-.link-provider { min-width: 0; max-width: 100%; color: var(--text-primary); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
+.link-provider { line-height: 20px; min-width: 0; max-width: 100%; color: var(--text-primary); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
 .password-badge { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 4px; color: var(--text-tertiary); font-size: 11px; overflow-wrap: anywhere; word-break: break-word; }
 .link-actions { display: flex; align-items: center; min-width: 0; gap: 7px; flex: 0 1 auto; }
 .open-btn, .copy-btn { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 5px; padding: 7px 9px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-primary); color: var(--text-secondary); cursor: pointer; font-size: 11px; font-weight: 650; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -231,15 +233,16 @@ button.meta-tag:hover, button.meta-tag.active { border-color: color-mix(in srgb,
   .link-row {
     display: grid;
     grid-template-columns: 30px minmax(0, 1fr);
-    align-items: start;
+    align-items: center;
     gap: 10px;
   }
   .link-provider-icon { grid-column: 1; }
   .link-main {
     grid-column: 2;
+    min-height: 30px;
     width: 100%;
     max-width: 100%;
-    align-items: flex-start;
+    align-items: center;
     flex-direction: row;
     flex-wrap: wrap;
     gap: 4px 8px;

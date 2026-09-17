@@ -104,40 +104,10 @@ export class UnifiedCache<T = SearchResult[]> {
   }
 
   /**
-   * 清空指定命名空间的缓存
-   */
-  clearNamespace(namespace: CacheNamespace): void {
-    const cacheKey = this.namespacePrefix
-      ? `${this.namespacePrefix}:${namespace}`
-      : namespace;
-    const cache = this.caches.get(cacheKey);
-    if (cache) {
-      cache.clear();
-    }
-  }
-
-  /**
    * 清空所有缓存
    */
   clearAll(): void {
     this.caches.forEach((cache) => cache.clear());
-  }
-
-  /**
-   * 获取缓存统计信息
-   */
-  getStats(): Record<string, any> {
-    const stats: Record<string, any> = {
-      enabled: this.config.enabled,
-      ttlMinutes: this.config.ttlMinutes,
-      namespaces: {},
-    };
-
-    this.caches.forEach((cache, key) => {
-      stats.namespaces[key] = cache.getStats();
-    });
-
-    return stats;
   }
 
   /**

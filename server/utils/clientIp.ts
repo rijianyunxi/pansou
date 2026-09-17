@@ -19,6 +19,10 @@ function normalizeIp(value: unknown): string | undefined {
   return ip && ip !== "unknown" ? ip : undefined;
 }
 
+/** Minimal view of the Node request needed to read the peer socket address. */
+type NodePeer = { remoteAddress?: string };
+type NodeRequest = { socket?: NodePeer; connection?: NodePeer };
+
 /** Resolve the client address for audit records, with a socket fallback for local/dev requests. */
 export function getClientIp(event: H3Event): string {
   const trustProxy = trustProxyHeaders(event);
@@ -33,6 +37,7 @@ export function getClientIp(event: H3Event): string {
 
   // Never inspect forwarded headers in the default mode: a direct client can
   // set them arbitrarily and otherwise bypass IP rate limits or corrupt audit logs.
-  const socket = (event.node?.req as any)?.socket || (event.node?.req as any)?.connection;
+  const request = event.node?.req as unknown as NodeRequest | undefined;
+  const socket = request?.socket ?? request?.connection;
   return normalizeIp(socket?.remoteAddress) || normalizeIp(getRequestIP(event)) || "unknown";
 }

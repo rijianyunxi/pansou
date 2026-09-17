@@ -5,36 +5,41 @@ import type {
   SearchStreamCompleteData,
   SearchStreamResultData,
 } from "../core/types/models";
-import { executePreparedSearch, type PreparedSearchRequest } from "./executeSearch";
+import { executePreparedSearch, type PreparedSearch } from "./executeSearch";
+import { linkIdentity } from "../core/utils/resultMerge";
 import { withRequestSignal } from "./requestSignal";
 import { SEARCH_SSE_INTERVAL_MS, SearchSseQueue } from "./searchSseQueue";
-import { logSearchStreamEvent } from "../core/utils/upstreamDebug";
+import { logSearchStreamEvent } from "../core/utils/sourceDebug";
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "搜索过程中发生未知错误";
 }
 
-function searchResultKey(result: SearchSourceUpdate["results"][number]): string {
-  return result.id;
-}
-
+/**
+ * Build a filter that only ever emits links the client has not received yet.
+ *
+ * Results are tracked per result id, but a link already delivered under a
+ * different result id must not be repeated either, so a global link set is
+ * consulted alongside the per-result one. `dedupeLinks` in
+ * `core/utils/resultMerge.ts` states the same rule for the final JSON body; the
+ * two must stay in step so both endpoints describe the same search.
+ */
 function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate {
   const sentLinks = new Map<string, Set<string>>();
   const sentLinkKeys = new Set<string>();
   return (update) => ({
     ...update,
     results: update.results.flatMap((result) => {
-      const key = searchResultKey(result);
-      const seen = sentLinks.get(key) ?? new Set<string>();
+      const seen = sentLinks.get(result.id) ?? new Set<string>();
       const freshLinks = result.links.filter((link) => {
-        const linkKey = `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`;
-        if (seen.has(linkKey) || sentLinkKeys.has(linkKey)) return false;
-        seen.add(linkKey);
-        sentLinkKeys.add(linkKey);
+        const key = linkIdentity(link);
+        if (seen.has(key) || sentLinkKeys.has(key)) return false;
+        seen.add(key);
+        sentLinkKeys.add(key);
         return true;
       });
-      sentLinks.set(key, seen);
+      sentLinks.set(result.id, seen);
       if (!freshLinks.length) return [];
       return [{
         ...result,
@@ -48,7 +53,7 @@ function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate
 /** Starts a pure SSE search response. Validation and authorization must run first. */
 export function sendSearchStream(
   event: H3Event,
-  prepared: PreparedSearchRequest,
+  prepared: PreparedSearch,
 ): Promise<void> {
   setHeader(event, "Content-Type", "text/event-stream; charset=utf-8");
   setHeader(event, "Cache-Control", "private, no-store, no-transform");

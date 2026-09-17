@@ -1,3 +1,5 @@
+import { defineEventHandler, setHeader } from "h3";
+
 export default defineEventHandler((event) => {
   const config = useRuntimeConfig(event);
   const siteUrl = typeof config.public?.siteUrl === "string"

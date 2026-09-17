@@ -6,14 +6,13 @@ export interface AuthUser {
   nickname: string | null;
   role: "admin" | "user";
   status: "active" | "disabled";
-  mustChangePassword: boolean;
   channels: string[];
   lastLoginIp?: string | null;
   lastLoginAt: number | null;
   createdAt: number;
 }
 
-type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number; anonymousCustomChannels?: boolean; showAuthButtons?: boolean; registrationEnabled?: boolean };
+type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number; anonymousCustomChannels?: boolean; showHotSearch?: boolean; showAuthButtons?: boolean };
 type ApiError = { statusCode?: number; statusMessage?: string; message?: string; data?: { statusMessage?: string; message?: string } };
 
 function errorStatus(error: ApiError | undefined): number | undefined {
@@ -24,7 +23,7 @@ function errorMessage(error: ApiError | undefined, fallback: string): string {
   const status = errorStatus(error);
   const message = error?.data?.statusMessage || error?.data?.message || error?.statusMessage || error?.message;
   if (status === 400) return message || "提交内容不符合要求。";
-  if (status === 401) return "用户名或密码错误，或登录已过期。";
+  if (status === 401) return message || "登录状态已失效，请重新登录。";
   if (status === 403) return message || "当前操作不被允许。";
   if (status === 409) return message || "用户名已存在，请换一个。";
   if (status === 429) return "操作过于频繁，请稍后再试。";
@@ -37,8 +36,8 @@ export function useAuth() {
   const sessionReady = useState("auth-session-ready", () => false);
   const sessionId = useState<number | null>("auth-session-id", () => null);
   const anonymousCustomChannels = useState<boolean>("auth-anonymous-custom-channels", () => false);
-  const showAuthButtons = useState<boolean>("auth-show-buttons", () => true);
-  const registrationEnabled = useState<boolean>("auth-registration-enabled", () => true);
+  const showHotSearch = useState<boolean>("auth-show-hot-search", () => true);
+  const showAuthButtons = useState<boolean>("auth-show-auth-buttons", () => true);
   const sessionError = useState("auth-session-error", () => "");
   const initialized = useState("auth-session-initialized", () => false);
   let initializePromise: Promise<boolean> | undefined;
@@ -57,8 +56,8 @@ export function useAuth() {
         user.value = data.authenticated ? data.user : null;
         sessionId.value = data.sessionId || null;
         anonymousCustomChannels.value = !!data.anonymousCustomChannels;
+        showHotSearch.value = data.showHotSearch !== false;
         showAuthButtons.value = data.showAuthButtons !== false;
-        registrationEnabled.value = data.registrationEnabled !== false;
         sessionReady.value = true;
         initialized.value = true;
         return true;
@@ -93,20 +92,6 @@ export function useAuth() {
     }
   }
 
-  async function register(username: string, password: string, nickname?: string): Promise<AuthUser | null> {
-    error.value = "";
-    try {
-      const data = await $fetch<{ ok: boolean; user: AuthUser }>(`${API_BASE}/account/register`, {
-        method: "POST", body: { username, password, nickname: nickname || undefined }, credentials: "include", retry: 0,
-      });
-      setAuthenticatedUser(data.user);
-      return data.user;
-    } catch (e: any) {
-      error.value = errorMessage(e, "注册失败，请检查填写内容。");
-      return null;
-    }
-  }
-
   async function logout(): Promise<boolean> {
     error.value = "";
     try {
@@ -136,25 +121,6 @@ export function useAuth() {
     }
   }
 
-  async function changePassword(currentPassword: string, newPassword: string): Promise<boolean> {
-    try {
-      await $fetch(`${API_BASE}/account/password`, {
-        method: "PUT", body: { currentPassword, newPassword }, credentials: "include", retry: 0,
-      });
-      user.value = null;
-      sessionReady.value = false;
-      await initializeSession(true);
-      return true;
-    } catch (e: any) {
-      error.value = errorMessage(e, "密码修改失败");
-      if (errorStatus(e) === 401) {
-        user.value = null;
-        await initializeSession(true);
-      }
-      return false;
-    }
-  }
-
   function handleSessionExpired(message = "登录已过期，请重新登录。") {
     user.value = null;
     error.value = message;
@@ -162,8 +128,8 @@ export function useAuth() {
   }
 
   return {
-    error, user, sessionReady, sessionId, anonymousCustomChannels, showAuthButtons, registrationEnabled, sessionError, initialized,
-    initializeSession, login, register, logout, updateProfile,
-    changePassword, handleSessionExpired,
+    error, user, sessionReady, sessionId, anonymousCustomChannels, showHotSearch, showAuthButtons, sessionError, initialized,
+    initializeSession, login, logout, updateProfile,
+    handleSessionExpired,
   };
 }

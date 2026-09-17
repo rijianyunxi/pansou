@@ -1,10 +1,4 @@
-import { defineEventHandler, getRouterParam, setHeader } from "h3";
-import { requireAdminAuth } from "../../../../utils/requireAdminAuth";
-import { parseUserId, setAdminUserStatus } from "../../../../core/services/adminUserService";
+import { defineEventHandler } from "h3";
+import { setAdminUserStatusAction } from "../../../../utils/adminUserActions";
 
-export default defineEventHandler((event) => {
-  requireAdminAuth(event);
-  setHeader(event, "Cache-Control", "no-store");
-  const user = setAdminUserStatus(parseUserId(getRouterParam(event, "id")), "disabled");
-  return { code: 0, message: "disabled", data: { user } };
-});
+export default defineEventHandler((event) => setAdminUserStatusAction(event, "disabled"));

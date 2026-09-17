@@ -29,7 +29,7 @@ export interface ErrorDetail {
   message: string;
   source?: string;
   timestamp: number;
-  /** 机器可读细分码（如 tg_channel_not_found），同一 type 下可进一步区分失败原因。 */
+  /** 机器可读细分码（如 dns_lookup_failed），同一 type 下可进一步区分失败原因。 */
   code?: string;
 }
 
@@ -50,26 +50,6 @@ export interface WarningInfo {
  */
 export function classifyError(error: any, source?: string): ErrorDetail {
   const timestamp = Date.now();
-
-  // 来源请求的失败分类（TgChannelError.tgKind）：网络失败 / 结构变化 /
-  // 频道不存在 / 频道私有，用现有 ErrorType 承载并用 code 细分。
-  if (typeof error?.tgKind === "string" && error.tgKind) {
-    const typeByKind: Record<string, ErrorType> = {
-      network_error: ErrorType.NETWORK_ERROR,
-      structure_changed: ErrorType.PARSE_ERROR,
-      channel_not_found: ErrorType.VALIDATION_ERROR,
-      channel_private: ErrorType.VALIDATION_ERROR,
-      no_results: ErrorType.UNKNOWN_ERROR,
-    };
-    return {
-      type: typeByKind[error.tgKind] ?? ErrorType.UNKNOWN_ERROR,
-      severity: error.tgKind === "structure_changed" ? ErrorSeverity.HIGH : ErrorSeverity.MEDIUM,
-      message: error?.message || "未知错误",
-      source,
-      timestamp,
-      code: `tg_${error.tgKind}`,
-    };
-  }
 
   const message = typeof error?.message === "string" ? error.message : String(error ?? "未知错误");
   // SSRF/DNS guard errors are security or network failures, never response

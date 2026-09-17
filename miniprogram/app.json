@@ -1,0 +1,5 @@
+{
+  "pages": ["pages/login/index"],
+  "window": { "navigationBarTitleText": "盘搜账号" },
+  "style": "v2"
+}

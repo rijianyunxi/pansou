@@ -1,5 +1,5 @@
 <template>
-  <div class="upstream-app admin-feature-app" :data-ready="ready ? 'true' : 'false'">
+  <div class="source-app admin-feature-app" :data-ready="ready ? 'true' : 'false'">
     <AdminAccessGate
       v-if="checking || locked"
       :checking="checking"
@@ -20,7 +20,7 @@
           <NuxtLink to="/admin/resources" :class="['console-nav-link', { active: (feature as string) === 'resources' }]" ><ConsoleIcon name="box" />网盘资源</NuxtLink>
           <NuxtLink to="/admin/users" :class="['console-nav-link', { active: feature === 'users' }]"><ConsoleIcon name="user" />用户管理</NuxtLink>
           <NuxtLink to="/admin/logs" :class="['console-nav-link', { active: feature === 'logs' }]"><ConsoleIcon name="activity" />搜索日志</NuxtLink>
-          <NuxtLink to="/admin/policies" :class="['console-nav-link', { active: feature === 'policies' }]"><ConsoleIcon name="sliders" />搜索策略</NuxtLink>
+          <NuxtLink to="/admin/policies" :class="['console-nav-link', { active: feature === 'policies' }]"><ConsoleIcon name="sliders" />系统设置</NuxtLink>
         </nav>
       </aside>
 
@@ -31,11 +31,8 @@
             <ConsoleIcon name="chevron" :size="13" /><strong>{{ title }}</strong>
           </div>
           <div class="topbar-right">
-            <span class="local-chip"><span></span>ADMIN SESSION</span>
-            <span class="topbar-divider"></span>
-            <NuxtLink to="/" class="back-search"><ConsoleIcon name="external" :size="14" />返回搜索</NuxtLink>
             <button class="session-button" type="button" @click="lock">
-              <span class="user-avatar">P</span><span>退出后台</span><ConsoleIcon name="logout" :size="15" />
+              <span>退出后台</span><ConsoleIcon name="logout" :size="15" />
             </button>
           </div>
         </header>
@@ -62,7 +59,7 @@
                     <button class="button secondary" type="button" :disabled="selectedCount === 0 || busy" @click="disableSelectedUsers">
                       <ConsoleIcon name="lock" :size="14" />批量禁用<span v-if="selectedCount" class="action-count">{{ selectedCount }}</span>
                     </button>
-                    <button class="button primary" type="button" @click="openCreateUser"><ConsoleIcon name="plus" :size="14" />创建用户</button>
+                    <button class="button primary" type="button" @click="openCreateUser"><ConsoleIcon name="plus" :size="14" />创建管理员</button>
                   </div>
                 </form>
                 <div class="query-meta">已选 {{ selectedCount }} 项 · 共 {{ displayTotal }} 个用户</div>
@@ -96,15 +93,15 @@
                 <div v-if="createUserOpen" class="admin-modal-backdrop" @click.self="closeCreateUser">
                   <section class="admin-modal" role="dialog" aria-modal="true" aria-labelledby="create-user-title">
                     <header class="admin-modal-header">
-                      <div><p class="modal-eyebrow">NEW USER</p><h2 id="create-user-title">创建用户</h2><p>设置新账号的初始信息，用户首次登录后可按要求修改密码。</p></div>
-                      <button class="modal-close" type="button" aria-label="关闭创建用户弹窗" @click="closeCreateUser"><ConsoleIcon name="close" :size="18" /></button>
+                      <div><p class="modal-eyebrow">NEW ADMIN</p><h2 id="create-user-title">创建管理员</h2><p>创建后即可用该用户名与密码登录管理后台。普通用户账号由小程序首次登录时自动创建，无需在此建号。</p></div>
+                      <button class="modal-close" type="button" aria-label="关闭创建管理员弹窗" @click="closeCreateUser"><ConsoleIcon name="close" :size="18" /></button>
                     </header>
                     <form class="create-user-modal-form" @submit.prevent="createUser">
                       <label class="modal-field">用户名<input ref="usernameInput" v-model.trim="newUser.username" required minlength="4" maxlength="32" autocomplete="username" placeholder="至少 4 位字符" /></label>
-                      <label class="modal-field">初始密码<input v-model="newUser.password" required minlength="6" maxlength="128" type="password" autocomplete="new-password" placeholder="至少 6 位字符" /></label>
+                      <label class="modal-field">登录密码<input v-model="newUser.password" required minlength="6" maxlength="128" type="password" autocomplete="new-password" placeholder="至少 6 位字符" /></label>
                       <label class="modal-field">昵称<span class="optional-label">可选</span><input v-model.trim="newUser.nickname" maxlength="32" autocomplete="nickname" placeholder="请输入昵称" /></label>
                       <p v-if="modalError" class="modal-error" role="alert"><ConsoleIcon name="info" :size="15" />{{ modalError }}</p>
-                      <div class="admin-modal-actions"><button class="modal-button secondary" type="button" :disabled="busy" @click="closeCreateUser">取消</button><button class="modal-button primary" type="submit" :disabled="busy">{{ busy ? '创建中…' : '创建用户' }}</button></div>
+                      <div class="admin-modal-actions"><button class="modal-button secondary" type="button" :disabled="busy" @click="closeCreateUser">取消</button><button class="modal-button primary" type="submit" :disabled="busy">{{ busy ? '创建中…' : '创建管理员' }}</button></div>
                     </form>
                   </section>
                 </div>
@@ -165,82 +162,93 @@
               </Teleport>
             </template>
 
-            <template v-else>
-              <section class="feature-card policy-card" aria-label="搜索策略 JSON 配置">
+          <template v-else>
+              <section class="feature-card policy-card" aria-labelledby="system-settings-title">
                 <div class="policy-card-header">
                   <div class="policy-card-copy">
-                    <h2>策略配置</h2>
+                    <h2 id="system-settings-title">搜索与账号配置</h2>
                   </div>
                   <div class="policy-card-actions">
-                    <span class="policy-count">13 个配置项</span>
+                    <span class="policy-count">16 个配置项</span>
                     <button class="refresh-button" type="button" :disabled="loading" @click="loadData">
                       <ConsoleIcon name="refresh" :size="14" />{{ loading ? '读取中…' : '刷新数据' }}
                     </button>
-                    <button class="primary-button" type="button" :disabled="busy" @click="savePolicy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存策略' }}</button>
+                    <button class="primary-button" type="submit" form="system-settings-form" :disabled="busy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存搜索配置' }}</button>
                   </div>
                 </div>
-                <div class="policy-editor">
-                  <div class="policy-editor-toolbar"><span>JSON 配置</span><span>仅支持 13 个字段</span></div>
-                  <textarea v-model="policyText" spellcheck="false" wrap="off" aria-label="搜索策略 JSON 配置"></textarea>
-                </div>
-                <div class="policy-field-guide" aria-label="搜索策略字段说明">
-                  <div class="policy-guide-heading"><span>字段说明</span><span>配置含义</span></div>
-                  <div class="policy-guide-grid">
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">注</span>
-                      <div><div class="policy-guide-title"><strong>是否允许新用户注册</strong><code>registrationEnabled</code></div><p>true 允许注册，false 关闭注册入口。</p></div>
+                <form id="system-settings-form" class="policy-form" @submit.prevent="savePolicy">
+                  <fieldset class="policy-group">
+                    <legend>账号与首页</legend>
+                    <div class="policy-form-grid">
+                      <label class="policy-field policy-toggle"><input v-model="policyForm.showHotSearch" type="checkbox" /><span><strong>展示热门搜索</strong><small>关闭后首页不加载或展示热门搜索区域。</small></span></label>
+                      <label class="policy-field policy-toggle"><input v-model="policyForm.anonymousCustomChannels" type="checkbox" /><span><strong>允许匿名用户使用自定义频道</strong><small>关闭后自定义频道仅微信登录用户可用。</small></span></label>
+                      <label class="policy-field policy-toggle"><input v-model="policyForm.showAuthButtons" type="checkbox" /><span><strong>是否展示登录按钮</strong><small>关闭后首页顶栏不再显示登录入口，扫码登录接口同时停用。</small></span></label>
                     </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">频</span>
-                      <div><div class="policy-guide-title"><strong>匿名用户是否可使用自定义频道</strong><code>anonymousCustomChannels</code></div><p>true 允许匿名搜索自定义频道，false 仅登录用户可用。</p></div>
+                  </fieldset>
+                  <fieldset class="policy-group">
+                    <legend>会话与频道</legend>
+                    <div class="policy-form-grid">
+                      <label class="policy-field"><span><strong>会话有效天数</strong><code>sessionDays</code></span><input v-model.number="policyForm.sessionDays" type="number" min="1" max="365" required /><small>范围：1–365 天</small></label>
+                      <label class="policy-field"><span><strong>自定义频道数量上限</strong><code>customChannelLimit</code></span><input v-model.number="policyForm.customChannelLimit" type="number" min="0" max="100" required /><small>范围：0–100 个</small></label>
                     </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">显</span>
-                      <div><div class="policy-guide-title"><strong>是否展示登录注册按钮</strong><code>showAuthButtons</code></div><p>true 展示首页登录 / 注册入口，false 隐藏未登录用户的入口。</p></div>
+                  </fieldset>
+                  <fieldset class="policy-group">
+                    <legend>搜索运行</legend>
+                    <div class="policy-form-grid">
+                      <label class="policy-field"><span><strong>默认并发请求数</strong><code>defaultConcurrency</code></span><input v-model.number="policyForm.defaultConcurrency" type="number" min="1" max="16" required /><small>范围：1–16</small></label>
+                      <label class="policy-field"><span><strong>请求 / transform 超时</strong><code>requestTimeoutMs</code></span><input v-model.number="policyForm.requestTimeoutMs" type="number" min="1000" max="60000" required /><small>范围：1000–60000 ms</small></label>
+                      <label class="policy-field"><span><strong>来源熔断失败次数</strong><code>circuitBreakerMaxFailures</code></span><input v-model.number="policyForm.circuitBreakerMaxFailures" type="number" min="1" max="20" required /><small>范围：1–20 次</small></label>
+                      <label class="policy-field"><span><strong>整次搜索超时</strong><code>searchTimeoutMs</code></span><input v-model.number="policyForm.searchTimeoutMs" type="number" min="1000" max="120000" required /><small>范围：1000–120000 ms</small></label>
+                      <label class="policy-field"><span><strong>搜索缓存时长</strong><code>cacheTtlMinutes</code></span><input v-model.number="policyForm.cacheTtlMinutes" type="number" min="1" max="10" required /><small>范围：1–10 分钟</small></label>
                     </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">时</span>
-                      <div><div class="policy-guide-title"><strong>统一会话有效天数</strong><code>sessionDays</code></div><p>匿名用户和注册用户共用，范围为 1–365 天。</p></div>
+                  </fieldset>
+                  <fieldset class="policy-group">
+                    <legend>搜索限流</legend>
+                    <div class="policy-form-grid">
+                      <label class="policy-field"><span><strong>匿名账户限流窗口</strong><code>anonymousSearchRateLimitWindowSeconds</code></span><input v-model.number="policyForm.anonymousSearchRateLimitWindowSeconds" type="number" min="10" max="3600" required /><small>范围：10–3600 秒</small></label>
+                      <label class="policy-field"><span><strong>匿名账户单 Session 上限</strong><code>anonymousSearchRateLimitPerSession</code></span><input v-model.number="policyForm.anonymousSearchRateLimitPerSession" type="number" min="1" max="300" required /><small>范围：1–300 次</small></label>
+                      <label class="policy-field"><span><strong>匿名账户单 IP 上限</strong><code>anonymousSearchRateLimitPerIp</code></span><input v-model.number="policyForm.anonymousSearchRateLimitPerIp" type="number" min="1" max="1000" required /><small>范围：1–1000 次</small></label>
+                      <label class="policy-field"><span><strong>登录账户限流窗口</strong><code>loggedSearchRateLimitWindowSeconds</code></span><input v-model.number="policyForm.loggedSearchRateLimitWindowSeconds" type="number" min="10" max="3600" required /><small>范围：10–3600 秒</small></label>
+                      <label class="policy-field"><span><strong>登录账户单 Session 上限</strong><code>loggedSearchRateLimitPerSession</code></span><input v-model.number="policyForm.loggedSearchRateLimitPerSession" type="number" min="1" max="300" required /><small>范围：1–300 次</small></label>
+                      <label class="policy-field"><span><strong>登录账户单 IP 上限</strong><code>loggedSearchRateLimitPerIp</code></span><input v-model.number="policyForm.loggedSearchRateLimitPerIp" type="number" min="1" max="1000" required /><small>范围：1–1000 次</small></label>
                     </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">数</span>
-                      <div><div class="policy-guide-title"><strong>统一自定义频道数量上限</strong><code>customChannelLimit</code></div><p>匿名用户和注册用户共用，范围为 0–100 个。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">并</span>
-                      <div><div class="policy-guide-title"><strong>默认并发请求数</strong><code>defaultConcurrency</code></div><p>未单独指定时使用，范围为 1–16。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">时</span>
-                      <div><div class="policy-guide-title"><strong>统一请求 / transform 超时（ms）</strong><code>requestTimeoutMs</code></div><p>统一控制请求和 transform 执行超时，范围为 1000–60000 毫秒。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">断</span>
-                      <div><div class="policy-guide-title"><strong>来源失败多少次后熔断</strong><code>circuitBreakerMaxFailures</code></div><p>同一来源在 5 分钟失败达到此次数后暂时停止请求，范围为 1–20 次，默认 5 次；成功请求不会让突发失败绕过熔断。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">总</span>
-                      <div><div class="policy-guide-title"><strong>整次搜索超时（ms）</strong><code>searchTimeoutMs</code></div><p>控制一轮搜索最多执行多久，范围为 1000–120000 毫秒；超时后返回已完成的资源源结果。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">缓</span>
-                      <div><div class="policy-guide-title"><strong>搜索缓存时长（分钟）</strong><code>cacheTtlMinutes</code></div><p>相同关键词的完整搜索结果在服务端复用，范围为 1–10 分钟。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">窗</span>
-                      <div><div class="policy-guide-title"><strong>搜索限流窗口（秒）</strong><code>searchRateLimitWindowSeconds</code></div><p>Session 和 IP 限流共用的固定窗口，范围为 10–3600 秒。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">会</span>
-                      <div><div class="policy-guide-title"><strong>单 Session 搜索次数上限</strong><code>searchRateLimitPerSession</code></div><p>同一会话在一个限流窗口内最多搜索次数，范围为 1–300 次。</p></div>
-                    </div>
-                    <div class="policy-guide-item">
-                      <span class="policy-guide-icon">IP</span>
-                      <div><div class="policy-guide-title"><strong>单 IP 搜索次数上限</strong><code>searchRateLimitPerIp</code></div><p>同一 IP 在一个限流窗口内最多搜索次数，范围为 1–1000 次。</p></div>
-                    </div>
+                  </fieldset>
+                </form>
+              </section>
+              <section class="feature-card admin-account-card" aria-labelledby="wechat-mini-title">
+                <div class="policy-card-header">
+                  <div class="policy-card-copy">
+                    <h2 id="wechat-mini-title">微信小程序</h2>
+                    <p>网站扫码登录与小程序登录共用这份凭据，保存在数据库里，保存后立即生效，不需要改环境变量或重启服务。</p>
+                  </div>
+                  <div class="policy-card-actions">
+                    <span class="policy-count">{{ wechatSettings.configured ? '已配置' : '未配置' }}</span>
                   </div>
                 </div>
-                <p class="field-help">字段说明放在编辑器外，JSON 内容保持合法且只包含以上 13 个字段。</p>
+                <form class="admin-account-form" @submit.prevent="saveWechatSettings">
+                  <label class="policy-field"><span><strong>AppID</strong><small>微信公众平台 → 开发管理 → 开发设置</small></span><input v-model.trim="wechatForm.appId" type="text" maxlength="64" autocomplete="off" placeholder="wx 开头的 AppID" /></label>
+                  <label class="policy-field"><span><strong>AppSecret</strong><small>{{ wechatSecretHint }}</small></span><input v-model="wechatForm.secret" type="password" maxlength="128" autocomplete="new-password" :placeholder="wechatSettings.secretConfigured ? '留空表示不修改已保存的密钥' : '填写 AppSecret'" /></label>
+                  <label class="policy-field"><span><strong>扫码页面</strong><small>小程序码指向的页面，不带前导斜杠</small></span><input v-model.trim="wechatForm.qrPage" type="text" maxlength="128" placeholder="pages/login/index" /></label>
+                  <label class="policy-field"><span><strong>打开版本</strong><small>小程序还没发布时选体验版，否则扫出来的码打不开页面</small></span>
+                    <select v-model="wechatForm.envVersion">
+                      <option value="release">release（正式版）</option>
+                      <option value="trial">trial（体验版）</option>
+                      <option value="develop">develop（开发版）</option>
+                    </select>
+                  </label>
+                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存微信配置' }}</button></div>
+                </form>
+              </section>
+              <section class="feature-card admin-account-card" aria-labelledby="admin-account-title">
+                <div class="policy-card-header">
+                  <div class="policy-card-copy"><h2 id="admin-account-title">管理员账号</h2><p>修改后台登录用户名或密码。当前会话不会被立即退出。</p></div>
+                </div>
+                <form class="admin-account-form" @submit.prevent="saveAdminAccount">
+                  <label class="policy-field"><span><strong>管理员用户名</strong><small>4–32 位字母、数字或下划线</small></span><input v-model.trim="adminAccount.username" type="text" minlength="4" maxlength="32" autocomplete="username" required /></label>
+                  <label class="policy-field"><span><strong>新密码</strong><small>留空表示保持当前密码不变，至少 6 位</small></span><input v-model="adminAccount.password" type="password" minlength="6" maxlength="128" autocomplete="new-password" placeholder="不修改密码请留空" /></label>
+                  <label v-if="adminAccount.password" class="policy-field"><span><strong>确认新密码</strong></span><input v-model="adminAccount.confirmPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required /></label>
+                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !adminAccount.username"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存管理员账号' }}</button></div>
+                </form>
               </section>
             </template>
           </section>
@@ -253,7 +261,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AdminAccessGate from "./AdminAccessGate.vue";
-import ConsoleIcon from "../upstreams/ConsoleIcon.vue";
+import ConsoleIcon from "../sources/ConsoleIcon.vue";
 
 import AdminPagination from "./AdminPagination.vue";
 const auth = useAuth();
@@ -261,9 +269,9 @@ type Feature = "users" | "logs" | "policies";
 type AdminUser = { id: number; username: string; nickname?: string | null; role?: "admin" | "user"; status: "active" | "disabled"; channels?: string[]; channelCount?: number; lastLoginIp?: string | null; createdAt?: number; created_at?: number };
 type AdminLog = { id: number; keyword?: string; kw?: string; username?: string; userId?: number | null; sessionId?: number | string; ip?: string; scope?: string; searchScope?: string; channels?: string[]; createdAt?: number; created_at?: number };
 type UserPolicy = {
-  registrationEnabled: boolean;
-  showAuthButtons: boolean;
+  showHotSearch: boolean;
   anonymousCustomChannels: boolean;
+  showAuthButtons: boolean;
   sessionDays: number;
   customChannelLimit: number;
   defaultConcurrency: number;
@@ -271,15 +279,18 @@ type UserPolicy = {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
-  searchRateLimitWindowSeconds: number;
-  searchRateLimitPerSession: number;
-  searchRateLimitPerIp: number;
+  anonymousSearchRateLimitWindowSeconds: number;
+  anonymousSearchRateLimitPerSession: number;
+  anonymousSearchRateLimitPerIp: number;
+  loggedSearchRateLimitWindowSeconds: number;
+  loggedSearchRateLimitPerSession: number;
+  loggedSearchRateLimitPerIp: number;
 };
 
 const DEFAULT_POLICY: UserPolicy = {
-  registrationEnabled: true,
-  showAuthButtons: true,
+  showHotSearch: true,
   anonymousCustomChannels: false,
+  showAuthButtons: true,
   sessionDays: 30,
   customChannelLimit: 10,
   defaultConcurrency: 4,
@@ -287,18 +298,33 @@ const DEFAULT_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
-  searchRateLimitWindowSeconds: 60,
-  searchRateLimitPerSession: 30,
-  searchRateLimitPerIp: 120,
+  anonymousSearchRateLimitWindowSeconds: 60,
+  anonymousSearchRateLimitPerSession: 20,
+  anonymousSearchRateLimitPerIp: 60,
+  loggedSearchRateLimitWindowSeconds: 60,
+  loggedSearchRateLimitPerSession: 60,
+  loggedSearchRateLimitPerIp: 240,
 };
 
 const props = defineProps<{ feature: Feature }>();
 const feature = computed(() => props.feature);
-const title = computed(() => ({ users: "用户管理", logs: "搜索日志", policies: "搜索策略" })[props.feature]);
+const title = computed(() => ({ users: "用户管理", logs: "搜索日志", policies: "系统设置" })[props.feature]);
 const checking = ref(true); const ready = ref(false); const authenticated = ref(false); const locked = ref(true);
 const loading = ref(false); const busy = ref(false); const authError = ref(""); const notice = ref(""); const noticeIsError = ref(false);
 const users = ref<AdminUser[]>([]); const logs = ref<AdminLog[]>([]); const userQuery = ref(""); const userStatus = ref(""); const logQuery = ref("");
-const policyText = ref(JSON.stringify(DEFAULT_POLICY, null, 2));
+const policyForm = ref<UserPolicy>({ ...DEFAULT_POLICY });
+const adminAccount = ref({ username: "", password: "", confirmPassword: "" });
+type WechatEnvVersion = "release" | "trial" | "develop";
+type WechatSettingsView = { appId: string; qrPage: string; envVersion: WechatEnvVersion; secretConfigured: boolean; secretLength: number; configured: boolean };
+type WechatForm = { appId: string; secret: string; qrPage: string; envVersion: WechatEnvVersion };
+const DEFAULT_WECHAT_SETTINGS: WechatSettingsView = { appId: "", qrPage: "pages/login/index", envVersion: "release", secretConfigured: false, secretLength: 0, configured: false };
+// `secret` is write-only: it is never sent back, so the form always starts blank
+// and an empty field means "keep the stored secret".
+const wechatSettings = ref<WechatSettingsView>({ ...DEFAULT_WECHAT_SETTINGS });
+const wechatForm = ref<WechatForm>({ appId: "", secret: "", qrPage: "pages/login/index", envVersion: "release" });
+const wechatSecretHint = computed(() => wechatSettings.value.secretConfigured
+  ? `已保存 ${wechatSettings.value.secretLength} 位密钥，留空表示不修改`
+  : "与 AppID 配套，仅保存在服务端，保存后不会回显");
 const newUser = ref({ username: "", password: "", nickname: "" }); const createUserOpen = ref(false); const modalError = ref(""); const usernameInput = ref<HTMLInputElement | null>(null);
 const selectedKeys = ref<string[]>([]); const page = ref(1); const pageSize = ref(20); const total = ref(0);
 const userChannelsOpen = ref(false); const userChannelsLoading = ref(false); const userChannelsError = ref(""); const selectedUserChannels = ref<{ username: string; channels: string[] } | null>(null);
@@ -349,7 +375,7 @@ async function checkStatus() {
 async function lock() {
   createUserOpen.value = false;
   try {
-    await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 });
+    await auth.logout();
   } finally {
     authenticated.value = false;
     locked.value = true;
@@ -368,11 +394,20 @@ async function loadData() {
       const result = await $fetch<any>("/api/admin/search-logs", { query: { q: logQuery.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" });
       const data = result?.data ?? result; logs.value = data.logs || data.items || []; total.value = Number(data.total || logs.value.length); page.value = Number(data.page || page.value);
     } else {
-      const result = await $fetch<any>("/api/settings/user-policy", { cache: "no-store" });
-      const loadedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(result, "policy"));
-      policyText.value = JSON.stringify(loadedPolicy, null, 2);
+      const [policyResult, accountResult, wechatResult] = await Promise.all([
+        $fetch<any>("/api/settings/user-policy", { cache: "no-store" }),
+        $fetch<any>("/api/admin/account", { cache: "no-store" }),
+        $fetch<any>("/api/settings/wechat", { cache: "no-store" }),
+      ]);
+      const loadedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(policyResult, "policy"));
+      const loadedAccount = unwrap<{ username?: string }>(accountResult, "account");
+      const loadedWechat = normalizeWechatSettings(unwrap<Partial<WechatSettingsView>>(wechatResult, "wechat"));
+      policyForm.value = loadedPolicy;
+      adminAccount.value = { username: String(loadedAccount.username || ""), password: "", confirmPassword: "" };
+      auth.showHotSearch.value = loadedPolicy.showHotSearch;
       auth.showAuthButtons.value = loadedPolicy.showAuthButtons;
-      auth.registrationEnabled.value = loadedPolicy.registrationEnabled;
+      wechatSettings.value = loadedWechat;
+      wechatForm.value = { appId: loadedWechat.appId, secret: "", qrPage: loadedWechat.qrPage, envVersion: loadedWechat.envVersion };
     }
   } catch (error: any) { if ([401, 403].includes(statusOf(error))) { authenticated.value = false; locked.value = true; } show(apiError(error), true); }
   finally { loading.value = false; }
@@ -390,7 +425,7 @@ function handleModalKeydown(event: KeyboardEvent) {
   else if (userChannelsOpen.value) closeUserChannels();
   else if (logChannelsOpen.value) closeLogChannels();
 }
-async function createUser() { if (busy.value) return; busy.value = true; try { await $fetch("/api/admin/users", { method: "POST", body: newUser.value }); newUser.value = { username: "", password: "", nickname: "" }; modalError.value = ""; createUserOpen.value = false; show("用户已创建。"); await loadData(); } catch (error: any) { modalError.value = apiError(error); if (statusOf(error) === 401) locked.value = true; } finally { busy.value = false; } }
+async function createUser() { if (busy.value) return; busy.value = true; try { await $fetch("/api/admin/users", { method: "POST", body: newUser.value }); newUser.value = { username: "", password: "", nickname: "" }; modalError.value = ""; createUserOpen.value = false; show("管理员已创建。"); await loadData(); } catch (error: any) { modalError.value = apiError(error); if (statusOf(error) === 401) locked.value = true; } finally { busy.value = false; } }
 async function openUserChannels(item: AdminUser) {
   userChannelsOpen.value = true;
   userChannelsLoading.value = true;
@@ -412,7 +447,7 @@ function openLogChannels(item: AdminLog) {
   logChannelsOpen.value = true;
 }
 function closeLogChannels() { logChannelsOpen.value = false; }
-async function userAction(item: AdminUser, action: string) { if (busy.value) return; busy.value = true; try { const id = encodeURIComponent(String(item.id)); const method = action === "delete" || action === "sessions" || action === "revoke-sessions" ? "DELETE" : "POST"; const path = action === "delete" ? `/api/admin/users/${id}` : `/api/admin/users/${id}/${action}`; await $fetch(path, { method }); show(action === "delete" ? "用户已移入回收状态。" : "操作已完成。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
+async function userAction(item: AdminUser, action: string) { if (busy.value) return; busy.value = true; try { const id = encodeURIComponent(String(item.id)); const method = action === "delete" || action === "sessions" ? "DELETE" : "POST"; const path = action === "delete" ? `/api/admin/users/${id}` : `/api/admin/users/${id}/${action}`; await $fetch(path, { method }); show(action === "delete" ? "用户已移入回收状态。" : "操作已完成。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
 async function toggleUser(item: AdminUser) { await userAction(item, item.status === "active" ? "disable" : "enable"); }
 async function revokeUser(item: AdminUser) { await userAction(item, "sessions"); }
 async function deleteUser(item: AdminUser) {
@@ -426,9 +461,9 @@ async function deleteLog(item: AdminLog) { if (busy.value || !import.meta.client
 function normalizePolicy(value: unknown): UserPolicy {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value as Partial<UserPolicy> : {};
   return {
-    registrationEnabled: typeof input.registrationEnabled === "boolean" ? input.registrationEnabled : DEFAULT_POLICY.registrationEnabled,
-    showAuthButtons: typeof input.showAuthButtons === "boolean" ? input.showAuthButtons : DEFAULT_POLICY.showAuthButtons,
+    showHotSearch: typeof input.showHotSearch === "boolean" ? input.showHotSearch : DEFAULT_POLICY.showHotSearch,
     anonymousCustomChannels: typeof input.anonymousCustomChannels === "boolean" ? input.anonymousCustomChannels : DEFAULT_POLICY.anonymousCustomChannels,
+    showAuthButtons: typeof input.showAuthButtons === "boolean" ? input.showAuthButtons : DEFAULT_POLICY.showAuthButtons,
     sessionDays: typeof input.sessionDays === "number" && Number.isInteger(input.sessionDays) ? input.sessionDays : DEFAULT_POLICY.sessionDays,
     customChannelLimit: typeof input.customChannelLimit === "number" && Number.isInteger(input.customChannelLimit) ? input.customChannelLimit : DEFAULT_POLICY.customChannelLimit,
     defaultConcurrency: typeof input.defaultConcurrency === "number" && Number.isInteger(input.defaultConcurrency) ? input.defaultConcurrency : DEFAULT_POLICY.defaultConcurrency,
@@ -436,49 +471,86 @@ function normalizePolicy(value: unknown): UserPolicy {
     circuitBreakerMaxFailures: typeof input.circuitBreakerMaxFailures === "number" && Number.isInteger(input.circuitBreakerMaxFailures) ? input.circuitBreakerMaxFailures : DEFAULT_POLICY.circuitBreakerMaxFailures,
     searchTimeoutMs: typeof input.searchTimeoutMs === "number" && Number.isInteger(input.searchTimeoutMs) ? input.searchTimeoutMs : DEFAULT_POLICY.searchTimeoutMs,
     cacheTtlMinutes: typeof input.cacheTtlMinutes === "number" && Number.isInteger(input.cacheTtlMinutes) ? input.cacheTtlMinutes : DEFAULT_POLICY.cacheTtlMinutes,
-    searchRateLimitWindowSeconds: typeof input.searchRateLimitWindowSeconds === "number" && Number.isInteger(input.searchRateLimitWindowSeconds) ? input.searchRateLimitWindowSeconds : DEFAULT_POLICY.searchRateLimitWindowSeconds,
-    searchRateLimitPerSession: typeof input.searchRateLimitPerSession === "number" && Number.isInteger(input.searchRateLimitPerSession) ? input.searchRateLimitPerSession : DEFAULT_POLICY.searchRateLimitPerSession,
-    searchRateLimitPerIp: typeof input.searchRateLimitPerIp === "number" && Number.isInteger(input.searchRateLimitPerIp) ? input.searchRateLimitPerIp : DEFAULT_POLICY.searchRateLimitPerIp,
+    anonymousSearchRateLimitWindowSeconds: typeof input.anonymousSearchRateLimitWindowSeconds === "number" && Number.isInteger(input.anonymousSearchRateLimitWindowSeconds) ? input.anonymousSearchRateLimitWindowSeconds : DEFAULT_POLICY.anonymousSearchRateLimitWindowSeconds,
+    anonymousSearchRateLimitPerSession: typeof input.anonymousSearchRateLimitPerSession === "number" && Number.isInteger(input.anonymousSearchRateLimitPerSession) ? input.anonymousSearchRateLimitPerSession : DEFAULT_POLICY.anonymousSearchRateLimitPerSession,
+    anonymousSearchRateLimitPerIp: typeof input.anonymousSearchRateLimitPerIp === "number" && Number.isInteger(input.anonymousSearchRateLimitPerIp) ? input.anonymousSearchRateLimitPerIp : DEFAULT_POLICY.anonymousSearchRateLimitPerIp,
+    loggedSearchRateLimitWindowSeconds: typeof input.loggedSearchRateLimitWindowSeconds === "number" && Number.isInteger(input.loggedSearchRateLimitWindowSeconds) ? input.loggedSearchRateLimitWindowSeconds : DEFAULT_POLICY.loggedSearchRateLimitWindowSeconds,
+    loggedSearchRateLimitPerSession: typeof input.loggedSearchRateLimitPerSession === "number" && Number.isInteger(input.loggedSearchRateLimitPerSession) ? input.loggedSearchRateLimitPerSession : DEFAULT_POLICY.loggedSearchRateLimitPerSession,
+    loggedSearchRateLimitPerIp: typeof input.loggedSearchRateLimitPerIp === "number" && Number.isInteger(input.loggedSearchRateLimitPerIp) ? input.loggedSearchRateLimitPerIp : DEFAULT_POLICY.loggedSearchRateLimitPerIp,
   };
 }
 
-function policyPayload(): UserPolicy {
-  let parsed: unknown;
-  try { parsed = JSON.parse(policyText.value); } catch { throw new Error("策略配置必须是合法 JSON。"); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("策略配置必须是 JSON 对象。");
-  const input = parsed as Record<string, unknown>;
-  const allowed = Object.keys(DEFAULT_POLICY);
-  const unknownKey = Object.keys(input).find((key) => !allowed.includes(key));
-  if (unknownKey) throw new Error(`不支持的策略项: ${unknownKey}`);
-  const missingKey = allowed.find((key) => !Object.prototype.hasOwnProperty.call(input, key));
-  if (missingKey) throw new Error(`缺少策略项: ${missingKey}`);
-  if (typeof input.registrationEnabled !== "boolean") throw new Error("registrationEnabled 必须是布尔值。");
-  if (typeof input.showAuthButtons !== "boolean") throw new Error("showAuthButtons 必须是布尔值。");
-  if (typeof input.anonymousCustomChannels !== "boolean") throw new Error("anonymousCustomChannels 必须是布尔值。");
-  if (!Number.isInteger(input.sessionDays) || Number(input.sessionDays) < 1 || Number(input.sessionDays) > 365) throw new Error("sessionDays 必须是 1 到 365 之间的整数。");
-  if (!Number.isInteger(input.customChannelLimit) || Number(input.customChannelLimit) < 0 || Number(input.customChannelLimit) > 100) throw new Error("customChannelLimit 必须是 0 到 100 之间的整数。");
-  if (!Number.isInteger(input.defaultConcurrency) || Number(input.defaultConcurrency) < 1 || Number(input.defaultConcurrency) > 16) throw new Error("defaultConcurrency 必须是 1 到 16 之间的整数。");
-  if (!Number.isInteger(input.requestTimeoutMs) || Number(input.requestTimeoutMs) < 1000 || Number(input.requestTimeoutMs) > 60000) throw new Error("requestTimeoutMs 必须是 1000 到 60000 之间的整数。");
-  if (!Number.isInteger(input.circuitBreakerMaxFailures) || Number(input.circuitBreakerMaxFailures) < 1 || Number(input.circuitBreakerMaxFailures) > 20) throw new Error("circuitBreakerMaxFailures 必须是 1 到 20 之间的整数。");
-  if (!Number.isInteger(input.searchTimeoutMs) || Number(input.searchTimeoutMs) < 1000 || Number(input.searchTimeoutMs) > 120000) throw new Error("searchTimeoutMs 必须是 1000 到 120000 之间的整数。");
-  if (!Number.isInteger(input.cacheTtlMinutes) || Number(input.cacheTtlMinutes) < 1 || Number(input.cacheTtlMinutes) > 10) throw new Error("cacheTtlMinutes 必须是 1 到 10 之间的整数。");
-  if (!Number.isInteger(input.searchRateLimitWindowSeconds) || Number(input.searchRateLimitWindowSeconds) < 10 || Number(input.searchRateLimitWindowSeconds) > 3600) throw new Error("searchRateLimitWindowSeconds 必须是 10 到 3600 之间的整数。");
-  if (!Number.isInteger(input.searchRateLimitPerSession) || Number(input.searchRateLimitPerSession) < 1 || Number(input.searchRateLimitPerSession) > 300) throw new Error("searchRateLimitPerSession 必须是 1 到 300 之间的整数。");
-  if (!Number.isInteger(input.searchRateLimitPerIp) || Number(input.searchRateLimitPerIp) < 1 || Number(input.searchRateLimitPerIp) > 1000) throw new Error("searchRateLimitPerIp 必须是 1 到 1000 之间的整数。");
-  return input as UserPolicy;
+function normalizeWechatSettings(value: unknown): WechatSettingsView {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as Partial<WechatSettingsView> : {};
+  const envVersion = input.envVersion === "trial" || input.envVersion === "develop" ? input.envVersion : "release";
+  return {
+    appId: typeof input.appId === "string" ? input.appId : DEFAULT_WECHAT_SETTINGS.appId,
+    qrPage: typeof input.qrPage === "string" && input.qrPage ? input.qrPage : DEFAULT_WECHAT_SETTINGS.qrPage,
+    envVersion,
+    secretConfigured: input.secretConfigured === true,
+    secretLength: typeof input.secretLength === "number" ? input.secretLength : 0,
+    configured: input.configured === true,
+  };
 }
 
 async function savePolicy() {
   if (busy.value) return;
-  let payload: UserPolicy;
-  try { payload = policyPayload(); } catch (error: any) { show(error.message, true); return; }
   busy.value = true;
   try {
-    const result = await $fetch<any>("/api/settings/user-policy", { method: "PUT", body: payload });
+    const result = await $fetch<any>("/api/settings/user-policy", { method: "PUT", body: policyForm.value });
     const savedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(result, "policy"));
-    policyText.value = JSON.stringify(savedPolicy, null, 2);
+    policyForm.value = savedPolicy;
+    auth.showHotSearch.value = savedPolicy.showHotSearch;
     auth.showAuthButtons.value = savedPolicy.showAuthButtons;
-    show("策略已保存。");
+    show("搜索配置已保存。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function saveWechatSettings() {
+  if (busy.value) return;
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/settings/wechat", {
+      method: "PUT",
+      body: {
+        appId: wechatForm.value.appId,
+        // An empty field means "keep the stored secret"; the API never returns
+        // the current value, so the console cannot send it back unchanged.
+        secret: wechatForm.value.secret || undefined,
+        qrPage: wechatForm.value.qrPage,
+        envVersion: wechatForm.value.envVersion,
+      },
+    });
+    const saved = normalizeWechatSettings(unwrap<Partial<WechatSettingsView>>(result, "wechat"));
+    wechatSettings.value = saved;
+    wechatForm.value = { appId: saved.appId, secret: "", qrPage: saved.qrPage, envVersion: saved.envVersion };
+    show(saved.configured
+      ? "微信配置已保存，扫码登录与小程序登录立即生效。"
+      : "已保存，但 AppID 或 AppSecret 仍为空，微信登录暂不可用。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function saveAdminAccount() {
+  if (busy.value) return;
+  if (adminAccount.value.password && adminAccount.value.password !== adminAccount.value.confirmPassword) {
+    show("两次输入的新密码不一致。", true);
+    return;
+  }
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/admin/account", {
+      method: "PUT",
+      body: {
+        username: adminAccount.value.username,
+        password: adminAccount.value.password || undefined,
+      },
+    });
+    const saved = unwrap<{ username?: string }>(result, "account");
+    adminAccount.value = { username: String(saved.username || adminAccount.value.username), password: "", confirmPassword: "" };
+    if (auth.user.value && saved.username) auth.user.value = { ...auth.user.value, username: saved.username };
+    show("管理员账号已保存，新的用户名和密码可用于下次登录。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }
 }
@@ -489,7 +561,7 @@ onMounted(() => { checkStatus(); window.addEventListener("keydown", handleModalK
 onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown); document.body.style.overflow = ""; });
 </script>
 
-<style src="../../assets/upstream-console.css"></style>
+<style src="../../assets/source-console.css"></style>
 
 <style scoped>
 .feature-content { width: 100%; margin: 0; padding: 0; }
@@ -593,7 +665,7 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 .admin-data-table tbody tr { transition: background 140ms ease, box-shadow 140ms ease; }
 .admin-data-table .source-name { color: #1f2937; font-size: 12px; font-weight: 700; line-height: 1.35; }
 .admin-data-table .source-description { margin: 0; color: #64748b; font-size: 10px; line-height: 1.4; }
-.admin-data-table .row-actions { gap: 7px; justify-content: flex-end; }
+.admin-data-table .row-actions { gap: 7px; justify-content: flex-start; }
 .admin-data-table .row-actions .button.tiny, .admin-data-table .icon-button { border-radius: 8px; }
 
 .user-table th:nth-child(1), .user-table td:nth-child(1) { width: 42px; }

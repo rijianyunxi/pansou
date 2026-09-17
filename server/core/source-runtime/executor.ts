@@ -2,7 +2,6 @@ import type { SearchResult } from "../types/models";
 import { executeSourceTransform } from "./runtime";
 import type {
   SourceDefinition,
-  SourceExecutionBudgetOptions,
   SourceExecutionResult,
   SourceExecutionTrace,
   SourceValue,
@@ -14,26 +13,17 @@ import {
 } from "./validation";
 import { executeSafeHttp, type SafeHttpResponse } from "../http/safeHttpExecutor";
 import { getUnifiedRequestTimeoutMs } from "../services/timeoutPolicy";
+import {
+  REDACTED,
+  isSensitiveKey,
+  redactSensitiveValue,
+} from "../utils/redaction";
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024;
-/** Cumulative request and response payload budget. */
-const DEFAULT_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const RAW_PREVIEW_LIMIT = 100_000;
 
 const text = (value: unknown): string =>
   value == null ? "" : typeof value === "string" ? value : String(value);
-
-
-/** Raised when a per-call budget is exhausted; the message names the budget path. */
-export class ExecutionBudgetError extends Error {
-  constructor(
-    message: string,
-    readonly path: "budget.maxTotalBytes"
-  ) {
-    super(message);
-    this.name = "ExecutionBudgetError";
-  }
-}
 
 
 interface RenderedRequest {
@@ -41,17 +31,6 @@ interface RenderedRequest {
   headers: Record<string, string>;
   body?: string;
   method: "GET" | "POST";
-}
-
-const DEBUG_SENSITIVE_KEY = /(?:authorization|cookie|token|api[-_]?key|secret|password|passwd|credential|signature)/i;
-
-function redactDebugValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => redactDebugValue(item));
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-    key,
-    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactDebugValue(child),
-  ]));
 }
 
 function requestDebugSnapshot(
@@ -62,14 +41,14 @@ function requestDebugSnapshot(
   const query: Record<string, string | string[]> = {};
   for (const key of new Set(url.searchParams.keys())) {
     const values = url.searchParams.getAll(key).map((value) => (
-      DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : value
+      isSensitiveKey(key) ? REDACTED : value
     ));
     query[key] = values.length > 1 ? values : values[0] || "";
-    if (DEBUG_SENSITIVE_KEY.test(key)) url.searchParams.set(key, "[REDACTED]");
+    if (isSensitiveKey(key)) url.searchParams.set(key, REDACTED);
   }
   const headers = Object.fromEntries(Object.entries(rendered.headers).map(([key, value]) => [
     key,
-    DEBUG_SENSITIVE_KEY.test(key) ? "[REDACTED]" : value,
+    isSensitiveKey(key) ? REDACTED : value,
   ]));
   let body: unknown = undefined;
   if (rendered.body !== undefined) {
@@ -83,7 +62,7 @@ function requestDebugSnapshot(
     } catch {
       body = rendered.body;
     }
-    body = redactDebugValue(body);
+    body = redactSensitiveValue(body);
   }
   return {
     url: url.toString(),
@@ -102,8 +81,6 @@ export async function executeSource(
   options: {
     signal?: AbortSignal;
     limit?: number;
-    /** Per-source response size budget. */
-    budget?: SourceExecutionBudgetOptions;
     /** Receives the completed request trace, including failures. */
     onTrace?: (trace: SourceExecutionTrace) => void;
     /** Template values supplied by the caller, e.g. a validated channel. */
@@ -182,22 +159,7 @@ export async function executeSource(
     options.onTrace?.(trace);
   };
 
-  // ---- Per-source budget for the single request ----
-  const maxBytes = Math.max(
-    1,
-    Math.floor(options.budget?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES)
-  );
-  let bytesUsed = 0;
-  const recordTransfer = (responseBytes: number, requestBody?: string): void => {
-    bytesUsed += responseBytes + (requestBody ? Buffer.byteLength(requestBody) : 0);
-    if (bytesUsed > maxBytes) {
-      throw new ExecutionBudgetError(
-        `解析器传输预算超限: budget.maxTotalBytes=${maxBytes}，本次调用已传输 ${bytesUsed} 字节`,
-        "budget.maxTotalBytes"
-      );
-    }
-  };
-
+  // ---- Single request and response transform ----
   const fetchRequest = async (
     rendered: RenderedRequest,
     stage: string,
@@ -226,7 +188,6 @@ export async function executeSource(
           allowedDomains: request.allowedDomains,
           allowHttp: request.allowInsecureHttp,
         });
-        recordTransfer(payload.bytes, rendered.body);
         recordTrace({
           stage,
           url: payload.url.toString(),

@@ -367,7 +367,7 @@
 </template>
 
 <script setup lang="ts">
-import ConsoleIcon from "../upstreams/ConsoleIcon.vue";
+import ConsoleIcon from "../sources/ConsoleIcon.vue";
 import {
   STATE_LABELS,
   STATE_TONES,
@@ -451,7 +451,7 @@ const settingsDraft = ref<{
 const sourceOptions = computed(() =>
   rows.value
     .filter((row) => !row.trashed)
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 );
 
 function sourceSelectionKey(row: MonitorRow): string {
@@ -563,7 +563,7 @@ async function loadSearchSettings() {
 
 async function setSourceEnabled(row: MonitorRow, enabled: boolean) {
   const response = await $fetch<{ code?: number; message?: string }>(
-    `/api/settings/upstreams/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
+    `/api/settings/sources/${encodeURIComponent(row.id)}/${enabled ? "enable" : "disable"}`,
     { method: "POST" },
   );
   if ((response.code ?? 0) !== 0) throw new Error(response.message || "操作未被接受");
@@ -696,7 +696,7 @@ async function confirmDeleteSource() {
   deleteBusy.value = true;
   const snapshot = rows.value;
   try {
-    await $fetch(`/api/settings/upstreams/${encodeURIComponent(target.id)}`, {
+    await $fetch(`/api/settings/sources/${encodeURIComponent(target.id)}`, {
       method: "DELETE",
       body: { confirmation: target.id, actor: "monitor-console" },
     });

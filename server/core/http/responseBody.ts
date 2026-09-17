@@ -4,7 +4,7 @@ export function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-/** Best-effort cleanup: an upstream cancellation failure is not the root error. */
+/** Best-effort cleanup: an source cancellation failure is not the root error. */
 export function discardResponseBody(response: Response): void {
   if (response.body && !response.body.locked && !response.bodyUsed) {
     void response.body.cancel().catch(() => undefined);

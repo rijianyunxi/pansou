@@ -1,18 +1,20 @@
 import { createError, setHeader, type H3Event } from "h3";
 import { cleanupUserData, getUserPolicy, type UserPolicy } from "../core/services/policyService";
-import { listUnifiedUpstreams } from "../core/services/upstreamCatalog";
-import { getSqliteDatabase } from "../core/storage/sqlite";
-import { getStoredChannels, getStoredSessionChannels, getUserSession, type UserSessionContext } from "./userAuth";
 import { searchRateLimiter } from "../core/security/rateLimit";
-import { prepareSearch, type PreparedSearchRequest } from "./executeSearch";
+import { listUnifiedSources } from "../core/services/sourceCatalog";
+import { getSqliteDatabase } from "../core/storage/sqlite";
 import { normalizeTelegramChannels } from "../../utils/telegramChannels";
 import { getClientIp } from "./clientIp";
+import { prepareSearch, type PreparedSearch } from "./executeSearch";
+import { getStoredChannels, getStoredSessionChannels, getUserSession, type UserSessionContext } from "./userAuth";
+
+export type SearchScope = "system" | "custom_channels";
 
 export interface AuthorizedSearch {
-  prepared: PreparedSearchRequest;
+  prepared: PreparedSearch;
   context: UserSessionContext;
   policy: UserPolicy;
-  scope: "system" | "custom_channels";
+  scope: SearchScope;
   channels: string[];
   sourceIds: string[];
 }
@@ -22,21 +24,36 @@ function deny(message: string, statusCode = 403): never {
 }
 
 function authorizeSearchRateLimit(event: H3Event, context: UserSessionContext, policy: UserPolicy): void {
-  const windowMs = policy.searchRateLimitWindowSeconds * 1000;
+  const accountType = context.user ? "logged" : "anonymous";
+  // Logged-in and anonymous callers have separate budgets; pick the tier once
+  // instead of branching on every individual limit.
+  const tier = context.user
+    ? {
+        windowSeconds: policy.loggedSearchRateLimitWindowSeconds,
+        sessionLimit: policy.loggedSearchRateLimitPerSession,
+        ipLimit: policy.loggedSearchRateLimitPerIp,
+      }
+    : {
+        windowSeconds: policy.anonymousSearchRateLimitWindowSeconds,
+        sessionLimit: policy.anonymousSearchRateLimitPerSession,
+        ipLimit: policy.anonymousSearchRateLimitPerIp,
+      };
+  const windowMs = tier.windowSeconds * 1000;
   const ip = getClientIp(event);
-  const sessionDecision = searchRateLimiter.check(`search:session:${context.session.id}`, {
-    limit: policy.searchRateLimitPerSession,
+  const sessionDecision = searchRateLimiter.check(`search:${accountType}:session:${context.session.id}`, {
+    limit: tier.sessionLimit,
     windowMs,
   });
-  const ipDecision = searchRateLimiter.check(`search:ip:${ip}`, {
-    limit: policy.searchRateLimitPerIp,
+  const ipDecision = searchRateLimiter.check(`search:${accountType}:ip:${ip}`, {
+    limit: tier.ipLimit,
     windowMs,
   });
-  const remaining = Math.min(sessionDecision.remaining, ipDecision.remaining);
-  setHeader(event, "X-RateLimit-Remaining", String(remaining));
-  setHeader(event, "X-RateLimit-Session-Limit", String(policy.searchRateLimitPerSession));
+  setHeader(event, "X-RateLimit-Account-Type", accountType);
+  setHeader(event, "X-RateLimit-Remaining", String(Math.min(sessionDecision.remaining, ipDecision.remaining)));
+  setHeader(event, "X-RateLimit-Window-Seconds", String(tier.windowSeconds));
+  setHeader(event, "X-RateLimit-Session-Limit", String(tier.sessionLimit));
   setHeader(event, "X-RateLimit-Session-Remaining", String(sessionDecision.remaining));
-  setHeader(event, "X-RateLimit-IP-Limit", String(policy.searchRateLimitPerIp));
+  setHeader(event, "X-RateLimit-IP-Limit", String(tier.ipLimit));
   setHeader(event, "X-RateLimit-IP-Remaining", String(ipDecision.remaining));
 
   if (sessionDecision.allowed && ipDecision.allowed) return;
@@ -45,56 +62,57 @@ function authorizeSearchRateLimit(event: H3Event, context: UserSessionContext, p
   throw createError({ statusCode: 429, statusMessage: "搜索请求过于频繁，请稍后再试" });
 }
 
-function sourceSnapshot(prepared: PreparedSearchRequest): string[] {
+/** Which configured sources a search would actually load, recorded for audit. */
+function sourceSnapshot(prepared: PreparedSearch): string[] {
   if (prepared.request.channels !== undefined) return [];
-  const configured = listUnifiedUpstreams();
-  return prepared.effective.sourceIds?.length
-    ? configured.filter((source) => prepared.effective.sourceIds!.includes(source.id)).map((source) => source.id)
+  const configured = listUnifiedSources();
+  const selected = prepared.effective.sourceIds;
+  return selected?.length
+    ? configured.filter((source) => selected.includes(source.id)).map((source) => source.id)
     : configured.map((source) => source.id);
 }
 
 function searchScopeAndChannels(
-  prepared: PreparedSearchRequest,
+  prepared: PreparedSearch,
   context: UserSessionContext,
   policy: UserPolicy,
-): { prepared: PreparedSearchRequest; scope: "system" | "custom_channels"; channels: string[] } {
-  const requested = prepared.request.channels;
-  if (requested === undefined) return { prepared, scope: "system", channels: [] };
-  if (context.user) {
-    const stored = normalizeTelegramChannels(getStoredChannels(context.user));
-    if (stored.length > policy.customChannelLimit) deny("已保存的自定义频道超过当前配额，请先删除部分频道");
-    if (!stored.length) deny("请先添加至少一个公开频道");
-    // The request only selects custom-channel mode. The actual channel list is
-    // always loaded from the authenticated user's row, never trusted from JSON.
-    const nextPrepared = {
-      ...prepared,
-      request: { ...prepared.request, channels: stored },
-    } as PreparedSearchRequest;
-    return { prepared: nextPrepared, scope: "custom_channels", channels: stored };
+): { prepared: PreparedSearch; scope: SearchScope; channels: string[] } {
+  if (prepared.request.channels === undefined) {
+    return { prepared, scope: "system", channels: [] };
   }
-
-  if (!policy.anonymousCustomChannels) deny("自定义频道仅对登录用户开放，请先登录或注册。");
-  const stored = normalizeTelegramChannels(getStoredSessionChannels(context.session));
+  // The request only selects custom-channel mode. The actual channel list is
+  // always read back from the server-side store (the account row for a
+  // logged-in caller, the anonymous session otherwise) and never trusted from
+  // client JSON.
+  const stored = context.user
+    ? normalizeTelegramChannels(getStoredChannels(context.user))
+    : policy.anonymousCustomChannels
+      ? normalizeTelegramChannels(getStoredSessionChannels(context.session))
+      : deny("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。");
   if (stored.length > policy.customChannelLimit) deny("已保存的自定义频道超过当前配额，请先删除部分频道");
   if (!stored.length) deny("请先添加至少一个公开频道");
-  // Anonymous custom channels are persisted on the anonymous session as well;
-  // do not trust a client-supplied channel list when executing a search.
-  const nextPrepared = {
-    ...prepared,
-    request: { ...prepared.request, channels: stored },
-  } as PreparedSearchRequest;
-  return { prepared: nextPrepared, scope: "custom_channels", channels: stored };
+  return {
+    prepared: { ...prepared, request: { ...prepared.request, channels: stored } },
+    scope: "custom_channels",
+    channels: stored,
+  };
 }
 
-function writeSearchLog(event: H3Event, context: UserSessionContext, prepared: PreparedSearchRequest, scope: "system" | "custom_channels", channels: string[], sourceIds: string[]): void {
-  const ip = getClientIp(event);
+function writeSearchLog(
+  event: H3Event,
+  context: UserSessionContext,
+  prepared: PreparedSearch,
+  scope: SearchScope,
+  channels: string[],
+  sourceIds: string[],
+): void {
   try {
     getSqliteDatabase().run(
       "INSERT INTO search_logs(session_id,user_id,keyword,ip,search_scope,channels_json,source_ids_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
       context.session.id,
       context.user?.id ?? null,
       prepared.request.kw,
-      ip,
+      getClientIp(event),
       scope,
       JSON.stringify(channels),
       JSON.stringify(sourceIds),
@@ -114,14 +132,13 @@ export function authorizeSearch(
 ): AuthorizedSearch {
   // Parse before creating an anonymous session so malformed requests do not
   // create identities or execute a search.
-  let prepared = prepareSearch(raw, options);
+  const parsed = prepareSearch(raw, options);
   cleanupUserData();
   const context = getUserSession(event, { createAnonymous: true });
   const policy = getUserPolicy();
   authorizeSearchRateLimit(event, context, policy);
-  const resolved = searchScopeAndChannels(prepared, context, policy);
-  prepared = resolved.prepared;
-  const sourceIds = sourceSnapshot(prepared);
-  writeSearchLog(event, context, prepared, resolved.scope, resolved.channels, sourceIds);
-  return { prepared, context, policy, scope: resolved.scope, channels: resolved.channels, sourceIds };
+  const resolved = searchScopeAndChannels(parsed, context, policy);
+  const sourceIds = sourceSnapshot(resolved.prepared);
+  writeSearchLog(event, context, resolved.prepared, resolved.scope, resolved.channels, sourceIds);
+  return { prepared: resolved.prepared, context, policy, scope: resolved.scope, channels: resolved.channels, sourceIds };
 }

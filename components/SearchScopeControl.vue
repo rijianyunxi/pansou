@@ -12,7 +12,7 @@
       type="button"
       :aria-pressed="modelValue"
       :aria-disabled="customDisabled || disabled ? 'true' : undefined"
-      :title="customDisabled ? '自定义频道仅对登录用户开放，请先登录或注册。' : undefined"
+      :title="customDisabled ? '自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。' : undefined"
       :disabled="disabled"
       :class="{ 'custom-disabled': customDisabled }"
       @click="onCustomClick">

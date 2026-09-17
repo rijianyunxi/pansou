@@ -7,19 +7,6 @@ export interface MemoryCacheOptions {
   memoryThreshold?: number; // 内存阈值百分比（0-1），达到时触发清理
 }
 
-export interface MemoryCacheStats {
-  total: number; // 总条目数
-  active: number; // 有效条目数
-  expired: number; // 过期条目数
-  maxSize: number; // 最大条目数
-  memoryBytes: number; // 当前内存占用
-  maxMemoryBytes: number; // 最大内存限制
-  memoryUsagePercent: number; // 内存使用百分比
-  hits: number; // 命中次数
-  misses: number; // 未命中次数
-  evictions: number; // 淘汰次数
-}
-
 export class MemoryCache<T = unknown> {
   private store = new Map<string, CacheRecord<T>>();
   private accessOrder = new Map<string, number>(); // key -> 最后访问时间戳
@@ -290,36 +277,6 @@ export class MemoryCache<T = unknown> {
 
   get memoryUsage(): number {
     return this.calculateMemoryUsage();
-  }
-
-  getStats(): MemoryCacheStats {
-    const now = Date.now();
-    let active = 0;
-    let expired = 0;
-
-    for (const [, rec] of this.store) {
-      if (rec.expireAt > now) {
-        active++;
-      } else {
-        expired++;
-      }
-    }
-
-    const memoryBytes = this.calculateMemoryUsage();
-    const memoryUsagePercent = (memoryBytes / this.options.maxMemoryBytes) * 100;
-
-    return {
-      total: this.store.size,
-      active,
-      expired,
-      maxSize: this.options.maxSize,
-      memoryBytes,
-      maxMemoryBytes: this.options.maxMemoryBytes,
-      memoryUsagePercent: Math.round(memoryUsagePercent * 100) / 100,
-      hits: this.metrics.hits,
-      misses: this.metrics.misses,
-      evictions: this.metrics.evictions,
-    };
   }
 
   /**

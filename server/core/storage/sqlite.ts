@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomInt, scryptSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { normalizeSearchKeyword } from "../utils/searchKeyword";
@@ -8,10 +8,19 @@ const DEFAULT_PATH = process.env.PANHUB_SQLITE_DB || "./data/panhub.sqlite";
 const connections = new Map<string, SqliteDatabase>();
 const normalizePath = (path: string): string => path === ":memory:" ? path : resolve(path);
 
+/**
+ * Upper bound on cached prepared statements. Several callers build SQL with a
+ * variable-length `IN (?,?,…)` list, so distinct SQL texts can keep arriving;
+ * the cap keeps the cache bounded and re-prepares the least recently used
+ * statement instead of growing without limit.
+ */
+const MAX_CACHED_STATEMENTS = 256;
+
 /** Thin typed-SQL wrapper around the application's normalized SQLite schema. */
 export class SqliteDatabase {
   readonly path: string;
   private readonly db: Database.Database;
+  /** Insertion-ordered, so the first key is the least recently used one. */
   private readonly statements = new Map<string, Database.Statement>();
 
   constructor(path = DEFAULT_PATH) {
@@ -25,11 +34,22 @@ export class SqliteDatabase {
     this.db.pragma("temp_store = MEMORY");
     this.db.exec(SCHEMA);
     this.ensureSessionChannelsColumn();
+    this.ensureSessionTransportColumn();
     this.ensureResourceSourceColumns();
     this.ensureUserAccountColumns();
     this.ensureManagedResourceColumns();
     this.ensureUserRolesAndDefaultAdmin();
+    this.ensureSourceLifecycleTable();
+    this.retireLegacyTables();
+    this.retireRemovedPolicyKeys();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
+  }
+
+  private ensureSessionTransportColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "transport")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN transport TEXT NOT NULL DEFAULT 'cookie'");
+    }
   }
 
   private ensureSessionChannelsColumn(): void {
@@ -42,6 +62,27 @@ export class SqliteDatabase {
     }
   }
 
+  private ensureSourceLifecycleTable(): void {
+    const legacy = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tg_channel_states'").get();
+    if (!legacy) return;
+    // Earlier databases stored channel-source lifecycle overrides in a
+    // Telegram-named table. Move the rows into the unified table and retire the
+    // old one so the schema has a single name for this concept.
+    this.db.exec("INSERT OR IGNORE INTO source_lifecycle_states(channel,enabled,deleted,updated_at) SELECT channel,enabled,deleted,updated_at FROM tg_channel_states");
+    this.db.exec("DROP INDEX IF EXISTS idx_tg_channel_states_deleted");
+    this.db.exec("DROP TABLE tg_channel_states");
+  }
+
+  private retireLegacyTables(): void {
+    // Tables that no version of the runtime creates or reads any more: the
+    // Telegram channel-health log (the Telegram feature is gone) and the WeChat
+    // identity table that `auth_identities` replaced. Leaving them behind makes
+    // the schema look like these concepts still exist.
+    for (const table of ["tg_channel_health", "wechat_identities"]) {
+      this.db.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+  }
+
   private ensureResourceSourceColumns(): void {
     const columns = this.db.prepare("PRAGMA table_info(resource_sources)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "priority")) {
@@ -49,7 +90,11 @@ export class SqliteDatabase {
       // the neutral priority while enabling priority-aware scheduling.
       this.db.exec("ALTER TABLE resource_sources ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
     }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_resource_sources_priority ON resource_sources(priority DESC,enabled,id)");
+    // Priority is a queue position, so the index is ascending to match the
+    // catalog's ordering (a smaller value runs first).
+    const priorityIndex = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_resource_sources_priority'").get() as { sql: string | null } | undefined;
+    if (priorityIndex && /DESC/i.test(priorityIndex.sql || "")) this.db.exec("DROP INDEX idx_resource_sources_priority");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_resource_sources_priority ON resource_sources(priority,enabled,id)");
   }
 
   private ensureUserAccountColumns(): void {
@@ -62,7 +107,29 @@ export class SqliteDatabase {
       // authenticating or appearing in the active user management list.
       this.db.exec("ALTER TABLE users ADD COLUMN deleted_at INTEGER");
     }
+    // Accounts now authenticate through an external provider and the change-
+    // password screen is gone, so nothing could ever clear this flag. Dropping
+    // it removes the only way an account could be locked out permanently.
+    if (columns.some((column) => column.name === "must_change_password")) {
+      this.db.exec("ALTER TABLE users DROP COLUMN must_change_password");
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at)");
+  }
+
+  private retireRemovedPolicyKeys(): void {
+    // Keys that no version of the runtime reads any more. `showLoginButton` lost
+    // its only consumer when the homepage login button was removed; the others
+    // belong to a superseded policy surface. Leaving them behind makes the
+    // stored configuration look like it still controls something.
+    const retired = [
+      "showLoginButton",
+      "registrationEnabled",
+      "searchRateLimitWindowSeconds",
+      "searchRateLimitPerSession",
+      "searchRateLimitPerIp",
+    ];
+    const statement = this.db.prepare("DELETE FROM policy_settings WHERE key = ?");
+    for (const key of retired) statement.run(key);
   }
 
   private randomUserId(): number {
@@ -78,7 +145,22 @@ export class SqliteDatabase {
     if (!columns.some((column) => column.name === "search_text")) {
       this.db.exec("ALTER TABLE managed_resources ADD COLUMN search_text TEXT NOT NULL DEFAULT ''");
     }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_managed_resources_search_text ON managed_resources(search_text)");
+    // The search projection is queried with `instr()`, which cannot use a
+    // B-tree index, so the former idx_managed_resources_search_text only ever
+    // added write cost. Drop it on existing databases too.
+    this.db.exec("DROP INDEX IF EXISTS idx_managed_resources_search_text");
+
+    // Disabling a resource has to be reversible without losing its id, links or
+    // creation time, which a hard delete cannot offer. Search only returns
+    // enabled rows; the console lists both states.
+    if (!columns.some((column) => column.name === "enabled")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
+    }
+
+    // The console now matches the same normalized projection as the search path,
+    // so nothing queries `name` directly any more and this index only added write
+    // cost. Drop it on existing databases too.
+    this.db.exec("DROP INDEX IF EXISTS idx_managed_resources_name");
 
     // Backfill the normalized search projection once for databases created
     // before the projection existed. The projection is maintained by the
@@ -108,22 +190,44 @@ export class SqliteDatabase {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)");
 
-    const admin = this.db.prepare("SELECT id, password_hash FROM users WHERE username_normalized = ?").get("admin") as { id: number; password_hash: string } | undefined;
-    if (admin) {
-      this.db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(admin.id);
-      // Migrate the previously seeded admin/admin account to the six-character
-      // default without overwriting an administrator who has already changed it.
-      if (this.passwordMatches(admin.password_hash, "admin")) {
-        this.db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(this.hashPassword("123456"), Date.now(), admin.id);
-      }
+    const existingAdmin = this.db.prepare("SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+    if (existingAdmin) return;
+
+    const legacyAdmin = this.db.prepare("SELECT id FROM users WHERE username_normalized = ? AND deleted_at IS NULL").get("admin") as { id: number } | undefined;
+    if (legacyAdmin) {
+      // A database that already carries an `admin` row keeps whatever password
+      // it has. Rewriting it to a known value would silently weaken a credential
+      // the operator may have chosen deliberately, and this is the only account
+      // that can still sign in with a password.
+      this.db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(legacyAdmin.id);
       return;
     }
 
     const timestamp = Date.now();
-    const passwordHash = this.hashPassword("123456");
-    this.db.prepare("INSERT INTO users(id,username,username_normalized,password_hash,nickname,role,status,must_change_password,custom_channels_json,custom_channels_updated_at,last_login_ip,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
-      this.randomUserId(), "admin", "admin", passwordHash, "系统管理员", "admin", "active", 0, "[]", timestamp, null, timestamp, timestamp,
+    const { password, generated } = this.initialAdminPassword();
+    this.db.prepare("INSERT INTO users(id,username,username_normalized,password_hash,nickname,role,status,custom_channels_json,custom_channels_updated_at,last_login_ip,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      this.randomUserId(), "admin", "admin", this.hashPassword(password), "系统管理员", "admin", "active", "[]", timestamp, null, timestamp, timestamp,
     );
+    if (generated) {
+      // Printed once, on the run that creates the account. Nothing else can
+      // recover it — there is no password-reset path for administrators, only
+      // the console's own "change credentials" screen — so it has to be
+      // captured here and changed immediately.
+      console.warn(`[PanHub][bootstrap] 已创建初始管理员账号 admin，口令：${password}（仅打印这一次，请登录后台后立即修改）`);
+    }
+  }
+
+  /**
+   * Password for a freshly created initial administrator.
+   *
+   * `PANHUB_ADMIN_INITIAL_PASSWORD` lets a deployment pin it (the test suite
+   * does too). Without it a random value is generated, so the repository ships
+   * no default credential that every installation would share.
+   */
+  private initialAdminPassword(): { password: string; generated: boolean } {
+    const configured = process.env.PANHUB_ADMIN_INITIAL_PASSWORD?.trim();
+    if (configured) return { password: configured, generated: false };
+    return { password: randomBytes(18).toString("base64url"), generated: true };
   }
 
   private hashPassword(password: string): string {
@@ -132,25 +236,21 @@ export class SqliteDatabase {
     return `scrypt$16384$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
   }
 
-  private passwordMatches(encoded: string, password: string): boolean {
-    try {
-      const [kind, n, r, p, saltText, hashText] = encoded.split("$");
-      if (kind !== "scrypt" || !n || !r || !p || !saltText || !hashText) return false;
-      const expected = Buffer.from(hashText, "base64url");
-      const actual = scryptSync(password, Buffer.from(saltText, "base64url"), expected.length, {
-        N: Number(n), r: Number(r), p: Number(p), maxmem: 64 * 1024 * 1024,
-      });
-      return expected.length === actual.length && timingSafeEqual(expected, actual);
-    } catch {
-      return false;
-    }
-  }
-
   private statement(sql: string): Database.Statement {
-    let statement = this.statements.get(sql);
-    if (!statement) {
-      statement = this.db.prepare(sql);
-      this.statements.set(sql, statement);
+    const cached = this.statements.get(sql);
+    if (cached) {
+      // Re-insert to mark as most recently used.
+      this.statements.delete(sql);
+      this.statements.set(sql, cached);
+      return cached;
+    }
+    const statement = this.db.prepare(sql);
+    this.statements.set(sql, statement);
+    if (this.statements.size > MAX_CACHED_STATEMENTS) {
+      const oldest = this.statements.keys().next().value as string | undefined;
+      // Dropping the reference is enough; the statement finalizes on collection
+      // and an in-flight iterator keeps its own reference alive.
+      if (oldest !== undefined) this.statements.delete(oldest);
     }
     return statement;
   }
@@ -158,6 +258,13 @@ export class SqliteDatabase {
   run(sql: string, ...params: unknown[]): Database.RunResult { return this.statement(sql).run(...params); }
   getRow<T = Record<string, unknown>>(sql: string, ...params: unknown[]): T | undefined { return this.statement(sql).get(...params) as T | undefined; }
   allRows<T = Record<string, unknown>>(sql: string, ...params: unknown[]): T[] { return this.statement(sql).all(...params) as T[]; }
+  /**
+   * Stream rows instead of materializing them. Use for scans that stop early,
+   * so a full table read is not paid once per page.
+   */
+  iterate<T = Record<string, unknown>>(sql: string, ...params: unknown[]): IterableIterator<T> {
+    return this.statement(sql).iterate(...params) as IterableIterator<T>;
+  }
   transaction<T>(callback: () => T): T { return this.db.transaction(callback)(); }
   close(): void { this.statements.clear(); this.db.close(); }
 }
@@ -175,8 +282,8 @@ CREATE TABLE IF NOT EXISTS resource_sources(id TEXT PRIMARY KEY,name TEXT NOT NU
 CREATE INDEX IF NOT EXISTS idx_resource_sources_enabled ON resource_sources(enabled,id);
 CREATE TABLE IF NOT EXISTS deleted_sources(id TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS source_template_settings(id INTEGER PRIMARY KEY CHECK(id=1),url_template TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS tg_channel_states(channel TEXT PRIMARY KEY,enabled INTEGER NOT NULL,deleted INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_tg_channel_states_deleted ON tg_channel_states(deleted,channel);
+CREATE TABLE IF NOT EXISTS source_lifecycle_states(channel TEXT PRIMARY KEY,enabled INTEGER NOT NULL,deleted INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_source_lifecycle_states_deleted ON source_lifecycle_states(deleted,channel);
 CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last_searched DESC);
 CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
@@ -190,11 +297,11 @@ CREATE TABLE IF NOT EXISTS managed_resources(
   tags_json TEXT NOT NULL DEFAULT '[]',
   images_json TEXT NOT NULL DEFAULT '[]',
   search_text TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_managed_resources_updated_at ON managed_resources(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_managed_resources_name ON managed_resources(name);
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL,
@@ -203,7 +310,6 @@ CREATE TABLE IF NOT EXISTS users(
   nickname TEXT,
   role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin','user')),
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
-  must_change_password INTEGER NOT NULL DEFAULT 0,
   custom_channels_json TEXT NOT NULL DEFAULT '[]',
   custom_channels_updated_at INTEGER NOT NULL,
   last_login_ip TEXT,
@@ -214,6 +320,29 @@ CREATE TABLE IF NOT EXISTS users(
 );
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE TABLE IF NOT EXISTS auth_identities(
+  provider TEXT NOT NULL,
+  provider_app_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  provider_union_id TEXT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider, provider_app_id, subject),
+  UNIQUE(provider, provider_app_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS login_tickets(
+  ticket TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('pending','confirmed','consumed')),
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  ip TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  confirmed_at INTEGER,
+  consumed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_login_tickets_expires_at ON login_tickets(expires_at);
+CREATE TABLE IF NOT EXISTS wechat_mini_settings(id INTEGER PRIMARY KEY CHECK(id=1),app_id TEXT NOT NULL DEFAULT '',secret TEXT NOT NULL DEFAULT '',qr_page TEXT NOT NULL DEFAULT 'pages/login/index',env_version TEXT NOT NULL DEFAULT 'release',updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,
@@ -223,8 +352,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   expires_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
   custom_channels_json TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+);CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS search_logs(
   id INTEGER PRIMARY KEY AUTOINCREMENT,

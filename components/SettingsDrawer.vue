@@ -27,8 +27,8 @@
           <p class="hint">
             添加公开频道用户名或链接。本站搜索不会使用这些频道；选择首页「自定义频道」后，只搜索这里的频道。
             <template v-if="auth.user">当前已同步到账号，可在其他设备继续使用。</template>
-            <template v-else-if="isServerManaged">当前已保存到本次匿名会话，登录后会转存到账号。</template>
-            <template v-else>自定义频道需要登录后才能使用。</template>
+            <template v-else-if="isServerManaged">当前已保存到本次匿名会话，仅本浏览器可用，不会同步到账号。</template>
+            <template v-else>自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。</template>
           </p>
 
           <p v-if="storageError" class="feedback feedback--error" role="alert">{{ storageError }}</p>
@@ -162,7 +162,7 @@ async function addChannel() {
 
   checking.value = true;
   try {
-    const validation = await $fetch<{ ok: boolean; message?: string }>("/api/tg/validate-channel", {
+    const validation = await $fetch<{ ok: boolean; message?: string }>("/api/account/channels/validate", {
       method: "POST",
       body: { channel: name },
       credentials: "include",
@@ -182,7 +182,7 @@ async function addChannel() {
     newChannel.value = "";
     channelStatus.value = auth.user.value
       ? `已验证 @${name}，已保存到账号。`
-      : `已验证 @${name}，已保存到本次匿名会话。登录后会转存到账号。`;
+      : `已验证 @${name}，已保存到本次匿名会话。`;
     await nextTick();
     channelInput.value?.focus();
   } catch (reason: any) {

@@ -1,14 +1,13 @@
-import { createError, defineEventHandler, readBody, setHeader } from "h3";
+import { defineEventHandler, readBody } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
+import { toHttpError } from "../../utils/apiResponse";
 import { saveUserPolicy } from "../../core/services/policyService";
 
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
   try {
-    const data = saveUserPolicy(await readBody(event) || {});
-    setHeader(event, "Cache-Control", "no-store");
-    return { code: 0, message: "saved", data };
-  } catch (error: any) {
-    throw createError({ statusCode: 400, statusMessage: error?.message || "invalid user policy" });
+    return { code: 0, message: "saved", data: saveUserPolicy(await readBody(event) || {}) };
+  } catch (error) {
+    throw toHttpError(error, 400, "invalid user policy");
   }
 });

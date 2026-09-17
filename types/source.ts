@@ -1,4 +1,4 @@
-export interface UpstreamRequestConfig {
+export interface SourceRequestConfig {
   query?: Record<string, unknown>;
   headers?: Record<string, string>;
   bodyType?: "json" | "form";
@@ -10,17 +10,17 @@ export interface UpstreamRequestConfig {
 }
 
 /** Every searchable source is the same request + response transform contract. */
-export interface UpstreamDefinition {
+export interface SourceDefinition {
   id: string;
   name: string;
   description: string;
   url: string;
   method: "GET" | "POST";
   format: "json" | "html";
-  /** Higher values are queued and started before lower-priority sources. */
+  /** A smaller value is queued and started earlier; 0 runs first. */
   priority: number;
   enabled?: boolean;
-  request?: UpstreamRequestConfig;
+  request?: SourceRequestConfig;
   transform: string;
 }
 
@@ -42,7 +42,7 @@ export interface ProbeTrace {
   request?: ProbeRequestDetails;
   error?: string;
 }
-export interface UpstreamProbe {
+export interface SourceProbe {
   sourceId: string;
   checkedAt: string;
   state: ProbeState;

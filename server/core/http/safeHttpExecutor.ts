@@ -1,6 +1,6 @@
 import { resolveSafeHostAddresses, type HostResolver } from "../security/dnsGuard";
 import { awaitWithAbort, createAbortScope, throwIfAborted } from "../utils/abort";
-import { logUpstreamRequest } from "../utils/upstreamDebug";
+import { logSourceRequest } from "../utils/sourceDebug";
 import { loadPinnedHttpTransport, type PinnedHttpTransport } from "./pinnedTransport";
 import { discardResponseBody, readResponseBody } from "./responseBody";
 import { prepareSafeHttpRequest, redirectTarget, validateResponseType } from "./requestPolicy";
@@ -13,7 +13,7 @@ export { FORBIDDEN_OUTBOUND_HEADERS, isForbiddenOutboundHeader } from "../securi
 export interface SafeHttpDependencies {
   loadTransport(): Promise<PinnedHttpTransport | null>;
   resolveHost: HostResolver;
-  log: typeof logUpstreamRequest;
+  log: typeof logSourceRequest;
 }
 
 /** Single outbound boundary; injected I/O keeps its policy testable offline. */
@@ -83,5 +83,5 @@ export function createSafeHttpExecutor(dependencies: SafeHttpDependencies) {
 export const executeSafeHttp = createSafeHttpExecutor({
   loadTransport: loadPinnedHttpTransport,
   resolveHost: resolveSafeHostAddresses,
-  log: logUpstreamRequest,
+  log: logSourceRequest,
 });

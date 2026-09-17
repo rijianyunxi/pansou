@@ -1,5 +1,4 @@
 import { SearchService, type SearchServiceOptions } from "./searchService";
-import { listUnifiedUpstreams } from "./upstreamCatalog";
 import { getUserPolicy } from "./policyService";
 
 const SERVICE_CONTEXT_KEY = "__panhub_search_service__";
@@ -7,10 +6,8 @@ const SERVICE_CONTEXT_KEY = "__panhub_search_service__";
 function createServiceOptions(): SearchServiceOptions {
   const policy = getUserPolicy();
   return {
-    defaultSourceIds: [],
     defaultConcurrency: policy.defaultConcurrency,
     cacheTtlMinutes: policy.cacheTtlMinutes,
-    sourceLoader: async () => listUnifiedUpstreams(),
   };
 }
 

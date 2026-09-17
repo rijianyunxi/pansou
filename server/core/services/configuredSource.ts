@@ -1,7 +1,10 @@
-import type { UpstreamDefinition } from "../../../types/source";
-import type { SourceDefinition } from "../source-runtime/types";
+// Two distinct shapes share the name: the catalog row stored in SQLite and the
+// declarative runtime definition consumed by the executor. Only the runtime one
+// is aliased, so `SourceDefinition` keeps meaning "catalog row" here.
+import type { SourceDefinition } from "../../../types/source";
+import type { SourceDefinition as RuntimeSourceDefinition } from "../source-runtime/types";
 
-export function getSourceConfigurationVersion(source: UpstreamDefinition): string {
+export function getSourceConfigurationVersion(source: SourceDefinition): string {
   const input = JSON.stringify({
     url: source.url,
     method: source.method,
@@ -23,7 +26,7 @@ export function getSourceConfigurationVersion(source: UpstreamDefinition): strin
  * one parsing model: transform(payload, $, context) owns the complete result
  * conversion, including the new resource-level result shape.
  */
-export function upstreamToSourceDefinition(source: UpstreamDefinition): SourceDefinition {
+export function toSourceDefinition(source: SourceDefinition): RuntimeSourceDefinition {
   const request = source.request;
   const transform = source.transform?.trim();
   if (!transform) throw new Error("来源必须配置 transform(payload, $, context)");
@@ -45,10 +48,10 @@ export function upstreamToSourceDefinition(source: UpstreamDefinition): SourceDe
     request: {
       method: source.method,
       url: source.url,
-      query: request?.query as SourceDefinition["request"]["query"] ?? (source.method === "GET" ? { keyword: "{{keyword}}" } : undefined),
+      query: request?.query as RuntimeSourceDefinition["request"]["query"] ?? (source.method === "GET" ? { keyword: "{{keyword}}" } : undefined),
       headers: request?.headers,
       bodyType: source.method === "POST" ? (request?.bodyType ?? "json") : undefined,
-      body: source.method === "POST" ? (request?.body as SourceDefinition["request"]["body"] ?? { keyword: "{{keyword}}" }) : undefined,
+      body: source.method === "POST" ? (request?.body as RuntimeSourceDefinition["request"]["body"] ?? { keyword: "{{keyword}}" }) : undefined,
       maxResponseBytes: request?.maxResponseBytes,
       redirect: request?.redirect,
       allowedDomains,

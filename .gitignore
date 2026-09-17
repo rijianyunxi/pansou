@@ -21,3 +21,11 @@ logs/
 .fleet/
 .idea/
 
+# 本地 Agent 工作数据（项目记忆、排查笔记）：属于本机上下文，不入版本控制。
+.workbuddy-ai/
+
+# SQLite WAL 侧写文件是运行时状态，必须与主库文件同步才有意义；
+# 被检出到别处会让数据库看起来损坏。只提交 .sqlite 本身。
+*.sqlite-wal
+*.sqlite-shm
+

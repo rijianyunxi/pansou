@@ -51,10 +51,8 @@ export default defineNuxtConfig({
     "/admin": { swr: false, cache: false },
     "/admin/**": { swr: false, cache: false },
     "/api/monitor": { swr: false, cache: false },
-    "/api/upstreams/**": { swr: false, cache: false },
-    "/api/tg/**": { swr: false, cache: false },
+    "/api/sources/**": { swr: false, cache: false },
     // 健康接口反映实时运行状态，禁止缓存
-    "/api/source-health": { swr: false, cache: false },
     "/api/health": { swr: false, cache: false },
     // 管理端搜索设置不缓存
     "/api/settings/**": { swr: false, cache: false },
@@ -68,25 +66,29 @@ export default defineNuxtConfig({
     // POST 搜索必须保留请求体，不能被通用 SWR 包装器接管。
     "/api/search": { swr: false, cache: false },
     "/api/search/**": { swr: false, cache: false },
-    "/**": { swr: 3600 },
+    // Do not enable a process-local SWR cache for every route. Nitro's default
+    // storage driver is an in-memory Map, so unique URLs could accumulate
+    // cached SSR responses without a global eviction policy. Static assets
+    // already have explicit immutable browser/CDN cache headers above.
   },
   runtimeConfig: {
     // Private server-only setting. Override at runtime with NUXT_TRUST_PROXY.
     // Only enable when the app is reachable exclusively through a trusted
     // reverse proxy; otherwise forwarded client-IP headers are spoofable.
     trustProxy: false,
+    // 微信小程序凭据（AppID / AppSecret）与扫码登录参数**不在 runtimeConfig 里**：
+    // 它们存在 SQLite 的 wechat_mini_settings 表，由后台「系统设置 → 微信小程序」维护，
+    // 改完立即生效，不需要改环境变量或重启进程。见 core/services/wechatConfigService.ts。
     public: {
-      // Public site settings are supplied by matching NUXT_PUBLIC_* variables.
-      // Keep the keys here so Nuxt exposes them to both SSR and the browser.
-      apiBase: "",
-      siteUrl: "",
-      siteName: "",
-      homeTitle: "",
-      homeDescription: "",
-      siteTitle: "",
-      siteDescription: "",
-      siteKeywords: "",
-      siteImageAlt: "",
+      apiBase: "/api",
+      siteUrl: "https://pan.letus.lol",
+      siteName: "盘搜",
+      homeTitle: "网盘资源聚合搜索",
+      homeDescription: "网盘、磁力、公开频道，一个搜索框直达。",
+      siteTitle: "网盘资源聚合搜索 · 盘搜",
+      siteDescription: "盘搜 聚合网盘、磁力链接与公开频道资源，支持百度网盘、夸克、阿里云盘、115、迅雷等平台。一个搜索框，查找分享链接，按平台筛选结果。",
+      siteKeywords: "盘搜, 网盘搜索, 网盘资源搜索, 聚合搜索, 百度网盘, 夸克网盘, 阿里云盘, 115网盘, 迅雷云盘, 磁力链接, 公开频道搜索",
+      siteImageAlt: "盘搜 网盘资源聚合搜索：网盘、磁力、公开频道，一个搜索框直达。",
     },
   },
 });

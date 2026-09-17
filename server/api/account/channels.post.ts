@@ -1,8 +1,8 @@
-import { createError, defineEventHandler, readBody, setHeader } from "h3";
+import { createError, defineEventHandler, readBody } from "h3";
 import { getUserPolicy } from "../../core/services/policyService";
+import { setPrivateNoStore } from "../../utils/apiResponse";
 import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
 import {
-  getStoredChannels,
   getUserSession,
   requireSameOriginUserRequest,
   updateStoredChannels,
@@ -10,12 +10,12 @@ import {
 } from "../../utils/userAuth";
 
 export default defineEventHandler(async (event) => {
-  setHeader(event, "Cache-Control", "private, no-store");
+  setPrivateNoStore(event);
   requireSameOriginUserRequest(event);
-  const context = getUserSession(event, { createAnonymous: true, allowMustChange: true });
+  const context = getUserSession(event, { createAnonymous: true });
   const policy = getUserPolicy();
   if (!context.user && !policy.anonymousCustomChannels) {
-    throw createError({ statusCode: 403, statusMessage: "自定义频道仅对登录用户开放，请先登录或注册。" });
+    throw createError({ statusCode: 403, statusMessage: "自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。" });
   }
 
   const body = await readBody<{ channels?: unknown }>(event);
@@ -29,14 +29,13 @@ export default defineEventHandler(async (event) => {
   }
 
   if (context.user) {
-    const user = updateStoredChannels(context.user.id, channels);
     return {
       ok: true,
       channels,
       limit,
       count: channels.length,
       anonymousCustomChannels: policy.anonymousCustomChannels,
-      user,
+      user: updateStoredChannels(context.user.id, channels),
     };
   }
 

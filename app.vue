@@ -1,7 +1,7 @@
 <template>
-  <div v-if="isAdminConsole" class="upstream-console-layout"><NuxtPage /></div>
+  <div v-if="isAdminConsole" class="source-console-layout"><NuxtPage /></div>
   <div v-else class="layout" :class="`theme-${settings.theme}`">
-    <!-- 顶部导航：左侧 Logo，右侧账号与公共操作 -->
+    <!-- 顶部导航：左侧 Logo，右侧公共操作与账号入口 -->
     <header class="topnav" :inert="openSettings">
       <NuxtLink to="/" class="brand">
         <span class="brand-mark">
@@ -13,33 +13,24 @@
         <span class="brand-text">{{ siteName }}</span>
       </NuxtLink>
       <nav class="topnav-actions" aria-label="主导航">
-        <NuxtLink
-          v-if="adminSessionActive"
-          class="admin-console-entry"
-          to="/admin"
-          :prefetch="false"
-          aria-label="打开管理控制台"
-          title="管理控制台">
-          <ConsoleIcon name="shield" :size="16" />
-          <span>管理控制台</span>
-        </NuxtLink>
-        <div class="theme-switcher" role="group" aria-label="首页风格">
-          <button
-            type="button"
-            :class="{ active: settings.theme === 'classic' }"
-            :aria-pressed="settings.theme === 'classic'"
-            @click="setTheme('classic')">
-            原始
-          </button>
-          <button
-            type="button"
-            :class="{ active: settings.theme === 'geometric' }"
-            :aria-pressed="settings.theme === 'geometric'"
-            @click="setTheme('geometric')">
-            明快
-          </button>
-        </div>
-        <UserAccountPanel />
+        <button
+          class="theme-toggle nav-action-button"
+          type="button"
+          :aria-label="themeToggleLabel"
+          :title="themeToggleLabel"
+          @click="setTheme(settings.theme === 'classic' ? 'geometric' : 'classic')">
+          <svg v-if="settings.theme === 'classic'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="5" />
+            <path d="M4 10h16M10 10v10" />
+          </svg>
+          <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="7" cy="7" r="3" />
+            <path d="m17 3 4 7h-8z" />
+            <rect x="4" y="14" width="6" height="6" rx="1" />
+            <path d="m17 13 4 4-4 4-4-4z" />
+          </svg>
+        </button>
+        <UserAccountPanel variant="wechat" />
       </nav>
     </header>
 
@@ -66,7 +57,6 @@
 </template>
 
 <script setup lang="ts">
-import ConsoleIcon from "./components/upstreams/ConsoleIcon.vue";
 
 const route = useRoute();
 const isAdminConsole = computed(
@@ -113,7 +103,9 @@ useHead(() => ({
 
 const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
-const adminSessionActive = computed(() => auth.user.value?.role === "admin");
+const themeToggleLabel = computed(() => settings.value.theme === "classic"
+  ? "当前为原始风格，切换到明快风格"
+  : "当前为明快风格，切换到原始风格");
 const openSettings = ref(false);
 
 function setTheme(theme: "classic" | "geometric") {
@@ -142,7 +134,7 @@ function showToast(message: string, type: "info" | "success" | "error" = "info")
 const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
 function openChannelSettings() {
   if (!canUseCustomChannels.value) {
-    showToast("自定义频道仅对登录用户开放，请先登录或注册。", "info");
+    showToast("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。", "info");
     return;
   }
   openSettings.value = true;
@@ -291,16 +283,19 @@ button {
     min-width: 44px;
   }
 
-  .admin-console-entry {
-    width: 38px;
-    min-width: 38px;
-    padding: 0;
-    justify-content: center;
+  /*
+   * iOS Safari 会在聚焦字号小于 16px 的输入控件时自动放大页面，
+   * 放大后的视觉视口可能产生横向滚动条。不要通过禁用用户缩放来规避，
+   * 直接保证所有可编辑控件达到 iOS 的免缩放字号阈值。
+   */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    max-width: 100%;
+    font-size: 16px !important;
   }
 
-  .admin-console-entry span {
-    display: none;
-  }
+
 }
 
 /* 动画定义 */
@@ -318,11 +313,36 @@ button {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+.nav-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  height: 44px;
+  border: var(--nav-action-border, 1px solid var(--border-light));
+  border-radius: 999px;
+  background: var(--nav-action-bg, var(--bg-primary));
+  color: var(--nav-action-color, var(--text-secondary));
+  box-shadow: var(--nav-action-shadow, none);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+/* Touch taps must not leave desktop hover colors stuck on the control. */
+@media (hover: hover) and (pointer: fine) {
+  .nav-action-button:hover:not(:disabled) {
+    background: var(--nav-action-hover-bg, var(--bg-secondary));
+    color: var(--nav-action-color, var(--text-primary));
+    border-color: var(--border-medium);
+  }
+}
+.nav-action-button:active:not(:disabled) { opacity: .78; }
+.nav-action-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
 </style>
 
 <style>
 /* 明快几何主题：仅作用于搜索站点，不影响后台控制台 */
-.layout.theme-geometric {
+.layout.theme-geometric,
+.account-theme-geometric {
   --primary: #3155e7;
   --primary-dark: #243fb5;
   --primary-soft: #e9edff;
@@ -343,8 +363,8 @@ button {
   --radius-md: 6px;
   --radius-lg: 10px;
   --radius-xl: 10px;
-  background: #fffbed;
 }
+.layout.theme-geometric { background: #fffbed; }
 
 .layout.theme-geometric .topnav {
   background: #fffbed;
@@ -358,31 +378,12 @@ button {
 
 .layout.theme-geometric .brand-mark svg { stroke: #20201e; }
 .layout.theme-geometric .brand-text { font-weight: 850; }
-.layout.theme-geometric .theme-switcher {
-  display: inline-flex;
-  gap: 3px;
-  padding: 3px;
-  border: 2px solid #20201e;
-  border-radius: 7px;
-  background: #fffefa;
-}
-.layout.theme-geometric .theme-switcher button {
-  min-height: 30px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #56564f;
-  font-size: 11px;
-  font-weight: 700;
-}
-.layout.theme-geometric .theme-switcher button.active {
-  background: #ffe48a;
-  color: #20201e;
-}
-.layout.theme-geometric .theme-switcher button:focus-visible {
-  outline: 2px solid #3155e7;
-  outline-offset: 2px;
+.layout.theme-geometric .nav-action-button {
+  --nav-action-border: 2px solid var(--border-light);
+  --nav-action-bg: #ffe48a;
+  --nav-action-hover-bg: #ffda62;
+  --nav-action-color: var(--ink);
+  --nav-action-shadow: 2px 2px 0 var(--ink);
 }
 .layout.theme-geometric .btn-icon:hover { background: #ffe48a; color: #20201e; }
 .layout.theme-geometric .main { max-width: 1240px; padding: 30px 28px 42px; }
@@ -525,7 +526,6 @@ button {
   .layout.theme-geometric .hero::after { right: 12px; top: 9px; width: 58px; height: 58px; box-shadow: 12px 14px 0 -4px #ffb687, 12px 14px 0 -2px #20201e; }
   .layout.theme-geometric .hero-title { padding-right: 42px; font-size: 38px; }
   .layout.theme-geometric .search-workspace { padding: 13px; }
-  .layout.theme-geometric .theme-switcher button { padding: 0 7px; }
 }
 </style>
 
@@ -591,64 +591,7 @@ button {
   flex: 1 1 auto;
 }
 
-.theme-switcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--border-light);
-  border-radius: 9px;
-  background: var(--bg-secondary);
-}
-
-.theme-switcher button {
-  min-height: 29px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.theme-switcher button.active {
-  background: var(--bg-primary);
-  color: var(--primary);
-  box-shadow: var(--shadow-sm);
-}
-
-.theme-switcher button:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
-
-.admin-console-entry {
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 11px;
-  border: 1px solid var(--border-light);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  background: var(--bg-primary);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
-}
-
-.admin-console-entry:hover {
-  border-color: #bfdbfe;
-  color: var(--primary-dark);
-  background: var(--primary-soft);
-}
-
-.admin-console-entry:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
+.theme-toggle { flex: 0 0 44px; width: 44px; padding: 0; }
 
 .topnav-link {
   font-size: 14px;
@@ -751,7 +694,30 @@ button {
   }
 
   .topnav-actions {
-    gap: 6px;
+    gap: 10px;
+  }
+
+  /* 外圈缩小到 36px，外围透明热区仍提供 44px 触控范围。 */
+  .layout .topnav-actions :deep(.nav-action-button) {
+    position: relative;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    min-height: 36px;
+    flex: 0 0 36px;
+  }
+
+  .layout .topnav-actions :deep(.nav-action-button::before) {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: inherit;
+  }
+
+  /* 沿用各主题的按钮配色和阴影。 */
+  .topnav-actions :deep(.nav-action-button svg) {
+    width: 18px;
+    height: 18px;
   }
 
   .brand {

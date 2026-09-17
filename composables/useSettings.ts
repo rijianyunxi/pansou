@@ -154,7 +154,7 @@ export function useSettings(): UseSettingsReturn {
       if (status === 401 && auth.user.value) auth.handleSessionExpired();
       if (status === 403 && !auth.user.value) applyChannels([]);
       storageError.value = status === 403
-        ? "自定义频道仅对登录用户开放，请先登录或注册。"
+        ? "自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。"
         : error?.data?.statusMessage || error?.message || "频道保存失败，请稍后重试。";
       return false;
     }

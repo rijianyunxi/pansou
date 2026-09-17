@@ -23,14 +23,18 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   if (typeof value.kw !== "string" || !value.kw.trim() || value.kw.trim().length > 100) return invalid("kw must contain 1 to 100 characters");
   if (Object.prototype.hasOwnProperty.call(value, "res")) return invalid("res is no longer supported; search APIs always return normalized results");
   if (Object.prototype.hasOwnProperty.call(value, "debug")) return invalid("debug is not a request parameter");
-  const channels = list(value.channels, "channels", MAX_USER_TG_CHANNELS);
   const sourceIds = list(value.sourceIds, "sourceIds");
-  if (channels) {
-    const normalized = normalizeTelegramChannels(channels);
-    if (!normalized.length || normalized.some((name) => !TG_CHANNEL_PATTERN.test(name))) return invalid("channels must contain public channel usernames");
+  // Normalize the channel list once: the same normalized value is validated
+  // here and then handed to the search pipeline.
+  const requestedChannels = list(value.channels, "channels", MAX_USER_TG_CHANNELS);
+  const channels = requestedChannels ? normalizeTelegramChannels(requestedChannels) : undefined;
+  if (channels && (!channels.length || channels.some((name) => !TG_CHANNEL_PATTERN.test(name)))) {
+    return invalid("channels must contain public channel usernames");
   }
   return {
-    kw: value.kw.trim(), channels: channels ? normalizeTelegramChannels(channels) : undefined, sourceIds,
+    kw: value.kw.trim(),
+    channels,
+    sourceIds,
     conc: integer(value.conc, 1, 16, "conc"),
     refresh: value.refresh === true || value.refresh === "true",
   };

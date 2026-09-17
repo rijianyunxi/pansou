@@ -397,6 +397,7 @@ onMounted(async () => {
 
 /* 按钮图标 */
 .action-btn svg {
+  display: block;
   stroke: currentColor;
   flex-shrink: 0;
 }
@@ -453,7 +454,11 @@ onMounted(async () => {
   .action-btn.reset,
   .action-btn.pause,
   .action-btn.resume {
-    padding: 8px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
   }
 }
 

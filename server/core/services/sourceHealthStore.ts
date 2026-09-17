@@ -26,25 +26,56 @@ export function loadSourceHealthSnapshot(): Record<string, SourceHealthStatus> {
   return snapshot;
 }
 
-/** Persist one already-sanitized public health status. Failures are non-fatal. */
-export function saveSourceHealthStatus(sourceId: string, status: SourceHealthStatus): boolean {
-  if (!sourceId) return false;
+const UPSERT_SQL =
+  "INSERT INTO source_health(source_id,snapshot_json,updated_at) VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at";
+
+/**
+ * Pending health snapshots, keyed by source id.
+ *
+ * A search records health once per source it ran, so writing on every record
+ * turned a single search into N full-snapshot JSON writes. Queueing collapses
+ * them into one transaction flushed when the search ends; the worst case of a
+ * crash before the flush is losing one search worth of counters, which the
+ * next search rebuilds.
+ */
+const pending = new Map<string, SourceHealthStatus>();
+
+/** Stage one already-sanitized public health status for the next flush. */
+export function queueSourceHealthStatus(sourceId: string, status: SourceHealthStatus): void {
+  if (!sourceId) return;
+  pending.set(sourceId, status);
+}
+
+/** Write every staged snapshot in one transaction. Failures are non-fatal. */
+export function flushSourceHealthStatuses(): number {
+  if (!pending.size) return 0;
+  const entries = [...pending.entries()];
+  pending.clear();
   try {
-    getSqliteDatabase().run(
-      "INSERT INTO source_health(source_id,snapshot_json,updated_at) VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at",
-      sourceId,
-      JSON.stringify({ ...status, name: sourceId }),
-      Date.now(),
-    );
-    return true;
+    const db = getSqliteDatabase();
+    const now = Date.now();
+    db.transaction(() => {
+      for (const [sourceId, status] of entries) {
+        db.run(UPSERT_SQL, sourceId, JSON.stringify({ ...status, name: sourceId }), now);
+      }
+    });
+    return entries.length;
   } catch {
     // Health persistence must never break the search path.
-    return false;
+    return 0;
   }
+}
+
+/** Immediate single write. Search paths should prefer queue + flush. */
+export function saveSourceHealthStatus(sourceId: string, status: SourceHealthStatus): boolean {
+  if (!sourceId) return false;
+  queueSourceHealthStatus(sourceId, status);
+  return flushSourceHealthStatuses() > 0;
 }
 
 export function deleteSourceHealthStatus(sourceId: string): boolean {
   if (!sourceId) return false;
+  pending.delete(sourceId);
   try {
     getSqliteDatabase().run("DELETE FROM source_health WHERE source_id=?", sourceId);
     return true;
@@ -54,10 +85,32 @@ export function deleteSourceHealthStatus(sourceId: string): boolean {
 }
 
 export function clearSourceHealthStatuses(): boolean {
+  pending.clear();
   try {
     getSqliteDatabase().run("DELETE FROM source_health");
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Remove snapshots for sources that are no longer present in the catalog. */
+export function pruneSourceHealthStatuses(sourceIds: Iterable<string>): number {
+  const ids = [...new Set([...sourceIds].map((id) => String(id).trim()).filter(Boolean))];
+  // A staged snapshot for a removed source must not be resurrected by a later flush.
+  const keep = new Set(ids);
+  for (const sourceId of pending.keys()) {
+    if (!keep.has(sourceId)) pending.delete(sourceId);
+  }
+  try {
+    const db = getSqliteDatabase();
+    if (!ids.length) return db.run("DELETE FROM source_health").changes;
+    const placeholders = ids.map(() => "?").join(",");
+    return db.run(
+      `DELETE FROM source_health WHERE source_id NOT IN (${placeholders})`,
+      ...ids,
+    ).changes;
+  } catch {
+    return 0;
   }
 }

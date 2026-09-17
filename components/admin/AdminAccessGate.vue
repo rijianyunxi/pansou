@@ -17,15 +17,15 @@
           <ConsoleIcon name="info" :size="15" />{{ error }}
         </p>
         <p v-else-if="authenticated">当前账号没有管理员权限，请使用管理员账号登录后再进入后台。</p>
-        <p v-else>请先登录管理员账号。系统初始管理员账号为 <code>admin</code>，密码为 <code>admin</code>。</p>
+        <p v-else>请先登录管理员账号。管理员用户名和密码可在进入后台后于“系统设置”中修改。</p>
       </div>
       <NuxtLink to="/" class="admin-access-submit">
         <ConsoleIcon name="external" :size="17" />
-        {{ authenticated ? "返回搜索" : "返回搜索 / 登录" }}
+        {{ authenticated ? "返回搜索" : "返回搜索首页" }}
       </NuxtLink>
       <div class="admin-access-login">
-        <span>{{ authenticated ? "当前账号没有管理员权限，可先退出当前账号再登录管理员账号。" : "首页登录入口已隐藏，后台仍保留管理员登录入口。" }}</span>
-        <UserAccountPanel force-visible @authenticated="emit('authenticated')" />
+        <span>{{ authenticated ? "当前账号没有管理员权限，可先退出当前账号再登录管理员账号。" : "普通用户通过微信小程序登录；后台使用管理员账号密码。" }}</span>
+        <UserAccountPanel @authenticated="emit('authenticated')" />
       </div>
       <div class="admin-access-security">
         普通账号会话 · 角色权限校验 · 同源校验 · 登录限流
@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import ConsoleIcon from "../upstreams/ConsoleIcon.vue";
+import ConsoleIcon from "../sources/ConsoleIcon.vue";
 
 const props = withDefaults(defineProps<{
   checking?: boolean;

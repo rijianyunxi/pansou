@@ -1,17 +1,22 @@
-import { defineEventHandler, getQuery, getRouterParam, setHeader } from "h3";
+import { defineEventHandler, getQuery, getRouterParam } from "h3";
 import { requireAdminAuth } from "../../../../utils/requireAdminAuth";
+import { parseSearchLogQuery } from "../../../../utils/adminQuery";
 import { listAdminSearchLogs } from "../../../../core/services/adminSearchLogService";
 import { parseUserId } from "../../../../core/services/adminUserService";
-import { positiveInteger, optionalInteger } from "../../../../core/services/adminQueryHelpers";
 
+/**
+ * 当前无调用方：2026-09-18 孤儿接口扫描确认，仓库内没有任何地方请求本路由。
+ * 全局的 GET /api/admin/search-logs 由 AdminFeaturePage.vue 使用，但按账号过滤的
+ * 这一条没有入口。走 requireAdminAuth，不构成泄露风险。
+ * 保留待定；若确认无用可直接删除本文件。
+ */
 export default defineEventHandler((event) => {
   requireAdminAuth(event);
-  const query = getQuery(event);
+  // The path fixes the account, so a `userId` query parameter cannot widen the scope.
   const userId = parseUserId(getRouterParam(event, "id"));
-  const from = optionalInteger(query.from ?? query.startTime, "from");
-  const to = optionalInteger(query.to ?? query.endTime, "to");
-  const page = positiveInteger(query.page, 1, 1000000);
-  const pageSize = positiveInteger(query.pageSize ?? query.limit, 20, 100);
-  setHeader(event, "Cache-Control", "no-store");
-  return { code: 0, message: "success", data: listAdminSearchLogs({ page, pageSize, userId, keyword: String(query.keyword || query.q || ""), sessionId: optionalInteger(query.sessionId, "sessionId"), ip: String(query.ip || ""), searchScope: String(query.searchScope || query.scope || ""), from, to }) };
+  return {
+    code: 0,
+    message: "success",
+    data: listAdminSearchLogs(parseSearchLogQuery(getQuery(event), { userId })),
+  };
 });

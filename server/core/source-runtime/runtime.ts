@@ -1,6 +1,6 @@
 import { load, type CheerioAPI } from "cheerio";
 import { Script, createContext } from "node:vm";
-import { inferDriveType, validResourceUrl } from "../../../utils/upstreamAdapter";
+import { inferDriveType, validResourceUrl } from "../../../utils/sourceAdapter";
 import type { Link, SearchResult } from "../types/models";
 import { formatSearchDateTime } from "../utils/searchDateTime";
 import type { SourceTransformDefinition, SourceTransformContext } from "./types";

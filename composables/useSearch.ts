@@ -126,7 +126,9 @@ export function useSearch() {
         state.value.error = "搜索会话已失效，请刷新页面后重试。此次请求未计入搜索配额。";
         options.onSessionExpired?.();
       } else if (status === 403) {
-        state.value.error = "搜索范围或自定义频道当前无权限（403）。请登录账号、检查频道权限或联系管理员；拒绝请求不会计入搜索配额。";
+        // Prefer the server's reason: it distinguishes "sign in from the mini
+        // program" from quota and channel problems.
+        state.value.error = error?.data?.statusMessage || "当前账号无搜索权限（403）。请检查频道权限或联系管理员；拒绝请求不会计入搜索配额。";
       } else if (status === 429) {
         state.value.error = "搜索服务暂时不可用（429），请稍候再试。";
       } else {
@@ -161,7 +163,7 @@ export function useSearch() {
   function resetSearch() { cancelActiveRequests(); snapshot = undefined; accumulated = 0; state.value = initial(); }
   async function copyLink(url: string) { try { await navigator.clipboard.writeText(url); } catch {} }
   // Leaving the home page should abort the SSE request immediately instead of
-  // letting the server continue querying upstreams for an abandoned search.
+  // letting the server continue querying sources for an abandoned search.
   onBeforeUnmount(cancelActiveRequests);
   return {
     state, loading: computed(() => state.value.loading), paused: computed(() => state.value.paused), error: computed(() => state.value.error), searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs), total: computed(() => state.value.total), results: computed(() => state.value.results), hasResults: computed(() => state.value.results.length > 0),

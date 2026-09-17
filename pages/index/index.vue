@@ -16,7 +16,7 @@
       :loading="searchState.loading"
       :paused="searchState.paused"
       :searched="searched"
-      :search-disabled="!settingsReady || !auth.sessionReady || needsChannelConfiguration"
+      :search-disabled="!settingsReady || !auth.sessionReady.value || needsChannelConfiguration"
       :disabled-description-id="needsChannelConfiguration && !searchState.loading ? 'channel-configuration-hint' : undefined"
       :placeholder="onlyUserTg ? '搜索自定义频道…' : placeholder"
       :needs-channel-configuration="needsChannelConfiguration"
@@ -33,7 +33,7 @@
       @continue="handleContinueSearch" />
 
     <!-- 热门搜索：仅未搜索时展示 -->
-    <div v-show="!searched" class="hot-search-section">
+    <div v-if="auth.sessionReady.value && auth.showHotSearch.value" v-show="!searched" class="hot-search-section">
       <HotSearchSection ref="hotSearchRef" :on-search="quickSearch" />
     </div>
 
@@ -61,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CLOUD_TYPE_LABELS } from "~/shared/cloudTypes";
 import type { SearchResult } from "~/server/core/types/models";
 
@@ -105,9 +105,10 @@ onMounted(async () => {
   updateScrollState();
   // Support the SearchAction URL emitted below, e.g. /?q=movie.
   const queryKeyword = typeof route.query.q === "string" ? route.query.q.trim() : "";
-  // 热搜是公开数据，先与会话初始化并行；直接搜索链接则跳过无用的热搜请求。
-  const hotSearchPromise = queryKeyword ? undefined : hotSearchRef.value?.init();
   await auth.initializeSession();
+  await nextTick();
+  // 热搜展示受后台策略控制；先完成会话配置，再决定是否请求热搜数据。
+  const hotSearchPromise = queryKeyword || !auth.showHotSearch.value ? undefined : hotSearchRef.value?.init();
   await Promise.all([
     settingsApi.syncWithSession(),
     hotSearchPromise,
@@ -202,7 +203,7 @@ function handleOpenChannelSettings() {
   openChannelSettings();
 }
 function notifyCustomChannelsAccess() {
-  showToast("自定义频道仅对登录用户开放，请先登录或注册。", "info");
+  showToast("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。", "info");
 }
 watch(canUseCustomChannels, (allowed) => {
   if (!allowed && onlyUserTg.value) onlyUserTg.value = false;

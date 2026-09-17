@@ -1,4 +1,11 @@
 import { defineEventHandler } from "h3";
-import { requireSameOriginUserRequest } from "../../utils/userAuth";
-import { getUserSession, revokeSession } from "../../utils/userAuth";
-export default defineEventHandler((event) => { requireSameOriginUserRequest(event); const context = getUserSession(event, { allowMustChange: true }); revokeSession(context, event); return { ok: true }; });
+import { setPrivateNoStore } from "../../utils/apiResponse";
+import { getUserSession, requireSameOriginUserRequest, revokeSession } from "../../utils/userAuth";
+
+export default defineEventHandler((event) => {
+  requireSameOriginUserRequest(event);
+  setPrivateNoStore(event);
+  const context = getUserSession(event);
+  revokeSession(context, event);
+  return { ok: true };
+});

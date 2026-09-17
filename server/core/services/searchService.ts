@@ -2,18 +2,21 @@ import pLimit from "p-limit";
 import { UnifiedCache, CacheNamespace } from "../cache/unifiedCache";
 import { awaitWithAbort, createAbortScope, throwIfAborted } from "../utils/abort";
 import { getUserPolicy } from "./policyService";
-import { getUnifiedUpstreamVersion, listUnifiedUpstreams } from "./upstreamCatalog";
-import { upstreamToSourceDefinition } from "./configuredSource";
+import { getUnifiedSourceVersion, listUnifiedSources } from "./sourceCatalog";
+import { toSourceDefinition } from "./configuredSource";
 import { executeSource } from "../source-runtime/executor";
-import type { UpstreamDefinition } from "../../../types/source";
+import type { SourceDefinition } from "../../../types/source";
 import type { SearchExecutionResponse, SearchResult, SearchSourceMeta, SearchSourceUpdate } from "../types/models";
 import { ErrorCollector, classifyError, ErrorType, type WarningInfo } from "../utils/errors";
+import { mergeResultsByIdentity } from "../utils/resultMerge";
 import { createSourceHealthChecker, type SourceHealthStatus } from "./sourceHealth";
 import {
   clearSourceHealthStatuses,
   deleteSourceHealthStatus,
+  flushSourceHealthStatuses,
   loadSourceHealthSnapshot,
-  saveSourceHealthStatus,
+  pruneSourceHealthStatuses,
+  queueSourceHealthStatus,
 } from "./sourceHealthStore";
 
 export interface SearchExecutionOptions {
@@ -22,15 +25,14 @@ export interface SearchExecutionOptions {
 }
 
 export interface SearchServiceOptions {
-  defaultSourceIds: string[];
   defaultConcurrency: number;
   cacheTtlMinutes: number;
-  sourceLoader?: () => Promise<UpstreamDefinition[]>;
 }
 
 function canonical(value: string): string { return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase(); }
-function sourceKey(source: UpstreamDefinition): string { return source.id.trim().toLowerCase(); }
-function sourcePriority(source: UpstreamDefinition): number {
+function sourceKey(source: SourceDefinition): string { return source.id.trim().toLowerCase(); }
+/** Queue position: a smaller priority value is scheduled earlier. */
+function sourcePriority(source: SourceDefinition): number {
   const priority = Number(source.priority);
   return Number.isFinite(priority) ? priority : 0;
 }
@@ -49,7 +51,7 @@ interface SearchCacheEntry {
 }
 
 function buildCacheKey(keyword: string, sourceIds: string[]): string {
-  return `keyword:${canonical(keyword)}:sources:${sourceIds.map((id) => id.trim().toLowerCase()).sort().join(",")}:config:${getUnifiedUpstreamVersion()}`;
+  return `keyword:${canonical(keyword)}:sources:${sourceIds.map((id) => id.trim().toLowerCase()).sort().join(",")}:config:${getUnifiedSourceVersion()}`;
 }
 
 export class SearchService {
@@ -59,6 +61,12 @@ export class SearchService {
   private readonly health = createSourceHealthChecker();
   /** SourceHealthChecker keys by stable source id; keep the display name separately. */
   private readonly sourceNames = new Map<string, string>();
+  /**
+   * Signature of the last pruned source set. `pruneStaleHealth` runs on every
+   * search, but the DELETE it issues is only meaningful when the catalog itself
+   * changed, so an unchanged signature skips the write entirely.
+   */
+  private prunedSourceSignature: string | null = null;
   private inFlight = new Map<string, Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }>>();
 
   constructor(options: SearchServiceOptions) {
@@ -67,6 +75,7 @@ export class SearchService {
       { enabled: true, ttlMinutes: options.cacheTtlMinutes },
       "search",
     );
+    this.pruneStaleHealth();
     // Restore circuit state/counters before the first request so an unhealthy
     // source cannot bypass the breaker merely because the process restarted.
     try {
@@ -81,9 +90,31 @@ export class SearchService {
     this.options.defaultConcurrency = policy.defaultConcurrency;
     this.cache.setTtlMinutes(policy.cacheTtlMinutes);
     this.health.setMaxFailures(policy.circuitBreakerMaxFailures);
+    this.pruneStaleHealth();
   }
 
-  private resolveSources(sources: UpstreamDefinition[] | undefined, ephemeral: UpstreamDefinition[] = []): UpstreamDefinition[] {
+  private configuredSourceIds(): Set<string> {
+    return new Set(listUnifiedSources().map(sourceKey));
+  }
+
+  private pruneStaleHealth(): void {
+    const configuredIds = this.configuredSourceIds();
+    const signature = [...configuredIds].sort().join(",");
+    if (signature !== this.prunedSourceSignature) {
+      pruneSourceHealthStatuses(configuredIds);
+      this.prunedSourceSignature = signature;
+    }
+    // In-memory cleanup is free and must follow every catalog change, so it is
+    // not gated by the signature.
+    for (const sourceId of this.sourceNames.keys()) {
+      if (!configuredIds.has(sourceId)) this.sourceNames.delete(sourceId);
+    }
+    for (const status of this.health.getAllStatus()) {
+      if (!configuredIds.has(status.name)) this.health.reset(status.name);
+    }
+  }
+
+  private resolveSources(sources: SourceDefinition[] | undefined, ephemeral: SourceDefinition[] = []): SourceDefinition[] {
     const selected = sources?.length ? sources : [];
     const seen = new Set<string>();
     return [...selected, ...ephemeral].filter((source) => {
@@ -91,16 +122,16 @@ export class SearchService {
       if (!key || seen.has(key) || source.enabled === false) return false;
       seen.add(key);
       return true;
-    }).sort((a, b) => sourcePriority(b) - sourcePriority(a)).map(clone);
+    }).sort((a, b) => sourcePriority(a) - sourcePriority(b)).map(clone);
   }
 
   async searchWithWarnings(
     keyword: string,
-    sources: UpstreamDefinition[] | undefined,
+    sources: SourceDefinition[] | undefined,
     concurrency: number | undefined,
     forceRefresh: boolean,
     executionOptions: SearchExecutionOptions = {},
-    ephemeralSources: UpstreamDefinition[] = [],
+    ephemeralSources: SourceDefinition[] = [],
   ): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     executionOptions.signal?.throwIfAborted();
     this.syncRuntimePolicy();
@@ -124,16 +155,17 @@ export class SearchService {
         }
       }
     }
-    const run = this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, executionOptions, canUseCache ? cachedEntry : undefined, cacheKey, cacheAllowed);
+    const ephemeralSourceIds = new Set(ephemeralSources.map(sourceKey));
+    const run = this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, executionOptions, canUseCache ? cachedEntry : undefined, cacheKey, cacheAllowed, ephemeralSourceIds);
     if (canUseCache) this.inFlight.set(cacheKey, run);
     try { return await run; } finally { if (this.inFlight.get(cacheKey) === run) this.inFlight.delete(cacheKey); }
   }
 
-  async search(keyword: string, sources: UpstreamDefinition[] | undefined, concurrency?: number, forceRefresh?: boolean, executionOptions: SearchExecutionOptions = {}, ephemeralSources: UpstreamDefinition[] = []): Promise<SearchExecutionResponse> {
+  async search(keyword: string, sources: SourceDefinition[] | undefined, concurrency?: number, forceRefresh?: boolean, executionOptions: SearchExecutionOptions = {}, ephemeralSources: SourceDefinition[] = []): Promise<SearchExecutionResponse> {
     return (await this.searchWithWarnings(keyword, sources, concurrency, !!forceRefresh, executionOptions, ephemeralSources)).response;
   }
 
-  private async executeSearchWithTimeout(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number | undefined, executionOptions: SearchExecutionOptions, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
+  private async executeSearchWithTimeout(keyword: string, allSources: SourceDefinition[], sourcesToExecute: SourceDefinition[], concurrency: number | undefined, executionOptions: SearchExecutionOptions, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean, ephemeralSourceIds: ReadonlySet<string>): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const configuredBudget = Number(getUserPolicy().searchTimeoutMs);
     const timeoutMs = Number.isFinite(configuredBudget) && configuredBudget > 0 ? Math.min(configuredBudget, 120_000) : 30_000;
     const limit = Math.min(16, Math.max(1, Math.floor(Number(concurrency || this.options.defaultConcurrency) || 1)));
@@ -142,17 +174,22 @@ export class SearchService {
     const scope = createAbortScope(executionOptions.signal, timeoutMs, timeoutError);
     const execution = { signal: scope.signal, schedule: pLimit(limit), onSourceSuccess: executionOptions.onSourceSuccess };
     try {
-      const result = await this.performSearch(keyword, allSources, sourcesToExecute, limit, execution, cachedEntry, cacheKey, cacheAllowed);
+      const result = await this.performSearch(keyword, allSources, sourcesToExecute, limit, execution, cachedEntry, cacheKey, cacheAllowed, ephemeralSourceIds);
       if (scope.signal.aborted && !executionOptions.signal?.aborted) {
         const detail = classifyError(scope.signal.reason, "search");
         result.warnings.push({ type: detail.type, message: detail.message, source: detail.source, count: 1 });
         if (result.response.meta) result.response.meta.warnings = result.warnings;
       }
       return result;
-    } finally { scope.dispose(); }
+    } finally {
+      scope.dispose();
+      // Health snapshots are staged per source and written once here, so a
+      // search costs one batched transaction instead of one write per source.
+      flushSourceHealthStatuses();
+    }
   }
 
-  private async performSearch(keyword: string, allSources: UpstreamDefinition[], sourcesToExecute: UpstreamDefinition[], concurrency: number, execution: { signal: AbortSignal; schedule: ReturnType<typeof pLimit>; onSourceSuccess?: (update: SearchSourceUpdate) => void | Promise<void> }, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
+  private async performSearch(keyword: string, allSources: SourceDefinition[], sourcesToExecute: SourceDefinition[], concurrency: number, execution: { signal: AbortSignal; schedule: ReturnType<typeof pLimit>; onSourceSuccess?: (update: SearchSourceUpdate) => void | Promise<void> }, cachedEntry: SearchCacheEntry | undefined, cacheKey: string, cacheAllowed: boolean, ephemeralSourceIds: ReadonlySet<string>): Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }> {
     const collector = new ErrorCollector();
     const cachedWarnings: WarningInfo[] = [];
     const cachedStates = cachedEntry?.sources || {};
@@ -181,7 +218,8 @@ export class SearchService {
     const tasks = sourcesToExecute.map((source) => async () => {
       const diagnostic = diagnosticById.get(source.id)!;
       const started = Date.now();
-      const definition = upstreamToSourceDefinition(source);
+      const definition = toSourceDefinition(source);
+      const trackHealth = !ephemeralSourceIds.has(sourceKey(source));
       try {
         if (execution.signal.aborted) return [];
         // An open circuit is a real scheduling decision, not only a status label.
@@ -223,7 +261,7 @@ export class SearchService {
         diagnostic.status = "success";
         diagnostic.resultCount = sourceResults.length;
         diagnostic.elapsedMs = Date.now() - started;
-        this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
+        if (trackHealth) this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
         if (execution.onSourceSuccess && !execution.signal.aborted) {
           await execution.onSourceSuccess({ request: { keyword, phase: "source" }, results: sourceResults });
         }
@@ -232,7 +270,7 @@ export class SearchService {
       } catch (error) {
         diagnostic.status = execution.signal.aborted ? "skipped" : "failed";
         diagnostic.elapsedMs = Date.now() - started;
-        // A cancelled search is not evidence that the upstream is unhealthy.
+        // A cancelled search is not evidence that the source is unhealthy.
         // If this was the half-open probe, release it so a later request can retry.
         if (execution.signal.aborted) {
           this.health.releaseProbe(source.id);
@@ -240,7 +278,7 @@ export class SearchService {
         }
         const detail = classifyError(error, source.id);
         collector.record(detail, "source_search");
-        this.recordHealth(source, false, diagnostic.elapsedMs, 0, detail.message, detail.type);
+        if (trackHealth) this.recordHealth(source, false, diagnostic.elapsedMs, 0, detail.message, detail.type);
         nextStates[sourceKey(source)] = {
           id: source.id,
           name: source.name,
@@ -271,7 +309,7 @@ export class SearchService {
     return { response, warnings };
   }
 
-  private buildResponseFromCache(sources: UpstreamDefinition[], entry: SearchCacheEntry): SearchExecutionResponse {
+  private buildResponseFromCache(sources: SourceDefinition[], entry: SearchCacheEntry): SearchExecutionResponse {
     const results = this.mergeUniqueResults(sources.flatMap((source) => {
       const cached = entry.sources[sourceKey(source)];
       return cached?.status === "success" ? cached.results : [];
@@ -286,7 +324,7 @@ export class SearchService {
     };
   }
 
-  private async emitCachedResults(sources: UpstreamDefinition[], entry: SearchCacheEntry | undefined, callback: ((update: SearchSourceUpdate) => void | Promise<void>) | undefined, keyword: string): Promise<void> {
+  private async emitCachedResults(sources: SourceDefinition[], entry: SearchCacheEntry | undefined, callback: ((update: SearchSourceUpdate) => void | Promise<void>) | undefined, keyword: string): Promise<void> {
     if (!entry || !callback) return;
     for (const source of sources) {
       const state = entry.sources[sourceKey(source)];
@@ -294,15 +332,19 @@ export class SearchService {
     }
   }
 
+  /**
+   * Deduplicate results gathered from several sources.
+   *
+   * This delegates to the shared pipeline definition instead of comparing raw
+   * ids: the old `id || links[0].url || name|datetime` key never fell through to
+   * the link branch because every source result carries an id, so the same share
+   * link coming from two sources was emitted twice here while the streamed view
+   * emitted it once.
+   */
   private mergeUniqueResults(results: SearchResult[]): SearchResult[] {
-    const seen = new Set<string>();
-    return results.filter((result) => {
-      const key = result.id || result.links[0]?.url || `${result.name}|${result.datetime || ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    });
+    return mergeResultsByIdentity(results);
   }
-  private recordHealth(source: UpstreamDefinition, ok: boolean, elapsedMs: number, resultCount: number, message?: string, category?: string): void {
+  private recordHealth(source: SourceDefinition, ok: boolean, elapsedMs: number, resultCount: number, message?: string, category?: string): void {
     this.sourceNames.set(source.id, source.name);
     if (ok) {
       this.health.recordSuccess(source.id, elapsedMs, { resultCount });
@@ -314,13 +356,12 @@ export class SearchService {
       });
     }
     const status = this.health.getStatus(source.id);
-    if (status) saveSourceHealthStatus(source.id, status);
+    if (status) queueSourceHealthStatus(source.id, status);
   }
 
-  getCacheStats() { this.syncRuntimePolicy(); return this.cache.getStats(); }
-  clearCache(namespace?: CacheNamespace) { namespace ? this.cache.clearNamespace(namespace) : this.cache.clearAll(); }
   getSourceHealthStatus(): Array<SourceHealthStatus & { id: string }> {
-    const configuredNames = new Map(listUnifiedUpstreams().map((source) => [source.id, source.name]));
+    this.pruneStaleHealth();
+    const configuredNames = new Map(listUnifiedSources().map((source) => [source.id, source.name]));
     return this.health.getAllStatus().map((status) => ({
       ...status,
       id: status.name,
@@ -336,6 +377,9 @@ export class SearchService {
       this.health.resetAll();
       this.sourceNames.clear();
       clearSourceHealthStatuses();
+      // The catalog did not change, so force the next prune to re-evaluate the
+      // table it was just told to empty.
+      this.prunedSourceSignature = null;
     }
   }
 }

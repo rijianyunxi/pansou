@@ -1,5 +1,5 @@
 <template>
-  <div class="upstream-app" :data-ready="clientReady ? 'true' : 'false'">
+  <div class="source-app" :data-ready="clientReady ? 'true' : 'false'">
     <AdminAccessGate v-if="adminChecking || adminLocked" :checking="adminChecking" :authenticated="adminAuthenticated"
       :error="authError" title="进入管理后台" @authenticated="checkAdminSession" />
     <template v-else>
@@ -24,7 +24,7 @@
             <ConsoleIcon name="activity" />搜索日志
           </NuxtLink>
           <NuxtLink to="/admin/policies" class="console-nav-link">
-            <ConsoleIcon name="sliders" />搜索策略
+            <ConsoleIcon name="sliders" />系统设置
           </NuxtLink>
         </nav>
       </aside>
@@ -38,13 +38,7 @@
               }}</strong>
           </div>
           <div class="topbar-right">
-            <span class="local-chip"><span></span>ADMIN SESSION</span>
-            <span class="topbar-divider"></span>
-            <NuxtLink to="/" class="back-search">
-              <ConsoleIcon name="external" :size="14" />返回搜索
-            </NuxtLink>
             <button class="session-button" type="button" @click="lockAdmin">
-              <span class="user-avatar">P</span>
               <span>退出后台</span>
               <ConsoleIcon name="logout" :size="15" />
             </button>
@@ -151,13 +145,13 @@
         </main>
       </div>
     </template>
-    <UpstreamDetailDrawer v-if="detailDrawerOpen && selected" :source="selected" :running="!!runningId"
+    <SourceDetailDrawer v-if="detailDrawerOpen && selected" :source="selected" :running="!!runningId"
       @close="detailDrawerOpen = false" @edit="openEditor(selected)"
       @debug="openDebug(selected)" @delete="requestDeleteSource(selected)" />
-    <UpstreamDebugDialog v-if="debugDialogOpen && selected" :source="selected" :report="selectedReport"
+    <SourceDebugDialog v-if="debugDialogOpen && selected" :source="selected" :report="selectedReport"
       :keyword="keyword" :running="!!runningId" @close="debugDialogOpen = false" @send="testSource(selected)"
       @update:keyword="keyword = $event" />
-    <UpstreamEditor v-if="!adminLocked && editorOpen" :source="editingSource" @close="editorOpen = false"
+    <SourceEditor v-if="!adminLocked && editorOpen" :source="editingSource" @close="editorOpen = false"
       @save="saveSource" />
     <div v-if="archiveOpen" class="modal-backdrop" @click.self="closeArchive">
       <section class="archive-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title">
@@ -165,7 +159,7 @@
           <div>
             <span class="eyebrow">LIFECYCLE MANAGEMENT</span>
             <h2 id="archive-title">回收站</h2>
-            <p>已移除的 Telegram 频道不会参与搜索，可恢复或永久删除。</p>
+            <p>已移除的频道来源不会参与搜索，可恢复或永久删除。</p>
           </div>
           <button class="icon-button" aria-label="关闭回收站" @click="closeArchive">
             <ConsoleIcon name="close" />
@@ -175,10 +169,10 @@
         <div v-else-if="!archivedChannels.length" class="archive-empty">
           <ConsoleIcon name="trash" :size="30" />
           <strong>回收站为空</strong>
-          <p>已移除的 Telegram 频道会显示在这里。</p>
+          <p>已移除的频道来源会显示在这里。</p>
         </div>
         <ul v-else class="archive-list">
-          <li v-for="channel in archivedChannels" :key="`telegram:${channel.channel}`">
+          <li v-for="channel in archivedChannels" :key="`channel-source:${channel.channel}`">
             <span class="source-avatar" style="--source-color: #229ed9">TG</span>
             <div class="archive-item-copy">
               <a class="archive-channel-link" :href="`https://t.me/s/${channel.channel}`" target="_blank"
@@ -234,15 +228,16 @@
 
 <script setup lang="ts">
 import AdminAccessGate from "../../components/admin/AdminAccessGate.vue";
-import ConsoleIcon from "../../components/upstreams/ConsoleIcon.vue";
-import SourceTemplateEditor from "../../components/upstreams/SourceTemplateEditor.vue";
+import ConsoleIcon from "../../components/sources/ConsoleIcon.vue";
+import SourceTemplateEditor from "../../components/sources/SourceTemplateEditor.vue";
 import MonitorPanel from "../../components/monitor/MonitorPanel.vue";
-import UpstreamEditor from "../../components/upstreams/UpstreamEditor.vue";
-import UpstreamDetailDrawer from "../../components/upstreams/UpstreamDetailDrawer.vue";
-import UpstreamDebugDialog from "../../components/upstreams/UpstreamDebugDialog.vue";
-import type { UpstreamDefinition, UpstreamProbe } from "../../types/source";
-import { buildSourceDebugUrl } from "../../utils/upstreamDebugUrl";
+import SourceEditor from "../../components/sources/SourceEditor.vue";
+import SourceDetailDrawer from "../../components/sources/SourceDetailDrawer.vue";
+import SourceDebugDialog from "../../components/sources/SourceDebugDialog.vue";
+import type { SourceDefinition, SourceProbe } from "../../types/source";
+import { buildSourceDebugUrl } from "../../utils/sourceDebugUrl";
 import { shallowRef } from "vue";
+const auth = useAuth();
 useHead({
   title: "管理后台",
   meta: [
@@ -254,21 +249,21 @@ useHead({
   ],
 });
 const clientReady = ref(false);
-const configuredUpstreams = ref<UpstreamDefinition[]>([]);
-type ArchivedTelegramChannel = {
+const configuredSources = ref<SourceDefinition[]>([]);
+type ArchivedChannelSource = {
   channel: string;
   origin: "builtin" | "custom";
   enabled: boolean;
   deleted: boolean;
 };
-const monitorChannels = shallowRef<ArchivedTelegramChannel[]>([]);
+const monitorChannels = shallowRef<ArchivedChannelSource[]>([]);
 const archivedChannels = computed(() => monitorChannels.value.filter((channel) => channel.deleted));
-const reports = ref<Record<string, UpstreamProbe>>({});
+const reports = ref<Record<string, SourceProbe>>({});
 // The unified catalog is the only source directory. Transform functions are source configuration, not separate sources.
-const sources = configuredUpstreams;
+const sources = configuredSources;
 const trashCount = computed(() => archivedChannels.value.length);
 const selectedId = ref("");
-const defaultUnifiedSource: UpstreamDefinition = {
+const defaultUnifiedSource: SourceDefinition = {
   id: "",
   name: "",
   description: "",
@@ -279,7 +274,7 @@ const defaultUnifiedSource: UpstreamDefinition = {
   transform: "",
   enabled: false,
 };
-const selected = computed<UpstreamDefinition>(
+const selected = computed<SourceDefinition>(
   () =>
     sources.value.find((s) => s.id === selectedId.value) ||
     sources.value[0] ||
@@ -307,7 +302,7 @@ const search = ref("");
 const runningId = ref("");
 const keyword = ref("三体");
 const editorOpen = ref(false);
-const editingSource = ref<UpstreamDefinition | null>(null);
+const editingSource = ref<SourceDefinition | null>(null);
 const detailDrawerOpen = ref(false);
 const debugDialogOpen = ref(false);
 const storageError = ref("");
@@ -318,20 +313,19 @@ const authError = ref("");
 const archiveOpen = ref(false);
 const archiveLoading = ref(false);
 const archiveBusyId = ref("");
-const purgeTarget = ref<ArchivedTelegramChannel | null>(null);
+const purgeTarget = ref<ArchivedChannelSource | null>(null);
 const purgeConfirmation = ref("");
 const canConfirmPurge = computed(() =>
   purgeConfirmation.value.trim().replace(/^@/, "").toLowerCase() === purgeTarget.value?.channel,
-);
-const notice = ref("");
+);const notice = ref("");
 useHead({ title: () => viewTitle.value });
 let noticeTimer: ReturnType<typeof setTimeout>;
 const SOURCE_COLORS = ["#4085b8", "#5b67c7", "#0f766e", "#b45309", "#9d174d", "#6d28d9"];
-function sourceInitials(source: UpstreamDefinition): string {
+function sourceInitials(source: SourceDefinition): string {
   const name = source.name.trim();
   return name ? Array.from(name)[0]!.toUpperCase() : "S";
 }
-function sourceColor(source: UpstreamDefinition): string {
+function sourceColor(source: SourceDefinition): string {
   let hash = 0;
   for (const char of source.id || source.name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return SOURCE_COLORS[hash % SOURCE_COLORS.length]!;
@@ -351,14 +345,14 @@ function apiErrorMessage(error: any): string {
   return error?.data?.statusMessage || error?.message || "服务端操作失败。";
 }
 
-async function loadUpstreamCatalog() {
+async function loadSourceCatalog() {
   try {
-    const response = await $fetch<{ data?: UpstreamDefinition[] }>("/api/settings/upstreams");
-    configuredUpstreams.value = response.data ?? [];
+    const response = await $fetch<{ data?: SourceDefinition[] }>("/api/settings/sources");
+    configuredSources.value = response.data ?? [];
     storageError.value = "";
     if (!sources.value.some((source) => source.id === selectedId.value)) selectedId.value = sources.value[0]?.id || "";
   } catch (error: any) {
-    configuredUpstreams.value = [];
+    configuredSources.value = [];
     if ([401, 403].includes(error?.statusCode || error?.response?.status)) {
       adminAuthenticated.value = false;
       adminLocked.value = true;
@@ -409,7 +403,7 @@ async function checkAdminSession() {
     );
     adminAuthenticated.value = status.authenticated;
     adminLocked.value = !(status.authenticated && status.user?.role === "admin");
-    if (!adminLocked.value) await loadUpstreamCatalog();
+    if (!adminLocked.value) await loadSourceCatalog();
   } catch (error: any) {
     adminAuthenticated.value = false;
     adminLocked.value = true;
@@ -420,9 +414,9 @@ async function checkAdminSession() {
 }
 async function lockAdmin() {
   try {
-    await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 });
+    await auth.logout();
   } finally {
-    configuredUpstreams.value = [];
+    configuredSources.value = [];
     monitorChannels.value = [];
     reports.value = {};
     editorOpen.value = false;
@@ -455,7 +449,7 @@ function displayUrl(url: string) {
     return safeUrl;
   }
 }
-function sourceDebugLinkTitle(source: UpstreamDefinition): string {
+function sourceDebugLinkTitle(source: SourceDefinition): string {
   const url = buildSourceDebugUrl(source, keyword.value);
   return source.method === "POST"
     ? `POST 参数浏览器预览（实际请求仍使用 POST Body）\n${url}`
@@ -469,27 +463,27 @@ function notify(message: string) {
 onMounted(async () => {
   clientReady.value = true;
   if (adminChecking.value) await checkAdminSession();
-  else if (!adminLocked.value) await loadUpstreamCatalog();
+  else if (!adminLocked.value) await loadSourceCatalog();
   if (adminLocked.value) {
     return;
   }
   await loadArchivedChannels();
 });
-function openDetail(source: UpstreamDefinition) {
+function openDetail(source: SourceDefinition) {
   selectedId.value = source.id;
   debugDialogOpen.value = false;
   detailDrawerOpen.value = true;
 }
-function openDebug(source: UpstreamDefinition) {
+function openDebug(source: SourceDefinition) {
   selectedId.value = source.id;
   detailDrawerOpen.value = false;
   debugDialogOpen.value = true;
 }
-function focusTelegramUpstream(channel: string) {
+function focusChannelSource(channel: string) {
   const normalized = String(channel || "").replace(/^@/, "").toLowerCase();
   const source = sources.value.find((item) => item.id === normalized);
   if (source) openDebug(source);
-  else notify(`未找到频道 @${normalized} 的来源配置。`);
+  else notify(`未找到频道来源 @${normalized} 的配置。`);
 }
 function testSourceById(id: string) {
   const source = sources.value.find((item) => item.id === id);
@@ -497,25 +491,25 @@ function testSourceById(id: string) {
   else notify(`未找到资源源 ${id}。`);
 }
 
-function focusUpstream(id: string) {
+function focusSource(id: string) {
   const source = sources.value.find((item) => item.id === id);
   if (source) openDetail(source);
 }
-function openEditor(source: UpstreamDefinition | null = null) {
+function openEditor(source: SourceDefinition | null = null) {
   detailDrawerOpen.value = false;
   editingSource.value = source;
   editorOpen.value = true;
 }
-async function saveSource(source: UpstreamDefinition) {
+async function saveSource(source: SourceDefinition) {
   try {
     // All sources are catalog configuration now. The page no longer creates a
-    // second "draft source" representation for a new upstream; saving is the
+    // second "draft source" representation for a new source; saving is the
     // activation boundary and the next request reads the SQLite row directly.
-    await $fetch("/api/settings/upstreams", {
+    await $fetch("/api/settings/sources", {
       method: "PUT",
       body: { source },
     });
-    await loadUpstreamCatalog();
+    await loadSourceCatalog();
     notify("来源配置已保存，下一次请求立即生效。");
   } catch (error: any) {
     notify(apiErrorMessage(error));
@@ -527,7 +521,7 @@ async function saveSource(source: UpstreamDefinition) {
 
 let disposed = false;
 let activeController: AbortController | undefined;
-async function testSource(source: UpstreamDefinition) {
+async function testSource(source: SourceDefinition) {
   if (runningId.value) return;
   if (!keyword.value.trim()) {
     notify("请输入测试关键词。");
@@ -537,7 +531,7 @@ async function testSource(source: UpstreamDefinition) {
   activeController = new AbortController();
   const timer = setTimeout(() => activeController?.abort(), 16000);
   try {
-    const result = await $fetch<UpstreamProbe>("/api/upstreams/test", {
+    const result = await $fetch<SourceProbe>("/api/sources/probe", {
       method: "POST",
       body: { sourceId: source.id, kw: keyword.value.trim() },
       signal: activeController.signal,
@@ -564,17 +558,17 @@ async function testSource(source: UpstreamDefinition) {
     activeController = undefined;
   }
 }
-async function requestDeleteSource(source: UpstreamDefinition) {
+async function requestDeleteSource(source: SourceDefinition) {
   if (!window.confirm(`确定删除「${source.name}」吗？删除后下一次请求立即停止加载。`)) return;
   try {
-    await $fetch(`/api/settings/upstreams/${encodeURIComponent(source.id)}`, {
+    await $fetch(`/api/settings/sources/${encodeURIComponent(source.id)}`, {
       method: "DELETE",
       body: { confirmation: source.id, actor: "admin-console" },
     });
     delete reports.value[source.id];
     detailDrawerOpen.value = false;
     debugDialogOpen.value = false;
-    await Promise.all([loadUpstreamCatalog(), loadArchivedChannels()]);
+    await Promise.all([loadSourceCatalog(), loadArchivedChannels()]);
     notify("来源已删除，下一次请求立即生效。");
   } catch (error: any) {
     notify(apiErrorMessage(error));
@@ -595,22 +589,22 @@ function closeArchive() {
   purgeConfirmation.value = "";
 }
 async function restoreArchivedChannel(channel: string) {
-  const busyId = `telegram:${channel}`;
+  const busyId = `channel-source:${channel}`;
   if (archiveBusyId.value) return;
   archiveBusyId.value = busyId;
   try {
-    await $fetch(`/api/tg/channels/${encodeURIComponent(channel)}/enable`, {
+    await $fetch(`/api/settings/sources/${encodeURIComponent(channel)}/enable`, {
       method: "POST",
     });
     await loadArchivedChannels();
-    notify(`Telegram 频道 @${channel} 已恢复。`);
+    notify(`频道来源 @${channel} 已恢复。`);
   } catch (error: any) {
     notify(apiErrorMessage(error));
   } finally {
     archiveBusyId.value = "";
   }
 }
-function requestPurgeArchivedChannel(channel: ArchivedTelegramChannel) {
+function requestPurgeArchivedChannel(channel: ArchivedChannelSource) {
   if (archiveBusyId.value) return;
   purgeTarget.value = channel;
   purgeConfirmation.value = "";
@@ -624,16 +618,16 @@ function cancelPurgeArchivedChannel() {
 async function confirmPurgeArchivedChannel() {
   const channel = purgeTarget.value?.channel;
   if (!channel || !canConfirmPurge.value || archiveBusyId.value) return;
-  archiveBusyId.value = `telegram:${channel}`;
+  archiveBusyId.value = `channel-source:${channel}`;
   try {
-    await $fetch(`/api/tg/channels/${encodeURIComponent(channel)}/purge`, {
+    await $fetch(`/api/settings/sources/${encodeURIComponent(channel)}/purge`, {
       method: "DELETE",
       body: { confirmation: channel },
     });
     purgeTarget.value = null;
     purgeConfirmation.value = "";
-    await Promise.all([loadArchivedChannels(), loadUpstreamCatalog()]);
-    notify(`Telegram 频道 @${channel} 已永久删除。`);
+    await Promise.all([loadArchivedChannels(), loadSourceCatalog()]);
+    notify(`频道来源 @${channel} 已永久删除。`);
   } catch (error: any) {
     notify(apiErrorMessage(error));
   } finally {
@@ -671,4 +665,4 @@ onBeforeUnmount(() => {
 });
 </script>
 
-<style src="../../assets/upstream-console.css"></style>
+<style src="../../assets/source-console.css"></style>
