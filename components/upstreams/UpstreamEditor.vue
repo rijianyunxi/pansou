@@ -78,6 +78,19 @@
                 <option value="html">HTML</option>
               </select>
             </label>
+            <label>
+              优先级
+              <input
+                v-model.number="form.priority"
+                type="number"
+                min="0"
+                max="999"
+                step="1"
+                :readonly="readonly"
+                aria-describedby="priority-help"
+              />
+              <small id="priority-help" class="editor-field-hint">数值越大越优先进入搜索队列</small>
+            </label>
           </div>
 
           <label class="editor-url-field">
@@ -284,6 +297,7 @@ function createBlankSource(): EditableUpstreamDefinition {
     description: "",
     method: "GET",
     format: "json",
+    priority: 0,
     transform: "",
   };
 }
@@ -455,6 +469,13 @@ function save() {
     error.value = "请填写来源名称。";
     return;
   }
+
+  const priority = Number(form.priority ?? 0);
+  if (!Number.isInteger(priority) || priority < 0 || priority > 999) {
+    error.value = "优先级请输入 0-999 的整数。";
+    return;
+  }
+  form.priority = priority;
 
   const parseJson = (text: string, label: string): unknown => {
     if (!text.trim()) return undefined;
@@ -633,13 +654,23 @@ function save() {
   gap: 3px;
 }
 
+.editor-field-hint {
+  display: block;
+  margin-top: 5px;
+  color: #7b899b;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
 .editor-primary-grid {
   grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
 }
 
 .editor-connection-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  align-items: end;
+  /* Keep method/format wide; priority is a compact numeric control. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(150px, 0.42fr);
+  align-items: start;
 }
 
 .editor-url-field {

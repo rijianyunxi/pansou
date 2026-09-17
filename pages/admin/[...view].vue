@@ -75,6 +75,7 @@
                       <th class="source-index-column">序号</th>
                       <th>来源</th>
                       <th>接入方式</th>
+                      <th>优先级</th>
                       <th>请求地址</th>
                       <th>操作</th>
                     </tr>
@@ -98,6 +99,9 @@
                           资源源
                         </span>
                         <span class="source-kind-meta">{{ source.method }} · {{ source.format.toUpperCase() }}</span>
+                      </td>
+                      <td class="source-priority-cell" data-label="优先级">
+                        <span class="source-priority-badge">{{ source.priority ?? 0 }}</span>
                       </td>
                       <td class="source-endpoint-cell" data-label="请求地址">
                         <a class="source-endpoint mono" :href="buildSourceDebugUrl(source, keyword)" target="_blank"
@@ -268,6 +272,7 @@ const defaultUnifiedSource: UpstreamDefinition = {
   url: "https://example.invalid",
   method: "GET",
   format: "json",
+  priority: 0,
   transform: "",
   enabled: false,
 };

@@ -20,6 +20,7 @@ import type { UpstreamDefinition } from "../../types/source";
 export interface MonitorSourceEntry {
   id: string;
   name: string;
+  priority: number;
   kind: "source";
   /** 来源配置是否启用。 */
   enabled: boolean;
@@ -162,6 +163,7 @@ function mapSource(
   return {
     id: source.id,
     name: source.name,
+    priority: source.priority,
     kind: "source",
     enabled: source.enabled !== false && !trashed,
     trashed,

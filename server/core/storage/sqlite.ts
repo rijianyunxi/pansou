@@ -24,6 +24,7 @@ export class SqliteDatabase {
     this.db.pragma("temp_store = MEMORY");
     this.db.exec(SCHEMA);
     this.ensureSessionChannelsColumn();
+    this.ensureResourceSourceColumns();
     this.ensureUserAccountColumns();
     this.ensureUserRolesAndDefaultAdmin();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
@@ -37,6 +38,16 @@ export class SqliteDatabase {
       // column was introduced.
       this.db.exec("ALTER TABLE sessions ADD COLUMN custom_channels_json TEXT NOT NULL DEFAULT '[]'");
     }
+  }
+
+  private ensureResourceSourceColumns(): void {
+    const columns = this.db.prepare("PRAGMA table_info(resource_sources)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "priority")) {
+      // Older databases did not persist source ordering. Keep those sources at
+      // the neutral priority while enabling priority-aware scheduling.
+      this.db.exec("ALTER TABLE resource_sources ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_resource_sources_priority ON resource_sources(priority DESC,enabled,id)");
   }
 
   private ensureUserAccountColumns(): void {
@@ -130,7 +141,7 @@ CREATE TABLE IF NOT EXISTS search_settings(id INTEGER PRIMARY KEY CHECK(id=1),co
 CREATE TABLE IF NOT EXISTS search_setting_sources(source_id TEXT PRIMARY KEY,trashed INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS search_setting_channels(channel TEXT PRIMARY KEY,position INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_search_setting_channels_position ON search_setting_channels(position,channel);
-CREATE TABLE IF NOT EXISTS resource_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,url TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,enabled INTEGER NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS resource_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,url TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_resource_sources_enabled ON resource_sources(enabled,id);
 CREATE TABLE IF NOT EXISTS deleted_sources(id TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS source_template_settings(id INTEGER PRIMARY KEY CHECK(id=1),url_template TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);

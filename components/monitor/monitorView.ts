@@ -64,6 +64,7 @@ export interface MonitorSourceHealth {
 export interface MonitorSourceEntry {
   id?: string | null;
   name?: string | null;
+  priority?: number | null;
   kind?: string | null;
   enabled?: boolean | null;
   trashed?: boolean | null;
@@ -98,6 +99,7 @@ export interface MonitorRow {
   kind: MonitorKind;
   id: string;
   name: string;
+  priority: number;
   typeLabel: string;
   state: MonitorRowState;
   enabled: boolean;
@@ -342,6 +344,7 @@ function buildSourceRow(entry: MonitorSourceEntry): MonitorRow | null {
     kind: "source",
     id,
     name: text(entry.name).trim() || id,
+    priority: num(entry.priority) ?? 0,
     typeLabel: origin === "builtin" ? "内置资源源" : origin === "custom" ? "自定义资源源" : "资源源",
     state,
     enabled: bool(entry.enabled) !== false,

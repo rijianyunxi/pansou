@@ -31,6 +31,10 @@ export interface SearchServiceOptions {
 
 function canonical(value: string): string { return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase(); }
 function sourceKey(source: UpstreamDefinition): string { return source.id.trim().toLowerCase(); }
+function sourcePriority(source: UpstreamDefinition): number {
+  const priority = Number(source.priority);
+  return Number.isFinite(priority) ? priority : 0;
+}
 function clone<T>(value: T): T { return structuredClone(value); }
 
 interface CachedSourceState {
@@ -94,7 +98,7 @@ export class SearchService {
       if (!key || seen.has(key) || source.enabled === false) return false;
       seen.add(key);
       return true;
-    }).map(clone);
+    }).sort((a, b) => sourcePriority(b) - sourcePriority(a)).map(clone);
   }
 
   async searchWithWarnings(
@@ -163,6 +167,7 @@ export class SearchService {
       return {
         id: source.id,
         name: source.name,
+        priority: source.priority,
         status: cached?.status === "success" ? "success" : cached?.status === "failed" ? "failed" : "skipped",
         resultCount: cached?.status === "success" ? cached.results.length : 0,
         elapsedMs: 0,
@@ -266,7 +271,7 @@ export class SearchService {
       total: results.length,
       results,
       meta: {
-        sources: sources.map((source) => ({ id: source.id, name: source.name, status: "success", resultCount: entry.sources[sourceKey(source)]?.results.length || 0, elapsedMs: 0, transformMs: null })),
+        sources: sources.map((source) => ({ id: source.id, name: source.name, priority: source.priority, status: "success", resultCount: entry.sources[sourceKey(source)]?.results.length || 0, elapsedMs: 0, transformMs: null })),
         warnings: [],
       },
     };

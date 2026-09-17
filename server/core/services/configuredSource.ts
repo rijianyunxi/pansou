@@ -6,6 +6,7 @@ export function getSourceConfigurationVersion(source: UpstreamDefinition): strin
     url: source.url,
     method: source.method,
     format: source.format,
+    priority: source.priority ?? 0,
     request: source.request,
     transform: source.transform,
   });

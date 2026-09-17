@@ -451,7 +451,7 @@ const settingsDraft = ref<{
 const sourceOptions = computed(() =>
   rows.value
     .filter((row) => !row.trashed)
-    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 );
 
 function sourceSelectionKey(row: MonitorRow): string {

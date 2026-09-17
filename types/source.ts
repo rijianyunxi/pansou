@@ -17,6 +17,8 @@ export interface UpstreamDefinition {
   url: string;
   method: "GET" | "POST";
   format: "json" | "html";
+  /** Higher values are queued and started before lower-priority sources. */
+  priority: number;
   enabled?: boolean;
   request?: UpstreamRequestConfig;
   transform: string;

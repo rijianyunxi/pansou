@@ -38,6 +38,7 @@ export type SourceExecutionStatus = "success" | "failed" | "skipped";
 export interface SearchSourceMeta {
   id: string;
   name: string;
+  priority: number;
   status: SourceExecutionStatus;
   resultCount: number;
   elapsedMs: number;

@@ -27,6 +27,11 @@ function sanitizeSourceRequest(raw: unknown): NonNullable<UpstreamDefinition["re
   return Object.fromEntries(REQUEST_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(value, field)).map((field) => [field, structuredClone(value[field])])) as NonNullable<UpstreamDefinition["request"]>;
 }
 function normalizeId(value: unknown): string { return String(value || "").trim().toLowerCase(); }
+function normalizePriority(value: unknown): number {
+  const priority = Number(value);
+  if (!Number.isFinite(priority)) return 0;
+  return Math.max(0, Math.min(999, Math.trunc(priority)));
+}
 function normalizeChannel(value: unknown): string { return String(value || "").trim().replace(/^@/, "").toLowerCase(); }
 function configuredChannels(): string[] {
   const settings = getSearchSettings();
@@ -51,6 +56,7 @@ function sanitize(raw: unknown): StoredCatalog {
       name: String(source.name || id).trim().slice(0, 100),
       description: String(source.description || "").trim().slice(0, 500),
       url, method, format, transform,
+      priority: normalizePriority(source.priority),
       enabled: source.enabled !== false,
       request: sanitizeSourceRequest(source.request),
     };
@@ -63,7 +69,7 @@ function read(): StoredCatalog {
     db.allRows<{ id: string }>("SELECT id FROM deleted_sources").map((row) => row.id),
   );
   const tgStates = getTgChannelStates();
-  const rows = db.allRows<any>("SELECT id,name,description,url,method,format,enabled,request_json,transform FROM resource_sources");
+  const rows = db.allRows<any>("SELECT id,name,description,url,method,format,priority,enabled,request_json,transform FROM resource_sources");
   const raw: Record<string, unknown> = {};
   for (const row of rows) {
     const id = normalizeId(row.id);
@@ -79,7 +85,7 @@ function read(): StoredCatalog {
 }
 function writeSource(source: UpstreamDefinition): void {
   const db = getSqliteDatabase();
-  db.run("INSERT INTO resource_sources(id,name,description,url,method,format,enabled,request_json,transform,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,method=excluded.method,format=excluded.format,enabled=excluded.enabled,request_json=excluded.request_json,transform=excluded.transform,updated_at=excluded.updated_at", source.id, source.name, source.description, source.url, source.method, source.format, source.enabled === false ? 0 : 1, source.request ? JSON.stringify(source.request) : null, source.transform, Date.now());
+  db.run("INSERT INTO resource_sources(id,name,description,url,method,format,priority,enabled,request_json,transform,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,method=excluded.method,format=excluded.format,priority=excluded.priority,enabled=excluded.enabled,request_json=excluded.request_json,transform=excluded.transform,updated_at=excluded.updated_at", source.id, source.name, source.description, source.url, source.method, source.format, source.priority ?? 0, source.enabled === false ? 0 : 1, source.request ? JSON.stringify(source.request) : null, source.transform, Date.now());
 }
 export function buildUserSource(channel: string): UpstreamDefinition {
   const normalized = normalizeChannel(channel);
@@ -91,6 +97,7 @@ export function buildUserSource(channel: string): UpstreamDefinition {
     url: template.url,
     method: template.method,
     format: template.format,
+    priority: 0,
     enabled: true,
     request: template.request as UpstreamDefinition["request"],
     transform: template.transform,
@@ -105,8 +112,14 @@ function effectiveSource(id: string, catalog: StoredCatalog): UpstreamDefinition
   return undefined;
 }
 
+function compareSources(a: UpstreamDefinition, b: UpstreamDefinition): number {
+  return (b.priority ?? 0) - (a.priority ?? 0)
+    || a.name.localeCompare(b.name)
+    || a.id.localeCompare(b.id);
+}
+
 export function listConfiguredUpstreams(): UpstreamDefinition[] {
-  return Object.values(read()).sort((a, b) => a.name.localeCompare(b.name));
+  return Object.values(read()).sort(compareSources);
 }
 export function getConfiguredUpstream(id: string): UpstreamDefinition | undefined { return read()[normalizeId(id)] && clone(read()[normalizeId(id)]); }
 export function listUnifiedUpstreams(): UpstreamDefinition[] {
@@ -117,7 +130,7 @@ export function listUnifiedUpstreams(): UpstreamDefinition[] {
     if (!catalog[channel] && !states[channel]?.deleted) catalog[channel] = buildUserSource(channel);
     if (catalog[channel] && states[channel]) catalog[channel]!.enabled = states[channel]!.enabled && !states[channel]!.deleted;
   }
-  return Object.values(catalog).sort((a, b) => a.name.localeCompare(b.name)).map(clone);
+  return Object.values(catalog).sort(compareSources).map(clone);
 }
 export function getUnifiedUpstream(id: string): UpstreamDefinition | undefined { return effectiveSource(id, read()); }
 export function saveUnifiedUpstream(raw: unknown): UpstreamDefinition {
@@ -183,7 +196,7 @@ export function setUnifiedUpstreamEnabled(id: string, enabled: boolean): Upstrea
 }
 export function getConfiguredUpstreamVersion(): string { return String(getSqliteDatabase().getRow<any>("SELECT revision FROM config_revisions WHERE scope='sources'")?.revision || 0); }
 export function getUnifiedUpstreamVersion(): string { return `${getConfiguredUpstreamVersion()}|${getSearchSettingsVersion()}|${getSourceTemplateVersion()}`; }
-export const UPSTREAM_CONFIG_SCHEMA_VERSION = 4;
+export const UPSTREAM_CONFIG_SCHEMA_VERSION = 5;
 export interface UpstreamConfigExport { schemaVersion: number; exportedAt: string; upstreams: UpstreamDefinition[]; }
 export function exportConfiguredUpstreams(): UpstreamConfigExport { return { schemaVersion: UPSTREAM_CONFIG_SCHEMA_VERSION, exportedAt: new Date().toISOString(), upstreams: listUnifiedUpstreams() }; }
 export function parseUpstreamConfigExport(raw: unknown): unknown {

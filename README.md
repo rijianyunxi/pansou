@@ -4,7 +4,7 @@
 
 ## 核心行为
 
-- **统一资源源**：系统来源保存在 SQLite 的 `resource_sources`，每个来源包含 URL、请求方式、响应格式、请求配置和 transform。
+- **统一资源源**：系统来源保存在 SQLite 的 `resource_sources`，每个来源包含 URL、请求方式、响应格式、请求配置、优先级和 transform；搜索会按优先级从高到低进入执行队列，同优先级保持来源目录顺序。
 - **单次执行**：每个资源源每次搜索只发起一次请求、执行一次 transform；不自动分页、不使用 cursor、不做关键词变体、深度搜索、fallback 或来源级重试。
 - **聚合最新结果**：所有来源并发执行，结果统一去重、按时间倒序排列，并只保留当前请求返回的首屏/最新部分。
 - **唯一搜索入口**：`/api/search` 支持 GET 和 POST，返回 SSE。旧的 `/api/searchHttp*`、`/api/search/channels*` 入口已删除。
@@ -55,6 +55,7 @@ POST `/api/search`：
     {
       "id": "hunhepan",
       "name": "混合盘",
+      "priority": 0,
       "version": "cfg-...",
       "status": "success",
       "resultCount": 3,
@@ -108,7 +109,7 @@ pnpm run test:transforms
 git diff --check
 ```
 
-当前重构不提供旧 API、旧 Plugin 兼容机制或旧数据库迁移。数据库应使用当前资源源结构初始化；如需重置本地开发数据，请停止服务后删除 `data/panhub.sqlite` 再启动。
+当前重构不提供旧 API 或旧 Plugin 兼容机制；数据库启动时会自动补齐资源源优先级字段。需要重置本地开发数据时，请停止服务后删除 `data/panhub.sqlite` 再启动。
 
 ## 搜索压力测试
 
