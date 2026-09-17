@@ -15,18 +15,9 @@ dist/
 logs/
 *.log
 
-# Local environment and tool settings
-.env
-.env.*
-!.env.example
-.claude/
 
 # IDE / OS files
 .DS_Store
 .fleet/
 .idea/
 
-# Local GenFlow diagnostics and temporary artifacts
-.genflow_tmp/
-*.sqlite-shm
-*.sqlite-wal
