@@ -38,14 +38,6 @@ case "$APP_DIR" in
     ;;
 esac
 
-# 第一步：先备份运行目录中的生产环境文件，再处理源码克隆目录。
-runtime_env="$DEPLOY_DIR/.env.production"
-runtime_env_backup="$DEPLOY_DIR/.env.production.backup"
-if [[ -f "$runtime_env" ]]; then
-  echo "备份生产环境配置：$runtime_env -> $runtime_env_backup"
-  install -m 600 "$runtime_env" "$runtime_env_backup"
-fi
-
 backup_dir="$(mktemp -d /tmp/panhub-deploy.XXXXXX)"
 chmod 700 "$backup_dir"
 cleanup() {
@@ -108,8 +100,12 @@ fi
 echo "移动新的运行产物到：$DEPLOY_DIR/.output"
 mv "$APP_DIR/.output" "$DEPLOY_DIR/.output"
 
-install -m 600 "$backup_dir/.env.production" "$DEPLOY_DIR/.env.production"
-install -m 644 "$APP_DIR/ecosystem.config.cjs" "$DEPLOY_DIR/ecosystem.config.cjs"
+echo "移动生产环境配置到：$DEPLOY_DIR/.env.production"
+mv -f -- "$APP_DIR/.env.production" "$DEPLOY_DIR/.env.production"
+chmod 600 "$DEPLOY_DIR/.env.production"
+
+echo "移动 PM2 配置到：$DEPLOY_DIR/ecosystem.config.cjs"
+mv -f -- "$APP_DIR/ecosystem.config.cjs" "$DEPLOY_DIR/ecosystem.config.cjs"
 
 cd "$DEPLOY_DIR"
 echo "启动或重启 PM2：$PM2_APP_NAME"
