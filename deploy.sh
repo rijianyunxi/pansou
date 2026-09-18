@@ -24,17 +24,6 @@ require_command git
 require_command node
 require_command npm
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  if command -v corepack >/dev/null 2>&1; then
-    corepack enable
-  fi
-fi
-
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "未找到 pnpm，正在安装..."
-  npm install --global pnpm
-fi
-
 if ! command -v pm2 >/dev/null 2>&1; then
   echo "未找到 pm2，正在安装..."
   npm install --global pm2
@@ -104,10 +93,10 @@ else
 fi
 
 echo "安装依赖..."
-pnpm install --frozen-lockfile
+npm install
 
 echo "构建 Nuxt..."
-pnpm build
+npm run build
 
 if [[ ! -f "$APP_DIR/.output/server/index.mjs" ]]; then
   echo "构建完成但未找到 .output/server/index.mjs，已停止部署。" >&2
