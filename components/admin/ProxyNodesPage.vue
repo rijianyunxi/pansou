@@ -24,19 +24,31 @@
         <main class="console-main admin-feature-main">
           <section class="feature-content">
             <p v-if="notice" class="feature-notice" :class="{ error: noticeError }" role="status">{{ notice }}</p>
+            <div class="page-heading proxy-page-heading">
+              <div>
+                <p class="eyebrow">PROXY NODES</p>
+                <h1>代理节点</h1>
+                <p>管理 Telegram 的直连和 Worker 中转线路。</p>
+              </div>
+              <div class="heading-actions">
+                <button class="button primary" type="button" @click="openCreate">
+                  <ConsoleIcon name="plus" :size="15" />新增代理节点
+                </button>
+              </div>
+            </div>
             <section class="sources-panel directory-panel table-panel">
               <div class="table-scroll">
                 <table class="source-table directory-table admin-data-table proxy-table">
                   <thead><tr><th>节点</th><th>类型</th><th>权重</th><th>今日用量</th><th>状态</th><th>最近错误</th><th>操作</th></tr></thead>
                   <tbody>
                     <tr v-for="node in nodes" :key="node.id">
-                      <td><strong>{{ node.name }}</strong><div class="table-muted mono">{{ node.kind === 'direct' ? '直连 Telegram' : node.baseUrl }}</div></td>
-                      <td><span class="resource-chip">{{ node.kind === 'direct' ? '直连' : 'Worker' }}</span></td>
-                      <td>{{ node.weight }}</td>
-                      <td>{{ node.quotaUsed }}<span v-if="node.dailyLimit"> / {{ node.dailyLimit }}</span><span v-else class="table-muted"> / 不限</span></td>
-                      <td><span class="proxy-status" :class="node.circuitState">{{ statusLabel(node) }}</span></td>
-                      <td class="break-cell">{{ node.lastError || '—' }}</td>
-                      <td class="action-column"><div class="row-actions"><button class="icon-button" type="button" :aria-label="`编辑 ${node.name}`" title="编辑" @click="edit(node)"><ConsoleIcon name="edit" :size="15" /></button><button class="icon-button" type="button" :aria-label="`恢复 ${node.name} 状态`" title="恢复状态" @click="reset(node)"><ConsoleIcon name="refresh" :size="15" /></button><button class="icon-button danger-icon" type="button" :aria-label="`删除 ${node.name}`" title="删除" @click="remove(node)"><ConsoleIcon name="trash" :size="15" /></button></div></td>
+                      <td data-label="节点" class="proxy-node-cell"><strong class="proxy-node-name">{{ node.name }}</strong><div class="table-muted mono proxy-node-address" :title="node.kind === 'direct' ? '直连 Telegram' : node.baseUrl">{{ node.kind === 'direct' ? '直连 Telegram' : node.baseUrl }}</div></td>
+                      <td data-label="类型"><span class="resource-chip">{{ node.kind === 'direct' ? '直连' : 'Worker' }}</span></td>
+                      <td data-label="权重">{{ node.weight }}</td>
+                      <td data-label="今日用量">{{ node.quotaUsed }}<span v-if="node.dailyLimit"> / {{ node.dailyLimit }}</span><span v-else class="table-muted"> / 不限</span></td>
+                      <td data-label="状态"><span class="proxy-status" :class="node.circuitState">{{ statusLabel(node) }}</span></td>
+                      <td data-label="最近错误" class="break-cell" :title="node.lastError || undefined"><span class="proxy-error">{{ node.lastError || '—' }}</span></td>
+                      <td data-label="操作" class="action-column"><div class="row-actions"><button class="icon-button" type="button" :aria-label="`编辑 ${node.name}`" title="编辑" @click="edit(node)"><ConsoleIcon name="edit" :size="15" /></button><button class="icon-button" type="button" :aria-label="`恢复 ${node.name} 状态`" title="恢复状态" @click="reset(node)"><ConsoleIcon name="refresh" :size="15" /></button><button class="icon-button danger-icon" type="button" :aria-label="`删除 ${node.name}`" title="删除" @click="remove(node)"><ConsoleIcon name="trash" :size="15" /></button></div></td>
                     </tr>
                     <tr v-if="!nodes.length"><td colspan="7" class="empty-cell">暂无代理节点。</td></tr>
                   </tbody>
@@ -222,7 +234,11 @@ onMounted(load);
 .modal-button.secondary { border-color: #dbe1ea; color: #475569; background: #fff; }
 .modal-button.secondary:hover:not(:disabled) { background: #f8fafc; }
 .modal-button:disabled { cursor: wait; opacity: .55; }
-.break-cell { max-width: 260px; overflow-wrap: anywhere; }
+.break-cell { min-width: 0; max-width: none; overflow: hidden; white-space: normal; }
+.proxy-node-cell { min-width: 0; white-space: normal; }
+.proxy-node-name, .proxy-node-address { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proxy-node-address { margin-top: 4px; }
+.proxy-error { display: -webkit-box; max-width: 100%; overflow: hidden; color: #b45309; line-height: 1.45; overflow-wrap: anywhere; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .proxy-table { min-width: 1040px; table-layout: fixed; }
 .proxy-table th:nth-child(1), .proxy-table td:nth-child(1) { width: 23%; }
 .proxy-table th:nth-child(2), .proxy-table td:nth-child(2) { width: 11%; }
@@ -234,6 +250,9 @@ onMounted(load);
 .proxy-table .action-column { white-space: nowrap; }
 @media (max-width: 760px) {
   .proxy-intro { align-items: stretch; flex-direction: column; }
+  .proxy-table { width: 100%; min-width: 0 !important; }
+  .proxy-table .break-cell { white-space: normal; }
+  .proxy-table .row-actions { flex-wrap: wrap; }
   .admin-modal-backdrop { padding: 14px; }
   .admin-modal-header { padding: 18px 18px 16px; }
   .proxy-form { padding: 18px; }
