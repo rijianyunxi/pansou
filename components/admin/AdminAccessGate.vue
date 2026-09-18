@@ -13,20 +13,34 @@
       <div class="admin-access-copy">
         <span>RESTRICTED WORKSPACE</span>
         <h1 id="admin-access-title">{{ title }}</h1>
-        <p v-if="error" class="admin-access-error" role="alert">
-          <ConsoleIcon name="info" :size="15" />{{ error }}
+        <p v-if="error || auth.error.value" class="admin-access-error" role="alert">
+          <ConsoleIcon name="info" :size="15" />{{ error || auth.error.value }}
         </p>
         <p v-else-if="authenticated">当前账号没有管理员权限，请使用管理员账号登录后再进入后台。</p>
         <p v-else>请先登录管理员账号。管理员用户名和密码可在进入后台后于“系统设置”中修改。</p>
       </div>
-      <NuxtLink to="/" class="admin-access-submit">
-        <ConsoleIcon name="external" :size="17" />
-        {{ authenticated ? "返回搜索" : "返回搜索首页" }}
-      </NuxtLink>
-      <div class="admin-access-login">
-        <span>{{ authenticated ? "当前账号没有管理员权限，可先退出当前账号再登录管理员账号。" : "普通用户通过微信小程序登录；后台使用管理员账号密码。" }}</span>
-        <UserAccountPanel @authenticated="emit('authenticated')" />
-      </div>
+      <form class="admin-access-form" @submit.prevent="submitLogin">
+        <label>
+          用户名
+          <input v-model.trim="username" type="text" autocomplete="username" minlength="4" maxlength="32"
+            placeholder="请输入管理员用户名" :disabled="loginBusy" required />
+        </label>
+        <label>
+          密码
+          <input v-model="password" type="password" autocomplete="current-password" minlength="6" maxlength="128"
+            placeholder="请输入管理员密码" :disabled="loginBusy" required />
+        </label>
+        <div class="admin-access-actions">
+          <button class="admin-access-login-button" type="submit"
+            :disabled="loginBusy || !username || password.length < 6">
+            <span v-if="loginBusy" class="admin-access-button-spinner" aria-hidden="true"></span>
+            {{ loginBusy ? "登录中…" : "登录" }}
+          </button>
+          <NuxtLink to="/" class="admin-access-home-button">
+            <ConsoleIcon name="external" :size="16" />返回首页
+          </NuxtLink>
+        </div>
+      </form>
       <div class="admin-access-security">
         普通账号会话 · 角色权限校验 · 同源校验 · 登录限流
       </div>
@@ -36,6 +50,7 @@
 
 <script setup lang="ts">
 import ConsoleIcon from "../sources/ConsoleIcon.vue";
+import { ref } from "vue";
 
 const props = withDefaults(defineProps<{
   checking?: boolean;
@@ -50,6 +65,22 @@ const props = withDefaults(defineProps<{
 });
 const { checking, authenticated, error, title } = toRefs(props);
 const emit = defineEmits<{ authenticated: [] }>();
+const auth = useAuth();
+const username = ref("");
+const password = ref("");
+const loginBusy = ref(false);
+
+async function submitLogin() {
+  if (loginBusy.value) return;
+  loginBusy.value = true;
+  auth.error.value = "";
+  const user = await auth.login(username.value, password.value);
+  loginBusy.value = false;
+  if (user?.role === "admin") {
+    password.value = "";
+    emit("authenticated");
+  }
+}
 </script>
 
 <style scoped>
@@ -139,22 +170,6 @@ const emit = defineEmits<{ authenticated: [] }>();
   background: #eff6ff;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
-.admin-access-submit {
-  width: 100%;
-  min-height: 46px;
-  margin-top: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid #2563eb;
-  border-radius: 8px;
-  color: #fff;
-  background: #2563eb;
-  font: 600 11px inherit;
-  cursor: pointer;
-}
-.admin-access-submit:hover:not(:disabled) { background: #1d4ed8; }
 .admin-access-error {
   margin: 10px 0 0;
   display: flex;
@@ -173,25 +188,42 @@ const emit = defineEmits<{ authenticated: [] }>();
   color: #6b7280;
   font-size: 9px;
 }
-.admin-access-login {
-  display: grid;
-  gap: 9px;
-  margin-top: 14px;
-  color: #6b7280;
-  font-size: 10px;
-  line-height: 1.6;
+.admin-access-form { display: grid; gap: 13px; margin-top: 8px; }
+.admin-access-form label { display: grid; gap: 6px; color: #4b5563; font-size: 12px; font-weight: 650; }
+.admin-access-form input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  color: #111827;
+  background: #fff;
+  font: inherit;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.admin-access-login :deep(.account-control) { display: block; }
-.admin-access-login :deep(.account-trigger) { width: 100%; justify-content: center; min-height: 42px; border-color: #dbeafe; color: #1d4ed8; background: #eff6ff; }
-.admin-access-back {
-  min-height: 40px;
+.admin-access-form input::placeholder { color: #9ca3af; }
+.admin-access-form input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+.admin-access-form input:disabled { cursor: wait; opacity: .7; }
+.admin-access-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.admin-access-login-button, .admin-access-home-button {
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  color: #6b7280;
-  font-size: 11px;
+  border-radius: 8px;
+  font: 600 12px inherit;
   text-decoration: none;
+  cursor: pointer;
 }
+.admin-access-login-button { border: 1px solid #2563eb; color: #fff; background: #2563eb; }
+.admin-access-login-button:hover:not(:disabled) { background: #1d4ed8; }
+.admin-access-login-button:disabled { opacity: .55; cursor: not-allowed; }
+.admin-access-home-button { border: 1px solid #d1d5db; color: #374151; background: #fff; }
+.admin-access-home-button:hover { border-color: #2563eb; color: #1d4ed8; background: #eff6ff; }
+.admin-access-button-spinner { width: 13px; height: 13px; box-sizing: border-box; border: 2px solid rgba(255,255,255,.45); border-top-color: #fff; border-radius: 50%; animation: admin-spin .8s linear infinite; }
 .admin-access-card :focus-visible {
   outline: 3px solid #93c5fd;
   outline-offset: 3px;

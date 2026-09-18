@@ -60,6 +60,7 @@ export function useSearch() {
   let started = 0;
   let accumulated = 0;
   let elapsedTimer: ReturnType<typeof setInterval> | undefined;
+  let searchLogId: number | undefined;
 
   function stopElapsedTimer() {
     if (elapsedTimer !== undefined) {
@@ -88,6 +89,7 @@ export function useSearch() {
     stopElapsedTimer();
     const ac = new AbortController(); controller = ac; started = performance.now();
     state.value.loading = true; state.value.paused = false; state.value.error = "";
+    searchLogId = undefined;
     updateElapsed();
     elapsedTimer = setInterval(() => {
       if (mySeq !== seq || ac.signal.aborted || !state.value.loading) return;
@@ -110,9 +112,16 @@ export function useSearch() {
       await consumeSearchEventStream(response, async (event) => {
         if (mySeq !== seq || ac.signal.aborted) return;
         const payload = JSON.parse(event.data) as GenericResponse<unknown>;
-        if (event.event === "result") {
+        if (event.event === "start") {
+          const start = payload.data as { searchLogId?: unknown } | undefined;
+          const id = Number(start?.searchLogId);
+          searchLogId = Number.isSafeInteger(id) && id > 0 ? id : undefined;
+        } else if (event.event === "result") {
           const update = (payload.data as SearchStreamResultData | undefined)?.update;
-          if (update) { applyResponse({ total: update.results.length, results: update.results }, false); await nextTick(); }
+          if (update) {
+            applyResponse({ total: update.results.length, results: update.results }, false);
+            await nextTick();
+          }
         } else if (event.event === "complete") {
           if (payload.code !== 0) throw new Error(payload.message || "搜索失败");
           completed = true;
@@ -145,7 +154,7 @@ export function useSearch() {
     }
   }
   async function performSearch(options: SearchOptions) {
-    cancelActiveRequests(); state.value = initial(); snapshot = undefined; accumulated = 0;
+    cancelActiveRequests(); state.value = initial(); snapshot = undefined; searchLogId = undefined; accumulated = 0;
     if (!options.keyword.trim()) { state.value.error = "请输入搜索关键词"; return; }
     if (options.onlyUserChannels && !options.userChannels?.length) { state.value.error = "请先添加至少一个公开频道，再选择「自定义频道」搜索。"; return; }
     snapshot = { ...options, userChannels: [...(options.userChannels ?? [])] }; state.value.searched = true;
@@ -160,13 +169,18 @@ export function useSearch() {
     state.value.paused = true;
   }
   async function continueSearch(_options?: SearchOptions) { if (!state.value.paused || !snapshot) return; await run(snapshot); }
-  function resetSearch() { cancelActiveRequests(); snapshot = undefined; accumulated = 0; state.value = initial(); }
-  async function copyLink(url: string) { try { await navigator.clipboard.writeText(url); } catch {} }
+  function resetSearch() { cancelActiveRequests(); snapshot = undefined; searchLogId = undefined; accumulated = 0; state.value = initial(); }
+  function captureResource(interaction: { resource: SearchResult }) {
+    if (!snapshot || typeof window === "undefined") return;
+    const url = `${snapshot.apiBase.replace(/\/+$/, "")}/search/resources`;
+    const body = JSON.stringify({ resource: interaction.resource });
+    void fetch(url, { method: "POST", credentials: "include", keepalive: true, headers: { "Content-Type": "application/json" }, body }).catch(() => undefined);
+  }
   // Leaving the home page should abort the SSE request immediately instead of
   // letting the server continue querying sources for an abandoned search.
   onBeforeUnmount(cancelActiveRequests);
   return {
     state, loading: computed(() => state.value.loading), paused: computed(() => state.value.paused), error: computed(() => state.value.error), searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs), total: computed(() => state.value.total), results: computed(() => state.value.results), hasResults: computed(() => state.value.results.length > 0),
-    performSearch, resetSearch, copyLink, cancelActiveRequests, pauseSearch, continueSearch,
+    performSearch, resetSearch, captureResource, cancelActiveRequests, pauseSearch, continueSearch,
   };
 }

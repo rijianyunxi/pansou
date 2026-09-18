@@ -15,7 +15,6 @@ export enum CacheNamespace {
 export interface UnifiedCacheConfig {
   enabled: boolean;
   ttlMinutes: number;
-  maxSize?: number;
   maxMemoryBytes?: number;
 }
 
@@ -51,7 +50,6 @@ export class UnifiedCache<T = SearchResult[]> {
 
     if (!this.caches.has(cacheKey)) {
       const cache = new MemoryCache<T>({
-        maxSize: this.config.maxSize,
         maxMemoryBytes: this.config.maxMemoryBytes,
       });
       this.caches.set(cacheKey, cache);
@@ -92,6 +90,13 @@ export class UnifiedCache<T = SearchResult[]> {
       if (this.config.ttlMinutes !== ttlMinutes) this.clearAll();
       this.config.ttlMinutes = ttlMinutes;
     }
+  }
+
+  setMaxMemoryBytes(maxMemoryBytes: number): void {
+    if (!Number.isFinite(maxMemoryBytes) || maxMemoryBytes < 1) return;
+    const normalized = Math.floor(maxMemoryBytes);
+    this.config.maxMemoryBytes = normalized;
+    for (const cache of this.caches.values()) cache.setMaxMemoryBytes(normalized);
   }
 
   /**

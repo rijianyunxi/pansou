@@ -16,7 +16,7 @@
         <div class="resource-heading">
           <div class="resource-heading-main">
             <h3 class="resource-title">{{ resource.name }}</h3>
-            <p v-if="resource.description" class="resource-description">{{ resource.description }}</p>
+            <ResourceDescription :text="resource.description" />
           </div>
           <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
         </div>
@@ -65,7 +65,8 @@
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 :aria-label="`打开${platformLabel(link.type)}链接`"
-                title="打开链接">
+                title="打开链接"
+                @click="$emit('open', { link, resource, resultId: resource.id })">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M14 3h7v7"></path>
                   <path d="M10 14 21 3"></path>
@@ -73,7 +74,7 @@
                 </svg>
                 打开链接
               </a>
-              <button class="copy-btn" type="button" :aria-label="`复制${platformLabel(link.type)}链接`" @click="copy(link.url, linkKey(link))">
+              <button class="copy-btn" type="button" :aria-label="`复制${platformLabel(link.type)}链接`" @click="copy(link, resource)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <rect x="9" y="9" width="13" height="13" rx="2"></rect>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -121,7 +122,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: "toggle"): void;
-  (event: "copy", url: string): void;
+  (event: "copy", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
+  (event: "open", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
   (event: "filter-platform", type: string): void;
 }>();
 
@@ -132,9 +134,15 @@ function linkKey(link: Link): string {
   return `${link.type}|${link.url}|${link.password || ""}`;
 }
 
-function copy(url: string, key: string) {
+async function copy(link: Link, resource: SearchResult) {
+  const key = linkKey(link);
+  try {
+    await navigator.clipboard.writeText(link.url);
+  } catch {
+    return;
+  }
   copiedKey.value = key;
-  emit("copy", url);
+  emit("copy", { link, resource, resultId: resource.id });
   window.setTimeout(() => {
     if (copiedKey.value === key) copiedKey.value = "";
   }, 1600);
@@ -201,7 +209,6 @@ function copy(url: string, key: string) {
 .resource-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
 .resource-heading-main { min-width: 0; flex: 1; }
 .resource-title { margin: 0; color: var(--text-primary); font-size: 16px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
-.resource-description { display: -webkit-box; overflow: hidden; margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .resource-date { flex-shrink: 0; padding-top: 3px; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
 
 .resource-meta { margin-top: 8px; }

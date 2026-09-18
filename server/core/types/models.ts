@@ -22,6 +22,8 @@ export interface SearchResult {
   images?: string[];
 }
 
+export type ResourceCheckStatus = "unchecked" | "checking" | "valid" | "invalid" | "unknown";
+
 export type SourceExecutionStatus = "success" | "failed" | "skipped";
 
 export interface SearchSourceMeta {
@@ -59,6 +61,8 @@ export interface SearchSourceUpdate {
     keyword: string;
     phase: "source";
   };
+  /** Stable source id that produced this streamed batch. */
+  sourceId: string;
   results: SearchResult[];
 }
 

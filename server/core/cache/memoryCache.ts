@@ -1,8 +1,7 @@
 type CacheRecord<T> = { value: T; expireAt: number; size: number };
 
 export interface MemoryCacheOptions {
-  maxSize?: number; // 最大缓存条目数
-  maxMemoryBytes?: number; // 最大内存占用（字节）
+  maxMemoryBytes?: number; // 估算缓存载荷容量（字节）
   cleanupInterval?: number; // 清理间隔（毫秒）
   memoryThreshold?: number; // 内存阈值百分比（0-1），达到时触发清理
 }
@@ -21,7 +20,6 @@ export class MemoryCache<T = unknown> {
 
   constructor(options: MemoryCacheOptions = {}) {
     this.options = {
-      maxSize: options.maxSize ?? 1000,
       maxMemoryBytes: options.maxMemoryBytes ?? 100 * 1024 * 1024, // 默认 100MB
       cleanupInterval: options.cleanupInterval ?? 5 * 60 * 1000,
       memoryThreshold: options.memoryThreshold ?? 0.8, // 80% 触发清理
@@ -31,21 +29,24 @@ export class MemoryCache<T = unknown> {
   /**
    * 估算对象大小（字节）
    */
-  private estimateSize(value: T): number {
+  private estimateSize(key: string, value: T): number {
+    let valueSize = 64;
     try {
-      if (value === null || value === undefined) return 8;
-      if (typeof value === 'string') return value.length * 2;
-      if (typeof value === 'number') return 8;
-      if (typeof value === 'boolean') return 4;
+      if (value === null || value === undefined) valueSize = 8;
+      else if (typeof value === 'string') valueSize = value.length * 2;
+      else if (typeof value === 'number') valueSize = 8;
+      else if (typeof value === 'boolean') valueSize = 4;
       if (typeof value === 'object') {
         // 简化的对象大小估算
         const str = JSON.stringify(value);
-        return str ? str.length * 2 : 64;
+        valueSize = str ? str.length * 2 : 64;
       }
-      return 64;
     } catch {
-      return 64;
+      valueSize = 64;
     }
+    // Include the key and a small record overhead so many tiny entries cannot
+    // bypass the single byte-based capacity policy.
+    return key.length * 2 + valueSize + 32;
   }
 
   /**
@@ -97,11 +98,10 @@ export class MemoryCache<T = unknown> {
     const memoryUsage = this.calculateMemoryUsage();
     const memoryPercent = memoryUsage / this.options.maxMemoryBytes;
 
-    // 检查是否需要基于内存阈值清理
+    // 只用缓存载荷字节数作为容量标准；条目数不参与回收决策。
     const needMemoryCleanup = memoryPercent > this.options.memoryThreshold;
-    const needSizeCleanup = this.store.size > this.options.maxSize;
 
-    if (!needMemoryCleanup && !needSizeCleanup && !force) {
+    if (!needMemoryCleanup && !force) {
       return;
     }
 
@@ -119,27 +119,19 @@ export class MemoryCache<T = unknown> {
     }
 
     // 2. 如果仍然超过限制，按 LRU 淘汰
-    const sizeOver = this.store.size - this.options.maxSize;
-    const memoryOver = memoryUsage - this.options.maxMemoryBytes;
-
-    if (sizeOver > 0) {
-      this.evictOldest(sizeOver);
-    } else if (memoryOver > 0) {
-      // 基于内存淘汰：需要释放多少字节
-      let bytesToFree = memoryOver;
-      let freed = 0;
+    let memoryOver = this.calculateMemoryUsage() - this.options.maxMemoryBytes;
+    if (memoryOver > 0) {
       const entries = Array.from(this.accessOrder.entries())
         .sort((a, b) => a[1] - b[1]);
 
       for (const [key] of entries) {
-        if (bytesToFree <= 0) break;
+        if (memoryOver <= 0) break;
         const rec = this.store.get(key);
         if (rec) {
-          bytesToFree -= rec.size;
+          memoryOver -= rec.size;
           this.store.delete(key);
           this.accessOrder.delete(key);
           this.metrics.evictions++;
-          freed++;
         }
       }
     }
@@ -174,7 +166,7 @@ export class MemoryCache<T = unknown> {
   set(key: string, value: T, ttlMs: number): void {
     this.smartCleanup();
 
-    const size = this.estimateSize(value);
+    const size = this.estimateSize(key, value);
     // A single entry must not violate the cache's global memory contract. Keep
     // the previous value when an oversized replacement is rejected.
     if (size > this.options.maxMemoryBytes) return;
@@ -197,10 +189,9 @@ export class MemoryCache<T = unknown> {
 
     // 检查容量和内存限制
     const currentMemory = this.calculateMemoryUsage();
-    const needSizeEviction = this.store.size >= this.options.maxSize;
     const needMemoryEviction = (currentMemory + size) > this.options.maxMemoryBytes;
 
-    if (needSizeEviction || needMemoryEviction) {
+    if (needMemoryEviction) {
       // 智能淘汰：优先淘汰过期的
       const expiredKeys: string[] = [];
       for (const [k, rec] of this.store) {
@@ -217,38 +208,26 @@ export class MemoryCache<T = unknown> {
       }
 
       // 检查删除过期后是否还需要淘汰
-      const stillNeedSizeEviction = this.store.size >= this.options.maxSize;
       const currentMemoryAfter = this.calculateMemoryUsage();
       const stillNeedMemoryEviction = (currentMemoryAfter + size) > this.options.maxMemoryBytes;
 
-      if (stillNeedSizeEviction || stillNeedMemoryEviction) {
-        // 按 LRU 淘汰
-        if (stillNeedSizeEviction) {
-          // 需要淘汰多少个条目
-          const toEvict = this.store.size - this.options.maxSize + 1; // +1 为新条目腾空间
-          this.evictOldest(toEvict);
-        } else if (stillNeedMemoryEviction) {
-          // 需要释放多少内存
-          let bytesToFree = (currentMemoryAfter + size) - this.options.maxMemoryBytes;
-          let freed = 0;
-          const entries = Array.from(this.accessOrder.entries())
-            .sort((a, b) => {
-              if (a[1] !== b[1]) {
-                return a[1] - b[1];
-              }
-              return a[0].localeCompare(b[0]);
-            });
+      if (stillNeedMemoryEviction) {
+        // 按 LRU 淘汰，直到新条目能够放入容量上限。
+        let bytesToFree = (currentMemoryAfter + size) - this.options.maxMemoryBytes;
+        const entries = Array.from(this.accessOrder.entries())
+          .sort((a, b) => {
+            if (a[1] !== b[1]) return a[1] - b[1];
+            return a[0].localeCompare(b[0]);
+          });
 
-          for (const [k] of entries) {
-            if (bytesToFree <= 0) break;
-            const rec = this.store.get(k);
-            if (rec) {
-              bytesToFree -= rec.size;
-              this.store.delete(k);
-              this.accessOrder.delete(k);
-              this.metrics.evictions++;
-              freed++;
-            }
+        for (const [k] of entries) {
+          if (bytesToFree <= 0) break;
+          const rec = this.store.get(k);
+          if (rec) {
+            bytesToFree -= rec.size;
+            this.store.delete(k);
+            this.accessOrder.delete(k);
+            this.metrics.evictions++;
           }
         }
       }
@@ -273,6 +252,15 @@ export class MemoryCache<T = unknown> {
 
   get size(): number {
     return this.store.size;
+  }
+
+  /** Update the byte limit and immediately evict older entries if needed. */
+  setMaxMemoryBytes(maxMemoryBytes: number): void {
+    if (!Number.isFinite(maxMemoryBytes) || maxMemoryBytes < 1) return;
+    const normalized = Math.floor(maxMemoryBytes);
+    if (this.options.maxMemoryBytes === normalized) return;
+    this.options.maxMemoryBytes = normalized;
+    this.smartCleanup(true);
   }
 
   get memoryUsage(): number {

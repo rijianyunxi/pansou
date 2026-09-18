@@ -1,8 +1,7 @@
 /**
  * /monitor 运行监控页的纯视图模型。
  *
- * 监控接口只返回统一的 sources。无论资源源来自规则解析器、系统模板还是
- * 用户自定义频道，前端都按同一个 ResourceSource 处理。
+ * 监控接口只返回统一的资源源，前端按同一个 ResourceSource 处理。
  */
 
 export type MonitorKind = "source";
@@ -68,7 +67,6 @@ export interface MonitorSourceEntry {
   kind?: string | null;
   enabled?: boolean | null;
   trashed?: boolean | null;
-  origin?: string | null;
   version?: string | null;
   health?: MonitorSourceHealth | null;
 }
@@ -104,7 +102,6 @@ export interface MonitorRow {
   state: MonitorRowState;
   enabled: boolean;
   trashed: boolean;
-  origin: "builtin" | "custom" | "";
   version: string;
   metrics: string[];
   detail: string;
@@ -338,18 +335,16 @@ function buildSourceRow(entry: MonitorSourceEntry): MonitorRow | null {
   if (!id) return null;
   const health = entry.health ?? null;
   const state = resolveSourceState(entry);
-  const origin = text(entry.origin) === "custom" ? "custom" : text(entry.origin) === "builtin" ? "builtin" : "";
   return {
     key: `source:${id}`,
     kind: "source",
     id,
     name: text(entry.name).trim() || id,
     priority: num(entry.priority) ?? 0,
-    typeLabel: origin === "builtin" ? "内置资源源" : origin === "custom" ? "自定义资源源" : "资源源",
+    typeLabel: "资源源",
     state,
     enabled: bool(entry.enabled) !== false,
     trashed: bool(entry.trashed) === true,
-    origin,
     version: text(entry.version),
     metrics: sourceMetrics(health),
     detail: text(health?.lastErrorMessage),

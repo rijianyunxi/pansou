@@ -14,8 +14,8 @@ import { setNoStore } from "../utils/apiResponse";
  * admin session. Naming the fields explicitly is the point: a field added to
  * `SourceHealthStatus` later cannot start leaking just because it was added.
  *
- * The administrator's default channel list is deliberately not part of this
- * response either — it is internal configuration and used to be echoed here.
+ * Internal source-selection settings are deliberately not part of this
+ * response either.
  */
 function publicHealth(status: SourceHealthStatus) {
   return {

@@ -27,6 +27,7 @@ export interface SearchExecutionOptions {
 export interface SearchServiceOptions {
   defaultConcurrency: number;
   cacheTtlMinutes: number;
+  cacheMaxMemoryBytes: number;
 }
 
 function canonical(value: string): string { return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase(); }
@@ -50,6 +51,18 @@ interface SearchCacheEntry {
   sources: Record<string, CachedSourceState>;
 }
 
+interface InFlightSubscriber {
+  callback: (update: SearchSourceUpdate) => void | Promise<void>;
+  queue: Promise<void>;
+  active: boolean;
+}
+
+interface InFlightSearch {
+  promise: Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }>;
+  updates: SearchSourceUpdate[];
+  subscribers: Set<InFlightSubscriber>;
+}
+
 function buildCacheKey(keyword: string, sourceIds: string[]): string {
   return `keyword:${canonical(keyword)}:sources:${sourceIds.map((id) => id.trim().toLowerCase()).sort().join(",")}:config:${getUnifiedSourceVersion()}`;
 }
@@ -67,12 +80,12 @@ export class SearchService {
    * changed, so an unchanged signature skips the write entirely.
    */
   private prunedSourceSignature: string | null = null;
-  private inFlight = new Map<string, Promise<{ response: SearchExecutionResponse; warnings: WarningInfo[] }>>();
+  private inFlight = new Map<string, InFlightSearch>();
 
   constructor(options: SearchServiceOptions) {
     this.options = options;
     this.cache = new UnifiedCache<SearchCacheEntry>(
-      { enabled: true, ttlMinutes: options.cacheTtlMinutes },
+      { enabled: true, ttlMinutes: options.cacheTtlMinutes, maxMemoryBytes: options.cacheMaxMemoryBytes },
       "search",
     );
     this.pruneStaleHealth();
@@ -89,6 +102,7 @@ export class SearchService {
     const policy = getUserPolicy();
     this.options.defaultConcurrency = policy.defaultConcurrency;
     this.cache.setTtlMinutes(policy.cacheTtlMinutes);
+    this.cache.setMaxMemoryBytes(policy.cacheMaxMemoryMb * 1024 * 1024);
     this.health.setMaxFailures(policy.circuitBreakerMaxFailures);
     this.pruneStaleHealth();
   }
@@ -145,7 +159,14 @@ export class SearchService {
       const cached = this.cache.get(CacheNamespace.SEARCH, cacheKey);
       cachedEntry = cached.hit && cached.value ? clone(cached.value) : undefined;
       const running = this.inFlight.get(cacheKey);
-      if (running) return await running;
+      if (running) {
+        const unsubscribe = this.subscribeInFlight(running, executionOptions.onSourceSuccess);
+        try {
+          return await running.promise;
+        } finally {
+          unsubscribe();
+        }
+      }
       if (cachedEntry) {
         sourcesToExecute = resolved.filter((source) => cachedEntry!.sources[sourceKey(source)]?.status !== "success");
         if (!sourcesToExecute.length) {
@@ -156,9 +177,70 @@ export class SearchService {
       }
     }
     const ephemeralSourceIds = new Set(ephemeralSources.map(sourceKey));
-    const run = this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, executionOptions, canUseCache ? cachedEntry : undefined, cacheKey, cacheAllowed, ephemeralSourceIds);
-    if (canUseCache) this.inFlight.set(cacheKey, run);
-    try { return await run; } finally { if (this.inFlight.get(cacheKey) === run) this.inFlight.delete(cacheKey); }
+    if (canUseCache) {
+      const flight: InFlightSearch = {
+        promise: Promise.resolve(null as never),
+        updates: [],
+        subscribers: new Set<InFlightSubscriber>(),
+      };
+      const unsubscribe = this.subscribeInFlight(flight, executionOptions.onSourceSuccess);
+      this.inFlight.set(cacheKey, flight);
+      flight.promise = this.executeSearchWithTimeout(
+        keyword,
+        resolved,
+        sourcesToExecute,
+        concurrency,
+        {
+          ...executionOptions,
+          onSourceSuccess: (update) => this.publishInFlight(flight, update),
+        },
+        cachedEntry,
+        cacheKey,
+        cacheAllowed,
+        ephemeralSourceIds,
+      );
+      try { return await flight.promise; }
+      finally {
+        unsubscribe();
+        if (this.inFlight.get(cacheKey) === flight) this.inFlight.delete(cacheKey);
+      }
+    }
+
+    return await this.executeSearchWithTimeout(keyword, resolved, sourcesToExecute, concurrency, executionOptions, cachedEntry, cacheKey, cacheAllowed, ephemeralSourceIds);
+  }
+
+  /**
+   * Share source-level SSE updates while only one upstream execution is active.
+   * A subscriber has its own promise chain so a late joiner receives the
+   * already completed sources first and then future updates in order.
+   */
+  private subscribeInFlight(flight: InFlightSearch, callback: SearchExecutionOptions["onSourceSuccess"]): () => void {
+    if (!callback) return () => undefined;
+    const subscriber: InFlightSubscriber = { callback, queue: Promise.resolve(), active: true };
+    flight.subscribers.add(subscriber);
+    for (const update of flight.updates) this.enqueueInFlightUpdate(flight, subscriber, update);
+    return () => {
+      subscriber.active = false;
+      flight.subscribers.delete(subscriber);
+    };
+  }
+
+  private enqueueInFlightUpdate(flight: InFlightSearch, subscriber: InFlightSubscriber, update: SearchSourceUpdate): Promise<void> {
+    subscriber.queue = subscriber.queue.then(async () => {
+      if (!subscriber.active) return;
+      await subscriber.callback(clone(update));
+    }).catch(() => {
+      // A disconnected SSE client must not fail the shared upstream search.
+      subscriber.active = false;
+      flight.subscribers.delete(subscriber);
+    });
+    return subscriber.queue;
+  }
+
+  private async publishInFlight(flight: InFlightSearch, update: SearchSourceUpdate): Promise<void> {
+    const snapshot = clone(update);
+    flight.updates.push(snapshot);
+    await Promise.all([...flight.subscribers].map((subscriber) => this.enqueueInFlightUpdate(flight, subscriber, snapshot)));
   }
 
   async search(keyword: string, sources: SourceDefinition[] | undefined, concurrency?: number, forceRefresh?: boolean, executionOptions: SearchExecutionOptions = {}, ephemeralSources: SourceDefinition[] = []): Promise<SearchExecutionResponse> {
@@ -263,7 +345,7 @@ export class SearchService {
         diagnostic.elapsedMs = Date.now() - started;
         if (trackHealth) this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
         if (execution.onSourceSuccess && !execution.signal.aborted) {
-          await execution.onSourceSuccess({ request: { keyword, phase: "source" }, results: sourceResults });
+          await execution.onSourceSuccess({ request: { keyword, phase: "source" }, sourceId: source.id, results: sourceResults });
         }
         nextStates[sourceKey(source)] = { id: source.id, name: source.name, status: "success", results: clone(sourceResults) };
         return sourceResults;
@@ -328,7 +410,7 @@ export class SearchService {
     if (!entry || !callback) return;
     for (const source of sources) {
       const state = entry.sources[sourceKey(source)];
-      if (state?.status === "success" && state.results.length) await callback({ request: { keyword, phase: "source" }, results: clone(state.results) });
+      if (state?.status === "success" && state.results.length) await callback({ request: { keyword, phase: "source" }, sourceId: source.id, results: clone(state.results) });
     }
   }
 

@@ -8,6 +8,7 @@ function createServiceOptions(): SearchServiceOptions {
   return {
     defaultConcurrency: policy.defaultConcurrency,
     cacheTtlMinutes: policy.cacheTtlMinutes,
+    cacheMaxMemoryBytes: policy.cacheMaxMemoryMb * 1024 * 1024,
   };
 }
 

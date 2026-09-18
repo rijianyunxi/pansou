@@ -54,7 +54,8 @@
       @update:filter-platform="filterPlatform = $event"
       @update:sort-type="sortType = $event"
       @filter-platform="handlePlatformFilter"
-      @copy="copyLink"
+      @copy="captureResource"
+      @open="captureResource"
       @apply-time-sort="applyTimeSort"
       @scroll-to-top="scrollToTop" />
   </div>
@@ -180,7 +181,7 @@ const {
   searched,
   performSearch,
   resetSearch,
-  copyLink,
+  captureResource,
   pauseSearch,
   continueSearch,
   hasResults,

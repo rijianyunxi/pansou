@@ -23,9 +23,31 @@ export interface IHotSearchStore {
 
 export interface HotSearchItem {
   term: string;
+  normalizedTerm: string;
   score: number;
   lastSearched: number;
   createdAt: number;
+  status: HotSearchStatus;
+  source: HotSearchSource;
+  pinned: boolean;
+  manualWeight: number;
+  updatedAt: number;
+}
+
+export type HotSearchStatus = "approved" | "pending" | "blocked" | "hidden";
+export type HotSearchSource = "auto" | "manual";
+
+export function normalizeHotSearchTerm(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\u200b-\u200f\u202a-\u202e\ufeff]/g, "")
+    .trim();
+}
+
+/** Stable key used for de-duplicating hot-search terms, not content moderation. */
+export function compactHotSearchTerm(value: string): string {
+  return normalizeHotSearchTerm(value).replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
 export interface HotSearchStats {

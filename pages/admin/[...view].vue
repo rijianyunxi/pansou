@@ -14,8 +14,14 @@
           <NuxtLink to="/admin/sources" :class="['console-nav-link', { active: view === 'sources' }]">
             <ConsoleIcon name="box" />来源管理
           </NuxtLink>
+          <NuxtLink to="/admin/proxies" :class="['console-nav-link', { active: (view as string) === 'proxies' }]">
+            <ConsoleIcon name="globe" />代理节点
+          </NuxtLink>
           <NuxtLink to="/admin/resources" :class="['console-nav-link', { active: (view as string) === 'resources' }]">
             <ConsoleIcon name="box" />网盘资源
+          </NuxtLink>
+          <NuxtLink to="/admin/hot-searches" class="console-nav-link">
+            <ConsoleIcon name="search" />热门搜索
           </NuxtLink>
           <NuxtLink to="/admin/users" class="console-nav-link">
             <ConsoleIcon name="user" />用户管理
@@ -50,7 +56,6 @@
           </div>
 
           <template v-if="view === 'sources'">
-            <SourceTemplateEditor />
             <section class="sources-panel directory-panel" aria-label="来源管理目录">
               <div class="source-toolbar directory-toolbar" aria-label="来源查询与操作">
                 <label class="source-search">
@@ -66,12 +71,12 @@
                 </button>
               </div>
               <div class="table-scroll">
-                <table class="source-table directory-table">
+                <table class="source-table directory-table admin-data-table">
                   <thead>
                     <tr>
                       <th class="source-index-column">序号</th>
                       <th>来源</th>
-                      <th>接入方式</th>
+                      <th>状态</th>
                       <th>优先级</th>
                       <th>请求地址</th>
                       <th>操作</th>
@@ -90,38 +95,51 @@
                           </div>
                         </div>
                       </td>
-                      <td class="source-kind-cell" data-label="接入方式">
-                        <span class="source-kind-badge resource-source-badge">
-                          <ConsoleIcon name="globe" :size="13" />
-                          资源源
-                        </span>
-                        <span class="source-kind-meta">{{ source.method }} · {{ source.format.toUpperCase() }}</span>
+                      <td class="source-status-cell" data-label="状态">
+                        <div class="source-state-tags">
+                          <span class="source-state-tag" :class="source.enabled === false ? 'disabled' : 'enabled'">
+                            {{ source.enabled === false ? '已停用' : '已启用' }}
+                          </span>
+                          <span class="source-state-tag" :class="circuitStateClass(source.id)">
+                            {{ circuitStateLabel(source.id) }}
+                          </span>
+                        </div>
                       </td>
                       <td class="source-priority-cell" data-label="优先级">
                         <span class="source-priority-badge">{{ source.priority ?? 0 }}</span>
                       </td>
                       <td class="source-endpoint-cell" data-label="请求地址">
-                        <a class="source-endpoint mono" :href="buildSourceDebugUrl(source, keyword)" target="_blank"
-                          rel="noopener noreferrer" :title="sourceDebugLinkTitle(source)"
-                          :aria-label="`在新标签打开 ${source.name} 的完整调试请求地址`">
-                          <span class="source-endpoint-text">{{ displayUrl(buildSourceDebugUrl(source, keyword))
+                        <a class="source-endpoint mono" :href="buildSourceCatalogUrl(source)" target="_blank"
+                          rel="noopener noreferrer" :title="sourceCatalogLinkTitle(source)"
+                          :aria-label="`在新标签打开 ${source.name} 的默认请求地址`">
+                          <span class="source-endpoint-text">{{ displayUrl(buildSourceCatalogUrl(source))
                             }}</span>
                           <ConsoleIcon name="external" :size="13" />
                         </a>
                       </td>
                       <td class="action-column" data-label="操作">
                         <div class="row-actions">
-                          <button class="button secondary tiny" type="button" @click="openDetail(source)">详情</button>
-                          <button class="button secondary tiny" type="button" :disabled="!!runningId"
-                            @click="openDebug(source)">
-                            <ConsoleIcon name="play" :size="13" />测试
+                          <button class="icon-button" :class="{ 'danger-icon': source.enabled !== false }" type="button"
+                            :aria-label="`${source.enabled === false ? '启用' : '停用'} ${source.name}`"
+                            :disabled="!!runningId || !!sourceToggleId"
+                            :title="source.enabled === false ? '重新加入搜索来源' : '从搜索来源中停用，配置保留'"
+                            @click="toggleSource(source)">
+                            <ConsoleIcon :name="source.enabled === false ? 'check' : 'stop'" :size="13" />
+                          </button>
+                          <button class="icon-button" type="button" :aria-label="`查看 ${source.name} 详情`" title="详情"
+                            @click="openDetail(source)">
+                            <ConsoleIcon name="info" :size="15" />
+                          </button>
+                          <button class="icon-button" type="button" :aria-label="`测试 ${source.name}`" title="测试"
+                            :disabled="!!runningId" @click="openDebug(source)">
+                            <ConsoleIcon name="play" :size="14" />
                           </button>
                           <button class="icon-button" type="button" :aria-label="`修改 ${source.name}`" title="修改"
                             @click="openEditor(source)">
                             <ConsoleIcon name="edit" :size="15" />
                           </button>
                           <button class="icon-button danger-icon" type="button" :aria-label="`删除 ${source.name}`"
-                            title="删除" @click="requestDeleteSource(source)">
+                            title="删除" :disabled="!!runningId || !!sourceToggleId" @click="requestDeleteSource(source)">
                             <ConsoleIcon name="trash" :size="15" />
                           </button>
                         </div>
@@ -229,13 +247,12 @@
 <script setup lang="ts">
 import AdminAccessGate from "../../components/admin/AdminAccessGate.vue";
 import ConsoleIcon from "../../components/sources/ConsoleIcon.vue";
-import SourceTemplateEditor from "../../components/sources/SourceTemplateEditor.vue";
 import MonitorPanel from "../../components/monitor/MonitorPanel.vue";
 import SourceEditor from "../../components/sources/SourceEditor.vue";
 import SourceDetailDrawer from "../../components/sources/SourceDetailDrawer.vue";
 import SourceDebugDialog from "../../components/sources/SourceDebugDialog.vue";
 import type { SourceDefinition, SourceProbe } from "../../types/source";
-import { buildSourceDebugUrl } from "../../utils/sourceDebugUrl";
+import { buildSourceCatalogUrl } from "../../utils/sourceDebugUrl";
 import { shallowRef } from "vue";
 const auth = useAuth();
 useHead({
@@ -257,6 +274,8 @@ type ArchivedChannelSource = {
   deleted: boolean;
 };
 const monitorChannels = shallowRef<ArchivedChannelSource[]>([]);
+type SourceCircuitState = "closed" | "open" | "half-open";
+const sourceCircuitStates = ref<Record<string, SourceCircuitState>>({});
 const archivedChannels = computed(() => monitorChannels.value.filter((channel) => channel.deleted));
 const reports = ref<Record<string, SourceProbe>>({});
 // The unified catalog is the only source directory. Transform functions are source configuration, not separate sources.
@@ -313,6 +332,7 @@ const authError = ref("");
 const archiveOpen = ref(false);
 const archiveLoading = ref(false);
 const archiveBusyId = ref("");
+const sourceToggleId = ref("");
 const purgeTarget = ref<ArchivedChannelSource | null>(null);
 const purgeConfirmation = ref("");
 const canConfirmPurge = computed(() =>
@@ -329,6 +349,14 @@ function sourceColor(source: SourceDefinition): string {
   let hash = 0;
   for (const char of source.id || source.name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return SOURCE_COLORS[hash % SOURCE_COLORS.length]!;
+}
+function circuitStateLabel(sourceId: string): string {
+  const state = sourceCircuitStates.value[sourceId];
+  return state === "open" ? "已熔断" : state === "half-open" ? "半开" : "未熔断";
+}
+function circuitStateClass(sourceId: string): string {
+  const state = sourceCircuitStates.value[sourceId];
+  return state === "open" ? "circuit-open" : state === "half-open" ? "circuit-half-open" : "circuit-closed";
 }
 
 const filteredSources = computed(() =>
@@ -369,11 +397,18 @@ async function loadArchivedChannels() {
       origin?: "builtin" | "custom" | "";
       enabled?: boolean;
       trashed?: boolean;
+      health?: { circuitState?: SourceCircuitState | null } | null;
     }> } }>(
       "/api/monitor?includeDeleted=true",
       { cache: "no-store" },
     );
-    monitorChannels.value = (response.data?.sources || [])
+    const monitorSources = response.data?.sources || [];
+    sourceCircuitStates.value = Object.fromEntries(
+      monitorSources
+        .filter((source) => !!source.id)
+        .map((source) => [source.id!, source.health?.circuitState || "closed"]),
+    );
+    monitorChannels.value = monitorSources
       .filter((source) => source.trashed === true && !!source.id && !!source.origin)
       .map((source) => ({
         channel: source.id!,
@@ -383,6 +418,7 @@ async function loadArchivedChannels() {
       }));
   } catch (error: any) {
     monitorChannels.value = [];
+    sourceCircuitStates.value = {};
     const code = error?.statusCode || error?.response?.status;
     if ([401, 403].includes(code)) {
       adminAuthenticated.value = false;
@@ -449,11 +485,8 @@ function displayUrl(url: string) {
     return safeUrl;
   }
 }
-function sourceDebugLinkTitle(source: SourceDefinition): string {
-  const url = buildSourceDebugUrl(source, keyword.value);
-  return source.method === "POST"
-    ? `POST 参数浏览器预览（实际请求仍使用 POST Body）\n${url}`
-    : `在新标签打开完整 GET 请求\n${url}`;
+function sourceCatalogLinkTitle(source: SourceDefinition): string {
+  return `在新标签打开 ${source.name} 的默认请求地址\n${buildSourceCatalogUrl(source)}`;
 }
 function notify(message: string) {
   notice.value = message;
@@ -519,6 +552,23 @@ async function saveSource(source: SourceDefinition) {
   search.value = "";
 }
 
+async function toggleSource(source: SourceDefinition) {
+  if (sourceToggleId.value || runningId.value) return;
+  const enabled = source.enabled === false;
+  sourceToggleId.value = source.id;
+  try {
+    await $fetch(`/api/settings/sources/${encodeURIComponent(source.id)}/${enabled ? "enable" : "disable"}`, {
+      method: "POST",
+    });
+    await Promise.all([loadSourceCatalog(), loadArchivedChannels()]);
+    notify(`${source.name} 已${enabled ? "启用" : "停用"}，下一次请求立即生效。`);
+  } catch (error: any) {
+    notify(apiErrorMessage(error));
+  } finally {
+    sourceToggleId.value = "";
+  }
+}
+
 let disposed = false;
 let activeController: AbortController | undefined;
 async function testSource(source: SourceDefinition) {
@@ -559,6 +609,10 @@ async function testSource(source: SourceDefinition) {
   }
 }
 async function requestDeleteSource(source: SourceDefinition) {
+  if (runningId.value || sourceToggleId.value) {
+    notify("请等待当前来源操作完成后再删除。");
+    return;
+  }
   if (!window.confirm(`确定删除「${source.name}」吗？删除后下一次请求立即停止加载。`)) return;
   try {
     await $fetch(`/api/settings/sources/${encodeURIComponent(source.id)}`, {

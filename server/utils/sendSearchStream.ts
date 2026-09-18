@@ -86,7 +86,7 @@ export function sendSearchStream(
     await push("start", {
       code: 0,
       message: "started",
-      data: { intervalMs: SEARCH_SSE_INTERVAL_MS },
+      data: { intervalMs: SEARCH_SSE_INTERVAL_MS, searchLogId: prepared.searchLogId ?? null },
     });
     const response = await executePreparedSearch(prepared, signal, (update) => queue.enqueueAndWait(update));
     await queue.finish();

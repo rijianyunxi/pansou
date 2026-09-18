@@ -1,12 +1,12 @@
 /**
- * Name rules for the public channels a user picks as their own search scope
- * (`custom_channels_json`), and for the administrator's default channel list.
+ * Name rules for public sources a user picks as their own custom search scope
+ * (`custom_channels_json`).
  *
  * A "channel" is a Telegram public channel today: `CHANNEL_NAME_PATTERN` is
  * Telegram's username rule, and `customChannelInput.ts` only accepts `t.me` /
  * `telegram.me` links. The naming here stays provider-neutral because the UI
- * and the storage layer already say "channel" — see `docs/` for the channel
- * source template that turns a channel into a searchable source.
+ * and the storage layer already say "channel" — the shared source template
+ * turns the stored username into a searchable resource source.
  */
 
 /** Upper bound on how many channels one account may store. */

@@ -1,13 +1,11 @@
 import { defineEventHandler, readBody } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
 import { toHttpError } from "../../utils/apiResponse";
-import { parseSystemChannels } from "../../utils/channelSettings";
 import { getSearchSettingsVersion, saveSearchSettings } from "../../core/services/searchSettingsService";
 
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
   const body = await readBody(event);
-  if (body && Object.prototype.hasOwnProperty.call(body, "channels")) body.channels = parseSystemChannels(body.channels);
   try {
     const data = saveSearchSettings(body);
     return {

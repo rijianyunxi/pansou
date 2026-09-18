@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { getSqliteDatabase } from "../storage/sqlite";
-import type { CloudType, Link, SearchResult } from "../types/models";
+import type { CloudType, Link, ResourceCheckStatus, SearchResult } from "../types/models";
 import { CLOUD_TYPES } from "../../../shared/cloudTypes";
 export { CLOUD_TYPES } from "../../../shared/cloudTypes";
 import { buildSearchKeywordVariants, normalizeSearchKeyword } from "../utils/searchKeyword";
+import { executeSafeHttp } from "../http/safeHttpExecutor";
+import { getUnifiedRequestTimeoutMs } from "./timeoutPolicy";
 
 const CLOUD_TYPE_SET = new Set<string>(CLOUD_TYPES);
 const MAX_LINKS = 50;
@@ -16,7 +18,9 @@ const SEARCH_CACHE_TTL_MS = 30_000;
 const SEARCH_CACHE_MAX_ENTRIES = 256;
 
 type ManagedResourceInput = Partial<SearchResult> & { id?: unknown };
-type ResourceRow = { id: string; name: string; description: string | null; datetime: string | null; cloud_types_json: string; links_json: string; tags_json: string; images_json: string; search_text: string; enabled: number; created_at: number; updated_at: number };
+export type ManagedResourceApprovalStatus = "pending" | "approved" | "rejected";
+export type ManagedResourceCheckStatus = ResourceCheckStatus;
+type ResourceRow = { id: string; name: string; description: string | null; datetime: string | null; cloud_types_json: string; links_json: string; tags_json: string; images_json: string; search_text: string; enabled: number; approval_status: ManagedResourceApprovalStatus; check_status: ManagedResourceCheckStatus; check_message: string | null; checked_at: number | null; created_at: number; updated_at: number };
 
 function parseJson<T>(value: string, fallback: T): T { try { return JSON.parse(value) as T; } catch { return fallback; } }
 function cleanString(value: unknown, field: string, max: number, nullable = false): string | null {
@@ -70,11 +74,44 @@ function rowToResource(row: ResourceRow): SearchResult {
   const tags = parseJson<string[]>(row.tags_json, []); const images = parseJson<string[]>(row.images_json, []);
   return { id: row.id, name: row.name, description: row.description, datetime: row.datetime, cloud_types: parseJson<CloudType[]>(row.cloud_types_json, []), links: parseJson<Link[]>(row.links_json, []), ...(tags.length ? { tags } : {}), ...(images.length ? { images } : {}) };
 }
-function rowToAdmin(row: ResourceRow) { return { ...rowToResource(row), enabled: row.enabled !== 0, createdAt: row.created_at, updatedAt: row.updated_at }; }
+function rowToAdmin(row: ResourceRow) { return { ...rowToResource(row), enabled: row.enabled !== 0, approvalStatus: row.approval_status, checkStatus: row.check_status, checkMessage: row.check_message, checkedAt: row.checked_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
 function searchText(resource: SearchResult): string {
   return normalizeSearchKeyword([resource.name, resource.description || "", ...(resource.tags || [])].join(" "));
 }
-function toRow(resource: SearchResult, now: number) { return [resource.id, resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), now, now]; }
+function toRow(resource: SearchResult, now: number, approvalStatus: ManagedResourceApprovalStatus, enabled: boolean) { return [resource.id, resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), enabled ? 1 : 0, approvalStatus, now, now]; }
+
+function linkKey(url: string): string {
+  const value = url.trim();
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    return parsed.toString().replace(/\/$/u, "").toLowerCase();
+  } catch {
+    return value.toLowerCase();
+  }
+}
+
+function linkKeys(resource: SearchResult): Set<string> {
+  return new Set(resource.links.map((link) => linkKey(link.url)));
+}
+
+function findDuplicateResource(resource: SearchResult): ResourceRow | undefined {
+  const wanted = linkKeys(resource);
+  for (const row of getSqliteDatabase().allRows<ResourceRow>("SELECT * FROM managed_resources")) {
+    const existing = parseJson<Link[]>(row.links_json, []);
+    if (existing.some((link) => wanted.has(linkKey(link.url)))) return row;
+  }
+  return undefined;
+}
+
+function insertResource(resource: SearchResult, approvalStatus: ManagedResourceApprovalStatus, enabled: boolean): void {
+  const now = Date.now();
+  getSqliteDatabase().run(
+    "INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,enabled,approval_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ...toRow(resource, now, approvalStatus, enabled),
+  );
+}
 
 /**
  * Keyword variants usable against the normalized `search_text` projection.
@@ -129,8 +166,20 @@ export function listManagedResources(options: { q?: string; cloudType?: string; 
   return { items: rows.map(rowToAdmin), total, page: options.page, pageSize: options.pageSize };
 }
 export function getManagedResource(id: string): SearchResult | null { const row = getSqliteDatabase().getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", id); return row ? rowToResource(row) : null; }
-export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); const db = getSqliteDatabase(); const now = Date.now(); db.run("INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ...toRow(resource, now)); invalidateSearchCache(); return resource; }
-export function updateManagedResource(id: string, raw: unknown): SearchResult { const resource = normalizeInput({ ...(raw as object), id }); const db = getSqliteDatabase(); const now = Date.now(); const result = db.run("UPDATE managed_resources SET name=?,description=?,datetime=?,cloud_types_json=?,links_json=?,tags_json=?,images_json=?,search_text=?,updated_at=? WHERE id=?", resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), now, id); if (!result.changes) throw new Error("资源不存在"); invalidateSearchCache(); return resource; }
+export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); insertResource(resource, "approved", true); invalidateSearchCache(); return resource; }
+
+export function captureManagedResource(raw: unknown): { status: "created" | "duplicate"; resource: SearchResult } {
+  const resource = normalizeInput({ ...(raw as object), id: `captured-${randomUUID()}` });
+  const result = getSqliteDatabase().transaction(() => {
+    const duplicate = findDuplicateResource(resource);
+    if (duplicate) return { status: "duplicate" as const, resource: rowToResource(duplicate) };
+    insertResource(resource, "pending", false);
+    return { status: "created" as const, resource };
+  });
+  invalidateSearchCache();
+  return result;
+}
+export function updateManagedResource(id: string, raw: unknown): SearchResult { const resource = normalizeInput({ ...(raw as object), id }); const db = getSqliteDatabase(); const now = Date.now(); const result = db.run("UPDATE managed_resources SET name=?,description=?,datetime=?,cloud_types_json=?,links_json=?,tags_json=?,images_json=?,search_text=?,check_status='unchecked',check_message=NULL,checked_at=NULL,updated_at=? WHERE id=?", resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), now, id); if (!result.changes) throw new Error("资源不存在"); invalidateSearchCache(); return resource; }
 export function deleteManagedResources(ids: string[]): number { const unique = [...new Set(ids.filter(Boolean))]; if (!unique.length) return 0; const changes = getSqliteDatabase().transaction(() => unique.reduce((count, id) => count + Number(getSqliteDatabase().run("DELETE FROM managed_resources WHERE id = ?", id).changes), 0)); if (changes) invalidateSearchCache(); return changes; }
 /**
  * Flip the search visibility of a set of resources.
@@ -147,6 +196,103 @@ export function setManagedResourcesEnabled(ids: string[], enabled: boolean): num
   const changes = db.transaction(() => unique.reduce((count, id) => count + Number(db.run("UPDATE managed_resources SET enabled = ? WHERE id = ? AND enabled <> ?", flag, id, flag).changes), 0));
   if (changes) invalidateSearchCache();
   return changes;
+}
+
+export function setManagedResourceApproval(ids: string[], status: Exclude<ManagedResourceApprovalStatus, "pending">): number {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return 0;
+  const db = getSqliteDatabase();
+  const enabled = status === "approved" ? 1 : 0;
+  const changes = db.transaction(() => unique.reduce((count, id) => count + Number(db.run("UPDATE managed_resources SET approval_status=?,enabled=?,updated_at=? WHERE id=?", status, enabled, Date.now(), id).changes), 0));
+  if (changes) invalidateSearchCache();
+  return changes;
+}
+
+export interface ResourceCheckResult {
+  id: string;
+  status: ManagedResourceCheckStatus;
+  message: string;
+  checkedAt: number;
+}
+
+type LinkCheckStatus = "valid" | "invalid" | "unknown";
+
+interface LinkCheckResult {
+  status: LinkCheckStatus;
+  message: string;
+}
+
+function classifyLinkResponse(status: number, body: string): LinkCheckResult {
+  const text = body.slice(0, 128_000).toLowerCase();
+  if (status === 404 || status === 410) {
+    return { status: "invalid", message: `资源链接返回 HTTP ${status}，通常表示链接已失效` };
+  }
+  if (/分享不存在|链接不存在|资源不存在|页面不存在|分享已取消|链接已失效|资源已失效|not found|expired|removed|deleted/.test(text)) {
+    return { status: "invalid", message: `页面包含资源失效提示（HTTP ${status}）` };
+  }
+  if (status === 401 || status === 403 || /请登录|登录后访问|access denied|unauthorized/.test(text)) {
+    return { status: "unknown", message: "链接需要登录或当前访问被拒绝" };
+  }
+  if (/请输入提取码|输入提取码|提取码验证|password required/.test(text)) {
+    return { status: "unknown", message: "链接需要提取码，暂无法确认文件是否有效" };
+  }
+  if (status >= 200 && status < 300) return { status: "valid", message: `页面可访问，未发现失效提示（HTTP ${status}）` };
+  return { status: "unknown", message: `暂时无法确认链接状态（HTTP ${status}）` };
+}
+
+async function checkLink(link: Link, timeoutMs: number): Promise<LinkCheckResult> {
+  if (link.type === "magnet") return { status: "unknown", message: "磁力链接不支持通过网页请求检测" };
+  if (link.type === "others" && /^ed2k:\/\//iu.test(link.url)) return { status: "unknown", message: "ed2k 链接不支持通过网页请求检测" };
+  try {
+    const url = new URL(link.url);
+    const response = await executeSafeHttp({
+      method: "GET",
+      url: link.url,
+      timeoutMs,
+      maxRequestBodyBytes: 8 * 1024,
+      maxResponseBytes: 256 * 1024,
+      maxRedirects: 3,
+      followRedirects: true,
+      expectedContentTypes: ["text/html", "application/xhtml+xml", "text/plain", "application/json", "application/ld+json"],
+      allowedDomains: [url.hostname],
+      allowHttp: true,
+    });
+    return classifyLinkResponse(response.response.status, response.body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = message.match(/(?:HTTP 错误|HTTP)[:： ]+(\d{3})/i)?.[1];
+    if (code) return classifyLinkResponse(Number(code), message);
+    return { status: "unknown", message: `检测失败：${message}` };
+  }
+}
+
+function summarizeChecks(checks: LinkCheckResult[]): { status: ManagedResourceCheckStatus; message: string } {
+  if (checks.some((check) => check.status === "valid")) {
+    return { status: "valid", message: checks.length > 1 ? `至少 1 条链接可访问（共检测 ${checks.length} 条）` : checks[0].message };
+  }
+  if (checks.length > 0 && checks.every((check) => check.status === "invalid")) {
+    return { status: "invalid", message: checks.length > 1 ? `全部 ${checks.length} 条链接均已失效` : checks[0].message };
+  }
+  return { status: "unknown", message: checks.map((check) => check.message).filter(Boolean).slice(0, 2).join("；") || "暂时无法确认链接状态" };
+}
+
+export async function checkManagedResources(ids: string[]): Promise<ResourceCheckResult[]> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return [];
+  const db = getSqliteDatabase();
+  const now = Date.now();
+  const rows = unique.map((id) => db.getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", id)).filter((row): row is ResourceRow => !!row);
+  const timeoutMs = getUnifiedRequestTimeoutMs();
+  const results: ResourceCheckResult[] = [];
+  for (const row of rows) {
+    db.run("UPDATE managed_resources SET check_status='checking', check_message=NULL WHERE id=?", row.id);
+    const links = parseJson<Link[]>(row.links_json, []);
+    const checks = await Promise.all(links.map((link) => checkLink(link, timeoutMs)));
+    const summary = summarizeChecks(checks);
+    db.run("UPDATE managed_resources SET check_status=?, check_message=?, checked_at=? WHERE id=?", summary.status, summary.message, now, row.id);
+    results.push({ id: row.id, status: summary.status, message: summary.message, checkedAt: now });
+  }
+  return results;
 }
 export function searchManagedResources(keyword: string): SearchResult[] {
   const cacheKey = keyword.trim();
@@ -166,7 +312,7 @@ export function searchManagedResources(keyword: string): SearchResult[] {
   const placeholders = variants.map(() => "instr(search_text, ?) > 0").join(" OR ");
   const results: SearchResult[] = [];
   for (const row of getSqliteDatabase().iterate<ResourceRow>(
-    `SELECT * FROM managed_resources WHERE enabled = 1 AND (${placeholders}) ` +
+    `SELECT * FROM managed_resources WHERE enabled = 1 AND approval_status = 'approved' AND (${placeholders}) ` +
     `ORDER BY CASE WHEN instr(search_text, ?) > 0 THEN instr(search_text, ?) ELSE 2147483647 END, updated_at DESC, id`,
     ...variants, variants[0], variants[0],
   )) {

@@ -401,7 +401,6 @@ const AUTO_REFRESH_SECONDS = AUTO_REFRESH_MS / 1_000;
 
 interface SearchSettingsState {
   sources: string[] | null;
-  channels: string[] | null;
   trashedSources: string[];
 }
 
@@ -439,7 +438,6 @@ let countdownTimer: ReturnType<typeof setInterval> | undefined;
 
 const searchSettings = ref<SearchSettingsState>({
   sources: null,
-  channels: null,
   trashedSources: [],
 });
 const settingsLoading = ref(false);
@@ -539,18 +537,12 @@ async function loadSearchSettings() {
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
       sources: data.sources ?? null,
-      channels: data.channels ?? null,
       trashedSources: data.trashedSources ?? [],
     };
     const enabledRows = sourceOptions.value.filter((row) => row.enabled && !row.trashed);
-    const selectedSources = [
-      ...(searchSettings.value.sources === null
-        ? enabledRows.filter((row) => !row.origin).map(sourceSelectionKey)
-        : (searchSettings.value.sources || []).map((id) => `source:${id}`)),
-      ...(searchSettings.value.channels === null
-        ? enabledRows.filter((row) => !!row.origin).map(sourceSelectionKey)
-        : (searchSettings.value.channels || []).map((id) => `source:${id}`)),
-    ];
+    const selectedSources = searchSettings.value.sources === null
+      ? enabledRows.map(sourceSelectionKey)
+      : (searchSettings.value.sources || []).map((id) => `source:${id}`);
     settingsDraft.value = { sources: selectedSources };
     settingsError.value = "";
   } catch (error: any) {
@@ -576,8 +568,7 @@ async function saveSearchSettingsUi() {
   try {
     const selectedKeys = new Set(settingsDraft.value.sources);
     const selectedRows = sourceOptions.value.filter((row) => selectedKeys.has(sourceSelectionKey(row)));
-    const desiredChannels = selectedRows.filter((row) => !!row.origin).map((row) => row.id);
-    const desiredSources = selectedRows.filter((row) => !row.origin).map((row) => row.id);
+    const desiredSources = selectedRows.map((row) => row.id);
     for (const row of sourceOptions.value) {
       const shouldBeEnabled = selectedKeys.has(sourceSelectionKey(row));
       if (row.enabled !== shouldBeEnabled) await setSourceEnabled(row, shouldBeEnabled);
@@ -589,19 +580,16 @@ async function saveSearchSettingsUi() {
         method: "PUT",
         body: {
           sources: desiredSources,
-          channels: desiredChannels,
         },
       },
     );
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
       sources: data.sources ?? null,
-      channels: data.channels ?? null,
       trashedSources: data.trashedSources ?? [],
     };
     settingsDraft.value.sources = [
       ...(searchSettings.value.sources || []).map((id) => `source:${id}`),
-      ...(searchSettings.value.channels || []).map((id) => `source:${id}`),
     ];
     await loadMonitor({ silent: true });
     notify("搜索资源源设置已保存。");

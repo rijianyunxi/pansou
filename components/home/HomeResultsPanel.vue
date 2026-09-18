@@ -61,7 +61,8 @@
           :active-platform="filterPlatform"
           :platform-label="platformLabel"
           @filter-platform="emit('filter-platform', $event)"
-          @copy="emit('copy', $event)" />
+          @copy="emit('copy', $event)"
+          @open="emit('open', $event)" />
       </div>
     </section>
 
@@ -107,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import type { SearchResult } from "~/server/core/types/models";
+import type { Link, SearchResult } from "~/server/core/types/models";
 
 type SortType = "default" | "date-desc" | "date-asc";
 
@@ -132,7 +133,8 @@ const emit = defineEmits<{
   (event: "update:filterPlatform", value: string): void;
   (event: "update:sortType", value: SortType): void;
   (event: "filter-platform", value: string): void;
-  (event: "copy", value: string): void;
+  (event: "copy", value: { link: Link; resource: SearchResult; resultId: string }): void;
+  (event: "open", value: { link: Link; resource: SearchResult; resultId: string }): void;
   (event: "apply-time-sort"): void;
   (event: "scroll-to-top"): void;
 }>();

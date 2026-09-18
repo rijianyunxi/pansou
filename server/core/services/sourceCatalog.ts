@@ -1,13 +1,10 @@
 import type { SourceDefinition } from "../../../types/source";
-import { CHANNEL_NAME_PATTERN, normalizeChannelNames } from "../../../utils/customChannels";
 import { getSearchSettings, getSearchSettingsVersion, saveSearchSettings } from "./searchSettingsService";
-import { getSystemSettings } from "./systemSettingsService";
 import { getSqliteDatabase } from "../storage/sqlite";
 import { validateOutboundUrl } from "../security/outboundUrl";
 import { toSourceDefinition, getSourceConfigurationVersion } from "./configuredSource";
 import { validateSourceDefinition, validateSourceTransformCode } from "../source-runtime/validation";
-import { buildSourceFromTemplate, getSourceTemplateSettings, getSourceTemplateVersion } from "./sourceTemplateSettings";
-import { getSourceLifecycleStates, setSourceLifecycleState, clearSourceLifecycleState } from "./sourceLifecycleStore";
+import { buildSourceFromTemplate, getSourceTemplateVersion } from "./sourceTemplateSettings";
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 type StoredCatalog = Record<string, SourceDefinition>;
@@ -33,21 +30,6 @@ function normalizePriority(value: unknown): number {
   return Math.max(0, Math.min(999, Math.trunc(priority)));
 }
 function normalizeChannel(value: unknown): string { return String(value || "").trim().replace(/^@/, "").toLowerCase(); }
-function configuredChannels(): string[] {
-  const settings = getSearchSettings();
-  const system = getSystemSettings(useRuntimeConfig());
-  return normalizeChannelNames(settings.channels ?? system.defaultChannels).filter((channel) => CHANNEL_NAME_PATTERN.test(channel));
-}
-/**
- * Channel-backed sources share one id space with regular sources, so a
- * channel-shaped id only counts as a channel source when a configured channel
- * list or a persisted lifecycle override claims it. Without this gate a regular
- * source whose id happens to look like a username would take the channel path.
- */
-function isChannelSourceId(id: string): boolean {
-  return CHANNEL_NAME_PATTERN.test(id)
-    && (configuredChannels().includes(id) || getSourceLifecycleStates()[id] !== undefined);
-}
 function sanitize(raw: unknown): StoredCatalog {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out: StoredCatalog = {};
@@ -66,6 +48,7 @@ function sanitize(raw: unknown): StoredCatalog {
       name: String(source.name || id).trim().slice(0, 100),
       description: String(source.description || "").trim().slice(0, 500),
       url, method, format, transform,
+      proxyPool: source.proxyPool === "telegram" ? "telegram" : undefined,
       priority: normalizePriority(source.priority),
       enabled: source.enabled !== false,
       request: sanitizeSourceRequest(source.request),
@@ -78,15 +61,12 @@ function read(): StoredCatalog {
   const deletedSourceIds = new Set(
     db.allRows<{ id: string }>("SELECT id FROM deleted_sources").map((row) => row.id),
   );
-  const lifecycleStates = getSourceLifecycleStates();
   const rows = db.allRows<any>("SELECT id,name,description,url,method,format,priority,enabled,request_json,transform FROM resource_sources");
   const raw: Record<string, unknown> = {};
   for (const row of rows) {
     const id = normalizeId(row.id);
-    // Channel sources are persisted as normal resource sources, while their
-    // recycle-bin state is kept in source_lifecycle_states. Never expose an
-    // archived row through the active source catalog.
-    if (deletedSourceIds.has(id) || (CHANNEL_NAME_PATTERN.test(id) && lifecycleStates[id]?.deleted)) continue;
+    // Never expose an archived row through the active source catalog.
+    if (deletedSourceIds.has(id)) continue;
     let request: unknown = {};
     try { request = JSON.parse(row.request_json || "{}"); } catch { request = {}; }
     raw[id] = { ...row, id, request, enabled: Boolean(row.enabled) };
@@ -96,6 +76,27 @@ function read(): StoredCatalog {
 function writeSource(source: SourceDefinition): void {
   const db = getSqliteDatabase();
   db.run("INSERT INTO resource_sources(id,name,description,url,method,format,priority,enabled,request_json,transform,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,method=excluded.method,format=excluded.format,priority=excluded.priority,enabled=excluded.enabled,request_json=excluded.request_json,transform=excluded.transform,updated_at=excluded.updated_at", source.id, source.name, source.description, source.url, source.method, source.format, source.priority ?? 0, source.enabled === false ? 0 : 1, source.request ? JSON.stringify(source.request) : null, source.transform, Date.now());
+  // Saving a source with an id is an explicit resurrection. Clear the
+  // tombstone left by a previous deletion so read() does not keep hiding the
+  // newly saved row.
+  db.run("DELETE FROM deleted_sources WHERE id=?", source.id);
+}
+
+/** Remove rows that are owned by a persisted, non-archived source. */
+function removePersistedSourceArtifacts(id: string): void {
+  const db = getSqliteDatabase();
+  db.transaction(() => {
+    db.run("DELETE FROM resource_sources WHERE id=?", id);
+    db.run("DELETE FROM source_health WHERE source_id=?", id);
+    db.run("DELETE FROM search_setting_sources WHERE source_id=?", id);
+  });
+  // Reconcile the configuration flags and timestamps after removing the row.
+  // This also keeps any remaining explicit source selection intact.
+  const settings = getSearchSettings();
+  saveSearchSettings({
+    sources: settings.sources?.filter((sourceId) => sourceId !== id) ?? null,
+    trashedSources: settings.trashedSources.filter((sourceId) => sourceId !== id),
+  });
 }
 export function buildUserSource(channel: string): SourceDefinition {
   const normalized = normalizeChannel(channel);
@@ -103,25 +104,17 @@ export function buildUserSource(channel: string): SourceDefinition {
   return {
     id: normalized,
     name: `@${normalized}`,
-    description: "系统模板来源",
+    description: "用户资源源模板",
     url: template.url,
     method: template.method,
     format: template.format,
     priority: 0,
     enabled: true,
     request: template.request as SourceDefinition["request"],
+    proxyPool: template.proxyPool,
     transform: template.transform,
   };
 }
-function effectiveSource(id: string, catalog: StoredCatalog): SourceDefinition | undefined {
-  const key = normalizeId(id);
-  if (getSourceLifecycleStates()[key]?.deleted) return undefined;
-  const direct = catalog[key];
-  if (direct) return clone(direct);
-  if (CHANNEL_NAME_PATTERN.test(key) && configuredChannels().includes(key)) return buildUserSource(key);
-  return undefined;
-}
-
 /** Queue position, not a rank: a smaller priority starts earlier. Ties fall back to name, then id. */
 function compareSources(a: SourceDefinition, b: SourceDefinition): number {
   return (a.priority ?? 0) - (b.priority ?? 0)
@@ -134,16 +127,9 @@ export function listConfiguredSources(): SourceDefinition[] {
 }
 export function getConfiguredSource(id: string): SourceDefinition | undefined { return read()[normalizeId(id)] && clone(read()[normalizeId(id)]); }
 export function listUnifiedSources(): SourceDefinition[] {
-  const catalog = read();
-  const channels = new Set(configuredChannels());
-  const states = getSourceLifecycleStates();
-  for (const channel of channels) {
-    if (!catalog[channel] && !states[channel]?.deleted) catalog[channel] = buildUserSource(channel);
-    if (catalog[channel] && states[channel]) catalog[channel]!.enabled = states[channel]!.enabled && !states[channel]!.deleted;
-  }
-  return Object.values(catalog).sort(compareSources).map(clone);
+  return Object.values(read()).sort(compareSources).map(clone);
 }
-export function getUnifiedSource(id: string): SourceDefinition | undefined { return effectiveSource(id, read()); }
+export function getUnifiedSource(id: string): SourceDefinition | undefined { return getConfiguredSource(id); }
 function prepareUnifiedSource(raw: unknown, index?: number): SourceDefinition {
   try {
     assertSourceObject(raw);
@@ -169,60 +155,40 @@ export function deleteUnifiedSource(id: string): void {
   const key = normalizeId(id);
   const source = getUnifiedSource(key);
   if (!source) throw new Error("Unknown source");
-
-  // Channel sources use the same catalog but retain their lifecycle state in
-  // source_lifecycle_states so a generated template source does not get
-  // persisted as a duplicate resource_sources row.
-  if (isChannelSourceId(key)) {
-    const settings = getSearchSettings();
-    const system = getSystemSettings(useRuntimeConfig());
-    if (settings.channels?.includes(key)) {
-      saveSearchSettings({ channels: settings.channels.filter((channel) => channel !== key) });
-      clearSourceLifecycleState(key);
-      return;
-    }
-    if (normalizeChannelNames(system.defaultChannels).includes(key)) {
-      setSourceLifecycleState(key, { deleted: true });
-      return;
-    }
-  }
-
   const db = getSqliteDatabase();
-  db.transaction(() => {
-    db.run("DELETE FROM resource_sources WHERE id=?", key);
-    db.run("INSERT INTO deleted_sources(id,deleted_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at", key, Date.now());
-  });
+  removePersistedSourceArtifacts(key);
+  db.run("INSERT INTO deleted_sources(id,deleted_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at", key, Date.now());
 }
+export interface PurgedSourceArtifacts {
+  id: string;
+  removedSourceRows: number;
+  removedSearchEntries: number;
+  removedHealthRecords: number;
+}
+
+/** Permanently remove an archived resource source and its references. */
+export function purgeUnifiedSource(id: string): PurgedSourceArtifacts {
+  const key = normalizeId(id);
+  const db = getSqliteDatabase();
+  if (!db.getRow("SELECT 1 FROM deleted_sources WHERE id=?", key)) {
+    throw new Error("source must be in recycle bin before permanent deletion");
+  }
+  const result = db.transaction(() => {
+    const removedSourceRows = db.run("DELETE FROM resource_sources WHERE id=?", key).changes;
+    const removedSearchEntries = db.run("DELETE FROM search_setting_sources WHERE source_id=?", key).changes;
+    const removedHealthRecords = db.run("DELETE FROM source_health WHERE source_id=?", key).changes;
+    db.run("DELETE FROM deleted_sources WHERE id=?", key);
+    return { removedSourceRows, removedSearchEntries, removedHealthRecords };
+  });
+  return { id: key, ...result };
+}
+
 export function setUnifiedSourceEnabled(id: string, enabled: boolean): SourceDefinition {
   const key = normalizeId(id);
-  let source = getUnifiedSource(key);
-
-  // An archived built-in channel source is intentionally absent from the active
-  // catalog. Rehydrate its template so the same resource-source endpoint can
-  // restore it without introducing a second channel-specific monitor path.
-  if (!source && isChannelSourceId(key)) {
-    source = buildUserSource(key);
-  }
+  const source = getUnifiedSource(key);
   if (!source) throw new Error("Unknown source");
 
   const next = { ...source, enabled: !!enabled };
-  if (isChannelSourceId(key)) {
-    setSourceLifecycleState(key, { enabled: !!enabled, deleted: false });
-    // In explicit-channel mode the search scope is an explicit list, so the
-    // lifecycle override alone would not change what a search loads. In
-    // all-channels mode (null) the state table is the single source of truth.
-    const settings = getSearchSettings();
-    if (settings.channels !== null) {
-      const channels = new Set(settings.channels);
-      if (enabled) channels.add(key);
-      else channels.delete(key);
-      saveSearchSettings({ channels: [...channels] });
-    }
-    // A channel source may also have an explicitly persisted custom
-    // definition. Keep that row's enabled flag in sync when it exists.
-    if (getConfiguredSource(key)) writeSource(next);
-    return clone(next);
-  }
   writeSource(next);
   return clone(next);
 }

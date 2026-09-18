@@ -39,6 +39,7 @@ export interface SourceResponse {
 export interface SourceDefinition {
   schemaVersion: 1;
   manifest: SourceManifest;
+  proxyPool?: "telegram";
   request: SourceRequest;
   response: SourceResponse;
 }

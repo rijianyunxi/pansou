@@ -3455,6 +3455,49 @@
   font-size: 13px;
   font-weight: 700;
 }
+.source-app .console-main-sources .directory-table .source-state-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+.source-app .console-main-sources .directory-table .source-state-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.source-app .console-main-sources .directory-table .source-state-tag.enabled {
+  border-color: #b8e2c2;
+  color: #21733a;
+  background: #effaf1;
+}
+.source-app .console-main-sources .directory-table .source-state-tag.disabled {
+  border-color: #d7dee8;
+  color: #718096;
+  background: #f4f6f8;
+}
+.source-app .console-main-sources .directory-table .source-state-tag.circuit-closed {
+  border-color: #d7dee8;
+  color: #718096;
+  background: #f4f6f8;
+}
+.source-app .console-main-sources .directory-table .source-state-tag.circuit-half-open {
+  border-color: #f0d39a;
+  color: #9a6508;
+  background: #fff8e8;
+}
+.source-app .console-main-sources .directory-table .source-state-tag.circuit-open {
+  border-color: #f2b8b5;
+  color: #b42318;
+  background: #fff1f0;
+}
 .source-app .console-main-sources .directory-table .source-description {
   color: #68778b;
   font-size: 11px;
@@ -3545,21 +3588,19 @@
   }
 }
 
-/* Source sequence column. These are the only column widths for `.directory-table`;
-   the user and log tables override them per table. */
+/* Source directory column widths. These are the only column widths for
+   `.directory-table`; the user and log tables override them per table. */
 .source-app .directory-table th:nth-child(1),
 .source-app .directory-table td:nth-child(1) { width: 6%; }
 .source-app .directory-table th:nth-child(2),
-.source-app .directory-table td:nth-child(2) { width: 24%; }
+.source-app .directory-table td:nth-child(2) { width: 28%; }
 .source-app .directory-table th:nth-child(3),
-.source-app .directory-table td:nth-child(3) { width: 13%; }
-/* Priority holds one 28px badge. It previously inherited the request-address
-   width from the five-column era, leaving a wide empty cell beside a cramped
-   address column, with the value centred under a left-aligned header. */
+.source-app .directory-table td:nth-child(3) { width: 14%; }
+/* Priority holds one 28px badge, with the value centred under its header. */
 .source-app .directory-table th:nth-child(4),
 .source-app .directory-table td:nth-child(4) { width: 8%; }
 .source-app .directory-table th:nth-child(5),
-.source-app .directory-table td:nth-child(5) { width: 29%; }
+.source-app .directory-table td:nth-child(5) { width: 24%; }
 .source-app .directory-table th:nth-child(6),
 .source-app .directory-table td:nth-child(6) { width: 20%; }
 .source-app .directory-table .source-index-column,
@@ -3776,4 +3817,53 @@
   .admin-account-form .policy-field:last-of-type, .admin-account-actions { grid-column: auto; }
   .admin-account-card { padding: 18px; }
   .policy-card-actions { flex-wrap: wrap; }
+}
+
+/* 后台数据表操作栏统一：同一尺寸、同一图标按钮形态，文字通过 title/aria-label 提供。 */
+.source-app .admin-data-table .row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+.source-app .admin-data-table .row-actions > .icon-button,
+.source-app .admin-data-table .row-actions > .button.tiny {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  color: #64748b;
+  background: #fff;
+  font-size: 0;
+  line-height: 1;
+}
+.source-app .admin-data-table .row-actions > .icon-button:hover:not(:disabled),
+.source-app .admin-data-table .row-actions > .button.tiny:hover:not(:disabled) {
+  border-color: #93c5fd;
+  color: #2563eb;
+  background: #eff6ff;
+}
+.source-app .admin-data-table .row-actions > .danger-icon,
+.source-app .admin-data-table .row-actions > .danger-action {
+  border-color: #f1c3be;
+  color: #b42318;
+  background: #fffafa;
+}
+.source-app .admin-data-table .row-actions > .danger-icon:hover:not(:disabled),
+.source-app .admin-data-table .row-actions > .danger-action:hover:not(:disabled) {
+  border-color: #e58b82;
+  color: #9f1d16;
+  background: #fff1ef;
+}
+.source-app .admin-data-table .row-actions > :disabled {
+  cursor: not-allowed;
+  opacity: .45;
 }

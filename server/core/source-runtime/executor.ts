@@ -14,6 +14,12 @@ import {
 import { executeSafeHttp, type SafeHttpResponse } from "../http/safeHttpExecutor";
 import { getUnifiedRequestTimeoutMs } from "../services/timeoutPolicy";
 import {
+  acquireProxyRequest,
+  reportProxyFailure,
+  reportProxySuccess,
+  type ProxyLease,
+} from "../services/proxyPoolService";
+import {
   REDACTED,
   isSensitiveKey,
   redactSensitiveValue,
@@ -166,10 +172,20 @@ export async function executeSource(
     format: "json" | "html" | "text"
   ): Promise<SafeHttpResponse> => {
     const started = Date.now();
-    try {
-      const url = rendered.url.toString();
+    const targetUrl = rendered.url.toString();
+    const excludedNodeIds = new Set<string>();
+    let lastError: unknown;
+
+    for (;;) {
+      let lease: ProxyLease | undefined;
+      let outboundUrl = targetUrl;
       const attemptStarted = Date.now();
       try {
+        if (definition.proxyPool === "telegram") {
+          lease = acquireProxyRequest(targetUrl, excludedNodeIds);
+          outboundUrl = lease.requestUrl;
+        }
+        const url = outboundUrl;
         const payload = await executeSafeHttp({
           method: rendered.method,
           url,
@@ -185,9 +201,40 @@ export async function executeSource(
           expectedContentTypes: format === "json"
             ? JSON_CONTENT_TYPES
             : [...HTML_CONTENT_TYPES, "text/plain", "text/markdown"],
-          allowedDomains: request.allowedDomains,
+          allowedDomains: lease ? [new URL(url).hostname] : request.allowedDomains,
           allowHttp: request.allowInsecureHttp,
         });
+        if (lease) {
+          const quotaExhausted = payload.response.headers.get("x-proxy-quota") === "exhausted";
+          if (quotaExhausted || payload.response.status === 429 || payload.response.status >= 500) {
+            reportProxyFailure(lease.nodeId, {
+              status: payload.response.status,
+              message: quotaExhausted ? "代理节点报告每日额度已用完" : `代理请求返回 HTTP ${payload.response.status}`,
+              quotaExhausted,
+            });
+            excludedNodeIds.add(lease.nodeId);
+            lastError = new Error(
+              quotaExhausted
+                ? "代理节点报告每日额度已用完"
+                : `代理请求返回 HTTP ${payload.response.status}`,
+            );
+            recordTrace({
+              stage,
+              url: payload.url.toString(),
+              method: rendered.method,
+              status: payload.response.status,
+              elapsedMs: payload.elapsedMs,
+              bytes: payload.bytes,
+              contentType: payload.contentType,
+              request: requestDebugSnapshot(outboundUrl, rendered),
+              error: lastError.message,
+            });
+            continue;
+          } else {
+            // Telegram 的 403/404 仍然是源站响应，不应熔断代理节点。
+            reportProxySuccess(lease.nodeId, payload.response.status);
+          }
+        }
         recordTrace({
           stage,
           url: payload.url.toString(),
@@ -200,33 +247,30 @@ export async function executeSource(
         });
         return payload;
       } catch (error) {
+        lastError = error;
+        if (!lease && definition.proxyPool === "telegram") {
+          throw error;
+        }
+        if (lease) {
+          excludedNodeIds.add(lease.nodeId);
+          reportProxyFailure(lease.nodeId, { message: error instanceof Error ? error.message : String(error) });
+        }
         recordTrace({
           stage,
-          url,
+          url: outboundUrl,
           method: rendered.method,
           status: null,
           elapsedMs: Date.now() - attemptStarted,
           bytes: 0,
-          request: requestDebugSnapshot(url, rendered),
+          request: requestDebugSnapshot(outboundUrl, rendered),
           error: error instanceof Error ? error.message : String(error),
         });
-        throw error;
+        if (definition.proxyPool !== "telegram") throw error;
       }
-    } catch (error) {
-      // Preserve the original request timing for callers that display diagnostics.
-      if (!traces.some((trace) => trace.stage === stage)) {
-        recordTrace({
-          stage,
-          url: rendered.url.toString(),
-          method: rendered.method,
-          status: null,
-          elapsedMs: Date.now() - started,
-          bytes: 0,
-          request: requestDebugSnapshot(rendered.url.toString(), rendered),
-          error: error instanceof Error ? error.message : String(error),
-        });
+
+      if (definition.proxyPool !== "telegram") {
+        throw lastError;
       }
-      throw error;
     }
   };
 

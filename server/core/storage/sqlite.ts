@@ -33,15 +33,17 @@ export class SqliteDatabase {
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("temp_store = MEMORY");
     this.db.exec(SCHEMA);
+    this.migrateLegacySearchSources();
     this.ensureSessionChannelsColumn();
     this.ensureSessionTransportColumn();
     this.ensureResourceSourceColumns();
     this.ensureUserAccountColumns();
     this.ensureManagedResourceColumns();
+    this.ensureProxyNodeDefaults();
+    this.ensureHotSearchColumns();
+    this.ensureSearchAnalyticsColumns();
     this.ensureUserRolesAndDefaultAdmin();
-    this.ensureSourceLifecycleTable();
     this.retireLegacyTables();
-    this.retireDeletedChannelEntries();
     this.retireRemovedPolicyKeys();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
   }
@@ -51,6 +53,50 @@ export class SqliteDatabase {
     if (!columns.some((column) => column.name === "transport")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN transport TEXT NOT NULL DEFAULT 'cookie'");
     }
+  }
+
+  /** One-time upgrade from the removed global source/channel split. */
+  private migrateLegacySearchSources(): void {
+    const settingsColumns = this.db.prepare("PRAGMA table_info(search_settings)").all() as Array<{ name: string }>;
+    if (!settingsColumns.some((column) => column.name === "channels_configured")) return;
+    const legacyTable = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='search_setting_channels'").get();
+    if (!legacyTable) return;
+    const row = this.db.prepare("SELECT channels_configured FROM search_settings WHERE id=1").get() as { channels_configured?: number } | undefined;
+    if (!row?.channels_configured) return;
+    const legacySources = this.db.prepare("SELECT channel FROM search_setting_channels ORDER BY position").all() as Array<{ channel: string }>;
+    this.db.transaction(() => {
+      for (const item of legacySources) {
+        this.db.prepare("INSERT INTO search_setting_sources(source_id,trashed) VALUES(?,0) ON CONFLICT(source_id) DO NOTHING").run(item.channel);
+      }
+      this.db.prepare("UPDATE search_settings SET sources_configured=1,channels_configured=0,updated_at=? WHERE id=1").run(Date.now());
+      this.db.exec("DELETE FROM search_setting_channels");
+    })();
+  }
+
+  private ensureSearchAnalyticsColumns(): void {
+    // Click/copy telemetry is intentionally retired. It is no longer part of
+    // the schema or any reporting path, so discard the old event table too.
+    this.db.exec("DROP TABLE IF EXISTS search_events");
+    const columns = this.db.prepare("PRAGMA table_info(search_logs)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "status")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'");
+    }
+    if (!columns.some((column) => column.name === "result_count")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN result_count INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!columns.some((column) => column.name === "has_results")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN has_results INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!columns.some((column) => column.name === "source_result_counts_json")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN source_result_counts_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!columns.some((column) => column.name === "completed_at")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN completed_at INTEGER");
+    }
+    if (!columns.some((column) => column.name === "outcome_recorded")) {
+      this.db.exec("ALTER TABLE search_logs ADD COLUMN outcome_recorded INTEGER NOT NULL DEFAULT 0");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_search_logs_status_created_at ON search_logs(status,created_at DESC)");
   }
 
   private ensureSessionChannelsColumn(): void {
@@ -63,17 +109,6 @@ export class SqliteDatabase {
     }
   }
 
-  private ensureSourceLifecycleTable(): void {
-    const legacy = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tg_channel_states'").get();
-    if (!legacy) return;
-    // Earlier databases stored channel-source lifecycle overrides in a
-    // Telegram-named table. Move the rows into the unified table and retire the
-    // old one so the schema has a single name for this concept.
-    this.db.exec("INSERT OR IGNORE INTO source_lifecycle_states(channel,enabled,deleted,updated_at) SELECT channel,enabled,deleted,updated_at FROM tg_channel_states");
-    this.db.exec("DROP INDEX IF EXISTS idx_tg_channel_states_deleted");
-    this.db.exec("DROP TABLE tg_channel_states");
-  }
-
   private retireLegacyTables(): void {
     // Tables that no version of the runtime creates or reads any more: the
     // Telegram channel-health log (the Telegram feature is gone) and the WeChat
@@ -82,18 +117,6 @@ export class SqliteDatabase {
     for (const table of ["tg_channel_health", "wechat_identities"]) {
       this.db.exec(`DROP TABLE IF EXISTS ${table}`);
     }
-  }
-
-  private retireDeletedChannelEntries(): void {
-    // `system_channels` is written straight from the settings form and once had
-    // no filter against `deleted_sources`, so a source the operator deleted
-    // could be saved back into the default channel list and then never left it:
-    // the console reads this table directly, and the public health endpoint
-    // echoed it. `source_lifecycle_states` can hold the same contradiction — an
-    // "off" override for an id that no longer exists. Drop both; the write path
-    // now refuses to re-introduce them.
-    this.db.exec("DELETE FROM system_channels WHERE lower(name) IN (SELECT lower(id) FROM deleted_sources)");
-    this.db.exec("DELETE FROM source_lifecycle_states WHERE lower(channel) IN (SELECT lower(id) FROM deleted_sources)");
   }
 
   private ensureResourceSourceColumns(): void {
@@ -169,6 +192,18 @@ export class SqliteDatabase {
     if (!columns.some((column) => column.name === "enabled")) {
       this.db.exec("ALTER TABLE managed_resources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
     }
+    if (!columns.some((column) => column.name === "approval_status")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'");
+    }
+    if (!columns.some((column) => column.name === "check_status")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN check_status TEXT NOT NULL DEFAULT 'unchecked'");
+    }
+    if (!columns.some((column) => column.name === "check_message")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN check_message TEXT");
+    }
+    if (!columns.some((column) => column.name === "checked_at")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN checked_at INTEGER");
+    }
 
     // The console now matches the same normalized projection as the search path,
     // so nothing queries `name` directly any more and this index only added write
@@ -194,6 +229,61 @@ export class SqliteDatabase {
       }
     });
     backfill();
+  }
+
+  private ensureProxyNodeDefaults(): void {
+    if (this.db.prepare("SELECT 1 FROM proxy_nodes LIMIT 1").get()) return;
+    const now = Date.now();
+    const defaults = [
+      {
+        id: "direct",
+        name: "直连 Telegram",
+        kind: "direct",
+        baseUrl: "",
+        weight: 1,
+      },
+      {
+        id: "worker-frosty-mouse",
+        name: "Worker · frosty-mouse",
+        kind: "proxy",
+        baseUrl: "https://frosty-mouse-58c9.691736657.workers.dev",
+        weight: 1,
+      },
+      {
+        id: "worker-wild-glade",
+        name: "Worker · wild-glade",
+        kind: "proxy",
+        baseUrl: "https://wild-glade-8d69.mr-songjintao.workers.dev",
+        weight: 1,
+      },
+    ];
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO proxy_nodes(id,name,kind,base_url,enabled,weight,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES(?,?,?,?,1,?,0,'',0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
+    );
+    const seed = this.db.transaction(() => {
+      for (const item of defaults) insert.run(item.id, item.name, item.kind, item.baseUrl, item.weight, now, now);
+    });
+    seed();
+  }
+
+  private ensureHotSearchColumns(): void {
+    const columns = this.db.prepare("PRAGMA table_info(hot_searches)").all() as Array<{ name: string }>;
+    const add = (sql: string, name: string) => {
+      if (!columns.some((column) => column.name === name)) this.db.exec(sql);
+    };
+    add("ALTER TABLE hot_searches ADD COLUMN normalized_term TEXT NOT NULL DEFAULT ''", "normalized_term");
+    add("ALTER TABLE hot_searches ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'", "status");
+    add("ALTER TABLE hot_searches ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'", "source");
+    add("ALTER TABLE hot_searches ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0", "pinned");
+    add("ALTER TABLE hot_searches ADD COLUMN manual_weight INTEGER NOT NULL DEFAULT 0", "manual_weight");
+    add("ALTER TABLE hot_searches ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0", "updated_at");
+    this.db.exec("UPDATE hot_searches SET normalized_term = lower(trim(term)) WHERE normalized_term = '' OR normalized_term IS NULL");
+    this.db.exec("UPDATE hot_searches SET updated_at = CASE WHEN updated_at = 0 THEN last_searched ELSE updated_at END");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_hot_searches_status_rank ON hot_searches(status,pinned DESC,manual_weight DESC,score DESC,last_searched DESC)");
+    // The former hot-search blacklist table is intentionally retired. Existing
+    // rules are discarded during startup; manual hot-search status management
+    // remains available through hot_searches.status.
+    this.db.exec("DROP TABLE IF EXISTS hot_search_rules");
   }
 
   private ensureUserRolesAndDefaultAdmin(): void {
@@ -285,21 +375,37 @@ export class SqliteDatabase {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS config_revisions(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision >= 0));
 CREATE TABLE IF NOT EXISTS system_settings(id INTEGER PRIMARY KEY CHECK(id=1),default_concurrency INTEGER NOT NULL,request_timeout_ms INTEGER NOT NULL,cache_ttl_minutes INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS system_channels(kind TEXT NOT NULL,name TEXT NOT NULL,position INTEGER NOT NULL,PRIMARY KEY(kind,name));
-CREATE INDEX IF NOT EXISTS idx_system_channels_order ON system_channels(kind,position,name);
-CREATE TABLE IF NOT EXISTS search_settings(id INTEGER PRIMARY KEY CHECK(id=1),concurrency INTEGER,sources_configured INTEGER NOT NULL DEFAULT 0,channels_configured INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS search_settings(id INTEGER PRIMARY KEY CHECK(id=1),concurrency INTEGER,sources_configured INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS search_setting_sources(source_id TEXT PRIMARY KEY,trashed INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS search_setting_channels(channel TEXT PRIMARY KEY,position INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_search_setting_channels_position ON search_setting_channels(position,channel);
 CREATE TABLE IF NOT EXISTS resource_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,url TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_resource_sources_enabled ON resource_sources(enabled,id);
 CREATE TABLE IF NOT EXISTS deleted_sources(id TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS source_template_settings(id INTEGER PRIMARY KEY CHECK(id=1),url_template TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS source_lifecycle_states(channel TEXT PRIMARY KEY,enabled INTEGER NOT NULL,deleted INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_source_lifecycle_states_deleted ON source_lifecycle_states(deleted,channel);
-CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,normalized_term TEXT NOT NULL DEFAULT '',score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'approved',source TEXT NOT NULL DEFAULT 'auto',pinned INTEGER NOT NULL DEFAULT 0,manual_weight INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last_searched DESC);
 CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS proxy_nodes(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('direct','proxy')),
+  base_url TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  weight INTEGER NOT NULL DEFAULT 1 CHECK(weight >= 1 AND weight <= 100),
+  daily_limit INTEGER NOT NULL DEFAULT 0 CHECK(daily_limit >= 0),
+  quota_day TEXT NOT NULL DEFAULT '',
+  quota_used INTEGER NOT NULL DEFAULT 0 CHECK(quota_used >= 0),
+  circuit_state TEXT NOT NULL DEFAULT 'closed' CHECK(circuit_state IN ('closed','open','half-open','quota_exhausted')),
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  probe_in_flight INTEGER NOT NULL DEFAULT 0,
+  opened_until INTEGER,
+  last_status INTEGER,
+  last_error TEXT,
+  last_success_at INTEGER,
+  last_failure_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proxy_nodes_selection ON proxy_nodes(enabled,circuit_state,weight);
 CREATE TABLE IF NOT EXISTS managed_resources(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -311,6 +417,10 @@ CREATE TABLE IF NOT EXISTS managed_resources(
   images_json TEXT NOT NULL DEFAULT '[]',
   search_text TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
+  approval_status TEXT NOT NULL DEFAULT 'approved' CHECK(approval_status IN ('pending','approved','rejected')),
+  check_status TEXT NOT NULL DEFAULT 'unchecked',
+  check_message TEXT,
+  checked_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -376,6 +486,12 @@ CREATE TABLE IF NOT EXISTS search_logs(
   search_scope TEXT NOT NULL,
   channels_json TEXT NOT NULL DEFAULT '[]',
   source_ids_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'started' CHECK(status IN ('started','completed','failed')),
+  result_count INTEGER NOT NULL DEFAULT 0,
+  has_results INTEGER NOT NULL DEFAULT 0,
+  source_result_counts_json TEXT NOT NULL DEFAULT '{}',
+  completed_at INTEGER,
+  outcome_recorded INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL

@@ -17,7 +17,9 @@
         <nav aria-label="后台导航">
           <NuxtLink to="/admin/monitor" class="console-nav-link"><ConsoleIcon name="activity" />运行监控</NuxtLink>
           <NuxtLink to="/admin/sources" class="console-nav-link"><ConsoleIcon name="box" />来源管理</NuxtLink>
+          <NuxtLink to="/admin/proxies" class="console-nav-link"><ConsoleIcon name="globe" />代理节点</NuxtLink>
           <NuxtLink to="/admin/resources" :class="['console-nav-link', { active: (feature as string) === 'resources' }]" ><ConsoleIcon name="box" />网盘资源</NuxtLink>
+          <NuxtLink to="/admin/hot-searches" class="console-nav-link"><ConsoleIcon name="search" />热门搜索</NuxtLink>
           <NuxtLink to="/admin/users" :class="['console-nav-link', { active: feature === 'users' }]"><ConsoleIcon name="user" />用户管理</NuxtLink>
           <NuxtLink to="/admin/logs" :class="['console-nav-link', { active: feature === 'logs' }]"><ConsoleIcon name="activity" />搜索日志</NuxtLink>
           <NuxtLink to="/admin/policies" :class="['console-nav-link', { active: feature === 'policies' }]"><ConsoleIcon name="sliders" />系统设置</NuxtLink>
@@ -56,7 +58,7 @@
                   <div class="query-actions">
                     <button class="button primary" type="submit"><ConsoleIcon name="search" :size="14" />查询</button>
                     <button class="button secondary" type="button" @click="resetQuery">重置</button>
-                    <button class="button secondary" type="button" :disabled="selectedCount === 0 || busy" @click="disableSelectedUsers">
+                    <button class="button danger-button" type="button" :disabled="selectedCount === 0 || busy" @click="disableSelectedUsers">
                       <ConsoleIcon name="lock" :size="14" />批量禁用<span v-if="selectedCount" class="action-count">{{ selectedCount }}</span>
                     </button>
                     <button class="button primary" type="button" @click="openCreateUser"><ConsoleIcon name="plus" :size="14" />创建管理员</button>
@@ -80,7 +82,7 @@
                         <td><span :class="['role-badge', item.role === 'admin' ? 'admin' : 'user']">{{ item.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
                         <td><span :class="['status-badge', item.status]">{{ item.status === 'active' ? '正常' : '已禁用' }}</span></td>
                         <td><button class="channel-count-button" type="button" @click="openUserChannels(item)">{{ item.channelCount ?? item.channels?.length ?? 0 }}</button></td><td>{{ item.lastLoginIp || '—' }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td>
-                        <td class="action-column"><div class="row-actions"><button class="button secondary tiny" type="button" @click="toggleUser(item)">{{ item.status === 'active' ? '禁用' : '启用' }}</button><button class="button secondary tiny" type="button" @click="revokeUser(item)">退出会话</button><button class="button danger-button tiny" type="button" @click="deleteUser(item)">删除</button></div></td>
+                        <td class="action-column"><div class="row-actions"><button class="icon-button" :class="{ 'danger-icon': item.status === 'active' }" type="button" :title="item.status === 'active' ? '禁用' : '启用'" :aria-label="`${item.status === 'active' ? '禁用' : '启用'}用户 ${item.username}`" @click="toggleUser(item)"><ConsoleIcon :name="item.status === 'active' ? 'lock' : 'unlock'" :size="15" /></button><button class="icon-button danger-icon" type="button" title="退出会话" :aria-label="`退出用户 ${item.username} 的会话`" @click="revokeUser(item)"><ConsoleIcon name="logout" :size="15" /></button><button class="icon-button danger-icon" type="button" title="删除" :aria-label="`删除用户 ${item.username}`" @click="deleteUser(item)"><ConsoleIcon name="trash" :size="15" /></button></div></td>
                       </tr>
                       <tr v-if="!users.length"><td colspan="10" class="empty-cell">暂无用户数据，或服务端用户管理接口尚未启用。</td></tr>
                     </tbody>
@@ -126,6 +128,12 @@
             </template>
 
             <template v-else-if="feature === 'logs'">
+              <section class="analytics-strip" aria-label="搜索行为概览">
+                <div class="analytics-card"><span>搜索次数</span><strong>{{ analytics.overview.searches }}</strong></div>
+                <div class="analytics-card"><span>有结果</span><strong>{{ analytics.overview.withResults }}</strong></div>
+                <div class="analytics-card"><span>无结果</span><strong>{{ analytics.overview.noResults }}</strong></div>
+                <div class="analytics-card"><span>返回资源</span><strong>{{ analytics.overview.resultCount }}</strong></div>
+              </section>
               <section class="query-panel" aria-label="搜索日志查询与操作">
                 <form class="query-toolbar" @submit.prevent="runQuery">
                   <label class="query-input"><ConsoleIcon name="search" :size="16" /><input v-model.trim="logQuery" type="search" placeholder="关键词 / 用户 / IP" /></label>
@@ -136,16 +144,15 @@
               <section class="sources-panel directory-panel table-panel" aria-label="搜索日志列表">
                 <div class="table-scroll">
                   <table class="source-table directory-table admin-data-table log-table">
-                    <thead><tr><th class="checkbox-column"><input type="checkbox" :checked="allCurrentSelected" :indeterminate="someCurrentSelected" aria-label="选择当前页全部日志" @change="toggleAllCurrent" /></th><th class="serial-column">序号</th><th>时间</th><th>关键词</th><th>用户</th><th>会话</th><th>IP</th><th>搜索范围</th><th>操作</th></tr></thead>
+                    <thead><tr><th class="checkbox-column"><input type="checkbox" :checked="allCurrentSelected" :indeterminate="someCurrentSelected" aria-label="选择当前页全部日志" @change="toggleAllCurrent" /></th><th class="serial-column">序号</th><th>时间</th><th>关键词</th><th>用户</th><th>结果</th><th>搜索范围</th><th>操作</th></tr></thead>
                     <tbody>
-                      <tr v-for="(item, index) in logs" :key="item.id" :class="{ 'selected-row': isSelected(item.id) }"><td class="checkbox-column"><input type="checkbox" :checked="isSelected(item.id)" :aria-label="`选择日志 ${item.id}`" @change="toggleSelection(item.id)" /></td><td class="serial-column">{{ rowNumber(index) }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td><td class="break-cell">{{ item.keyword || item.kw || '—' }}</td><td>{{ item.username || item.userId || '未登录' }}</td><td>{{ item.sessionId || '—' }}</td><td>{{ formatIp(item.ip) }}</td><td><button v-if="isCustomScope(item)" class="scope-link" type="button" @click="openLogChannels(item)">自定义频道</button><span v-else>{{ searchScopeLabel(item) }}</span></td><td class="action-column"><button class="icon-button danger-icon" type="button" aria-label="删除日志" title="删除日志" @click="deleteLog(item)"><ConsoleIcon name="trash" :size="16" /></button></td></tr>
-                      <tr v-if="!logs.length"><td colspan="9" class="empty-cell">暂无日志数据，或服务端日志接口尚未启用。</td></tr>
+                      <tr v-for="(item, index) in logs" :key="item.id" :class="{ 'selected-row': isSelected(item.id) }"><td class="checkbox-column"><input type="checkbox" :checked="isSelected(item.id)" :aria-label="`选择日志 ${item.id}`" @change="toggleSelection(item.id)" /></td><td class="serial-column">{{ rowNumber(index) }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td><td class="break-cell">{{ item.keyword || item.kw || '—' }}</td><td>{{ item.username || item.userId || '未登录' }}</td><td>{{ logResultCountLabel(item) }}</td><td><button v-if="isCustomScope(item)" class="scope-link" type="button" @click="openLogChannels(item)">自定义频道</button><span v-else>{{ searchScopeLabel(item) }}</span></td><td class="action-column"><div class="row-actions"><button class="icon-button" type="button" aria-label="查看日志详情" title="详情" @click="openLogDetail(item)"><ConsoleIcon name="info" :size="16" /></button><button class="icon-button danger-icon" type="button" aria-label="删除日志" title="删除日志" @click="deleteLog(item)"><ConsoleIcon name="trash" :size="16" /></button></div></td></tr>
+                      <tr v-if="!logs.length"><td colspan="8" class="empty-cell">暂无日志数据，或服务端日志接口尚未启用。</td></tr>
                     </tbody>
                   </table>
                 </div>
                 <AdminPagination :page="page" :total-pages="pageCount" :total="displayTotal" :page-size="pageSize" @change="goToPage" @update:page-size="changePageSize" />
               </section>
-
               <Teleport to="body">
                 <div v-if="logChannelsOpen" class="admin-modal-backdrop" @click.self="closeLogChannels">
                   <section class="admin-modal channels-modal" role="dialog" aria-modal="true" aria-labelledby="log-channels-title">
@@ -160,6 +167,24 @@
                   </section>
                 </div>
               </Teleport>
+
+              <Teleport to="body">
+                <div v-if="logDetailOpen" class="admin-modal-backdrop" @click.self="closeLogDetail">
+                  <section class="admin-modal log-detail-modal" role="dialog" aria-modal="true" aria-labelledby="log-detail-title">
+                    <header class="admin-modal-header">
+                      <div><p class="modal-eyebrow">SEARCH RESULT DETAIL</p><h2 id="log-detail-title">搜索结果详情</h2><p v-if="selectedLogDetail">关键词：{{ selectedLogDetail.keyword || selectedLogDetail.kw || '—' }} · 共 {{ selectedLogDetail.resultCount || 0 }} 条</p></div>
+                      <button class="modal-close" type="button" aria-label="关闭" @click="closeLogDetail">×</button>
+                    </header>
+                    <div v-if="selectedLogSourceCounts.length" class="log-source-count-list">
+                      <div v-for="item in selectedLogSourceCounts" :key="item.sourceId" class="log-source-count-row">
+                        <span class="log-source-name">{{ item.sourceId }}</span>
+                        <strong>{{ item.count }} 条</strong>
+                      </div>
+                    </div>
+                    <p v-else class="modal-empty">这条日志没有记录各来源的结果数量。</p>
+                  </section>
+                </div>
+              </Teleport>
             </template>
 
           <template v-else>
@@ -169,7 +194,7 @@
                     <h2 id="system-settings-title">搜索与账号配置</h2>
                   </div>
                   <div class="policy-card-actions">
-                    <span class="policy-count">16 个配置项</span>
+                    <span class="policy-count">17 个配置项</span>
                     <button class="refresh-button" type="button" :disabled="loading" @click="loadData">
                       <ConsoleIcon name="refresh" :size="14" />{{ loading ? '读取中…' : '刷新数据' }}
                     </button>
@@ -200,6 +225,7 @@
                       <label class="policy-field"><span><strong>来源熔断失败次数</strong><code>circuitBreakerMaxFailures</code></span><input v-model.number="policyForm.circuitBreakerMaxFailures" type="number" min="1" max="20" required /><small>范围：1–20 次</small></label>
                       <label class="policy-field"><span><strong>整次搜索超时</strong><code>searchTimeoutMs</code></span><input v-model.number="policyForm.searchTimeoutMs" type="number" min="1000" max="120000" required /><small>范围：1000–120000 ms</small></label>
                       <label class="policy-field"><span><strong>搜索缓存时长</strong><code>cacheTtlMinutes</code></span><input v-model.number="policyForm.cacheTtlMinutes" type="number" min="1" max="10" required /><small>范围：1–10 分钟</small></label>
+                      <label class="policy-field"><span><strong>搜索缓存容量上限</strong><code>cacheMaxMemoryMb</code></span><input v-model.number="policyForm.cacheMaxMemoryMb" type="number" min="16" max="512" required /><small>范围：16–512 MB，调小后按 LRU 立即淘汰</small></label>
                     </div>
                   </fieldset>
                   <fieldset class="policy-group">
@@ -267,7 +293,11 @@ import AdminPagination from "./AdminPagination.vue";
 const auth = useAuth();
 type Feature = "users" | "logs" | "policies";
 type AdminUser = { id: number; username: string; nickname?: string | null; role?: "admin" | "user"; status: "active" | "disabled"; channels?: string[]; channelCount?: number; lastLoginIp?: string | null; createdAt?: number; created_at?: number };
-type AdminLog = { id: number; keyword?: string; kw?: string; username?: string; userId?: number | null; sessionId?: number | string; ip?: string; scope?: string; searchScope?: string; channels?: string[]; createdAt?: number; created_at?: number };
+type AdminLog = { id: number; keyword?: string; kw?: string; username?: string; userId?: number | null; sessionId?: number | string; ip?: string; scope?: string; searchScope?: string; channels?: string[]; createdAt?: number; created_at?: number; status?: string; resultCount?: number; hasResults?: boolean; outcomeRecorded?: boolean; sourceResultCounts?: Record<string, number> };
+type SearchAnalytics = {
+  overview: { searches: number; withResults: number; noResults: number; resultCount: number };
+  sources: Array<{ sourceId: string; resultCount: number }>;
+};
 type UserPolicy = {
   showHotSearch: boolean;
   anonymousCustomChannels: boolean;
@@ -279,6 +309,7 @@ type UserPolicy = {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
+  cacheMaxMemoryMb: number;
   anonymousSearchRateLimitWindowSeconds: number;
   anonymousSearchRateLimitPerSession: number;
   anonymousSearchRateLimitPerIp: number;
@@ -298,6 +329,7 @@ const DEFAULT_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
+  cacheMaxMemoryMb: 100,
   anonymousSearchRateLimitWindowSeconds: 60,
   anonymousSearchRateLimitPerSession: 20,
   anonymousSearchRateLimitPerIp: 60,
@@ -312,6 +344,7 @@ const title = computed(() => ({ users: "用户管理", logs: "搜索日志", pol
 const checking = ref(true); const ready = ref(false); const authenticated = ref(false); const locked = ref(true);
 const loading = ref(false); const busy = ref(false); const authError = ref(""); const notice = ref(""); const noticeIsError = ref(false);
 const users = ref<AdminUser[]>([]); const logs = ref<AdminLog[]>([]); const userQuery = ref(""); const userStatus = ref(""); const logQuery = ref("");
+const analytics = ref<SearchAnalytics>({ overview: { searches: 0, withResults: 0, noResults: 0, resultCount: 0 }, sources: [] });
 const policyForm = ref<UserPolicy>({ ...DEFAULT_POLICY });
 const adminAccount = ref({ username: "", password: "", confirmPassword: "" });
 type WechatEnvVersion = "release" | "trial" | "develop";
@@ -329,6 +362,7 @@ const newUser = ref({ username: "", password: "", nickname: "" }); const createU
 const selectedKeys = ref<string[]>([]); const page = ref(1); const pageSize = ref(20); const total = ref(0);
 const userChannelsOpen = ref(false); const userChannelsLoading = ref(false); const userChannelsError = ref(""); const selectedUserChannels = ref<{ username: string; channels: string[] } | null>(null);
 const logChannelsOpen = ref(false); const selectedLogChannels = ref<{ keyword: string; channels: string[] } | null>(null);
+const logDetailOpen = ref(false); const selectedLogDetail = ref<AdminLog | null>(null);
 
 function statusOf(error: any) { return error?.statusCode || error?.response?.status || error?.status; }
 function apiError(error: any): string { const status = statusOf(error); if (status === 401) return "请先登录管理员账号。"; if (status === 403) return "当前账号没有管理员权限。"; if (status === 404) return "服务端接口尚未部署，当前页面先保留入口。"; return error?.data?.statusMessage || error?.message || "后台请求失败。"; }
@@ -337,10 +371,17 @@ function formatTime(value: unknown) { const n = Number(value); return Number.isF
 function formatIp(value: unknown) { const ip = String(value || "").trim(); return ip && ip.toLowerCase() !== "unknown" ? ip : "未知"; }
 function isCustomScope(item: AdminLog) { return (item.scope || item.searchScope) === "custom_channels"; }
 function searchScopeLabel(item: AdminLog) { return isCustomScope(item) ? "自定义频道" : "本站来源"; }
+function logResultCountLabel(item: AdminLog) {
+  if (!item.outcomeRecorded) return item.status === "started" ? "进行中" : item.status === "failed" ? "失败" : "未统计";
+  return `${Math.max(0, Number(item.resultCount || 0))} 条`;
+}
 function unwrap<T>(result: any, key: string): T { return result?.[key] ?? result?.data?.[key] ?? result?.data ?? result; }
 const displayTotal = computed(() => total.value);
 const pageCount = computed(() => Math.max(1, Math.ceil(displayTotal.value / pageSize.value)));
 const currentRowKeys = computed(() => props.feature === "users" ? users.value.map((item) => String(item.id)) : props.feature === "logs" ? logs.value.map((item) => String(item.id)) : []);
+const selectedLogSourceCounts = computed(() => Object.entries(selectedLogDetail.value?.sourceResultCounts || {})
+  .map(([sourceId, count]) => ({ sourceId, count: Math.max(0, Number(count) || 0) }))
+  .sort((left, right) => right.count - left.count || left.sourceId.localeCompare(right.sourceId)));
 const selectedCount = computed(() => selectedKeys.value.length);
 const allCurrentSelected = computed(() => currentRowKeys.value.length > 0 && currentRowKeys.value.every((key) => selectedKeys.value.includes(key)));
 const someCurrentSelected = computed(() => currentRowKeys.value.some((key) => selectedKeys.value.includes(key)) && !allCurrentSelected.value);
@@ -391,8 +432,12 @@ async function loadData() {
       const result = await $fetch<any>("/api/admin/users", { query: { q: userQuery.value || undefined, status: userStatus.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" });
       const data = result?.data ?? result; users.value = (data.users || data.items || []).map((item: AdminUser) => ({ ...item, channelCount: item.channelCount ?? item.channels?.length })); total.value = Number(data.total || users.value.length); page.value = Number(data.page || page.value);
     } else if (props.feature === "logs") {
-      const result = await $fetch<any>("/api/admin/search-logs", { query: { q: logQuery.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" });
+      const [result, analyticsResult] = await Promise.all([
+        $fetch<any>("/api/admin/search-logs", { query: { q: logQuery.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" }),
+        $fetch<any>("/api/admin/search-analytics", { cache: "no-store" }),
+      ]);
       const data = result?.data ?? result; logs.value = data.logs || data.items || []; total.value = Number(data.total || logs.value.length); page.value = Number(data.page || page.value);
+      analytics.value = analyticsResult?.data ?? analytics.value;
     } else {
       const [policyResult, accountResult, wechatResult] = await Promise.all([
         $fetch<any>("/api/settings/user-policy", { cache: "no-store" }),
@@ -423,6 +468,7 @@ function handleModalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   if (createUserOpen.value) closeCreateUser();
   else if (userChannelsOpen.value) closeUserChannels();
+  else if (logDetailOpen.value) closeLogDetail();
   else if (logChannelsOpen.value) closeLogChannels();
 }
 async function createUser() { if (busy.value) return; busy.value = true; try { await $fetch("/api/admin/users", { method: "POST", body: newUser.value }); newUser.value = { username: "", password: "", nickname: "" }; modalError.value = ""; createUserOpen.value = false; show("管理员已创建。"); await loadData(); } catch (error: any) { modalError.value = apiError(error); if (statusOf(error) === 401) locked.value = true; } finally { busy.value = false; } }
@@ -447,6 +493,8 @@ function openLogChannels(item: AdminLog) {
   logChannelsOpen.value = true;
 }
 function closeLogChannels() { logChannelsOpen.value = false; }
+function openLogDetail(item: AdminLog) { selectedLogDetail.value = item; logDetailOpen.value = true; }
+function closeLogDetail() { logDetailOpen.value = false; selectedLogDetail.value = null; }
 async function userAction(item: AdminUser, action: string) { if (busy.value) return; busy.value = true; try { const id = encodeURIComponent(String(item.id)); const method = action === "delete" || action === "sessions" ? "DELETE" : "POST"; const path = action === "delete" ? `/api/admin/users/${id}` : `/api/admin/users/${id}/${action}`; await $fetch(path, { method }); show(action === "delete" ? "用户已移入回收状态。" : "操作已完成。"); await loadData(); } catch (error: any) { show(apiError(error), true); } finally { busy.value = false; } }
 async function toggleUser(item: AdminUser) { await userAction(item, item.status === "active" ? "disable" : "enable"); }
 async function revokeUser(item: AdminUser) { await userAction(item, "sessions"); }
@@ -471,6 +519,7 @@ function normalizePolicy(value: unknown): UserPolicy {
     circuitBreakerMaxFailures: typeof input.circuitBreakerMaxFailures === "number" && Number.isInteger(input.circuitBreakerMaxFailures) ? input.circuitBreakerMaxFailures : DEFAULT_POLICY.circuitBreakerMaxFailures,
     searchTimeoutMs: typeof input.searchTimeoutMs === "number" && Number.isInteger(input.searchTimeoutMs) ? input.searchTimeoutMs : DEFAULT_POLICY.searchTimeoutMs,
     cacheTtlMinutes: typeof input.cacheTtlMinutes === "number" && Number.isInteger(input.cacheTtlMinutes) ? input.cacheTtlMinutes : DEFAULT_POLICY.cacheTtlMinutes,
+    cacheMaxMemoryMb: typeof input.cacheMaxMemoryMb === "number" && Number.isInteger(input.cacheMaxMemoryMb) ? input.cacheMaxMemoryMb : DEFAULT_POLICY.cacheMaxMemoryMb,
     anonymousSearchRateLimitWindowSeconds: typeof input.anonymousSearchRateLimitWindowSeconds === "number" && Number.isInteger(input.anonymousSearchRateLimitWindowSeconds) ? input.anonymousSearchRateLimitWindowSeconds : DEFAULT_POLICY.anonymousSearchRateLimitWindowSeconds,
     anonymousSearchRateLimitPerSession: typeof input.anonymousSearchRateLimitPerSession === "number" && Number.isInteger(input.anonymousSearchRateLimitPerSession) ? input.anonymousSearchRateLimitPerSession : DEFAULT_POLICY.anonymousSearchRateLimitPerSession,
     anonymousSearchRateLimitPerIp: typeof input.anonymousSearchRateLimitPerIp === "number" && Number.isInteger(input.anonymousSearchRateLimitPerIp) ? input.anonymousSearchRateLimitPerIp : DEFAULT_POLICY.anonymousSearchRateLimitPerIp,
@@ -565,6 +614,17 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 
 <style scoped>
 .feature-content { width: 100%; margin: 0; padding: 0; }
+.analytics-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.analytics-card { display: flex; min-height: 72px; flex-direction: column; justify-content: center; gap: 5px; padding: 12px 15px; border: 1px solid #dfe7f1; border-radius: 12px; background: #fff; box-shadow: 0 8px 22px rgba(40,62,92,.05); }
+.analytics-card span { color: #8591a2; font-size: 11px; }
+.analytics-card strong { color: #1f2937; font-size: 21px; font-variant-numeric: tabular-nums; }
+.analytics-table-panel { margin-bottom: 16px; }
+.analytics-section-heading { display: flex; align-items: center; min-height: 64px; padding: 12px 16px; border-bottom: 1px solid #edf1f6; background: #fbfcfe; }
+.analytics-section-heading h2 { margin: 0 0 4px; color: #1f2937; font-size: 14px; }
+.analytics-section-heading p { margin: 0; color: #8591a2; font-size: 11px; }
+.conversion-cell { color: #2563eb !important; font-weight: 750; font-variant-numeric: tabular-nums; }
+.analytics-source-table { min-width: 760px !important; }
+.analytics-table-scroll { max-height: 360px; }
 .feature-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .feature-heading h1 { margin: 0 0 7px; font-size: 29px; }
 .feature-heading p:not(.eyebrow) { margin: 0; color: #64748b; font-size: 13px; }
@@ -657,8 +717,13 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 .channel-count-button:focus-visible, .scope-link:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
 .modal-loading, .modal-empty { margin: 0; padding: 26px 0 4px; color: #64748b; font-size: 12px; text-align: center; }
 .channels-modal { width: min(560px, 100%); }
+.log-detail-modal { width: min(620px, 100%); }
 .channel-chip-list { display: flex; flex-wrap: wrap; gap: 9px; padding-top: 22px; }
 .channel-chip { display: inline-flex; align-items: center; min-height: 30px; padding: 5px 10px; border: 1px solid #dbeafe; border-radius: 999px; color: #1d4ed8; background: #eff6ff; font-size: 12px; }
+.log-source-count-list { display: grid; gap: 8px; padding-top: 22px; }
+.log-source-count-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border: 1px solid #e5edf7; border-radius: 9px; background: #f8fbff; }
+.log-source-name { min-width: 0; overflow-wrap: anywhere; color: #334155; font-size: 12px; }
+.log-source-count-row strong { flex: 0 0 auto; color: #1d4ed8; font-size: 13px; font-variant-numeric: tabular-nums; }
 .admin-data-table { min-width: 0 !important; width: 100% !important; }
 .admin-data-table th { height: 38px; padding-top: 1px; color: #7f8b9d; background: #f8fafc; font-size: 9px; font-weight: 700; letter-spacing: .45px; }
 .admin-data-table td { height: 82px; padding-top: 12px; padding-bottom: 12px; }
@@ -686,7 +751,9 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 .log-table th:nth-child(6), .log-table td:nth-child(6) { width: 12%; }
 .log-table th:nth-child(7), .log-table td:nth-child(7) { width: 12%; }
 .log-table th:nth-child(8), .log-table td:nth-child(8) { width: 16%; }
+.log-table { min-width: 1120px !important; }
 .log-table th:nth-child(9), .log-table td:nth-child(9) { width: 13%; }
+.log-table th:nth-child(10), .log-table td:nth-child(10) { width: 9%; }
 .policy-table th:nth-child(1), .policy-table td:nth-child(1) { width: 42px; }
 .policy-table th:nth-child(2), .policy-table td:nth-child(2) { width: 58px; }
 .policy-table th:nth-child(3), .policy-table td:nth-child(3) { width: 25%; }
@@ -702,5 +769,6 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 .create-user-modal-form { display: flex; flex-direction: column; gap: 15px; padding-top: 20px; }.modal-field { display: flex; flex-direction: column; gap: 7px; color: #374151; font-size: 12px; font-weight: 650; }.modal-field input { min-height: 42px; padding: 9px 11px; border: 1px solid #dbe1ea; border-radius: 8px; outline: none; color: #111827; background: #fff; font: inherit; font-size: 13px; font-weight: 400; }.optional-label { margin-left: 5px; color: #94a3b8; font-size: 11px; font-weight: 400; }.modal-error { display: flex; align-items: flex-start; gap: 7px; margin: 0; padding: 10px 11px; border: 1px solid #fecaca; border-radius: 8px; color: #b91c1c; background: #fef2f2; font-size: 11px; line-height: 1.5; }.admin-modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 7px; }.modal-button { min-height: 40px; padding: 8px 15px; border: 1px solid transparent; border-radius: 8px; font: 600 12px inherit; cursor: pointer; }.modal-button.primary { border-color: #2563eb; color: #fff; background: #2563eb; }.modal-button.primary:hover:not(:disabled) { background: #1d4ed8; }.modal-button.secondary { border-color: #dbe1ea; color: #475569; background: #fff; }.modal-button.secondary:hover:not(:disabled) { background: #f8fafc; }.modal-button:disabled { cursor: wait; opacity: .55; }
 @media (min-width: 821px) { .query-toolbar { flex-wrap: nowrap; }.query-actions { flex-wrap: nowrap; }.query-input { min-width: 180px; }.query-actions .button { flex: 0 0 auto; } }
 @media (max-width: 820px) { .feature-heading { flex-direction: column; align-items: stretch; }.query-toolbar { align-items: stretch; }.query-input { min-width: 100%; }.query-select { width: 100%; flex: 1 1 100%; }.query-actions { width: 100%; }.query-actions .button { flex: 1 1 auto; } }
+@media (max-width: 820px) { .analytics-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .admin-data-table { min-width: 820px !important; }.query-toolbar { padding: 12px 16px; }.table-scroll { max-height: min(58vh, 560px); }.query-panel { top: calc(var(--console-topbar-height) + 6px); padding: 0; }.query-actions .button { flex: 1 1 calc(50% - 7px); }.admin-modal { padding: 20px; } }
 </style>

@@ -18,6 +18,7 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 });
 const paths: Record<string, string[]> = {
   channel: ["m21 3-6 18-4-8-8-4 18-6Z M11 13 21 3"],
   box: ["M4 4h16v6H4z M4 14h16v6H4z M8 7h.01 M8 17h.01 M12 7h5 M12 17h5"],
+  database: ["M4 5c0-1.1 3.6-2 8-2s8 .9 8 2-3.6 2-8 2-8-.9-8-2Z", "M4 5v7c0 1.1 3.6 2 8 2s8-.9 8-2V5", "M4 12v7c0 1.1 3.6 2 8 2s8-.9 8-2v-7"],
   grid: ["M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"],
   activity: ["M2 12h5l3-8 4 16 3-8h5"],
   arrow: ["M5 12h14 M13 6l6 6-6 6"],

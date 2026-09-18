@@ -16,6 +16,7 @@ export interface UserPolicy {
   circuitBreakerMaxFailures: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
+  cacheMaxMemoryMb: number;
   anonymousSearchRateLimitWindowSeconds: number;
   anonymousSearchRateLimitPerSession: number;
   anonymousSearchRateLimitPerIp: number;
@@ -35,6 +36,7 @@ export const DEFAULT_USER_POLICY: UserPolicy = {
   circuitBreakerMaxFailures: 5,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
+  cacheMaxMemoryMb: 100,
   anonymousSearchRateLimitWindowSeconds: 60,
   anonymousSearchRateLimitPerSession: 20,
   anonymousSearchRateLimitPerIp: 60,
@@ -51,6 +53,7 @@ const integerRanges: Record<string, [number, number]> = {
   circuitBreakerMaxFailures: [1, 20],
   searchTimeoutMs: [1000, 120000],
   cacheTtlMinutes: [1, 10],
+  cacheMaxMemoryMb: [16, 512],
   anonymousSearchRateLimitWindowSeconds: [10, 3600],
   anonymousSearchRateLimitPerSession: [1, 300],
   anonymousSearchRateLimitPerIp: [1, 1000],
@@ -113,10 +116,12 @@ function readLegacyPerformanceValues(): Record<string, unknown> {
 }
 
 function persistMigratedValues(values: Record<string, unknown>, result: UserPolicy): void {
-  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
+  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "cacheMaxMemoryMb", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
+  const obsoleteKeys = ["cacheMaxEntries"] as const;
   const missing = keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key));
   const hasLegacy = legacyPolicyKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
-  if (!missing.length && !hasLegacy) return;
+  const hasObsolete = obsoleteKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
+  if (!missing.length && !hasLegacy && !hasObsolete) return;
   const db = getSqliteDatabase();
   const timestamp = Date.now();
   db.transaction(() => {
@@ -127,6 +132,7 @@ function persistMigratedValues(values: Record<string, unknown>, result: UserPoli
     // second active source of truth.
     if (missing.includes("defaultConcurrency")) db.run("UPDATE search_settings SET concurrency = NULL WHERE id=1");
     if (hasLegacy) db.run(`DELETE FROM policy_settings WHERE key IN (${legacyPolicyKeys.map(() => "?").join(",")})`, ...legacyPolicyKeys);
+    if (hasObsolete) db.run(`DELETE FROM policy_settings WHERE key IN (${obsoleteKeys.map(() => "?").join(",")})`, ...obsoleteKeys);
   });
 }
 
@@ -145,6 +151,7 @@ export function getUserPolicy(): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", values.circuitBreakerMaxFailures, DEFAULT_USER_POLICY.circuitBreakerMaxFailures) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", values.searchTimeoutMs, DEFAULT_USER_POLICY.searchTimeoutMs) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", values.cacheTtlMinutes ?? legacy.cacheTtlMinutes, DEFAULT_USER_POLICY.cacheTtlMinutes) as number,
+    cacheMaxMemoryMb: parseValue("cacheMaxMemoryMb", values.cacheMaxMemoryMb, DEFAULT_USER_POLICY.cacheMaxMemoryMb) as number,
     anonymousSearchRateLimitWindowSeconds: parseValue("anonymousSearchRateLimitWindowSeconds", values.anonymousSearchRateLimitWindowSeconds, DEFAULT_USER_POLICY.anonymousSearchRateLimitWindowSeconds) as number,
     anonymousSearchRateLimitPerSession: parseValue("anonymousSearchRateLimitPerSession", values.anonymousSearchRateLimitPerSession, DEFAULT_USER_POLICY.anonymousSearchRateLimitPerSession) as number,
     anonymousSearchRateLimitPerIp: parseValue("anonymousSearchRateLimitPerIp", values.anonymousSearchRateLimitPerIp, DEFAULT_USER_POLICY.anonymousSearchRateLimitPerIp) as number,
@@ -174,6 +181,7 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", Object.prototype.hasOwnProperty.call(input, "circuitBreakerMaxFailures") ? input.circuitBreakerMaxFailures : current.circuitBreakerMaxFailures, undefined) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", Object.prototype.hasOwnProperty.call(input, "searchTimeoutMs") ? input.searchTimeoutMs : current.searchTimeoutMs, undefined) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", Object.prototype.hasOwnProperty.call(input, "cacheTtlMinutes") ? input.cacheTtlMinutes : current.cacheTtlMinutes, undefined) as number,
+    cacheMaxMemoryMb: parseValue("cacheMaxMemoryMb", Object.prototype.hasOwnProperty.call(input, "cacheMaxMemoryMb") ? input.cacheMaxMemoryMb : current.cacheMaxMemoryMb, undefined) as number,
     anonymousSearchRateLimitWindowSeconds: parseValue("anonymousSearchRateLimitWindowSeconds", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitWindowSeconds") ? input.anonymousSearchRateLimitWindowSeconds : current.anonymousSearchRateLimitWindowSeconds, undefined) as number,
     anonymousSearchRateLimitPerSession: parseValue("anonymousSearchRateLimitPerSession", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitPerSession") ? input.anonymousSearchRateLimitPerSession : current.anonymousSearchRateLimitPerSession, undefined) as number,
     anonymousSearchRateLimitPerIp: parseValue("anonymousSearchRateLimitPerIp", Object.prototype.hasOwnProperty.call(input, "anonymousSearchRateLimitPerIp") ? input.anonymousSearchRateLimitPerIp : current.anonymousSearchRateLimitPerIp, undefined) as number,

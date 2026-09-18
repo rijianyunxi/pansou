@@ -83,12 +83,13 @@ export default defineNuxtConfig({
       apiBase: "/api",
       siteUrl: "https://pan.letus.lol",
       siteName: "盘搜",
-      homeTitle: "网盘资源聚合搜索",
-      homeDescription: "网盘、磁力、公开频道，一个搜索框直达。",
-      siteTitle: "网盘资源聚合搜索 · 盘搜",
-      siteDescription: "盘搜 聚合网盘、磁力链接与公开频道资源，支持百度网盘、夸克、阿里云盘、115、迅雷等平台。一个搜索框，查找分享链接，按平台筛选结果。",
-      siteKeywords: "盘搜, 网盘搜索, 网盘资源搜索, 聚合搜索, 百度网盘, 夸克网盘, 阿里云盘, 115网盘, 迅雷云盘, 磁力链接, 公开频道搜索",
-      siteImageAlt: "盘搜 网盘资源聚合搜索：网盘、磁力、公开频道，一个搜索框直达。",
+      siteTitle: "网盘资源聚合搜索｜盘搜 PanHub",
+      siteDescription:
+        "盘搜（PanHub）聚合网盘分享、磁力链接与公开频道资源，支持百度网盘、夸克、阿里云盘、115、UC、123、迅雷等平台，按平台筛选分享链接。",
+      siteKeywords:
+        "盘搜, PanHub, 网盘搜索, 网盘资源搜索, 百度网盘, 夸克网盘, 阿里云盘, 115网盘, UC网盘, 123云盘, 迅雷云盘, 磁力链接, 公开频道搜索",
+      siteImageAlt:
+        "盘搜 PanHub 网盘资源聚合搜索：网盘、磁力、公开频道，一个搜索框直达。",
     },
   },
 });

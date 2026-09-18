@@ -140,3 +140,20 @@ export function buildSourceDebugUrl(
     return source.url;
   }
 }
+
+/** Build the stable address shown in the source directory without a keyword. */
+export function buildSourceCatalogUrl(source: SourceDefinition): string {
+  const marker = "__panhub_keyword__";
+  try {
+    const rendered = renderedSourceUrl(source, { keyword: marker, limit: 200 });
+    const url = new URL(rendered);
+    for (const key of [...url.searchParams.keys()]) {
+      if (url.searchParams.getAll(key).some((value) => value.includes(marker))) {
+        url.searchParams.delete(key);
+      }
+    }
+    return url.toString();
+  } catch {
+    return source.url;
+  }
+}

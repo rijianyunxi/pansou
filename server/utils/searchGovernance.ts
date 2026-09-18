@@ -2,11 +2,11 @@ import { createError, setHeader, type H3Event } from "h3";
 import { cleanupUserData, getUserPolicy, type UserPolicy } from "../core/services/policyService";
 import { searchRateLimiter } from "../core/security/rateLimit";
 import { listUnifiedSources } from "../core/services/sourceCatalog";
-import { getSqliteDatabase } from "../core/storage/sqlite";
 import { normalizeChannelNames } from "../../utils/customChannels";
 import { getClientIp } from "./clientIp";
 import { prepareSearch, type PreparedSearch } from "./executeSearch";
 import { getStoredChannels, getStoredSessionChannels, getUserSession, type UserSessionContext } from "./userAuth";
+import { createSearchLog } from "../core/services/searchAnalyticsService";
 
 export type SearchScope = "system" | "custom_channels";
 
@@ -64,7 +64,10 @@ function authorizeSearchRateLimit(event: H3Event, context: UserSessionContext, p
 
 /** Which configured sources a search would actually load, recorded for audit. */
 function sourceSnapshot(prepared: PreparedSearch): string[] {
-  if (prepared.request.channels !== undefined) return [];
+  // User-owned custom sources are ephemeral (they are materialized from the
+  // account row for this request), but they still belong in the audit snapshot
+  // under the same source id field as catalogue sources.
+  if (prepared.request.channels !== undefined) return prepared.request.channels;
   const configured = listUnifiedSources();
   const selected = prepared.effective.sourceIds;
   return selected?.length
@@ -105,22 +108,21 @@ function writeSearchLog(
   scope: SearchScope,
   channels: string[],
   sourceIds: string[],
-): void {
+): number | undefined {
   try {
-    getSqliteDatabase().run(
-      "INSERT INTO search_logs(session_id,user_id,keyword,ip,search_scope,channels_json,source_ids_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
-      context.session.id,
-      context.user?.id ?? null,
-      prepared.request.kw,
-      getClientIp(event),
-      scope,
-      JSON.stringify(channels),
-      JSON.stringify(sourceIds),
-      Date.now(),
-    );
+    return createSearchLog({
+      sessionId: context.session.id,
+      userId: context.user?.id ?? null,
+      keyword: prepared.request.kw,
+      ip: getClientIp(event),
+      searchScope: scope,
+      channels,
+      sourceIds,
+    });
   } catch (error) {
     // Logging is best-effort by design; never turn an accepted search into an error.
     console.error("[search] failed to write search log", error);
+    return undefined;
   }
 }
 
@@ -139,6 +141,6 @@ export function authorizeSearch(
   authorizeSearchRateLimit(event, context, policy);
   const resolved = searchScopeAndChannels(parsed, context, policy);
   const sourceIds = sourceSnapshot(resolved.prepared);
-  writeSearchLog(event, context, resolved.prepared, resolved.scope, resolved.channels, sourceIds);
-  return { prepared: resolved.prepared, context, policy, scope: resolved.scope, channels: resolved.channels, sourceIds };
+  const searchLogId = writeSearchLog(event, context, resolved.prepared, resolved.scope, resolved.channels, sourceIds);
+  return { prepared: searchLogId ? { ...resolved.prepared, searchLogId } : resolved.prepared, context, policy, scope: resolved.scope, channels: resolved.channels, sourceIds };
 }

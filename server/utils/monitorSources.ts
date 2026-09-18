@@ -5,19 +5,10 @@ import {
   type SourceHealthStatus,
 } from "../core/services/sourceHealth";
 import { getSourceConfigurationVersion } from "../core/services/configuredSource";
-import { buildUserSource, listUnifiedSources } from "../core/services/sourceCatalog";
-import { getSourceLifecycleStates } from "../core/services/sourceLifecycleStore";
-import { getSearchSettings } from "../core/services/searchSettingsService";
-import { getSystemSettings } from "../core/services/systemSettingsService";
-import { CHANNEL_NAME_PATTERN } from "../../utils/customChannels";
-import {
-  createSourceOriginContext,
-  sourceOrigin,
-  type SourceOriginContext,
-} from "./sourceLifecycle";
+import { listUnifiedSources } from "../core/services/sourceCatalog";
 import type { SourceDefinition } from "../../types/source";
 
-/** A single row of the monitor response. Channel sources are resource sources too. */
+/** A single row of the monitor response. */
 export interface MonitorSourceEntry {
   id: string;
   name: string;
@@ -27,8 +18,6 @@ export interface MonitorSourceEntry {
   enabled: boolean;
   /** Whether the source sits in the recycle bin. Default requests never return trashed entries. */
   trashed: boolean;
-  /** Only channel sources carry builtin/custom origin; every other source is "". */
-  origin: "builtin" | "custom" | "";
   version: string;
   health: MonitorSourceHealth | null;
 }
@@ -139,7 +128,6 @@ function mapSourceHealth(status: SourceHealthStatus | undefined): MonitorSourceH
 function mapSource(
   source: SourceDefinition,
   healthById: Record<string, SourceHealthStatus>,
-  origins: SourceOriginContext,
   trashed = false,
 ): MonitorSourceEntry {
   return {
@@ -149,7 +137,6 @@ function mapSource(
     kind: "source",
     enabled: source.enabled !== false && !trashed,
     trashed,
-    origin: sourceOrigin(source.id, origins),
     // The manifest version is a pure hash of the configuration, so reading it
     // directly avoids materializing (and validating) a full runtime definition
     // just to display a version, and cannot fail on an incomplete source.
@@ -160,27 +147,13 @@ function mapSource(
 
 /**
  * The unified source catalog is the single source of truth for the monitor.
- * `includeDeleted` additionally rehydrates archived channel sources for the
- * console recycle bin; health still comes only from the health checker.
  */
 export function buildMonitorSources(
   healthById: Record<string, SourceHealthStatus>,
-  config: unknown,
-  includeDeleted: boolean,
 ): MonitorSourceEntry[] {
-  const settings = getSearchSettings();
-  const system = getSystemSettings(config);
-  const origins = createSourceOriginContext(settings.channels, system.defaultChannels);
   const sources = new Map<string, MonitorSourceEntry>();
   for (const source of listUnifiedSources()) {
-    sources.set(source.id, mapSource(source, healthById, origins));
-  }
-
-  if (includeDeleted) {
-    for (const [id, state] of Object.entries(getSourceLifecycleStates())) {
-      if (!state.deleted || sources.has(id) || !CHANNEL_NAME_PATTERN.test(id)) continue;
-      sources.set(id, mapSource(buildUserSource(id), healthById, origins, true));
-    }
+    sources.set(source.id, mapSource(source, healthById));
   }
 
   return [...sources.values()].sort(

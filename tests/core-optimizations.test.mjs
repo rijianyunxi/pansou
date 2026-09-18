@@ -16,6 +16,9 @@ const redaction = await jiti.import('../server/core/utils/redaction.ts');
 const configuredSource = await jiti.import('../server/core/services/configuredSource.ts');
 const keywords = await jiti.import('../server/core/utils/searchKeyword.ts');
 const merge = await jiti.import('../server/core/utils/resultMerge.ts');
+const { MemoryCache } = await jiti.import('../server/core/cache/memoryCache.ts');
+const hotSearchStore = await jiti.import('../server/core/services/sqliteHotSearchStore.ts');
+const adminHotSearch = await jiti.import('../server/core/services/adminHotSearchService.ts');
 
 const db = getSqliteDatabase();
 
@@ -313,5 +316,29 @@ test('server/core optimizations', async (t) => {
   await t.test('sqlite wrapper still reports its path', () => {
     assert.ok(new SqliteDatabase(':memory:') instanceof SqliteDatabase);
     assert.ok(db.path.endsWith('core.sqlite'));
+  });
+
+  await t.test('cache memory capacity can shrink live and evict the oldest entries', () => {
+    const cache = new MemoryCache({ maxMemoryBytes: 300 });
+    cache.set('a', { value: 'a' }, 60_000);
+    cache.set('b', { value: 'b' }, 60_000);
+    cache.set('c', { value: 'c' }, 60_000);
+    assert.equal(cache.size, 3);
+    assert.equal(cache.get('a').hit, true);
+    cache.setMaxMemoryBytes(100);
+    assert.equal(cache.size, 1);
+    assert.equal(cache.get('b').hit, false);
+    assert.equal(cache.get('a').hit, true);
+    assert.equal(cache.get('c').hit, false);
+  });
+
+  await t.test('hot searches are not auto-moderated but can still be blocked manually', async () => {
+    const store = new hotSearchStore.SqliteHotSearchStore();
+    await store.recordSearch('色情', Date.now());
+    assert.ok((await store.getHotSearches(30)).some((item) => item.term === '色情'));
+    assert.equal(adminHotSearch.setAdminHotSearchStatus(['色情'], 'blocked'), 1);
+    assert.equal((await store.getHotSearches(30)).some((item) => item.term === '色情'), false);
+    assert.equal(adminHotSearch.setAdminHotSearchStatus(['色情'], 'approved'), 1);
+    assert.ok((await store.getHotSearches(30)).some((item) => item.term === '色情'));
   });
 });

@@ -402,9 +402,27 @@ function syncEditor(source?: SourceDefinition | null) {
   debugReport.value = undefined;
 }
 
+async function loadGlobalTransformForNewSource() {
+  if (props.source || form.transform.trim()) return;
+  try {
+    const response = await $fetch<{ data?: { transform?: string } }>("/api/settings/source-template", {
+      retry: 0,
+    });
+    const transform = String(response.data?.transform || "").trim();
+    // Do not overwrite text if the user starts editing while the template loads.
+    if (!props.source && !form.transform.trim() && transform) form.transform = transform;
+  } catch {
+    // Keep the editor usable; validation will explain that a transform is required
+    // if the global template cannot be loaded.
+  }
+}
+
 watch(() => props.source, syncEditor);
 
-onMounted(() => dialog.value?.showModal());
+onMounted(() => {
+  dialog.value?.showModal();
+  void loadGlobalTransformForNewSource();
+});
 
 function openTransformImport() {
   transformImportInput.value?.click();

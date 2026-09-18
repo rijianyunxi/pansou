@@ -1,7 +1,7 @@
 <template>
   <div class="source-app admin-feature-app">
     <AdminAccessGate v-if="checking || locked" :checking="checking" :authenticated="authenticated" :error="authError"
-      title="进入网盘资源管理" />
+      title="进入网盘资源管理" @authenticated="checkStatus" />
     <template v-else>
       <aside class="console-sidebar">
         <NuxtLink to="/" class="console-brand"><span class="brand-symbol">
@@ -14,8 +14,14 @@
           <NuxtLink to="/admin/sources" class="console-nav-link">
             <ConsoleIcon name="box" />来源管理
           </NuxtLink>
+          <NuxtLink to="/admin/proxies" class="console-nav-link">
+            <ConsoleIcon name="globe" />代理节点
+          </NuxtLink>
           <NuxtLink to="/admin/resources" class="console-nav-link active">
             <ConsoleIcon name="database" />网盘资源
+          </NuxtLink>
+          <NuxtLink to="/admin/hot-searches" class="console-nav-link">
+            <ConsoleIcon name="search" />热门搜索
           </NuxtLink>
           <NuxtLink to="/admin/users" class="console-nav-link">
             <ConsoleIcon name="user" />用户管理
@@ -56,13 +62,16 @@
                     <ConsoleIcon name="search" :size="14" />查询
                   </button><button class="button secondary" type="button" @click="resetQuery">重置</button><button
                     class="button secondary" type="button" :disabled="!selected.length || busy"
-                    @click="deleteSelected">批量删除<span v-if="selected.length" class="action-count">{{ selected.length
+                    @click="checkSelected">批量检测<span v-if="selected.length" class="action-count">{{ selected.length
+                    }}</span></button><button
+                    class="button danger-button" type="button" :disabled="!selected.length || busy"
+                    @click="deleteSelected"><ConsoleIcon name="trash" :size="14" />批量删除<span v-if="selected.length" class="action-count">{{ selected.length
                     }}</span></button><button class="button secondary" type="button" :disabled="!canEnable || busy"
-                    @click="setEnabled(selected, true)">批量启用</button><button class="button secondary" type="button"
-                    :disabled="!canDisable || busy" @click="setEnabled(selected, false)">批量停用</button><button
+                    @click="setEnabled(selected, true)">批量启用</button><button
+                    class="button danger-button" type="button" :disabled="!canDisable || busy" @click="setEnabled(selected, false)"><ConsoleIcon name="stop" :size="14" />批量停用</button><button
                     class="button primary" type="button" @click="openCreate">
                     <ConsoleIcon name="plus" :size="14" />新增资源
-                  </button></div>
+                  </button><button class="button primary" type="button" :disabled="!selected.length || busy" @click="reviewSelected('approved')">批量通过</button><button class="button danger-button" type="button" :disabled="!selected.length || busy" @click="reviewSelected('rejected')">批量拒绝</button></div>
               </form>
               <div class="query-meta">已选 {{ selected.length }} 项 · 共 {{ total }} 条资源</div>
             </section>
@@ -80,6 +89,8 @@
                       <th>链接</th>
                       <th>资源时间</th>
                       <th>状态</th>
+                      <th>审核状态</th>
+                      <th>检测状态</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -89,26 +100,42 @@
                       <td class="checkbox-column"><input type="checkbox" :checked="selected.includes(item.id)"
                           :aria-label="`选择 ${item.name}`" @change="toggle(item.id)" /></td>
                       <td class="serial-column">{{ (page - 1) * pageSize + index + 1 }}</td>
-                      <td><strong>{{ item.name }}</strong><small class="resource-description">{{ item.description ||
-                        "无描述" }}</small></td>
+                      <td><strong>{{ item.name }}</strong><ResourceDescription variant="admin"
+                          :text="item.description || '无描述'" /></td>
                       <td><span v-for="type in item.cloud_types" :key="type" class="resource-chip">{{ cloudLabel(type)
                       }}</span></td>
                       <td><span v-for="tag in (item.tags || []).slice(0, 3)" :key="tag" class="resource-chip muted">{{
                         tag }}</span><span v-if="(item.tags || []).length > 3" class="table-muted">+{{
                             item.tags!.length - 3 }}</span></td>
-                      <td>{{ item.links.length }} 条</td>
+                      <td class="resource-links-cell">
+                        <div v-for="(link, linkIndex) in item.links" :key="`${link.url}-${linkIndex}`" class="resource-link-item">
+                          <a class="resource-link" :href="link.url" target="_blank" rel="noopener noreferrer nofollow" :title="link.url">
+                            <span class="resource-link-type">{{ cloudLabel(link.type) }}</span>
+                            <span class="resource-link-url">{{ link.url }}</span>
+                          </a>
+                          <span v-if="link.password" class="resource-link-password">提取码 {{ link.password }}</span>
+                        </div>
+                      </td>
                       <td>{{ item.datetime || "—" }}</td>
                       <td><span class="resource-status" :class="{ off: item.enabled === false }">{{ item.enabled === false ?
                         "已停用" : "已启用" }}</span></td>
+                      <td><span class="resource-status" :class="approvalClass(item.approvalStatus)">{{ approvalLabel(item.approvalStatus) }}</span></td>
+                      <td><span class="resource-check-status" :class="`check-${item.checkStatus || 'unchecked'}`"
+                          :title="item.checkMessage || ''">{{ checkStatusLabel(item.checkStatus) }}</span><small
+                          v-if="item.checkMessage" class="check-message">{{ item.checkMessage }}</small></td>
                       <td class="action-column">
                         <div class="row-actions"><button class="icon-button" type="button"
                             :aria-label="`编辑 ${item.name}`" title="编辑" @click="openEdit(item)">
                             <ConsoleIcon name="edit" :size="15" />
-                          </button><button class="button secondary tiny" type="button" :disabled="busy"
+                          </button><button v-if="item.approvalStatus === 'pending'" class="icon-button" type="button" :disabled="busy" aria-label="通过审核" title="通过审核" @click="review([item.id], 'approved')"><ConsoleIcon name="check" :size="14" /></button><button v-if="item.approvalStatus === 'pending'" class="icon-button danger-icon" type="button" :disabled="busy" aria-label="拒绝审核" title="拒绝审核" @click="review([item.id], 'rejected')"><ConsoleIcon name="close" :size="14" /></button><button class="icon-button" type="button" :disabled="busy"
+                            :aria-label="`检测 ${item.name}`" title="检测此资源的链接状态" @click="checkOne(item)">
+                            <ConsoleIcon name="refresh" :size="14" />
+                          </button><button
+                            class="icon-button" :class="{ 'danger-icon': item.enabled !== false }" type="button" :disabled="busy"
                             :title="item.enabled === false ? '重新出现在搜索结果里' : '从搜索结果里隐藏，数据保留'"
+                            :aria-label="`${item.enabled === false ? '启用' : '停用'} ${item.name}`"
                             @click="setEnabled([item.id], item.enabled === false)">
-                            <ConsoleIcon :name="item.enabled === false ? 'check' : 'stop'" :size="13" />{{
-                              item.enabled === false ? "启用" : "停用" }}
+                            <ConsoleIcon :name="item.enabled === false ? 'check' : 'stop'" :size="13" />
                           </button><button class="icon-button danger-icon" type="button"
                             :aria-label="`删除 ${item.name}`" title="删除" @click="remove(item)">
                             <ConsoleIcon name="trash" :size="15" />
@@ -116,13 +143,13 @@
                       </td>
                     </tr>
                     <tr v-if="!loading && !resources.length">
-                      <td colspan="9" class="empty-cell">{{ query || cloudType
+                      <td colspan="11" class="empty-cell">{{ query || cloudType
                         ? "没有匹配的资源。此处与前台搜索使用同一套分词规则（会忽略 1080p / 4K 等噪声词），关键词至少需要 2 个字符。"
                         : "还没有维护资源，点击右上角新增资源。" }}
                       </td>
                     </tr>
                     <tr v-if="loading">
-                      <td colspan="9" class="empty-cell">正在加载资源…</td>
+                      <td colspan="11" class="empty-cell">正在加载资源…</td>
                     </tr>
                   </tbody>
                 </table>
@@ -174,7 +201,7 @@ import ConsoleIcon from "../sources/ConsoleIcon.vue";
 import type { CloudType, Link, SearchResult } from "../../server/core/types/models";
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
-type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean };
+type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean; approvalStatus?: "pending" | "approved" | "rejected"; checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown"; checkMessage?: string | null; checkedAt?: number | null };
 const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref("");
 const form = ref<{ id?: string; name: string; description: string; datetime: string; links: Array<{ type: CloudType; url: string; password: string }> }>({ name: "", description: "", datetime: "", links: [{ type: "baidu", url: "", password: "" }] });
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value))); const currentKeys = computed(() => resources.value.map((item) => item.id)); const allSelected = computed(() => currentKeys.value.length > 0 && currentKeys.value.every((id) => selected.value.includes(id))); const someSelected = computed(() => selected.value.some((id) => currentKeys.value.includes(id)) && !allSelected.value);
@@ -182,8 +209,11 @@ const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.va
 // disable buttons can tell whether they would actually change anything.
 const selectedItems = computed(() => resources.value.filter((item) => selected.value.includes(item.id))); const canEnable = computed(() => selectedItems.value.some((item) => item.enabled === false)); const canDisable = computed(() => selectedItems.value.some((item) => item.enabled !== false));
 function cloudLabel(type: string) { return CLOUD_TYPE_SHORT_LABELS[type as CloudType] || type; }
+function checkStatusLabel(status?: AdminResource["checkStatus"]) { return status === "valid" ? "正常" : status === "invalid" ? "已失效" : status === "unknown" ? "待确认" : status === "checking" ? "检测中" : "未检测"; }
+function approvalLabel(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "待审核" : status === "rejected" ? "已拒绝" : "已通过"; }
+function approvalClass(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "approval-pending" : status === "rejected" ? "approval-rejected" : "approval-approved"; }
 function statusOf(error: any) { return error?.statusCode || error?.response?.status || error?.status; } function apiError(error: any) { const status = statusOf(error); return status === 401 ? "请先登录管理员账号。" : status === 403 ? "当前账号没有管理员权限。" : error?.data?.statusMessage || error?.message || "后台请求失败。"; } function show(message: string, error = false) { notice.value = message; noticeError.value = error; }
-async function checkStatus() { checking.value = true; try { const status = await $fetch<any>("/api/account/session", { credentials: "include", cache: "no-store", retry: 0 }); authenticated.value = !!status.authenticated; locked.value = !(authenticated.value && status.user?.role === "admin"); if (!locked.value) await loadResources(); } catch (e: any) { locked.value = true; authError.value = apiError(e); } finally { checking.value = false; } }
+async function checkStatus() { checking.value = true; authError.value = ""; try { const status = await $fetch<any>("/api/account/session", { credentials: "include", cache: "no-store", retry: 0 }); authenticated.value = !!status.authenticated; locked.value = !(authenticated.value && status.user?.role === "admin"); if (!locked.value) await loadResources(); } catch (e: any) { locked.value = true; authError.value = apiError(e); } finally { checking.value = false; } }
 async function lock() { await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 }).catch(() => { }); await navigateTo("/"); }
 async function loadResources() { loading.value = true; try { const result = await $fetch<any>("/api/admin/resources", { query: { q: query.value || undefined, cloudType: cloudType.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" }); const data = result?.data ?? result; resources.value = data.items || []; total.value = Number(data.total || 0); cloudTypes.value = data.cloudTypes || cloudTypes.value; selected.value = selected.value.filter((id) => currentKeys.value.includes(id)); } catch (e: any) { show(apiError(e), true); if (statusOf(e) === 401) locked.value = true; } finally { loading.value = false; } }
 function resetQuery() { query.value = ""; cloudType.value = ""; page.value = 1; void loadResources(); } function goPage(next: number) { if (next >= 1 && next <= pageCount.value && next !== page.value) { page.value = next; void loadResources(); } } function changePageSize(size: number) { pageSize.value = size; page.value = 1; void loadResources(); } function toggle(id: string) { selected.value = selected.value.includes(id) ? selected.value.filter((item) => item !== id) : [...selected.value, id]; } function toggleAll(event: Event) { const checked = (event.target as HTMLInputElement).checked; selected.value = checked ? [...new Set([...selected.value, ...currentKeys.value])] : selected.value.filter((id) => !currentKeys.value.includes(id)); }
@@ -192,6 +222,11 @@ async function save() { if (busy.value) return; formError.value = ""; busy.value
 async function remove(item: AdminResource) { if (busy.value || !window.confirm(`确定删除「${item.name}」吗？`)) return; busy.value = true; try { await $fetch(`/api/admin/resources/${encodeURIComponent(item.id)}`, { method: "DELETE" }); selected.value = selected.value.filter((id) => id !== item.id); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - 1) / pageSize.value))); show("资源已删除。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function deleteSelected() { if (!selected.value.length || !window.confirm(`确定删除选中的 ${selected.value.length} 条资源吗？`)) return; busy.value = true; try { await $fetch("/api/admin/resources/batch-delete", { method: "POST", body: { ids: selected.value } }); const count = selected.value.length; selected.value = []; page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - count) / pageSize.value))); show(`已删除 ${count} 条资源。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function setEnabled(ids: string[], enabled: boolean) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${enabled ? "启用" : "停用"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/enabled", { method: "POST", body: { ids: targets, enabled } }); const count = Number(result?.data?.count ?? 0); show(count ? `已${enabled ? "启用" : "停用"} ${count} 条资源。` : "所选资源已经是该状态，未做改动。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
+async function review(ids: string[], status: "approved" | "rejected") { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${status === "approved" ? "通过" : "拒绝"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/approval", { method: "POST", body: { ids: targets, status } }); const count = Number(result?.data?.count ?? 0); selected.value = selected.value.filter((id) => !targets.includes(id)); show(count ? `已${status === "approved" ? "通过" : "拒绝"} ${count} 条资源。` : "没有待审核资源发生变化。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
+function reviewSelected(status: "approved" | "rejected") { void review(selected.value, status); }
+async function checkResources(ids: string[], label: string) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; busy.value = true; show(`正在检测 ${label}，请稍候…`); try { const result = await $fetch<any>("/api/admin/resources/check", { method: "POST", body: { ids: targets } }); const data = result?.data ?? {}; show(`检测完成：${Number(data.valid || 0)} 条正常，${Number(data.invalid || 0)} 条失效，${Number(data.unknown || 0)} 条待确认。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
+function checkSelected() { void checkResources(selected.value, `${selected.value.length} 条资源`); }
+function checkOne(item: AdminResource) { void checkResources([item.id], `「${item.name}」`); }
 onMounted(checkStatus);
 </script>
 <style src="../../assets/source-console.css"></style>
@@ -334,7 +369,7 @@ onMounted(checkStatus);
 
 .table-scroll table {
   width: 100%;
-  min-width: 1040px;
+  min-width: 1240px;
   table-layout: fixed
 }
 
@@ -430,17 +465,6 @@ onMounted(checkStatus);
   box-shadow: 0 24px 70px rgba(15, 23, 42, .22)
 }
 
-.resource-description {
-  display: block;
-  max-width: 280px;
-  margin-top: 3px;
-  color: #94a3b8;
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis
-}
-
 .resource-chip {
   display: inline-block;
   margin: 2px 4px 2px 0;
@@ -454,6 +478,53 @@ onMounted(checkStatus);
 .resource-chip.muted {
   color: #64748b;
   background: #f1f5f9
+}
+
+.resource-links-cell {
+  min-width: 230px;
+  max-width: 340px;
+  white-space: normal !important
+}
+
+.resource-link-item + .resource-link-item {
+  margin-top: 7px
+  }
+
+.resource-link {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  color: #2563eb;
+  text-decoration: none
+}
+
+.resource-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline
+}
+
+.resource-link-type {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 10px
+}
+
+.resource-link-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.resource-link-password {
+  display: block;
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 10px
 }
 
 .table-muted {
@@ -476,8 +547,60 @@ onMounted(checkStatus);
   background: #f1f5f9
 }
 
+.resource-status.approval-pending {
+  color: #9a6700;
+  background: #fff4ce
+}
+
+.resource-status.approval-rejected {
+  color: #b42318;
+  background: #fee4e2
+}
+
+.resource-status.approval-approved {
+  color: #0f6e56;
+  background: #e1f5ee
+}
+
+.resource-check-status {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 10px;
+  white-space: nowrap
+}
+
+.resource-check-status.check-valid {
+  color: #0f6e56;
+  background: #e1f5ee
+}
+
+.resource-check-status.check-invalid {
+  color: #b42318;
+  background: #fee4e2
+}
+
+.resource-check-status.check-unknown,
+.resource-check-status.check-checking {
+  color: #9a6700;
+  background: #fff4ce
+}
+
+.check-message {
+  display: block;
+  max-width: 160px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
 /* The shared `.row-actions` rule is a wrapping flex row, which stacked the three
-   row buttons on top of each other once this table gained a ninth column. Match
+   row buttons on top of each other once this table gained more columns. Match
    the source directory instead: one compact row, left aligned, never wrapping. */
 .resource-table .row-actions {
   flex-wrap: nowrap;
@@ -491,9 +614,9 @@ onMounted(checkStatus);
 }
 
 .resource-table .row-actions .icon-button {
-  width: 30px;
-  min-width: 30px;
-  min-height: 30px
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px
 }
 
 .resource-table td.action-column {
@@ -698,44 +821,56 @@ onMounted(checkStatus);
 
 .resource-table th:nth-child(3),
 .resource-table td:nth-child(3) {
-  width: 24%;
+  width: 16%;
   white-space: normal;
   overflow: hidden
 }
 
 .resource-table th:nth-child(4),
 .resource-table td:nth-child(4) {
-  width: 11%;
+  width: 7%;
   white-space: normal
 }
 
 .resource-table th:nth-child(5),
 .resource-table td:nth-child(5) {
-  width: 14%;
+  width: 7%;
   white-space: normal
 }
 
 .resource-table th:nth-child(6),
 .resource-table td:nth-child(6) {
-  width: 6%;
-  white-space: nowrap
+  width: 20%;
+  white-space: normal
 }
 
 .resource-table th:nth-child(7),
 .resource-table td:nth-child(7) {
-  width: 10%;
+  width: 7%;
   white-space: nowrap
 }
 
 .resource-table th:nth-child(8),
 .resource-table td:nth-child(8) {
-  width: 8%;
+  width: 6%;
   white-space: nowrap
 }
 
 .resource-table th:nth-child(9),
 .resource-table td:nth-child(9) {
-  width: 20%;
+  width: 7%;
+  white-space: nowrap
+}
+
+.resource-table th:nth-child(10),
+.resource-table td:nth-child(10) {
+  width: 7%;
+  white-space: nowrap
+}
+
+.resource-table th:nth-child(11),
+.resource-table td:nth-child(11) {
+  width: 16%;
   white-space: nowrap
 }
 
