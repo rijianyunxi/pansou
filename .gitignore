@@ -29,3 +29,6 @@ logs/
 *.sqlite-wal
 *.sqlite-shm
 
+
+# Search load-test reports (keywords and request metadata)
+load-reports/

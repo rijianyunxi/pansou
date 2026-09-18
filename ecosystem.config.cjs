@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "panhub",
+      name: "pansou",
       cwd: __dirname,
       script: "./.output/server/index.mjs",
       interpreter: "node",
