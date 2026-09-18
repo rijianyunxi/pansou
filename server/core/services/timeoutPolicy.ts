@@ -12,7 +12,7 @@ export function normalizeUnifiedTimeoutMs(value: unknown, fallback = 5_000): num
     : safeFallback;
 }
 
-/** Read the one persisted timeout used by HTTP, Telegram, probes, and transforms. */
+/** Read the one persisted timeout used by HTTP, channel fetches, probes, and transforms. */
 export function getUnifiedRequestTimeoutMs(): number {
   return normalizeUnifiedTimeoutMs(getUserPolicy().requestTimeoutMs);
 }

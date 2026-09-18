@@ -1,7 +1,15 @@
-import { TG_CHANNEL_PATTERN } from "./telegramChannels";
+import { CHANNEL_NAME_PATTERN } from "./customChannels";
 
-/** UI convenience only: accept public channel usernames/links and send only the normalized username. */
-export function parseTelegramChannelInput(input: string): string | null {
+/**
+ * UI convenience only: accept what a user is likely to paste (`@name`,
+ * `t.me/name`, `t.me/s/name`, or a public post link) and hand the rest of the
+ * system nothing but the bare channel username.
+ *
+ * Telegram-specific by nature: the reserved path segments below are Telegram's
+ * own routes, and private invite links (`t.me/+…`, `joinchat`) are rejected
+ * outright so they can never be stored.
+ */
+export function parseCustomChannelInput(input: string): string | null {
   let name = input.trim();
   if (/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\//i.test(name)) {
     try {
@@ -16,5 +24,5 @@ export function parseTelegramChannelInput(input: string): string | null {
   } else {
     name = name.replace(/^@/, "");
   }
-  return TG_CHANNEL_PATTERN.test(name) ? name.toLowerCase() : null;
+  return CHANNEL_NAME_PATTERN.test(name) ? name.toLowerCase() : null;
 }

@@ -9,7 +9,7 @@ import {
   purgeChannelSource,
 } from "../../../../core/services/sourceLifecycleStore";
 import { normalizeSourceParam } from "../../../../utils/sourceLifecycle";
-import { TG_CHANNEL_PATTERN } from "../../../../../utils/telegramChannels";
+import { CHANNEL_NAME_PATTERN } from "../../../../../utils/customChannels";
 
 /**
  * DELETE /api/settings/sources/:id/purge —— permanently remove an archived
@@ -19,10 +19,10 @@ import { TG_CHANNEL_PATTERN } from "../../../../../utils/telegramChannels";
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
   const sourceId = normalizeSourceParam(getRouterParam(event, "id"));
-  if (!TG_CHANNEL_PATTERN.test(sourceId)) {
+  if (!CHANNEL_NAME_PATTERN.test(sourceId)) {
     throw createError({
       statusCode: 400,
-      statusMessage: "Source id must be a public Telegram username (5-64 chars: A-Za-z0-9_)",
+      statusMessage: "Source id must be a public channel username (5-64 chars: A-Za-z0-9_)",
     });
   }
 

@@ -3,7 +3,7 @@ import {
   type SourceLifecycleEntry,
   type SourceLifecycleMap,
 } from "../../utils/sourceLifecycle";
-import { TG_CHANNEL_PATTERN, normalizeTelegramChannels } from "../../../utils/telegramChannels";
+import { CHANNEL_NAME_PATTERN, normalizeChannelNames } from "../../../utils/customChannels";
 import { getSqliteDatabase } from "../storage/sqlite";
 
 /**
@@ -23,7 +23,7 @@ export function getSourceLifecycleStates(): SourceLifecycleMap { return structur
 export function getSourceLifecycleState(sourceId: string): SourceLifecycleEntry | undefined { return getSourceLifecycleStates()[normalize(sourceId)]; }
 export function setSourceLifecycleState(sourceId: string, patch: { enabled?: boolean; deleted?: boolean }): SourceLifecycleEntry {
   const name = normalize(sourceId);
-  if (!TG_CHANNEL_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(sourceId).slice(0, 64)}`);
+  if (!CHANNEL_NAME_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(sourceId).slice(0, 64)}`);
   const current = getSourceLifecycleState(name) || { enabled: true, deleted: false };
   const next = { enabled: patch.enabled ?? current.enabled, deleted: patch.deleted ?? current.deleted };
   const db = getSqliteDatabase();
@@ -34,14 +34,14 @@ export function setSourceLifecycleState(sourceId: string, patch: { enabled?: boo
 export function clearSourceLifecycleState(sourceId: string): void { getSqliteDatabase().run("DELETE FROM source_lifecycle_states WHERE channel=?", normalize(sourceId)); }
 export function countEffectiveChannelSources(channels: string[]): number {
   const states = getSourceLifecycleStates();
-  return normalizeTelegramChannels(channels).filter((name) => !states[name]?.deleted && states[name]?.enabled !== false).length;
+  return normalizeChannelNames(channels).filter((name) => !states[name]?.deleted && states[name]?.enabled !== false).length;
 }
 export interface PurgedChannelSource { channel: string; removedSystemEntries: number; removedSearchEntries: number; removedHealthRecords: number; }
 
 /** Permanently remove an archived channel source and every row that referenced it. */
 export function purgeChannelSource(sourceId: string): PurgedChannelSource {
   const name = normalize(sourceId);
-  if (!TG_CHANNEL_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(sourceId).slice(0, 64)}`);
+  if (!CHANNEL_NAME_PATTERN.test(name)) throw new Error(`invalid channel username: ${String(sourceId).slice(0, 64)}`);
   const db = getSqliteDatabase();
   const archived = db.getRow<{ deleted: number }>("SELECT deleted FROM source_lifecycle_states WHERE channel=?", name);
   if (!archived?.deleted) throw new Error("Channel source must be archived before permanent deletion");

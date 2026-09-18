@@ -3,7 +3,7 @@ import type { H3Event } from "h3";
 import { createError, getCookie, getHeader, getRequestURL, setHeader } from "h3";
 import { getSqliteDatabase } from "../core/storage/sqlite";
 import { getUserPolicy } from "../core/services/policyService";
-import { MAX_USER_TG_CHANNELS } from "../../utils/telegramChannels";
+import { MAX_USER_CHANNELS } from "../../utils/customChannels";
 
 export const USER_SESSION_COOKIE = "panhub_session";
 const COOKIE_PATH = "/";
@@ -130,7 +130,7 @@ export function rotateSession(context: UserSessionContext, event: H3Event, user:
     const anonymousChannels = getStoredChannelsFromJson(context.session.custom_channels_json);
     if (anonymousChannels.length) {
       const accountChannels = getStoredChannels(user);
-      const merged = [...new Set([...accountChannels, ...anonymousChannels])].slice(0, Math.min(MAX_USER_TG_CHANNELS, getUserPolicy().customChannelLimit));
+      const merged = [...new Set([...accountChannels, ...anonymousChannels])].slice(0, Math.min(MAX_USER_CHANNELS, getUserPolicy().customChannelLimit));
       user.custom_channels_json = JSON.stringify(merged);
       user.custom_channels_updated_at = timestamp;
       user.updated_at = timestamp;

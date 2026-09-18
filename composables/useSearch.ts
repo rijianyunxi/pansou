@@ -11,8 +11,8 @@ import { consumeSearchEventStream } from "../utils/searchEventStream";
 export interface SearchOptions {
   apiBase: string;
   keyword: string;
-  userTgChannels?: string[];
-  onlyUserTg?: boolean;
+  userChannels?: string[];
+  onlyUserChannels?: boolean;
   onSessionExpired?: () => void;
 }
 export interface SearchState {
@@ -98,7 +98,7 @@ export function useSearch() {
       const body: Record<string, unknown> = { kw: options.keyword.trim() };
       // All searches use one resource-source endpoint. User channels are
       // channels are sent only in custom-channel mode; otherwise the backend uses configured sources.
-      if (options.onlyUserTg) body.channels = options.userTgChannels ?? [];
+      if (options.onlyUserChannels) body.channels = options.userChannels ?? [];
       const response = await fetch(`${options.apiBase}/search`, { method: "POST", credentials: "include", signal: ac.signal,
         headers: { "Accept": "text/event-stream", "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) {
@@ -147,8 +147,8 @@ export function useSearch() {
   async function performSearch(options: SearchOptions) {
     cancelActiveRequests(); state.value = initial(); snapshot = undefined; accumulated = 0;
     if (!options.keyword.trim()) { state.value.error = "请输入搜索关键词"; return; }
-    if (options.onlyUserTg && !options.userTgChannels?.length) { state.value.error = "请先添加至少一个公开频道，再选择「自定义频道」搜索。"; return; }
-    snapshot = { ...options, userTgChannels: [...(options.userTgChannels ?? [])] }; state.value.searched = true;
+    if (options.onlyUserChannels && !options.userChannels?.length) { state.value.error = "请先添加至少一个公开频道，再选择「自定义频道」搜索。"; return; }
+    snapshot = { ...options, userChannels: [...(options.userChannels ?? [])] }; state.value.searched = true;
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLInputElement) document.activeElement.blur(); await run(snapshot);
   }
   function pauseSearch() {

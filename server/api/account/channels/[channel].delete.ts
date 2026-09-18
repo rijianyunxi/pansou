@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, getRouterParam } from "h3";
 import { setPrivateNoStore } from "../../../utils/apiResponse";
 import { getStoredChannels, requireSameOriginUserRequest, requireUserSession, updateStoredChannels } from "../../../utils/userAuth";
-import { TG_CHANNEL_PATTERN } from "../../../../utils/telegramChannels";
+import { CHANNEL_NAME_PATTERN } from "../../../../utils/customChannels";
 
 /**
  * 当前无调用方：2026-09-18 孤儿接口扫描确认，仓库内没有任何地方请求本路由。
@@ -14,7 +14,7 @@ export default defineEventHandler((event) => {
   requireSameOriginUserRequest(event);
   const context = requireUserSession(event);
   const channel = String(getRouterParam(event, "channel") || "").toLowerCase();
-  if (!TG_CHANNEL_PATTERN.test(channel)) {
+  if (!CHANNEL_NAME_PATTERN.test(channel)) {
     throw createError({ statusCode: 400, statusMessage: "频道格式无效" });
   }
   const channels = getStoredChannels(context.user).filter((item) => item !== channel);

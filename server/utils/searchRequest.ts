@@ -1,6 +1,6 @@
 import { createError } from "h3";
 import type { SearchRequest } from "../core/types/models";
-import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
+import { MAX_USER_CHANNELS, normalizeChannelNames, CHANNEL_NAME_PATTERN } from "../../utils/customChannels";
 
 function invalid(message: string): never { throw createError({ statusCode: 400, statusMessage: message }); }
 function list(value: unknown, field: string, max = 100): string[] | undefined {
@@ -26,9 +26,9 @@ export function parseSearchRequest(raw: unknown): SearchRequest {
   const sourceIds = list(value.sourceIds, "sourceIds");
   // Normalize the channel list once: the same normalized value is validated
   // here and then handed to the search pipeline.
-  const requestedChannels = list(value.channels, "channels", MAX_USER_TG_CHANNELS);
-  const channels = requestedChannels ? normalizeTelegramChannels(requestedChannels) : undefined;
-  if (channels && (!channels.length || channels.some((name) => !TG_CHANNEL_PATTERN.test(name)))) {
+  const requestedChannels = list(value.channels, "channels", MAX_USER_CHANNELS);
+  const channels = requestedChannels ? normalizeChannelNames(requestedChannels) : undefined;
+  if (channels && (!channels.length || channels.some((name) => !CHANNEL_NAME_PATTERN.test(name)))) {
     return invalid("channels must contain public channel usernames");
   }
   return {

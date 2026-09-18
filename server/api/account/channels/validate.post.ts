@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, readBody, setHeader } from "h3";
 import { getUserPolicy } from "../../../core/services/policyService";
-import { parseTelegramChannelInput } from "../../../../utils/telegramChannelInput";
-import { normalizeTelegramChannels } from "../../../../utils/telegramChannels";
+import { parseCustomChannelInput } from "../../../../utils/customChannelInput";
+import { normalizeChannelNames } from "../../../../utils/customChannels";
 import { validateChannelSource, type ChannelValidationResult } from "../../../core/services/channelValidation";
 import { MemoryRateLimiter } from "../../../core/security/rateLimit";
 import { setPrivateNoStore } from "../../../utils/apiResponse";
@@ -23,7 +23,7 @@ let active = 0;
 export default defineEventHandler(async (event): Promise<ChannelValidationResult> => {
   setPrivateNoStore(event);
   const body = await readBody(event);
-  const channel = parseTelegramChannelInput(typeof body?.channel === "string" ? body.channel : "");
+  const channel = parseCustomChannelInput(typeof body?.channel === "string" ? body.channel : "");
   if (!channel) {
     throw createError({
       statusCode: 400,
@@ -36,7 +36,7 @@ export default defineEventHandler(async (event): Promise<ChannelValidationResult
   if (!context.user && !policy.anonymousCustomChannels) {
     throw createError({ statusCode: 403, statusMessage: "验证自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。" });
   }
-  const stored = normalizeTelegramChannels(
+  const stored = normalizeChannelNames(
     context.user ? getStoredChannels(context.user) : getStoredSessionChannels(context.session),
   );
   // Re-validating a channel that is already stored is always allowed.

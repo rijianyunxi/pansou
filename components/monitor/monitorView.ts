@@ -2,7 +2,7 @@
  * /monitor 运行监控页的纯视图模型。
  *
  * 监控接口只返回统一的 sources。无论资源源来自规则解析器、系统模板还是
- * Telegram 频道，前端都按同一个 ResourceSource 处理。
+ * 用户自定义频道，前端都按同一个 ResourceSource 处理。
  */
 
 export type MonitorKind = "source";

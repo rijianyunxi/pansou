@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, readBody } from "h3";
 import { getUserPolicy } from "../../core/services/policyService";
 import { setPrivateNoStore } from "../../utils/apiResponse";
-import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
+import { MAX_USER_CHANNELS, normalizeChannelNames, CHANNEL_NAME_PATTERN } from "../../../utils/customChannels";
 import {
   getUserSession,
   requireSameOriginUserRequest,
@@ -22,9 +22,9 @@ export default defineEventHandler(async (event) => {
   if (!Array.isArray(body?.channels) || body.channels.some((x) => typeof x !== "string")) {
     throw createError({ statusCode: 400, statusMessage: "频道列表必须是字符串数组。" });
   }
-  const channels = normalizeTelegramChannels((body.channels as string[]).map((x) => x.trim()).filter(Boolean));
-  const limit = Math.min(MAX_USER_TG_CHANNELS, policy.customChannelLimit);
-  if (channels.length > limit || channels.some((x) => !TG_CHANNEL_PATTERN.test(x))) {
+  const channels = normalizeChannelNames((body.channels as string[]).map((x) => x.trim()).filter(Boolean));
+  const limit = Math.min(MAX_USER_CHANNELS, policy.customChannelLimit);
+  if (channels.length > limit || channels.some((x) => !CHANNEL_NAME_PATTERN.test(x))) {
     throw createError({ statusCode: 400, statusMessage: `频道数量不能超过 ${limit} 个，且必须为有效公开频道。` });
   }
 

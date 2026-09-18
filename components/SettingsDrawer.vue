@@ -22,7 +22,7 @@
         <section class="drawer__section">
           <div class="section__title">
             <strong>已添加的公开频道</strong>
-            <span class="tiny-hint">{{ inner.userTgChannels.length }}/{{ channelLimit }}</span>
+            <span class="tiny-hint">{{ inner.userChannels.length }}/{{ channelLimit }}</span>
           </div>
           <p class="hint">
             添加公开频道用户名或链接。本站搜索不会使用这些频道；选择首页「自定义频道」后，只搜索这里的频道。
@@ -56,8 +56,8 @@
           <p v-else-if="channelStatus" class="feedback" role="status">{{ channelStatus }}</p>
           <p v-else-if="newChannel.trim()" class="hint">尚未添加，请点击「添加」或按 Enter。</p>
 
-          <ul v-if="inner.userTgChannels.length" class="channel-list">
-            <li v-for="name in inner.userTgChannels" :key="name" class="channel-item">
+          <ul v-if="inner.userChannels.length" class="channel-list">
+            <li v-for="name in inner.userChannels" :key="name" class="channel-item">
               <span class="channel-avatar">{{ name.charAt(0).toUpperCase() }}</span>
               <span class="channel-name">@{{ name }}<small>已加入搜索列表</small></span>
               <button
@@ -85,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { parseTelegramChannelInput } from "../utils/telegramChannelInput";
+import { parseCustomChannelInput } from "../utils/customChannelInput";
 import type { UserSettings } from "~/composables/useSettings";
 
 const props = defineProps<{
@@ -143,19 +143,19 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 async function addChannel() {
-  const name = parseTelegramChannelInput(newChannel.value);
+  const name = parseCustomChannelInput(newChannel.value);
   channelStatus.value = "";
   channelError.value = "";
   if (!name) {
     channelError.value = "请输入公开频道用户名或链接，例如 @channel_name 或 t.me/s/channel_name；不支持私密邀请链接。";
     return;
   }
-  if (inner.value.userTgChannels.includes(name)) {
+  if (inner.value.userChannels.includes(name)) {
     channelStatus.value = `@${name} 已在列表中，无需重复添加。`;
     newChannel.value = "";
     return;
   }
-  if (inner.value.userTgChannels.length >= channelLimit.value) {
+  if (inner.value.userChannels.length >= channelLimit.value) {
     channelError.value = `当前账号最多可添加 ${channelLimit.value} 个公开频道。`;
     return;
   }
@@ -172,8 +172,8 @@ async function addChannel() {
       channelError.value = validation.message || "该频道不可用或不是公开频道，未添加。";
       return;
     }
-    const nextChannels = [...inner.value.userTgChannels, name];
-    emit("update:modelValue", { ...inner.value, userTgChannels: nextChannels });
+    const nextChannels = [...inner.value.userChannels, name];
+    emit("update:modelValue", { ...inner.value, userChannels: nextChannels });
     const saved = await saveChannels(nextChannels);
     if (!saved) {
       channelError.value = "频道已在当前页面加入，但服务端保存失败；请稍后重试。";
@@ -193,8 +193,8 @@ async function addChannel() {
 }
 
 async function removeChannel(name: string) {
-  const nextChannels = inner.value.userTgChannels.filter((c) => c !== name);
-  emit("update:modelValue", { ...inner.value, userTgChannels: nextChannels });
+  const nextChannels = inner.value.userChannels.filter((c) => c !== name);
+  emit("update:modelValue", { ...inner.value, userChannels: nextChannels });
   const saved = await saveChannels(nextChannels);
   channelStatus.value = saved ? `已移除 @${name}。` : "频道已从当前页面移除，但服务端保存失败，请稍后重试。";
   await nextTick();

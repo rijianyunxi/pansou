@@ -7,9 +7,9 @@
     </header>
 
     <HomeSearchWorkspace
-      :only-user-tg="onlyUserTg"
-      :channel-count="settings.userTgChannels.length"
-      :channels="settings.userTgChannels"
+      :only-user-channels="onlyUserChannels"
+      :channel-count="settings.userChannels.length"
+      :channels="settings.userChannels"
       :search-scope-disabled="searchScopeDisabled"
       :custom-channels-disabled="!canUseCustomChannels"
       :keyword="kw"
@@ -18,12 +18,12 @@
       :searched="searched"
       :search-disabled="!settingsReady || !auth.sessionReady.value || needsChannelConfiguration"
       :disabled-description-id="needsChannelConfiguration && !searchState.loading ? 'channel-configuration-hint' : undefined"
-      :placeholder="onlyUserTg ? '搜索自定义频道…' : placeholder"
+      :placeholder="onlyUserChannels ? '搜索自定义频道…' : placeholder"
       :needs-channel-configuration="needsChannelConfiguration"
       :storage-error="storageError"
       :session-error="auth.sessionError.value"
       :session-ready="auth.sessionReady.value"
-      @update:only-user-tg="onlyUserTg = $event"
+      @update:only-user-channels="onlyUserChannels = $event"
       @update:keyword="kw = $event"
       @custom-disabled="notifyCustomChannelsAccess"
       @open-channels="handleOpenChannelSettings"
@@ -166,7 +166,7 @@ useHead({
 // 搜索相关状态
 const kw = ref("");
 // Search scope is per visit, never a persisted channel preference.
-const onlyUserTg = ref(false);
+const onlyUserChannels = ref(false);
 const placeholder =
   "搜索电影、剧集、资料等资源…";
 
@@ -192,7 +192,7 @@ const searchScopeDisabled = computed(() =>
   searchState.value.loading || searchState.value.paused || !settingsReady.value || !auth.sessionReady.value,
 );
 const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
-const needsChannelConfiguration = computed(() => onlyUserTg.value && settings.value.userTgChannels.length === 0);
+const needsChannelConfiguration = computed(() => onlyUserChannels.value && settings.value.userChannels.length === 0);
 const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
 const showToast = inject<(message: string, type?: "info" | "success" | "error") => void>("showToast", () => {});
 function handleOpenChannelSettings() {
@@ -206,7 +206,7 @@ function notifyCustomChannelsAccess() {
   showToast("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。", "info");
 }
 watch(canUseCustomChannels, (allowed) => {
-  if (!allowed && onlyUserTg.value) onlyUserTg.value = false;
+  if (!allowed && onlyUserChannels.value) onlyUserChannels.value = false;
 });
 
 // 获取搜索选项（用户自定义频道实时读取最新设置）
@@ -214,8 +214,8 @@ function getSearchOptions() {
   return {
     apiBase,
     keyword: kw.value,
-    userTgChannels: settings.value.userTgChannels,
-    onlyUserTg: onlyUserTg.value,
+    userChannels: settings.value.userChannels,
+    onlyUserChannels: onlyUserChannels.value,
   };
 }
 

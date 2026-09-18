@@ -28,6 +28,10 @@ node .output/server/index.mjs
 
 默认 SQLite 文件为 `data/panhub.sqlite`，可通过 `PANHUB_SQLITE_DB` 覆盖。运行数据不应提交到 Git。
 
+⚠️ **开发服务器默认打开的是同一个 `data/panhub.sqlite`**：`.env.development` 与 `.env.production` 指向同一路径，而 `nuxt dev` 会热重载，所以**保存 `server/core/storage/sqlite.ts` 里的 schema/迁移就会立刻作用到这份数据库**，不等构建也不等部署。想隔离开发数据，把 `.env.development` 的 `PANHUB_SQLITE_DB` 指向另一个文件（例如 `./data/panhub-dev.sqlite`）再启动。
+
+`pnpm dev` 默认只监听 `127.0.0.1`（脚本里的 `--host 127.0.0.1`）。需要从局域网设备调试时，临时改成 `--host 0.0.0.0` 并在调试结束后改回来——否则等于把一个持有真实数据库的开发服务器暴露在局域网里。
+
 ### 生产环境变量与部署
 
 `.env.production` 不是必需文件，也不会因为这个文件名自动加载。可以通过进程管理器或服务器环境变量配置生产环境；需要文件管理时，可复制 `.env.example` 为服务器上的 `.env.production`，再修改数据库路径和站点地址。

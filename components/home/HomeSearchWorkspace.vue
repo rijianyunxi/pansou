@@ -2,14 +2,14 @@
   <section class="search-workspace" aria-label="资源搜索">
     <div class="search-toolbar">
       <SearchScopeControl
-        :model-value="onlyUserTg"
+        :model-value="onlyUserChannels"
         :count="channelCount"
         :disabled="searchScopeDisabled"
         :custom-disabled="customChannelsDisabled"
-        @update:model-value="emit('update:onlyUserTg', $event)"
+        @update:model-value="emit('update:onlyUserChannels', $event)"
         @custom-disabled="emit('custom-disabled')" />
       <button
-        v-if="onlyUserTg"
+        v-if="onlyUserChannels"
         type="button"
         class="manage-channels"
         :class="{ 'manage-channels--disabled': customChannelsDisabled }"
@@ -45,8 +45,8 @@
     </div>
 
     <div class="scope-summary" aria-live="polite">
-      <p v-if="onlyUserTg && channels.length">只搜索你添加的 {{ channels.length }} 个公开频道，不会请求其他配置来源。</p>
-      <div v-if="onlyUserTg && channels.length" class="channel-preview" aria-label="已添加的自定义频道">
+      <p v-if="onlyUserChannels && channels.length">只搜索你添加的 {{ channels.length }} 个公开频道，不会请求其他配置来源。</p>
+      <div v-if="onlyUserChannels && channels.length" class="channel-preview" aria-label="已添加的自定义频道">
         <span v-for="channel in channels.slice(0, 3)" :key="channel" class="channel-chip">@{{ channel }}</span>
         <button v-if="channels.length > 3" type="button" :disabled="paused" @click="emit('open-channels')">+{{ channels.length - 3 }} 个</button>
       </div>
@@ -59,7 +59,7 @@
 
 <script setup lang="ts">
 interface Props {
-  onlyUserTg: boolean;
+  onlyUserChannels: boolean;
   channelCount: number;
   channels: string[];
   searchScopeDisabled: boolean;
@@ -79,7 +79,7 @@ interface Props {
 
 withDefaults(defineProps<Props>(), { disabledDescriptionId: undefined });
 const emit = defineEmits<{
-  (event: "update:onlyUserTg", value: boolean): void;
+  (event: "update:onlyUserChannels", value: boolean): void;
   (event: "update:keyword", value: string): void;
   (event: "custom-disabled"): void;
   (event: "open-channels"): void;

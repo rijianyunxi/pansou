@@ -3,7 +3,7 @@ import { cleanupUserData, getUserPolicy, type UserPolicy } from "../core/service
 import { searchRateLimiter } from "../core/security/rateLimit";
 import { listUnifiedSources } from "../core/services/sourceCatalog";
 import { getSqliteDatabase } from "../core/storage/sqlite";
-import { normalizeTelegramChannels } from "../../utils/telegramChannels";
+import { normalizeChannelNames } from "../../utils/customChannels";
 import { getClientIp } from "./clientIp";
 import { prepareSearch, type PreparedSearch } from "./executeSearch";
 import { getStoredChannels, getStoredSessionChannels, getUserSession, type UserSessionContext } from "./userAuth";
@@ -85,9 +85,9 @@ function searchScopeAndChannels(
   // logged-in caller, the anonymous session otherwise) and never trusted from
   // client JSON.
   const stored = context.user
-    ? normalizeTelegramChannels(getStoredChannels(context.user))
+    ? normalizeChannelNames(getStoredChannels(context.user))
     : policy.anonymousCustomChannels
-      ? normalizeTelegramChannels(getStoredSessionChannels(context.session))
+      ? normalizeChannelNames(getStoredSessionChannels(context.session))
       : deny("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。");
   if (stored.length > policy.customChannelLimit) deny("已保存的自定义频道超过当前配额，请先删除部分频道");
   if (!stored.length) deny("请先添加至少一个公开频道");

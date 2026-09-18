@@ -1,5 +1,5 @@
 import type { SourceDefinition } from "../../../types/source";
-import { TG_CHANNEL_PATTERN, normalizeTelegramChannels } from "../../../utils/telegramChannels";
+import { CHANNEL_NAME_PATTERN, normalizeChannelNames } from "../../../utils/customChannels";
 import { getSearchSettings, getSearchSettingsVersion, saveSearchSettings } from "./searchSettingsService";
 import { getSystemSettings } from "./systemSettingsService";
 import { getSqliteDatabase } from "../storage/sqlite";
@@ -36,7 +36,7 @@ function normalizeChannel(value: unknown): string { return String(value || "").t
 function configuredChannels(): string[] {
   const settings = getSearchSettings();
   const system = getSystemSettings(useRuntimeConfig());
-  return normalizeTelegramChannels(settings.channels ?? system.defaultChannels).filter((channel) => TG_CHANNEL_PATTERN.test(channel));
+  return normalizeChannelNames(settings.channels ?? system.defaultChannels).filter((channel) => CHANNEL_NAME_PATTERN.test(channel));
 }
 /**
  * Channel-backed sources share one id space with regular sources, so a
@@ -45,7 +45,7 @@ function configuredChannels(): string[] {
  * source whose id happens to look like a username would take the channel path.
  */
 function isChannelSourceId(id: string): boolean {
-  return TG_CHANNEL_PATTERN.test(id)
+  return CHANNEL_NAME_PATTERN.test(id)
     && (configuredChannels().includes(id) || getSourceLifecycleStates()[id] !== undefined);
 }
 function sanitize(raw: unknown): StoredCatalog {
@@ -86,7 +86,7 @@ function read(): StoredCatalog {
     // Channel sources are persisted as normal resource sources, while their
     // recycle-bin state is kept in source_lifecycle_states. Never expose an
     // archived row through the active source catalog.
-    if (deletedSourceIds.has(id) || (TG_CHANNEL_PATTERN.test(id) && lifecycleStates[id]?.deleted)) continue;
+    if (deletedSourceIds.has(id) || (CHANNEL_NAME_PATTERN.test(id) && lifecycleStates[id]?.deleted)) continue;
     let request: unknown = {};
     try { request = JSON.parse(row.request_json || "{}"); } catch { request = {}; }
     raw[id] = { ...row, id, request, enabled: Boolean(row.enabled) };
@@ -118,7 +118,7 @@ function effectiveSource(id: string, catalog: StoredCatalog): SourceDefinition |
   if (getSourceLifecycleStates()[key]?.deleted) return undefined;
   const direct = catalog[key];
   if (direct) return clone(direct);
-  if (TG_CHANNEL_PATTERN.test(key) && configuredChannels().includes(key)) return buildUserSource(key);
+  if (CHANNEL_NAME_PATTERN.test(key) && configuredChannels().includes(key)) return buildUserSource(key);
   return undefined;
 }
 
@@ -181,7 +181,7 @@ export function deleteUnifiedSource(id: string): void {
       clearSourceLifecycleState(key);
       return;
     }
-    if (normalizeTelegramChannels(system.defaultChannels).includes(key)) {
+    if (normalizeChannelNames(system.defaultChannels).includes(key)) {
       setSourceLifecycleState(key, { deleted: true });
       return;
     }

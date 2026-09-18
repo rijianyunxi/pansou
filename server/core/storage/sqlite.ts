@@ -41,6 +41,7 @@ export class SqliteDatabase {
     this.ensureUserRolesAndDefaultAdmin();
     this.ensureSourceLifecycleTable();
     this.retireLegacyTables();
+    this.retireDeletedChannelEntries();
     this.retireRemovedPolicyKeys();
     this.db.prepare("INSERT OR IGNORE INTO config_revisions(scope, revision) VALUES('sources', 0)").run();
   }
@@ -81,6 +82,18 @@ export class SqliteDatabase {
     for (const table of ["tg_channel_health", "wechat_identities"]) {
       this.db.exec(`DROP TABLE IF EXISTS ${table}`);
     }
+  }
+
+  private retireDeletedChannelEntries(): void {
+    // `system_channels` is written straight from the settings form and once had
+    // no filter against `deleted_sources`, so a source the operator deleted
+    // could be saved back into the default channel list and then never left it:
+    // the console reads this table directly, and the public health endpoint
+    // echoed it. `source_lifecycle_states` can hold the same contradiction — an
+    // "off" override for an id that no longer exists. Drop both; the write path
+    // now refuses to re-introduce them.
+    this.db.exec("DELETE FROM system_channels WHERE lower(name) IN (SELECT lower(id) FROM deleted_sources)");
+    this.db.exec("DELETE FROM source_lifecycle_states WHERE lower(channel) IN (SELECT lower(id) FROM deleted_sources)");
   }
 
   private ensureResourceSourceColumns(): void {

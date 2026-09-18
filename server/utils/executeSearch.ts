@@ -29,7 +29,7 @@ export async function executePreparedSearch(
   const configured = listUnifiedSources();
   // The presence of channels selects custom-channel mode. It never mixes
   // configured site sources; every requested channel is instantiated from the
-  // persisted system Telegram source template. Without channels, search uses
+  // persisted system channel source template. Without channels, search uses
   // only the sources selected in the site settings.
   const requestedChannels = prepared.request.channels;
   const customChannelMode = requestedChannels !== undefined;
@@ -46,7 +46,7 @@ export async function executePreparedSearch(
   // Local resources are an awaited phase before source execution. They are
   // site-level content rather than a member of the source catalogue, so an
   // explicit `sourceIds` selection does not exclude them. Custom-channel mode is
-  // different: it is a request for "only these Telegram channels", and pinning
+  // different: it is a request for "only these channels", and pinning
   // local resources on top of it would ignore the scope the caller asked for.
   const localResults = customChannelMode ? [] : searchManagedResources(prepared.request.kw);
   if (onSourceSuccess && localResults.length) {

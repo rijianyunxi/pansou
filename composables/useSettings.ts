@@ -1,12 +1,12 @@
 import { computed, onMounted, type Ref } from "vue";
-import { MAX_USER_TG_CHANNELS, normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../utils/telegramChannels";
+import { MAX_USER_CHANNELS, normalizeChannelNames, CHANNEL_NAME_PATTERN } from "../utils/customChannels";
 import { useAuth } from "./useAuth";
 
 const USER_SETTINGS_STORAGE_KEY = "panhub.settings";
 
 export interface UserSettings {
-  /** 用户添加的 Telegram 频道：仅在首页选择“自定义频道”时使用 */
-  userTgChannels: string[];
+  /** 用户添加的公开频道（当前即 Telegram 公开频道）：仅在首页选择“自定义频道”时使用 */
+  userChannels: string[];
   /** 首页视觉风格 */
   theme: "classic" | "geometric";
 }
@@ -27,8 +27,8 @@ export interface UseSettingsReturn {
 
 function sanitizeChannels(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return normalizeTelegramChannels(value.filter((item): item is string => typeof item === "string"))
-    .filter((name) => TG_CHANNEL_PATTERN.test(name)).slice(0, MAX_USER_TG_CHANNELS);
+  return normalizeChannelNames(value.filter((item): item is string => typeof item === "string"))
+    .filter((name) => CHANNEL_NAME_PATTERN.test(name)).slice(0, MAX_USER_CHANNELS);
 }
 
 function sanitizeTheme(value: unknown): UserSettings["theme"] {
@@ -37,11 +37,11 @@ function sanitizeTheme(value: unknown): UserSettings["theme"] {
 
 export function useSettings(): UseSettingsReturn {
   const auth = useAuth();
-  const settings = useState<UserSettings>("user-search-settings", () => ({ userTgChannels: [], theme: "classic" }));
+  const settings = useState<UserSettings>("user-search-settings", () => ({ userChannels: [], theme: "classic" }));
   // Channels are no longer stored in localStorage; both authenticated and
   // permitted anonymous channels live in SQLite (users.custom_channels_json or
   // sessions.custom_channels_json).
-  const channelLimit = useState<number>("user-search-channel-limit", () => MAX_USER_TG_CHANNELS);
+  const channelLimit = useState<number>("user-search-channel-limit", () => MAX_USER_CHANNELS);
   const serverManaged = useState<boolean>("user-search-channels-server-managed", () => false);
   const settingsReady = useState<boolean>("user-search-settings-ready", () => false);
   const storageError = useState<string>("user-search-settings-error", () => "");
@@ -53,10 +53,10 @@ export function useSettings(): UseSettingsReturn {
       const parsed = raw ? JSON.parse(raw) : {};
       const theme = sanitizeTheme(parsed && typeof parsed === "object" ? (parsed as { theme?: unknown }).theme : undefined);
       // Remove legacy browser channel data while retaining the visual setting.
-      settings.value = { userTgChannels: [], theme };
+      settings.value = { userChannels: [], theme };
       localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({ theme }));
     } catch {
-      settings.value = { ...settings.value, userTgChannels: [] };
+      settings.value = { ...settings.value, userChannels: [] };
       storageError.value = "无法读取浏览器设置，当前使用默认配置。";
     }
   }
@@ -68,7 +68,7 @@ export function useSettings(): UseSettingsReturn {
   }
 
   function applyChannels(channels: string[]): void {
-    settings.value = { ...settings.value, userTgChannels: sanitizeChannels(channels).slice(0, channelLimit.value) };
+    settings.value = { ...settings.value, userChannels: sanitizeChannels(channels).slice(0, channelLimit.value) };
   }
 
   async function syncWithSession(): Promise<void> {
@@ -77,7 +77,7 @@ export function useSettings(): UseSettingsReturn {
     // an anonymous session gets its own server-side channel list when allowed.
     applyChannels([]);
     serverManaged.value = false;
-    channelLimit.value = MAX_USER_TG_CHANNELS;
+    channelLimit.value = MAX_USER_CHANNELS;
 
     try {
       const result = await $fetch<{
@@ -91,7 +91,7 @@ export function useSettings(): UseSettingsReturn {
         auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
       }
       serverManaged.value = true;
-      channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Math.max(0, Number(result.limit) || MAX_USER_TG_CHANNELS));
+      channelLimit.value = Math.min(MAX_USER_CHANNELS, Math.max(0, Number(result.limit) || MAX_USER_CHANNELS));
       applyChannels(result.channels || []);
       storageError.value = "";
     } catch (error: any) {
@@ -126,7 +126,7 @@ export function useSettings(): UseSettingsReturn {
     }
   }
 
-  async function saveChannels(channels = settings.value.userTgChannels): Promise<boolean> {
+  async function saveChannels(channels = settings.value.userChannels): Promise<boolean> {
     const next = sanitizeChannels(channels).slice(0, channelLimit.value);
     if (!auth.sessionReady.value) {
       applyChannels([]);
@@ -145,7 +145,7 @@ export function useSettings(): UseSettingsReturn {
         auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
       }
       serverManaged.value = true;
-      channelLimit.value = Math.min(MAX_USER_TG_CHANNELS, Number(result.limit) || channelLimit.value);
+      channelLimit.value = Math.min(MAX_USER_CHANNELS, Number(result.limit) || channelLimit.value);
       applyChannels(result.channels || next);
       storageError.value = "";
       return true;

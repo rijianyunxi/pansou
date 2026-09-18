@@ -1,7 +1,7 @@
 import { defineEventHandler, readBody } from "h3";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
 import { toHttpError } from "../../utils/apiResponse";
-import { parseSystemChannels } from "../../utils/telegramSettings";
+import { parseSystemChannels } from "../../utils/channelSettings";
 import { getSearchSettingsVersion, saveSearchSettings } from "../../core/services/searchSettingsService";
 
 export default defineEventHandler(async (event) => {

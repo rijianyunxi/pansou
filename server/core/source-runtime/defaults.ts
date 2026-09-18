@@ -1,4 +1,4 @@
-/** Built-in parser used for user-supplied Telegram channels and as the initial value for managed sources. */
+/** Built-in parser used for user-supplied channels and as the initial value for managed sources. */
 export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, $, context) {
   const keyword = String(context.keyword || "").trim().toLowerCase();
   const normalize = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");

@@ -47,6 +47,13 @@ function normalizeInput(raw: unknown, requireName = true): SearchResult {
     if (typeof link.type !== "string" || !CLOUD_TYPE_SET.has(link.type)) throw new Error("网盘类型不合法");
     const url = cleanString(link.url, "链接地址", 2000) as string;
     if (!/^(https?:\/\/|magnet:\?|ed2k:\/\/)/iu.test(url)) throw new Error("链接地址协议不支持");
+    // A link copied out of a chat message or a Markdown `[标题](url)` arrives
+    // with the surrounding punctuation still attached. None of these characters
+    // can appear unescaped in a URL, and a second `://` means a second link got
+    // swallowed — reject both instead of storing something nobody can open.
+    if (/[\s"'<>\\^`{|}]/u.test(url)) throw new Error("链接地址含空格或引号，请只填写链接本身");
+    const schemeEnd = url.indexOf("://");
+    if (schemeEnd !== -1 && url.indexOf("://", schemeEnd + 3) !== -1) throw new Error("链接地址里出现了第二个链接，请只填写一个");
     const password = cleanString(link.password, "提取码", 100, true);
     return { type: link.type as CloudType, url, password };
   });

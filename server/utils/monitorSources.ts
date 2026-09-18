@@ -9,7 +9,7 @@ import { buildUserSource, listUnifiedSources } from "../core/services/sourceCata
 import { getSourceLifecycleStates } from "../core/services/sourceLifecycleStore";
 import { getSearchSettings } from "../core/services/searchSettingsService";
 import { getSystemSettings } from "../core/services/systemSettingsService";
-import { TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
+import { CHANNEL_NAME_PATTERN } from "../../utils/customChannels";
 import {
   createSourceOriginContext,
   sourceOrigin,
@@ -178,7 +178,7 @@ export function buildMonitorSources(
 
   if (includeDeleted) {
     for (const [id, state] of Object.entries(getSourceLifecycleStates())) {
-      if (!state.deleted || sources.has(id) || !TG_CHANNEL_PATTERN.test(id)) continue;
+      if (!state.deleted || sources.has(id) || !CHANNEL_NAME_PATTERN.test(id)) continue;
       sources.set(id, mapSource(buildUserSource(id), healthById, origins, true));
     }
   }

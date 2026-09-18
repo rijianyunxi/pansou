@@ -1,4 +1,4 @@
-import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../../utils/telegramChannels";
+import { normalizeChannelNames, CHANNEL_NAME_PATTERN } from "../../../utils/customChannels";
 import { getSqliteDatabase } from "../storage/sqlite";
 
 export interface SearchSettings { sources: string[] | null; channels: string[] | null; trashedSources: string[]; }
@@ -14,7 +14,7 @@ function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettin
   };
   const sources = strList(value.sources, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s));
   const rawChannels = strList(value.channels);
-  const channels = rawChannels === null ? null : normalizeTelegramChannels(rawChannels).filter(name => TG_CHANNEL_PATTERN.test(name)).slice(0, MAX_CHANNELS);
+  const channels = rawChannels === null ? null : normalizeChannelNames(rawChannels).filter(name => CHANNEL_NAME_PATTERN.test(name)).slice(0, MAX_CHANNELS);
   const trashedSources = strList(value.trashedSources, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s)) || [];
   return { sources, channels, trashedSources };
 }

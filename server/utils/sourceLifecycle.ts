@@ -1,4 +1,4 @@
-import { normalizeTelegramChannels, TG_CHANNEL_PATTERN } from "../../utils/telegramChannels";
+import { normalizeChannelNames, CHANNEL_NAME_PATTERN } from "../../utils/customChannels";
 
 /**
  * Lifecycle override state for resource sources that are backed by a public
@@ -13,7 +13,7 @@ export function sanitizeSourceLifecycleStates(value: unknown): SourceLifecycleMa
   const out: SourceLifecycleMap = {};
   for (const [rawKey, rawEntry] of Object.entries(value as Record<string, unknown>)) {
     const name = normalizeSourceParam(rawKey);
-    if (!TG_CHANNEL_PATTERN.test(name) || !rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
+    if (!CHANNEL_NAME_PATTERN.test(name) || !rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
     const input = rawEntry as Record<string, unknown>;
     const enabled = typeof input.enabled === "boolean" ? input.enabled : true;
     const deleted = typeof input.deleted === "boolean" ? input.deleted : false;
@@ -44,8 +44,8 @@ export function createSourceOriginContext(
   builtinDefaults: string[],
 ): SourceOriginContext {
   return {
-    custom: new Set(normalizeTelegramChannels(customChannels ?? [])),
-    builtin: new Set(normalizeTelegramChannels(builtinDefaults ?? [])),
+    custom: new Set(normalizeChannelNames(customChannels ?? [])),
+    builtin: new Set(normalizeChannelNames(builtinDefaults ?? [])),
   };
 }
 
@@ -59,7 +59,7 @@ export function sourceOrigin(
   sourceId: string,
   origins: SourceOriginContext,
 ): "builtin" | "custom" | "" {
-  if (!TG_CHANNEL_PATTERN.test(sourceId)) return "";
+  if (!CHANNEL_NAME_PATTERN.test(sourceId)) return "";
   if (origins.custom.has(sourceId)) return "custom";
   return origins.builtin.has(sourceId) ? "builtin" : "custom";
 }
