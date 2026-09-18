@@ -240,10 +240,83 @@ function classifyLinkResponse(status: number, body: string): LinkCheckResult {
   return { status: "unknown", message: `暂时无法确认链接状态（HTTP ${status}）` };
 }
 
+function classifyQuarkTokenResponse(body: string): LinkCheckResult {
+  let payload: { status?: unknown; code?: unknown; message?: unknown; data?: { stoken?: unknown } };
+  try {
+    payload = JSON.parse(body) as typeof payload;
+  } catch {
+    return { status: "unknown", message: "夸克检测接口返回了无法解析的响应" };
+  }
+
+  const message = typeof payload.message === "string" ? payload.message : "";
+  const status = Number(payload.status);
+  const code = Number(payload.code);
+  const lowerMessage = message.toLowerCase();
+
+  // 夸克会用 HTTP 200 返回业务错误，不能只看 HTTP 状态码。
+  if (
+    code === 41011 ||
+    status === 404 ||
+    /分享地址已失效|分享不存在|分享已取消|分享已过期|链接已失效|expired|not found|removed|deleted/.test(lowerMessage)
+  ) {
+    return { status: "invalid", message: `夸克接口确认分享已失效（${message || `code ${code}`}）` };
+  }
+
+  // 没有提取码并不代表链接失效；接口能返回分享元信息，说明分享仍存在。
+  if (code === 41008 || /需要提取码|请输入提取码|输入提取码|password required/.test(lowerMessage)) {
+    return { status: "unknown", message: "夸克分享仍存在，但需要提取码，暂无法确认文件状态" };
+  }
+
+  if ((message === "ok" || code === 0) && typeof payload.data?.stoken === "string" && payload.data.stoken) {
+    return { status: "valid", message: "夸克分享有效，接口已成功获取访问令牌" };
+  }
+
+  return { status: "unknown", message: `夸克接口暂时无法确认链接状态（${message || `code ${code}`}）` };
+}
+
+async function checkQuarkLink(link: Link, timeoutMs: number): Promise<LinkCheckResult> {
+  let url: URL;
+  try {
+    url = new URL(link.url);
+  } catch {
+    return { status: "invalid", message: "夸克链接地址格式不正确" };
+  }
+
+  const match = url.pathname.match(/^\/s\/([A-Za-z0-9_-]+)\/?$/u);
+  if (!match) return { status: "unknown", message: "无法从夸克链接中提取分享 ID" };
+
+  const passcode = link.password || url.searchParams.get("pwd") || url.searchParams.get("passcode") || "";
+  const apiUrl = "https://drive.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc";
+  const response = await executeSafeHttp({
+    method: "POST",
+    url: apiUrl,
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9",
+      "content-type": "application/json",
+      origin: "https://pan.quark.cn",
+      referer: "https://pan.quark.cn/",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+    },
+    body: JSON.stringify({ pwd_id: match[1], passcode }),
+    timeoutMs,
+    maxRequestBodyBytes: 8 * 1024,
+    maxResponseBytes: 256 * 1024,
+    maxRedirects: 2,
+    followRedirects: true,
+    expectedContentTypes: ["application/json", "text/plain"],
+    allowedDomains: ["drive.quark.cn"],
+    allowHttp: false,
+  });
+
+  return classifyQuarkTokenResponse(response.body);
+}
+
 async function checkLink(link: Link, timeoutMs: number): Promise<LinkCheckResult> {
   if (link.type === "magnet") return { status: "unknown", message: "磁力链接不支持通过网页请求检测" };
   if (link.type === "others" && /^ed2k:\/\//iu.test(link.url)) return { status: "unknown", message: "ed2k 链接不支持通过网页请求检测" };
   try {
+    if (link.type === "quark") return await checkQuarkLink(link, timeoutMs);
     const url = new URL(link.url);
     const response = await executeSafeHttp({
       method: "GET",
