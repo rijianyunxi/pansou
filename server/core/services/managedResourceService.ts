@@ -236,7 +236,9 @@ function classifyLinkResponse(status: number, body: string): LinkCheckResult {
   if (/请输入提取码|输入提取码|提取码验证|password required/.test(text)) {
     return { status: "unknown", message: "链接需要提取码，暂无法确认文件是否有效" };
   }
-  if (status >= 200 && status < 300) return { status: "valid", message: `页面可访问，未发现失效提示（HTTP ${status}）` };
+  if (status >= 200 && status < 300) {
+    return { status: "unknown", message: `页面可访问，但未发现可验证的分享状态（HTTP ${status}）` };
+  }
   return { status: "unknown", message: `暂时无法确认链接状态（HTTP ${status}）` };
 }
 
