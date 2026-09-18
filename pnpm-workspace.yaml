@@ -1,0 +1,8 @@
+# pnpm 10 blocks dependency lifecycle scripts by default. These packages need
+# their install-time build steps for the production server and Nuxt toolchain.
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - better-sqlite3
+  - bufferutil
+  - esbuild
+  - utf-8-validate
