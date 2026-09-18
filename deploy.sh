@@ -31,6 +31,21 @@ fi
 
 mkdir -p "$DEPLOY_DIR"
 
+case "$APP_DIR" in
+  ""|"/"|"$DEPLOY_DIR"|"$DEPLOY_DIR/")
+    echo "源码目录路径不安全，拒绝继续：$APP_DIR" >&2
+    exit 1
+    ;;
+esac
+
+# 第一步：先备份运行目录中的生产环境文件，再处理源码克隆目录。
+runtime_env="$DEPLOY_DIR/.env.production"
+runtime_env_backup="$DEPLOY_DIR/.env.production.backup"
+if [[ -f "$runtime_env" ]]; then
+  echo "备份生产环境配置：$runtime_env -> $runtime_env_backup"
+  install -m 600 "$runtime_env" "$runtime_env_backup"
+fi
+
 backup_dir="$(mktemp -d /tmp/panhub-deploy.XXXXXX)"
 chmod 700 "$backup_dir"
 cleanup() {
@@ -47,38 +62,17 @@ for config_file in .env.production ecosystem.config.cjs; do
   fi
 done
 
-if [[ -d "$APP_DIR/.git" ]]; then
-  echo "更新已有源码：$APP_DIR"
-  cd "$APP_DIR"
-
-  # 除生产配置外，不自动覆盖服务器上的其他本地代码修改。
-  while IFS= read -r status_line; do
-    [[ -z "$status_line" ]] && continue
-    changed_path="${status_line:3}"
-    case "$changed_path" in
-      .env.production|ecosystem.config.cjs)
-        ;;
-      *)
-        echo "检测到未提交的源码修改：$changed_path" >&2
-        echo "请先处理该修改，再重新执行部署。" >&2
-        exit 1
-        ;;
-    esac
-  done < <(git status --porcelain)
-
-  # 先恢复被本地环境文件占用的跟踪文件，避免 git pull 被阻止。
-  git restore --source=HEAD -- .env.production ecosystem.config.cjs 2>/dev/null || true
-  git pull --ff-only origin "$BRANCH"
-else
-  if [[ -e "$APP_DIR" ]] && [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-    echo "$APP_DIR 已存在但不是 Git 仓库，且目录不为空，已停止部署。" >&2
-    exit 1
-  fi
-
-  mkdir -p "$APP_DIR"
-  echo "首次拉取源码：$REPO_URL"
-  git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+if [[ -e "$APP_DIR/.git" ]]; then
+  echo "检测到已有源码克隆，先删除：$APP_DIR"
+  rm -rf -- "$APP_DIR"
+elif [[ -e "$APP_DIR" ]] && [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+  echo "$APP_DIR 已存在但不是 Git 仓库，且目录不为空，已停止部署。" >&2
+  exit 1
 fi
+
+mkdir -p "$APP_DIR"
+echo "重新拉取源码：$REPO_URL"
+git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
 
 cd "$APP_DIR"
 
