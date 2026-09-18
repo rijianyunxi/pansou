@@ -38,21 +38,12 @@ case "$APP_DIR" in
     ;;
 esac
 
-backup_dir="$(mktemp -d /tmp/panhub-deploy.XXXXXX)"
-chmod 700 "$backup_dir"
-cleanup() {
-  rm -rf "$backup_dir"
-}
-trap cleanup EXIT
-
-# 优先保留运行目录中的生产配置，其次才使用源码目录里的配置。
-for config_file in .env.production ecosystem.config.cjs; do
-  if [[ -f "$DEPLOY_DIR/$config_file" ]]; then
-    cp -a "$DEPLOY_DIR/$config_file" "$backup_dir/$config_file"
-  elif [[ -f "$APP_DIR/$config_file" ]]; then
-    cp -a "$APP_DIR/$config_file" "$backup_dir/$config_file"
-  fi
-done
+# 生产配置不做备份；如果它还在旧源码目录中，先直接移动到运行目录。
+if [[ -f "$APP_DIR/.env.production" && ! -f "$DEPLOY_DIR/.env.production" ]]; then
+  echo "移动旧源码中的生产环境配置到：$DEPLOY_DIR/.env.production"
+  mv -- "$APP_DIR/.env.production" "$DEPLOY_DIR/.env.production"
+  chmod 600 "$DEPLOY_DIR/.env.production"
+fi
 
 if [[ -e "$APP_DIR/.git" ]]; then
   echo "检测到已有源码克隆，先删除：$APP_DIR"
@@ -68,12 +59,10 @@ git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
 
 cd "$APP_DIR"
 
-# 把服务器上的生产环境文件放回源码目录，构建和运行均使用同一份配置。
-if [[ -f "$backup_dir/.env.production" ]]; then
-  install -m 600 "$backup_dir/.env.production" "$APP_DIR/.env.production"
-elif [[ -f "$APP_DIR/.env.production" ]]; then
-  cp -a "$APP_DIR/.env.production" "$backup_dir/.env.production"
-else
+# 使用运行目录中的生产环境文件参与构建；如果没有，则使用仓库自带文件。
+if [[ -f "$DEPLOY_DIR/.env.production" ]]; then
+  cp -a "$DEPLOY_DIR/.env.production" "$APP_DIR/.env.production"
+elif [[ ! -f "$APP_DIR/.env.production" ]]; then
   echo "未找到 .env.production，请先创建：$APP_DIR/.env.production 或 $DEPLOY_DIR/.env.production" >&2
   exit 1
 fi
@@ -89,12 +78,9 @@ if [[ ! -f "$APP_DIR/.output/server/index.mjs" ]]; then
   exit 1
 fi
 
-release_stamp="$(date +%Y%m%d%H%M%S)"
-old_output="$DEPLOY_DIR/.output.previous.$release_stamp"
-
 if [[ -e "$DEPLOY_DIR/.output" ]]; then
-  echo "备份旧运行产物：$old_output"
-  mv "$DEPLOY_DIR/.output" "$old_output"
+  echo "删除旧运行产物：$DEPLOY_DIR/.output"
+  rm -rf -- "$DEPLOY_DIR/.output"
 fi
 
 echo "移动新的运行产物到：$DEPLOY_DIR/.output"
@@ -127,5 +113,4 @@ echo "部署完成"
 echo "源码目录已删除：$APP_DIR"
 echo "运行目录：$DEPLOY_DIR"
 echo "PM2 应用：$PM2_APP_NAME"
-echo "旧产物备份：$old_output"
 pm2 status "$PM2_APP_NAME"
