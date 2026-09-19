@@ -259,6 +259,15 @@ export function resetProxyNode(id: string): ProxyNode {
   return toNode(getRow(id)!);
 }
 
+/** Clear persisted health state for every proxy node without touching quota or configuration. */
+export function resetAllProxyNodeHealth(): number {
+  const result = getSqliteDatabase().run(
+    "UPDATE proxy_nodes SET circuit_state=CASE WHEN circuit_state='quota_exhausted' THEN 'quota_exhausted' ELSE 'closed' END,failure_count=0,probe_in_flight=0,opened_until=NULL,last_status=NULL,last_error=NULL,last_success_at=NULL,last_failure_at=NULL,updated_at=?",
+    Date.now(),
+  );
+  return result.changes;
+}
+
 export function acquireProxyRequest(targetUrl: string, excludedNodeIds: ReadonlySet<string> = new Set(), groupId?: string): ProxyLease {
   resetDailyCounters();
   const db = getSqliteDatabase();

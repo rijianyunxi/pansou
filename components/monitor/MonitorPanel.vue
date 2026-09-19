@@ -178,6 +178,11 @@
             <ConsoleIcon v-else name="refresh" :size="15" />
             <span>{{ loading ? "同步中…" : "立即刷新" }}</span>
           </button>
+          <button class="button secondary monitor-health-reset-button" type="button" :disabled="healthResetBusy" @click="requestHealthReset">
+            <span v-if="healthResetBusy" class="spinner"></span>
+            <ConsoleIcon v-else name="refresh" :size="15" />
+            <span>{{ healthResetBusy ? "重置中…" : "重置健康状态" }}</span>
+          </button>
         </div>
       </div>
 
@@ -360,6 +365,22 @@
       </form>
     </div>
 
+    <div v-if="healthResetOpen" class="modal-backdrop confirmation-backdrop" @click.self="closeHealthReset">
+      <section class="confirm-dialog health-reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="monitor-health-reset-title">
+        <span class="confirm-icon health-reset-icon"><ConsoleIcon name="refresh" :size="22" /></span>
+        <h2 id="monitor-health-reset-title">重置全部健康状态？</h2>
+        <p>将清除资源源健康统计、失败记录、熔断状态，以及代理节点的失败计数、探测锁和冷却信息。</p>
+        <p class="health-reset-note">不会删除资源源、代理配置，也不会清空今日额度。</p>
+        <div class="confirm-actions">
+          <button class="button secondary" type="button" :disabled="healthResetBusy" @click="closeHealthReset">取消</button>
+          <button class="button destructive" type="button" :disabled="healthResetBusy" @click="confirmHealthReset">
+            <span v-if="healthResetBusy" class="spinner"></span>
+            {{ healthResetBusy ? "重置中…" : "确认重置" }}
+          </button>
+        </div>
+      </section>
+    </div>
+
     <div v-if="notice" class="console-toast" role="status">
       <ConsoleIcon name="info" :size="17" />{{ notice }}
     </div>
@@ -428,6 +449,8 @@ const generatedAtLabel = computed(() => {
 
 const sourceDeleteTarget = ref<MonitorRow | null>(null);
 const sourceDeleteConfirm = ref("");
+const healthResetOpen = ref(false);
+const healthResetBusy = ref(false);
 
 const autoRefresh = ref(true);
 const sourceSettingsOpen = ref(false);
@@ -676,6 +699,32 @@ function closeSourceDelete() {
   if (deleteBusy.value) return;
   sourceDeleteTarget.value = null;
   sourceDeleteConfirm.value = "";
+}
+
+function requestHealthReset() {
+  if (healthResetBusy.value) return;
+  healthResetOpen.value = true;
+}
+
+function closeHealthReset() {
+  if (healthResetBusy.value) return;
+  healthResetOpen.value = false;
+}
+
+async function confirmHealthReset() {
+  if (healthResetBusy.value) return;
+  healthResetBusy.value = true;
+  try {
+    await $fetch("/api/admin/monitor/reset", { method: "POST" });
+    healthResetOpen.value = false;
+    await loadMonitor({ silent: true });
+    notify("全部健康状态已重置，下一次请求会重新探测。");
+  } catch (error: any) {
+    if ((error?.statusCode || error?.response?.status) === 401) emit("unauthorized");
+    else notify(`重置失败：${apiErrorMessage(error)}`);
+  } finally {
+    healthResetBusy.value = false;
+  }
 }
 
 async function confirmDeleteSource() {
@@ -975,6 +1024,31 @@ onBeforeUnmount(() => {
   gap: 7px;
   padding-inline: 14px;
   white-space: nowrap;
+}
+.monitor-health-reset-button {
+  min-height: 44px;
+  gap: 7px;
+  padding-inline: 14px;
+  border-color: #f1d6c9;
+  background: #fffaf7;
+  color: #b45309;
+  white-space: nowrap;
+}
+.monitor-health-reset-button:hover:not(:disabled) {
+  border-color: #e6b9a5;
+  background: #fff3eb;
+  color: #92400e;
+}
+.health-reset-dialog {
+  max-width: 440px;
+}
+.health-reset-icon {
+  background: #fff3e8;
+  color: #b45309;
+}
+.health-reset-note {
+  color: #7b8790;
+  font-size: 12px;
 }
 .monitor-title-row h2 > span small {
   color: #9aa39e;
