@@ -1,19 +1,40 @@
-// Configure your HTTPS request domain in the WeChat console before running.
-const API_BASE = 'https://pan.letus.lol';
+const { API_BASE } = require('./config');
+
 const STORAGE_KEY = 'panhub-auth';
 let pendingLogin;
 
-function request(path, { method = 'GET', data, cookie, authenticated = true } = {}) {
-  const session = wx.getStorageSync(STORAGE_KEY);
+function getSession() {
+  try {
+    const session = wx.getStorageSync(STORAGE_KEY);
+    return session && session.token ? session : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearSession() {
+  try { wx.removeStorageSync(STORAGE_KEY); } catch (error) { /* storage unavailable */ }
+}
+
+/** A stored token is usable until shortly before its server-side expiry. */
+function hasValidSession() {
+  const session = getSession();
+  if (!session) return false;
+  return !session.expiresAt || session.expiresAt > Date.now() + 60000;
+}
+
+function request(path, { method = 'GET', data, authenticated = true } = {}) {
+  const session = getSession();
   const header = { 'content-type': 'application/json' };
-  if (cookie) header.Cookie = cookie;
-  else if (authenticated && session && session.token) header.Authorization = `Bearer ${session.token}`;
+  // Mini program sessions are Bearer-only: the server isolates them from
+  // browser cookie sessions and never relies on wx.request cookies here.
+  if (authenticated && session) header.Authorization = `Bearer ${session.token}`;
   return new Promise((resolve, reject) => wx.request({
     url: `${API_BASE}${path}`, method, data, header, timeout: 15000,
     success(response) {
       if (response.statusCode >= 200 && response.statusCode < 300) return resolve(response);
-      if (response.statusCode === 401 && authenticated) wx.removeStorageSync(STORAGE_KEY);
-      const detail = response.data && response.data.statusMessage;
+      if (response.statusCode === 401 && authenticated) clearSession();
+      const detail = response.data && (response.data.statusMessage || response.data.message);
       const messages = {
         'External identity is not linked': '该微信尚未开通账号，请联系管理员。',
         'Account unavailable': '账号已停用，请联系管理员。',
@@ -25,9 +46,15 @@ function request(path, { method = 'GET', data, cookie, authenticated = true } = 
         'Invalid login ticket': '二维码无效，请回到网页重新获取。'
       };
       const fallback = { 400: '提交的信息有误，请检查后重试。', 401: '登录凭证无效，请重新登录。', 403: '当前操作不被允许，请联系管理员。', 409: '操作冲突，请稍后重试。', 410: '二维码已失效，请回到网页刷新后重试。', 429: '操作过于频繁，请稍后重试。', 502: '微信登录服务暂不可用，请稍后重试。', 503: '登录服务暂不可用，请稍后重试。' };
-      reject(new Error(messages[detail] || fallback[response.statusCode] || `请求失败 (${response.statusCode})`));
+      const error = new Error(messages[detail] || fallback[response.statusCode] || `请求失败 (${response.statusCode})`);
+      error.statusCode = response.statusCode;
+      reject(error);
     },
-    fail() { reject(new Error('网络请求失败，请稍后重试')); }
+    fail() {
+      const error = new Error('网络请求失败，请稍后重试');
+      error.statusCode = 0;
+      reject(error);
+    }
   }));
 }
 
@@ -39,20 +66,32 @@ function loginCode() {
   }));
 }
 
+/**
+ * Silent wx.login + code2Session. First login auto-creates the account on the
+ * server; the returned Bearer token is the only credential the mini program
+ * needs (no cookies involved).
+ */
 function login() {
   if (pendingLogin) return pendingLogin;
   pendingLogin = (async () => {
     const code = await loginCode();
     const { data } = await request('/api/account/wechat/login', { method: 'POST', data: { code }, authenticated: false });
-    wx.setStorageSync(STORAGE_KEY, { token: data.token, expiresAt: data.expiresAt });
-    return data.user;
+    const session = { token: data.token, expiresAt: data.expiresAt, user: data.user || null };
+    wx.setStorageSync(STORAGE_KEY, session);
+    return session.user;
   })().finally(() => { pendingLogin = undefined; });
   return pendingLogin;
 }
 
+/** Resolve with a usable session: reuse the stored token or sign in silently. */
+function ensureLogin() {
+  if (hasValidSession()) return Promise.resolve(getSession().user);
+  return login();
+}
+
 async function logout() {
   try { await request('/api/account/logout', { method: 'POST' }); }
-  finally { wx.removeStorageSync(STORAGE_KEY); }
+  finally { clearSession(); }
 }
 
 /**
@@ -68,4 +107,4 @@ async function confirmQrLogin(scene) {
   await request('/api/account/wechat/qr/confirm', { method: 'POST', data: { scene, code }, authenticated: false });
 }
 
-module.exports = { login, logout, confirmQrLogin, request };
+module.exports = { login, ensureLogin, logout, confirmQrLogin, request, getSession, clearSession, hasValidSession };

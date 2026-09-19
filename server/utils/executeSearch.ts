@@ -2,8 +2,7 @@ import { getOrCreateSearchService } from "../core/services";
 import { getOrCreateHotSearchService } from "../core/services/hotSearchService";
 import { searchManagedResources } from "../core/services/managedResourceService";
 import { buildUserSource, listUnifiedSources } from "../core/services/sourceCatalog";
-import type { SearchSourceUpdate } from "../core/types/models";
-import { hideSearchResponseDebugFields } from "./searchResponseVisibility";
+import type { SearchDebugSource, SearchSourceUpdate } from "../core/types/models";
 import { applySearchDefaults } from "./searchDefaults";
 import { parseSearchRequest } from "./searchRequest";
 import { mergeLocalResources } from "../core/utils/resultMerge";
@@ -13,14 +12,14 @@ export interface PreparedSearch {
   request: ReturnType<typeof parseSearchRequest>;
   effective: ReturnType<typeof applySearchDefaults>;
   /** Internal response mode; never populated from a client request parameter. */
-  includeMeta: boolean;
+  includeDebug: boolean;
   /** Server-assigned id used to join search outcome and link interactions. */
   searchLogId?: number;
 }
 
-export function prepareSearch(raw: unknown, options: { includeMeta?: boolean } = {}): PreparedSearch {
+export function prepareSearch(raw: unknown, options: { includeDebug?: boolean } = {}): PreparedSearch {
   const request = parseSearchRequest(raw);
-  return { request, effective: applySearchDefaults(request), includeMeta: options.includeMeta === true };
+  return { request, effective: applySearchDefaults(request), includeDebug: options.includeDebug === true };
 }
 
 export async function executePreparedSearch(
@@ -53,14 +52,15 @@ export async function executePreparedSearch(
   // local resources on top of it would ignore the scope the caller asked for.
   const localResults = customChannelMode ? [] : searchManagedResources(prepared.request.kw);
   const sourceResultCounts: Record<string, number> = {};
+  const sourceResults = new Map<string, SearchDebugSource["results"]>();
   const emitSourceSuccess = async (update: SearchSourceUpdate) => {
     sourceResultCounts[update.sourceId] = update.results.length;
+    sourceResults.set(update.sourceId, update.results);
     await onSourceSuccess?.(update);
   };
   try {
     if (localResults.length) {
       await emitSourceSuccess({
-        request: { keyword: prepared.request.kw, phase: "source" },
         sourceId: "managed_resources",
         results: localResults,
       });
@@ -78,15 +78,22 @@ export async function executePreparedSearch(
     // streamed view, while preserving local resources ahead of source data.
     response.results = mergeLocalResources(localResults, response.results);
     response.total = response.results.length;
-    for (const source of response.meta?.sources || []) {
+    for (const source of response.sources || []) {
       if (source.status === "success") sourceResultCounts[source.id] = source.resultCount;
     }
     await getOrCreateHotSearchService().recordSearch(prepared.request.kw);
     if (prepared.searchLogId) completeSearchLog(prepared.searchLogId, response.total, sourceResultCounts);
+    const sources = (response.sources || []).map((source) => ({
+      ...source,
+      results: sourceResults.get(source.id) || [],
+    }));
+    const data = prepared.includeDebug
+      ? { total: response.total, sources, searchLogId: prepared.searchLogId }
+      : { total: response.total, results: response.results, searchLogId: prepared.searchLogId };
     return {
       code: 0,
       message: warnings.length ? "partial_success" : "success",
-      data: prepared.includeMeta ? { ...response, searchLogId: prepared.searchLogId } : { ...hideSearchResponseDebugFields(response), searchLogId: prepared.searchLogId },
+      data,
     };
   } catch (error) {
     if (prepared.searchLogId) {

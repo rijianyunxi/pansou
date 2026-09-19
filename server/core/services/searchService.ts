@@ -6,9 +6,9 @@ import { getUnifiedSourceVersion, listUnifiedSources } from "./sourceCatalog";
 import { toSourceDefinition } from "./configuredSource";
 import { executeSource } from "../source-runtime/executor";
 import type { SourceDefinition } from "../../../types/source";
-import type { SearchExecutionResponse, SearchResult, SearchSourceMeta, SearchSourceUpdate } from "../types/models";
+import type { ProxyNodeMeta, SearchExecutionResponse, SearchResult, SearchSourceMeta, SearchSourceUpdate } from "../types/models";
 import { ErrorCollector, classifyError, ErrorType, type WarningInfo } from "../utils/errors";
-import { mergeResultsByIdentity } from "../utils/resultMerge";
+import { mergeResultsByLink } from "../utils/resultMerge";
 import { createSourceHealthChecker, type SourceHealthStatus } from "./sourceHealth";
 import {
   clearSourceHealthStatuses,
@@ -43,13 +43,17 @@ interface CachedSourceState {
   id: string;
   name: string;
   status: "success" | "failed";
-  results: SearchResult[];
-  proxyNode?: string;
+  resultCount: number;
+  proxyNodes?: ProxyNodeMeta[];
   warning?: WarningInfo;
 }
 
 interface SearchCacheEntry {
   sources: Record<string, CachedSourceState>;
+  /** Cross-source link-deduplicated results for this keyword. */
+  results: SearchResult[];
+  /** Raw result batches keyed by source, used by the JSON debug endpoint. */
+  resultsBySource?: Record<string, SearchResult[]>;
 }
 
 interface InFlightSubscriber {
@@ -172,7 +176,7 @@ export class SearchService {
         sourcesToExecute = resolved.filter((source) => cachedEntry!.sources[sourceKey(source)]?.status !== "success");
         if (!sourcesToExecute.length) {
           const response = this.buildResponseFromCache(resolved, cachedEntry);
-          await this.emitCachedResults(resolved, cachedEntry, executionOptions.onSourceSuccess, keyword);
+          await this.emitCachedResults(resolved, cachedEntry, executionOptions.onSourceSuccess);
           return { response, warnings: [] };
         }
       }
@@ -261,7 +265,6 @@ export class SearchService {
       if (scope.signal.aborted && !executionOptions.signal?.aborted) {
         const detail = classifyError(scope.signal.reason, "search");
         result.warnings.push({ type: detail.type, message: detail.message, source: detail.source, count: 1 });
-        if (result.response.meta) result.response.meta.warnings = result.warnings;
       }
       return result;
     } finally {
@@ -283,10 +286,10 @@ export class SearchService {
         name: source.name,
         priority: source.priority,
         status: cached?.status === "success" ? "success" : cached?.status === "failed" ? "failed" : "skipped",
-        resultCount: cached?.status === "success" ? cached.results.length : 0,
+        resultCount: cached?.status === "success" ? cached.resultCount : 0,
         elapsedMs: 0,
         transformMs: null,
-        proxyNode: cached?.proxyNode || (cached?.status === "success" ? "直连" : "未执行"),
+        proxyNodes: clone(cached?.proxyNodes || []),
       };
     });
     const diagnosticById = new Map(diagnostics.map((item) => [item.id, item]));
@@ -296,9 +299,12 @@ export class SearchService {
       const cached = cachedStates[key];
       nextStates[key] = cached
         ? clone(cached)
-        : { id: source.id, name: source.name, status: "failed", results: [] };
+        : { id: source.id, name: source.name, status: "failed", resultCount: 0 };
     }
-    await this.emitCachedResults(allSources, cachedEntry, execution.onSourceSuccess, keyword);
+    await this.emitCachedResults(allSources, cachedEntry, execution.onSourceSuccess);
+    const resultsBySource: Record<string, SearchResult[]> = cachedEntry?.resultsBySource
+      ? clone(cachedEntry.resultsBySource)
+      : {};
     const tasks = sourcesToExecute.map((source) => async () => {
       const diagnostic = diagnosticById.get(source.id)!;
       const started = Date.now();
@@ -345,17 +351,18 @@ export class SearchService {
         diagnostic.status = "success";
         diagnostic.resultCount = sourceResults.length;
         diagnostic.elapsedMs = Date.now() - started;
-        diagnostic.proxyNode = result.proxyNodes.length ? result.proxyNodes.join(" → ") : "直连";
+        diagnostic.proxyNodes = clone(result.proxyNodes);
         if (trackHealth) this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
         if (execution.onSourceSuccess && !execution.signal.aborted) {
-          await execution.onSourceSuccess({ request: { keyword, phase: "source" }, sourceId: source.id, results: sourceResults });
+          await execution.onSourceSuccess({ sourceId: source.id, results: sourceResults });
         }
+        resultsBySource[sourceKey(source)] = clone(sourceResults);
         nextStates[sourceKey(source)] = {
           id: source.id,
           name: source.name,
           status: "success",
-          results: clone(sourceResults),
-          proxyNode: diagnostic.proxyNode,
+          resultCount: sourceResults.length,
+          proxyNodes: clone(diagnostic.proxyNodes),
         };
         return sourceResults;
       } catch (error) {
@@ -374,7 +381,8 @@ export class SearchService {
           id: source.id,
           name: source.name,
           status: "failed",
-          results: [],
+          resultCount: 0,
+          proxyNodes: clone(diagnostic.proxyNodes),
           warning: {
             type: detail.type,
             message: detail.message,
@@ -387,62 +395,60 @@ export class SearchService {
       }
     });
     const resultGroups = await Promise.all(tasks.map((task) => execution.schedule(() => task())));
-    const cachedResults = allSources.flatMap((source) => {
-      const cached = cachedStates[sourceKey(source)];
-      return cached?.status === "success" ? cached.results : [];
-    });
+    const cachedResults = cachedEntry?.results || [];
     const results = this.mergeUniqueResults([...cachedResults, ...resultGroups.flat()]);
     const warnings = Array.from(new Map([...collector.getWarnings(), ...cachedWarnings].map((warning) => [`${warning.type}:${warning.source || ""}`, warning])).values());
-    const response: SearchExecutionResponse = { total: results.length, results, meta: { sources: diagnostics, warnings } };
+    const response: SearchExecutionResponse = { total: results.length, results, sources: diagnostics };
     if (cacheAllowed && allSources.every((source) => source.enabled !== false) && Object.keys(nextStates).length) {
-      this.cache.set(CacheNamespace.SEARCH, cacheKey, { sources: nextStates });
+      this.cache.set(CacheNamespace.SEARCH, cacheKey, {
+        sources: nextStates,
+        results: clone(results),
+        resultsBySource,
+      });
     }
     return { response, warnings };
   }
 
   private buildResponseFromCache(sources: SourceDefinition[], entry: SearchCacheEntry): SearchExecutionResponse {
-    const results = this.mergeUniqueResults(sources.flatMap((source) => {
-      const cached = entry.sources[sourceKey(source)];
-      return cached?.status === "success" ? cached.results : [];
-    }));
+    // The cache stores the final link-deduplicated projection, so a complete
+    // cache hit does not need to scan and merge the result list again.
+    const results = clone(entry.results);
     return {
       total: results.length,
       results,
-      meta: {
-        sources: sources.map((source) => ({
-          id: source.id,
-          name: source.name,
-          priority: source.priority,
-          status: "success",
-          resultCount: entry.sources[sourceKey(source)]?.results.length || 0,
-          elapsedMs: 0,
-          transformMs: null,
-          proxyNode: entry.sources[sourceKey(source)]?.proxyNode || "直连",
-        })),
-        warnings: [],
-      },
+      sources: sources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        priority: source.priority,
+        status: "success",
+        resultCount: entry.sources[sourceKey(source)]?.resultCount || 0,
+        elapsedMs: 0,
+        transformMs: null,
+        proxyNodes: clone(entry.sources[sourceKey(source)]?.proxyNodes || []),
+      })),
     };
   }
 
-  private async emitCachedResults(sources: SourceDefinition[], entry: SearchCacheEntry | undefined, callback: ((update: SearchSourceUpdate) => void | Promise<void>) | undefined, keyword: string): Promise<void> {
-    if (!entry || !callback) return;
-    for (const source of sources) {
-      const state = entry.sources[sourceKey(source)];
-      if (state?.status === "success" && state.results.length) await callback({ request: { keyword, phase: "source" }, sourceId: source.id, results: clone(state.results) });
+  private async emitCachedResults(sources: SourceDefinition[], entry: SearchCacheEntry | undefined, callback: ((update: SearchSourceUpdate) => void | Promise<void>) | undefined): Promise<void> {
+    if (!entry || !callback || !entry.results.length || !sources.length) return;
+    if (entry.resultsBySource) {
+      for (const source of sources) {
+        const results = entry.resultsBySource[sourceKey(source)];
+        if (results?.length) await callback({ sourceId: source.id, results: clone(results) });
+      }
+      return;
     }
+    // Older in-memory cache entries do not have per-source batches. Preserve
+    // streaming behavior by emitting the merged snapshot once as a fallback.
+    const source = sources.find((item) => entry.sources[sourceKey(item)]?.status === "success") || sources[0]!;
+    await callback({ sourceId: source.id, results: clone(entry.results) });
   }
 
   /**
-   * Deduplicate results gathered from several sources.
-   *
-   * This delegates to the shared pipeline definition instead of comparing raw
-   * ids: the old `id || links[0].url || name|datetime` key never fell through to
-   * the link branch because every source result carries an id, so the same share
-   * link coming from two sources was emitted twice here while the streamed view
-   * emitted it once.
+   * Deduplicate results gathered from several sources by shared links only.
    */
   private mergeUniqueResults(results: SearchResult[]): SearchResult[] {
-    return mergeResultsByIdentity(results);
+    return mergeResultsByLink(results);
   }
   private recordHealth(source: SourceDefinition, ok: boolean, elapsedMs: number, resultCount: number, message?: string, category?: string): void {
     this.sourceNames.set(source.id, source.name);

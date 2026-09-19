@@ -80,8 +80,8 @@ export interface SourceExecutionTrace {
 export interface SourceExecutionResult {
   results: import("../types/models").SearchResult[];
   traces: SourceExecutionTrace[];
-  /** Proxy nodes used while fetching this source, in attempt order. */
-  proxyNodes: string[];
+  /** Proxy/direct attempts used while fetching this source, in attempt order. */
+  proxyNodes: import("../types/models").ProxyNodeMeta[];
   /** Admin-only debug payload preview. */
   raw: string;
   rawTruncated: boolean;

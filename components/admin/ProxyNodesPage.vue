@@ -65,9 +65,8 @@
     <Teleport to="body">
       <div v-if="editorOpen" class="admin-modal-backdrop" @click.self="closeEditor">
         <section class="admin-modal proxy-modal" role="dialog" aria-modal="true" aria-labelledby="proxy-editor-title">
-          <header class="admin-modal-header"><div><p class="modal-eyebrow">PROXY NODE</p><h2 id="proxy-editor-title">{{ editing ? '编辑代理节点' : '添加代理节点' }}</h2><p>节点地址用于提供线路；每日额度为 0 表示不限额。</p></div><button class="modal-close" type="button" @click="closeEditor">×</button></header>
+          <header class="admin-modal-header"><div><p class="modal-eyebrow">PROXY NODE</p><h2 id="proxy-editor-title">{{ editing ? '编辑代理节点' : '添加代理节点' }}</h2><p>节点 ID 将根据名称自动生成；节点地址用于提供线路，每日额度为 0 表示不限额。</p></div><button class="modal-close" type="button" @click="closeEditor">×</button></header>
           <form class="proxy-form" @submit.prevent="save">
-            <label class="modal-field">节点 ID<input v-model.trim="form.id" :disabled="editing" required pattern="[a-z0-9][a-z0-9_-]{1,63}" placeholder="worker-a" /></label>
             <label class="modal-field">名称<input v-model.trim="form.name" required maxlength="100" placeholder="Worker 节点 A" /></label>
             <label class="modal-field">节点地址<input v-model.trim="form.baseUrl" required type="url" placeholder="https://xxx.workers.dev" /></label>
             <label class="modal-field">每日额度<input v-model.number="form.dailyLimit" required type="number" min="0" max="10000000" /><small>0 表示不限额。</small></label>
@@ -77,7 +76,7 @@
           </form>
         </section>
       </div>
-      <div v-if="routeEditorOpen" class="admin-modal-backdrop" @click.self="closeRouteEditor"><section class="admin-modal proxy-modal" role="dialog" aria-modal="true"><header class="admin-modal-header"><div><p class="modal-eyebrow">PROXY POLICY</p><h2>{{ routeEditing ? '编辑代理策略' : '新增代理策略' }}</h2><p>先勾选资源源，再选择参与策略的节点和权重。</p></div><button class="modal-close" type="button" @click="closeRouteEditor">×</button></header><form class="proxy-form" @submit.prevent="saveRoute"><label class="modal-field">策略名称<input v-model.trim="routeForm.name" required placeholder="例如：Telegram 资源、国内资源" /></label><fieldset class="source-picker"><legend>绑定哪些资源源</legend><label v-for="source in sources" :key="source.id" class="source-picker-row"><input type="checkbox" :checked="routeSourceSelected(source.id)" :disabled="!!sourceBindingOwner(source.id)" @change="toggleRouteSource(source.id)" /><span class="source-picker-name"><strong>{{ source.name }}</strong><small>{{ sourceBindingOwner(source.id) ? `已绑定：${sourceBindingOwner(source.id)}` : (source.enabled ? (source.description || source.url) : '已停用 · ' + (source.description || source.url)) }}</small></span></label><small v-if="!sources.length" class="field-helper">暂无可绑定的资源源，请先到来源管理添加。</small><small v-else class="field-helper">一个资源源只能绑定一条代理策略。</small></fieldset><fieldset class="node-picker"><legend>使用哪些节点</legend><label v-for="node in proxyNodes" :key="node.id" class="node-picker-row"><input type="checkbox" :checked="routeNodeSelected(node.id)" @change="toggleRouteNode(node.id)" /><span class="node-picker-name"><strong>{{ node.name }}</strong><small>{{ isDirectNode(node) ? '直接连接目标站点' : '节点' }}</small></span><input v-if="routeNodeSelected(node.id)" v-model.number="routeMemberWeights[node.id]" class="node-weight-input" type="number" min="1" max="100" aria-label="节点权重" /><span v-if="routeNodeSelected(node.id)" class="node-weight-label">权重</span></label><small class="field-helper">权重越高，被选中的机会越大；未勾选的节点不会参与这条策略。</small></fieldset><p v-if="routeError" class="modal-error">{{ routeError }}</p><div class="admin-modal-actions"><button class="modal-button secondary" type="button" @click="closeRouteEditor">取消</button><button class="modal-button primary" type="submit">保存策略</button></div></form></section></div>
+      <div v-if="routeEditorOpen" class="admin-modal-backdrop" @click.self="closeRouteEditor"><section class="admin-modal proxy-modal" role="dialog" aria-modal="true"><header class="admin-modal-header"><div><p class="modal-eyebrow">PROXY POLICY</p><h2>{{ routeEditing ? '编辑代理策略' : '新增代理策略' }}</h2><p>先勾选资源源，再选择参与策略的节点和权重。</p></div><button class="modal-close" type="button" @click="closeRouteEditor">×</button></header><form class="proxy-form" @submit.prevent="saveRoute"><label class="modal-field">策略名称<input v-model.trim="routeForm.name" required placeholder="例如：Telegram 资源、国内资源" /></label><fieldset class="source-picker"><legend>绑定哪些资源源</legend><label v-for="source in sources" :key="source.id" class="source-picker-row"><input type="checkbox" :checked="routeSourceSelected(source.id)" :disabled="!!sourceBindingOwner(source.id)" @change="toggleRouteSource(source.id)" /><span class="source-picker-name"><strong>{{ source.name }}</strong><small>{{ sourceBindingOwner(source.id) ? `已绑定：${sourceBindingOwner(source.id)}` : (source.enabled ? (source.description || source.url) : '已停用 · ' + (source.description || source.url)) }}</small></span></label><small v-if="!sources.length" class="field-helper">暂无可绑定的资源源，请先到来源管理添加。</small><small v-else class="field-helper">一个资源源只能绑定一条代理策略。</small></fieldset><fieldset class="node-picker"><legend>使用哪些节点</legend><label v-for="node in proxyNodes" :key="node.id" class="node-picker-row"><input type="checkbox" :checked="routeNodeSelected(node.id)" :disabled="!node.enabled && !routeNodeSelected(node.id)" @change="toggleRouteNode(node.id)" /><span class="node-picker-name"><strong>{{ node.name }}</strong><small>{{ !node.enabled ? '已停用，当前不会参与请求' : (isDirectNode(node) ? '直接连接目标站点' : '节点') }}</small></span><input v-if="routeNodeSelected(node.id)" v-model.number="routeMemberWeights[node.id]" class="node-weight-input" type="number" min="1" max="100" aria-label="节点权重" /><span v-if="routeNodeSelected(node.id)" class="node-weight-label">权重</span></label><small class="field-helper">权重越高，被选中的机会越大；停用或不可用的节点会自动跳过。</small></fieldset><p v-if="routeError" class="modal-error">{{ routeError }}</p><div class="admin-modal-actions"><button class="modal-button secondary" type="button" @click="closeRouteEditor">取消</button><button class="modal-button primary" type="submit">保存策略</button></div></form></section></div>
     </Teleport>
   </div>
 </template>
@@ -119,8 +118,9 @@ const notice = ref("");
 const noticeError = ref(false);
 const editorOpen = ref(false);
 const editing = ref(false);
+const editingId = ref<string | null>(null);
 const formError = ref("");
-const form = ref({ id: "", name: "", baseUrl: "", dailyLimit: 0, enabled: true });
+const form = ref({ name: "", baseUrl: "", dailyLimit: 0, enabled: true });
 const routeEditorOpen = ref(false); const routeEditing = ref(false); const routeError = ref("");
 const routeForm = ref({ id: "", name: "", sourceIds: [] as string[], groupId: "" });
 const routeFallbackAction = ref<"error" | "direct">("error");
@@ -177,15 +177,17 @@ async function saveRoute() { routeError.value = ""; try { const members = routeS
 async function removeRoute(route: ProxyRoute) { if (!window.confirm(`确定删除「${route.name}」吗？`)) return; try { await $fetch(`/api/admin/proxy-routes/${encodeURIComponent(route.id)}`, { method: "DELETE" }); await load(); show("代理策略已删除"); } catch (error: any) { show(apiError(error), true); } }
 function openCreate() {
   editing.value = false;
+  editingId.value = null;
   formError.value = "";
-  form.value = { id: "", name: "", baseUrl: "", dailyLimit: 0, enabled: true };
+  form.value = { name: "", baseUrl: "", dailyLimit: 0, enabled: true };
   editorOpen.value = true;
 }
 
 function edit(node: ProxyNode) {
   editing.value = true;
+  editingId.value = node.id;
   formError.value = "";
-  form.value = { id: node.id, name: node.name, baseUrl: node.baseUrl, dailyLimit: node.dailyLimit, enabled: node.enabled };
+  form.value = { name: node.name, baseUrl: node.baseUrl, dailyLimit: node.dailyLimit, enabled: node.enabled };
   editorOpen.value = true;
 }
 
@@ -195,7 +197,7 @@ async function save() {
   busy.value = true;
   formError.value = "";
   try {
-    const endpoint = editing.value ? `/api/admin/proxies/${encodeURIComponent(form.value.id)}` : "/api/admin/proxies";
+    const endpoint = editing.value && editingId.value ? `/api/admin/proxies/${encodeURIComponent(editingId.value)}` : "/api/admin/proxies";
     await $fetch(endpoint, { method: editing.value ? "PUT" : "POST", body: form.value });
     editorOpen.value = false;
     await load();
@@ -264,7 +266,7 @@ onMounted(load);
 .proxy-status.half-open { background: #fff8db; color: #9a6700; }
 .proxy-status.quota_exhausted { background: #feecec; color: #c62828; }
 .proxy-form { display: grid; gap: 13px; }
-.proxy-toggle { display: flex; align-items: center; gap: 8px; }
+.proxy-form .proxy-toggle { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; }
 .proxy-toggle input { width: 17px; height: 17px; margin: 0; accent-color: #2563eb; }
 .proxy-modal { width: min(560px, 100%); max-height: calc(100vh - 48px); overflow: auto; }
 .admin-modal-backdrop { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 42, .42); backdrop-filter: blur(3px); }

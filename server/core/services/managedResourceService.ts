@@ -152,9 +152,10 @@ function cloneResults(results: SearchResult[]): SearchResult[] {
   }));
 }
 
-export function listManagedResources(options: { q?: string; cloudType?: string; page: number; pageSize: number }) {
+export function listManagedResources(options: { q?: string; cloudType?: string; approvalStatus?: ManagedResourceApprovalStatus; page: number; pageSize: number }) {
   const db = getSqliteDatabase(); const q = options.q?.trim() || ""; const cloudType = options.cloudType && CLOUD_TYPE_SET.has(options.cloudType) ? options.cloudType : "";
-  const conditions: string[] = []; const params: unknown[] = [];
+  const approvalStatus = options.approvalStatus || "approved";
+  const conditions: string[] = ["approval_status = ?"]; const params: unknown[] = [approvalStatus];
   // Same predicate as the search path. The projection already covers name,
   // description and tags, so matching it is both cheaper and consistent.
   const predicate = keywordPredicate(q);
@@ -165,8 +166,15 @@ export function listManagedResources(options: { q?: string; cloudType?: string; 
   const rows = db.allRows<ResourceRow>(`SELECT * FROM managed_resources ${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`, ...params, options.pageSize, (options.page - 1) * options.pageSize);
   return { items: rows.map(rowToAdmin), total, page: options.page, pageSize: options.pageSize };
 }
+export function countManagedResourcesByApproval(): Record<ManagedResourceApprovalStatus, number> {
+  const counts: Record<ManagedResourceApprovalStatus, number> = { pending: 0, approved: 0, rejected: 0 };
+  for (const row of getSqliteDatabase().allRows<{ approval_status: ManagedResourceApprovalStatus; count: number }>("SELECT approval_status, COUNT(*) AS count FROM managed_resources GROUP BY approval_status")) {
+    if (row.approval_status in counts) counts[row.approval_status] = Number(row.count || 0);
+  }
+  return counts;
+}
 export function getManagedResource(id: string): SearchResult | null { const row = getSqliteDatabase().getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", id); return row ? rowToResource(row) : null; }
-export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); insertResource(resource, "approved", true); invalidateSearchCache(); return resource; }
+export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); insertResource(resource, "pending", false); invalidateSearchCache(); return resource; }
 
 export function captureManagedResource(raw: unknown): { status: "created" | "duplicate"; resource: SearchResult } {
   const resource = normalizeInput({ ...(raw as object), id: `captured-${randomUUID()}` });
@@ -203,7 +211,9 @@ export function setManagedResourceApproval(ids: string[], status: Exclude<Manage
   if (!unique.length) return 0;
   const db = getSqliteDatabase();
   const enabled = status === "approved" ? 1 : 0;
-  const changes = db.transaction(() => unique.reduce((count, id) => count + Number(db.run("UPDATE managed_resources SET approval_status=?,enabled=?,updated_at=? WHERE id=?", status, enabled, Date.now(), id).changes), 0));
+  // Only pending submissions can enter the inventory. This prevents a stale
+  // admin tab from silently changing an already approved/rejected resource.
+  const changes = db.transaction(() => unique.reduce((count, id) => count + Number(db.run("UPDATE managed_resources SET approval_status=?,enabled=?,updated_at=? WHERE id=? AND approval_status='pending'", status, enabled, Date.now(), id).changes), 0));
   if (changes) invalidateSearchCache();
   return changes;
 }

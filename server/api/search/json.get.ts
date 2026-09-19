@@ -9,7 +9,7 @@ import { withRequestSignal } from "../../utils/requestSignal";
  * session, policy, custom-channel and logging pipeline as SSE searches.
  */
 export default defineEventHandler(async (event) => {
-  const authorized = authorizeSearch(event, getQuery(event), { includeMeta: true });
+  const authorized = authorizeSearch(event, getQuery(event), { includeDebug: true });
   setPrivateNoStore(event);
   setHeader(event, "Content-Type", "application/json; charset=utf-8");
   return await withRequestSignal(event, (signal) => executePreparedSearch(authorized.prepared, signal));

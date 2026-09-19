@@ -207,6 +207,8 @@ export function resolveProxyRoute(sourceId?: string): ProxyRouteDecision | undef
 }
 
 function buildDecision(route: ProxyRoute): ProxyRouteDecision {
-  const group = route.groupId ? getSqliteDatabase().getRow<any>("SELECT fallback_action FROM proxy_groups WHERE id=? AND enabled=1", route.groupId) : undefined;
+  // Read fallback policy even when the group is disabled. A disabled group
+  // should still honor its configured direct/error fallback behavior.
+  const group = route.groupId ? getSqliteDatabase().getRow<any>("SELECT fallback_action FROM proxy_groups WHERE id=?", route.groupId) : undefined;
   return { routeId: route.id, routeName: route.name, action: route.action, groupId: route.groupId, fallbackAction: group?.fallback_action === "direct" ? "direct" : "error" };
 }

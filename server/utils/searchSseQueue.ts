@@ -1,12 +1,12 @@
 import type { SearchSourceUpdate } from "../core/types/models";
 
-export const SEARCH_SSE_INTERVAL_MS = 300;
+export const SEARCH_SSE_INTERVAL_MS = 16;
 
 type PushUpdate = (update: SearchSourceUpdate) => Promise<void>;
 
 /**
  * Sends the first completed source immediately, then keeps every later source
- * in FIFO order and emits exactly one result event per 300ms interval.
+ * in FIFO order and emits at most one result event per 16ms interval.
  */
 export class SearchSseQueue {
   private readonly pending: Array<{ update: SearchSourceUpdate; resolve: () => void; reject: (error: unknown) => void }> = [];

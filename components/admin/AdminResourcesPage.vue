@@ -51,6 +51,16 @@
           <section class="feature-content">
             <p v-if="notice" class="feature-notice" :class="{ error: noticeError }" role="status">{{ notice }}</p>
             <section class="query-panel" aria-label="资源查询与操作">
+              <div class="resource-tabs" role="tablist" aria-label="资源审核状态">
+                <button v-for="view in approvalViews" :key="view.key" class="resource-tab" :class="{ active: approvalStatus === view.key }"
+                  type="button" role="tab" :aria-selected="approvalStatus === view.key" @click="switchApprovalView(view.key)">
+                  <span>{{ view.label }}</span><span class="resource-tab-count" :class="{ pending: view.key === 'pending' }">{{ approvalCounts[view.key] }}</span>
+                </button>
+              </div>
+              <div class="resource-view-hint">
+                <ConsoleIcon :name="approvalStatus === 'pending' ? 'clock' : approvalStatus === 'rejected' ? 'close' : 'database'" :size="15" />
+                <span>{{ viewDescription }}</span>
+              </div>
               <form class="query-toolbar" @submit.prevent="loadResources"><label class="query-input">
                   <ConsoleIcon name="search" :size="16" /><input v-model.trim="query" type="search"
                     placeholder="按名称、描述或标签查询" />
@@ -67,13 +77,13 @@
                     class="button danger-button" type="button" :disabled="!selected.length || busy"
                     @click="deleteSelected"><ConsoleIcon name="trash" :size="14" />批量删除<span v-if="selected.length" class="action-count">{{ selected.length
                     }}</span></button><button class="button secondary" type="button" :disabled="!canEnable || busy"
-                    @click="setEnabled(selected, true)">批量启用</button><button
-                    class="button danger-button" type="button" :disabled="!canDisable || busy" @click="setEnabled(selected, false)"><ConsoleIcon name="stop" :size="14" />批量停用</button><button
+                    v-if="approvalStatus === 'approved'" @click="setEnabled(selected, true)">批量启用</button><button
+                    v-if="approvalStatus === 'approved'" class="button danger-button" type="button" :disabled="!canDisable || busy" @click="setEnabled(selected, false)"><ConsoleIcon name="stop" :size="14" />批量停用</button><button
                     class="button primary" type="button" @click="openCreate">
                     <ConsoleIcon name="plus" :size="14" />新增资源
-                  </button><button class="button primary" type="button" :disabled="!selected.length || busy" @click="reviewSelected('approved')">批量通过</button><button class="button danger-button" type="button" :disabled="!selected.length || busy" @click="reviewSelected('rejected')">批量拒绝</button></div>
+                  </button><button v-if="approvalStatus === 'pending'" class="button primary" type="button" :disabled="!selected.length || busy" @click="reviewSelected('approved')">批量通过</button><button v-if="approvalStatus === 'pending'" class="button danger-button" type="button" :disabled="!selected.length || busy" @click="reviewSelected('rejected')">批量拒绝</button></div>
               </form>
-              <div class="query-meta">已选 {{ selected.length }} 项 · 共 {{ total }} 条资源</div>
+              <div class="query-meta">已选 {{ selected.length }} 项 · {{ viewLabel }} {{ total }} 条</div>
             </section>
             <section class="sources-panel directory-panel table-panel" aria-label="资源列表">
               <div class="table-scroll">
@@ -130,7 +140,7 @@
                           </button><button v-if="item.approvalStatus === 'pending'" class="icon-button" type="button" :disabled="busy" aria-label="通过审核" title="通过审核" @click="review([item.id], 'approved')"><ConsoleIcon name="check" :size="14" /></button><button v-if="item.approvalStatus === 'pending'" class="icon-button danger-icon" type="button" :disabled="busy" aria-label="拒绝审核" title="拒绝审核" @click="review([item.id], 'rejected')"><ConsoleIcon name="close" :size="14" /></button><button class="icon-button" type="button" :disabled="busy"
                             :aria-label="`检测 ${item.name}`" title="检测此资源的链接状态" @click="checkOne(item)">
                             <ConsoleIcon name="refresh" :size="14" />
-                          </button><button
+                          </button><button v-if="approvalStatus === 'approved'"
                             class="icon-button" :class="{ 'danger-icon': item.enabled !== false }" type="button" :disabled="busy"
                             :title="item.enabled === false ? '重新出现在搜索结果里' : '从搜索结果里隐藏，数据保留'"
                             :aria-label="`${item.enabled === false ? '启用' : '停用'} ${item.name}`"
@@ -145,7 +155,7 @@
                     <tr v-if="!loading && !resources.length">
                       <td colspan="11" class="empty-cell">{{ query || cloudType
                         ? "没有匹配的资源。此处与前台搜索使用同一套分词规则（会忽略 1080p / 4K 等噪声词），关键词至少需要 2 个字符。"
-                        : "还没有维护资源，点击右上角新增资源。" }}
+                        : emptyLabel }}
                       </td>
                     </tr>
                     <tr v-if="loading">
@@ -202,9 +212,20 @@ import type { CloudType, Link, SearchResult } from "../../server/core/types/mode
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
 type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean; approvalStatus?: "pending" | "approved" | "rejected"; checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown"; checkMessage?: string | null; checkedAt?: number | null };
-const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref("");
+type ApprovalStatus = NonNullable<AdminResource["approvalStatus"]>;
+type ApprovalCounts = Record<ApprovalStatus, number>;
+const approvalViews: Array<{ key: ApprovalStatus; label: string }> = [
+  { key: "approved", label: "资源库" },
+  { key: "pending", label: "待审核" },
+  { key: "rejected", label: "已拒绝" },
+];
+const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const approvalStatus = ref<ApprovalStatus>("approved"); const approvalCounts = ref<ApprovalCounts>({ approved: 0, pending: 0, rejected: 0 }); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref("");
 const form = ref<{ id?: string; name: string; description: string; datetime: string; links: Array<{ type: CloudType; url: string; password: string }> }>({ name: "", description: "", datetime: "", links: [{ type: "baidu", url: "", password: "" }] });
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value))); const currentKeys = computed(() => resources.value.map((item) => item.id)); const allSelected = computed(() => currentKeys.value.length > 0 && currentKeys.value.every((id) => selected.value.includes(id))); const someSelected = computed(() => selected.value.some((id) => currentKeys.value.includes(id)) && !allSelected.value);
+const activeView = computed(() => approvalViews.find((view) => view.key === approvalStatus.value) || approvalViews[0]);
+const viewLabel = computed(() => activeView.value.label);
+const viewDescription = computed(() => approvalStatus.value === "pending" ? "新提交的资源会先进入这里；审核通过后才会进入资源库并参与前台搜索。" : approvalStatus.value === "rejected" ? "已拒绝的提交会保留在这里，方便复核或清理。" : "资源库只展示已通过审核的资源；停用只会隐藏搜索结果，不会删除数据。");
+const emptyLabel = computed(() => approvalStatus.value === "pending" ? "当前没有待审核资源。" : approvalStatus.value === "rejected" ? "当前没有已拒绝的资源。" : "还没有已入库资源，点击右上角新增资源。");
 // Selection is trimmed to the current page on every load, so the batch enable and
 // disable buttons can tell whether they would actually change anything.
 const selectedItems = computed(() => resources.value.filter((item) => selected.value.includes(item.id))); const canEnable = computed(() => selectedItems.value.some((item) => item.enabled === false)); const canDisable = computed(() => selectedItems.value.some((item) => item.enabled !== false));
@@ -215,10 +236,11 @@ function approvalClass(status?: AdminResource["approvalStatus"]) { return status
 function statusOf(error: any) { return error?.statusCode || error?.response?.status || error?.status; } function apiError(error: any) { const status = statusOf(error); return status === 401 ? "请先登录管理员账号。" : status === 403 ? "当前账号没有管理员权限。" : error?.data?.statusMessage || error?.message || "后台请求失败。"; } function show(message: string, error = false) { notice.value = message; noticeError.value = error; }
 async function checkStatus() { checking.value = true; authError.value = ""; try { const status = await $fetch<any>("/api/account/session", { credentials: "include", cache: "no-store", retry: 0 }); authenticated.value = !!status.authenticated; locked.value = !(authenticated.value && status.user?.role === "admin"); if (!locked.value) await loadResources(); } catch (e: any) { locked.value = true; authError.value = apiError(e); } finally { checking.value = false; } }
 async function lock() { await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 }).catch(() => { }); await navigateTo("/"); }
-async function loadResources() { loading.value = true; try { const result = await $fetch<any>("/api/admin/resources", { query: { q: query.value || undefined, cloudType: cloudType.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" }); const data = result?.data ?? result; resources.value = data.items || []; total.value = Number(data.total || 0); cloudTypes.value = data.cloudTypes || cloudTypes.value; selected.value = selected.value.filter((id) => currentKeys.value.includes(id)); } catch (e: any) { show(apiError(e), true); if (statusOf(e) === 401) locked.value = true; } finally { loading.value = false; } }
+async function loadResources() { loading.value = true; try { const result = await $fetch<any>("/api/admin/resources", { query: { q: query.value || undefined, cloudType: cloudType.value || undefined, approvalStatus: approvalStatus.value, page: page.value, pageSize: pageSize.value }, cache: "no-store" }); const data = result?.data ?? result; resources.value = data.items || []; total.value = Number(data.total || 0); cloudTypes.value = data.cloudTypes || cloudTypes.value; if (data.approvalCounts) approvalCounts.value = { ...approvalCounts.value, ...data.approvalCounts }; selected.value = selected.value.filter((id) => currentKeys.value.includes(id)); } catch (e: any) { show(apiError(e), true); if (statusOf(e) === 401) locked.value = true; } finally { loading.value = false; } }
+function switchApprovalView(next: ApprovalStatus) { if (approvalStatus.value === next || busy.value) return; approvalStatus.value = next; page.value = 1; selected.value = []; void loadResources(); }
 function resetQuery() { query.value = ""; cloudType.value = ""; page.value = 1; void loadResources(); } function goPage(next: number) { if (next >= 1 && next <= pageCount.value && next !== page.value) { page.value = next; void loadResources(); } } function changePageSize(size: number) { pageSize.value = size; page.value = 1; void loadResources(); } function toggle(id: string) { selected.value = selected.value.includes(id) ? selected.value.filter((item) => item !== id) : [...selected.value, id]; } function toggleAll(event: Event) { const checked = (event.target as HTMLInputElement).checked; selected.value = checked ? [...new Set([...selected.value, ...currentKeys.value])] : selected.value.filter((id) => !currentKeys.value.includes(id)); }
 function blank() { return { name: "", description: "", datetime: "", links: [{ type: (cloudTypes.value[0] || "baidu") as CloudType, url: "", password: "" }] }; } function openCreate() { editing.value = false; formError.value = ""; form.value = blank(); tagText.value = ""; imageText.value = ""; drawerOpen.value = true; } function openEdit(item: AdminResource) { editing.value = true; formError.value = ""; form.value = { id: item.id, name: item.name, description: item.description || "", datetime: item.datetime || "", links: item.links.map((link: Link) => ({ type: link.type, url: link.url, password: link.password || "" })) }; tagText.value = (item.tags || []).join(", "); imageText.value = (item.images || []).join(", "); drawerOpen.value = true; } function closeDrawer() { if (!busy.value) drawerOpen.value = false; } function addLink() { form.value.links.push({ type: (cloudTypes.value[0] || "baidu") as CloudType, url: "", password: "" }); } function removeLink(index: number) { if (form.value.links.length > 1) form.value.links.splice(index, 1); }
-async function save() { if (busy.value) return; formError.value = ""; busy.value = true; const body = { name: form.value.name, description: form.value.description || null, datetime: form.value.datetime || null, links: form.value.links, tags: tagText.value.split(",").map((v) => v.trim()).filter(Boolean), images: imageText.value.split(",").map((v) => v.trim()).filter(Boolean) }; try { await $fetch(editing.value ? `/api/admin/resources/${encodeURIComponent(form.value.id!)}` : "/api/admin/resources", { method: editing.value ? "PUT" : "POST", body }); drawerOpen.value = false; show(editing.value ? "资源已更新。" : "资源已创建。"); await loadResources(); } catch (e: any) { formError.value = apiError(e); } finally { busy.value = false; } }
+async function save() { if (busy.value) return; formError.value = ""; busy.value = true; const isCreating = !editing.value; const body = { name: form.value.name, description: form.value.description || null, datetime: form.value.datetime || null, links: form.value.links, tags: tagText.value.split(",").map((v) => v.trim()).filter(Boolean), images: imageText.value.split(",").map((v) => v.trim()).filter(Boolean) }; try { await $fetch(isCreating ? "/api/admin/resources" : `/api/admin/resources/${encodeURIComponent(form.value.id!)}`, { method: isCreating ? "POST" : "PUT", body }); drawerOpen.value = false; if (isCreating) { approvalStatus.value = "pending"; page.value = 1; selected.value = []; } show(isCreating ? "资源已提交审核，请通过后再进入资源库。" : "资源已更新。"); await loadResources(); } catch (e: any) { formError.value = apiError(e); } finally { busy.value = false; } }
 async function remove(item: AdminResource) { if (busy.value || !window.confirm(`确定删除「${item.name}」吗？`)) return; busy.value = true; try { await $fetch(`/api/admin/resources/${encodeURIComponent(item.id)}`, { method: "DELETE" }); selected.value = selected.value.filter((id) => id !== item.id); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - 1) / pageSize.value))); show("资源已删除。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function deleteSelected() { if (!selected.value.length || !window.confirm(`确定删除选中的 ${selected.value.length} 条资源吗？`)) return; busy.value = true; try { await $fetch("/api/admin/resources/batch-delete", { method: "POST", body: { ids: selected.value } }); const count = selected.value.length; selected.value = []; page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - count) / pageSize.value))); show(`已删除 ${count} 条资源。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function setEnabled(ids: string[], enabled: boolean) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${enabled ? "启用" : "停用"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/enabled", { method: "POST", body: { ids: targets, enabled } }); const count = Number(result?.data?.count ?? 0); show(count ? `已${enabled ? "启用" : "停用"} ${count} 条资源。` : "所选资源已经是该状态，未做改动。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
@@ -265,6 +287,83 @@ onMounted(checkStatus);
   box-shadow: 0 10px 30px rgba(40, 62, 92, .06);
   overflow: visible;
   backdrop-filter: blur(12px)
+}
+
+.resource-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid #edf1f6;
+  background: #fff
+}
+
+.resource-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #64748b;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color .18s ease, border-color .18s ease, background-color .18s ease
+}
+
+.resource-tab:hover,
+.resource-tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb
+}
+
+.resource-tab:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px
+}
+
+.resource-tab.active {
+  background: #f8fbff
+}
+
+.resource-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums
+}
+
+.resource-tab-count.pending {
+  color: #9a6700;
+  background: #fff4ce
+}
+
+.resource-view-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 10px 16px;
+  color: #64748b;
+  background: #fbfcfe;
+  font-size: 11px;
+  line-height: 1.5
+}
+
+.resource-view-hint :deep(svg) {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #2563eb
 }
 
 .query-toolbar {
@@ -757,6 +856,14 @@ onMounted(checkStatus);
 }
 
 @media(max-width:820px) {
+  .resource-tabs {
+    overflow-x: auto
+  }
+
+  .resource-tab {
+    flex: 0 0 auto
+  }
+
   .query-toolbar {
     align-items: stretch
   }

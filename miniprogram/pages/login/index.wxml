@@ -1,25 +1,31 @@
 <view class="page">
-  <view class="title">盘搜账号</view>
+  <view class="hero">
+    <view class="logo">盘搜</view>
+    <view class="title">盘搜账号</view>
+  </view>
 
   <block wx:if="{{scene}}">
     <block wx:if="{{confirmed}}">
-      <view class="hint">登录成功，请回到网页继续。</view>
+      <view class="hint success">登录成功，请回到网页继续。</view>
     </block>
     <block wx:else>
       <view class="hint">确认在网页端登录盘搜账号。</view>
-      <button type="primary" bindtap="onConfirmQr" loading="{{busy}}" disabled="{{busy}}">确认登录</button>
+      <button class="primary-btn" type="primary" bindtap="onConfirmQr" loading="{{busy}}" disabled="{{busy}}">确认登录</button>
       <view class="hint">首次确认会自动创建账号，无需注册，也不需要设置密码。</view>
     </block>
   </block>
 
   <block wx:elif="{{user}}">
-    <view class="hint">已登录：{{user.nickname || user.username}}</view>
-    <button bindtap="onLogout" disabled="{{busy}}">退出登录</button>
+    <view class="state-card card">
+      <view class="state-title">已登录</view>
+      <view class="state-value">{{user.nickname || user.username}}</view>
+    </view>
+    <button class="plain-btn" bindtap="onLogout" disabled="{{busy}}">退出登录</button>
   </block>
 
   <block wx:else>
     <view class="hint">使用微信身份登录盘搜，管理自己的频道与搜索记录。</view>
-    <button type="primary" bindtap="onLogin" loading="{{busy}}" disabled="{{busy}}">微信登录</button>
+    <button class="primary-btn" type="primary" bindtap="onLogin" loading="{{busy}}" disabled="{{busy}}">微信登录</button>
     <view class="hint">首次微信登录会自动创建账号，无需注册，也不需要设置密码。</view>
   </block>
 

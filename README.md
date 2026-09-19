@@ -9,7 +9,7 @@
 - **聚合最新结果**：所有来源并发执行，结果统一去重、按时间倒序排列，并只保留当前请求返回的首屏/最新部分。
 - **流式搜索入口**：`/api/search` 仅支持 POST，返回 SSE。旧的 `/api/searchHttp*`、`/api/search/channels*` 入口已删除。
 - **用户频道模板**：用户添加公开 Telegram 频道时，首次通过 `/api/account/channels/validate` 校验公开性和可访问性；搜索时使用后台配置的 `source_template_settings` 动态生成资源源，并走同一执行器。
-- **统一响应元数据**：响应的 `meta.sources` 列出本次实际参与的全部资源源，`meta.warnings` 汇总超时、网络、业务和解析告警。不再返回 `pluginVersions`、`registryVersion`、`http` 或 `tg` 分组。
+- **精简搜索响应**：普通 `/api/search` 通过 SSE 返回 `start`、`result`、`complete`、`error` 四类事件；调试用 `/api/search/json` 返回顶层 `sources`，每个来源对象同时包含诊断信息和该来源的原始结果列表。
 - **安全执行**：请求经过 URL/DNS/重定向/请求体/响应体校验；transform 在受限 VM 中同步执行，不能访问网络、文件系统或进程环境。
 
 ## 快速开始
@@ -100,22 +100,32 @@ POST `/api/search`：
 }
 ```
 
-每个 SSE `result` 事件包含一个已完成资源源的增量；`complete` 事件包含最终 `total` 和 `meta`：
+每个 SSE `result` 事件包含一个已完成资源源的增量；`complete` 事件包含最终 `total`：
 
 ```json
 {
+  "total": 3
+}
+```
+
+调试接口 `GET /api/search/json?kw=三体` 的 `data` 示例：
+
+```json
+{
+  "total": 3,
   "sources": [
     {
-      "id": "hunhepan",
-      "name": "混合盘",
+      "id": "pansearch",
+      "name": "PanSearch",
       "priority": 0,
-      "version": "cfg-...",
       "status": "success",
-      "resultCount": 3,
-      "elapsedMs": 420
+      "resultCount": 8,
+      "elapsedMs": 2248,
+      "transformMs": 16,
+      "proxyNode": "腾讯云Edge",
+      "results": []
     }
-  ],
-  "warnings": []
+  ]
 }
 ```
 
@@ -165,7 +175,7 @@ git diff --check
 
 ## 搜索压力测试
 
-脚本会为每次搜索先调用 `/api/account/session` 获取新的匿名 `panhub_session` Cookie，再调用搜索接口，避免复用同一会话触发会话级限流。默认使用 `/api/search/json`，因为该接口会返回每个资源源的 `elapsedMs`、`transformMs` 和 warnings；每次测试会把明细追加到 JSONL，并生成汇总 JSON。
+脚本会为每次搜索先调用 `/api/account/session` 获取新的匿名 `panhub_session` Cookie，再调用搜索接口，避免复用同一会话触发会话级限流。默认使用 `/api/search/json`，因为该接口会返回每个资源源的耗时、代理节点和原始结果列表；每次测试会把明细追加到 JSONL，并生成汇总 JSON。
 
 ```bash
 # 默认：300 次搜索，20 个客户端并发，180 秒内完成
@@ -180,7 +190,7 @@ pnpm test:stress-search -- \
   --output .tmp/my-search-stress
 ```
 
-报告包含每轮的接口状态、失败资源源、源接口失败、transform 失败、transform 总耗时、上游耗时和 warnings。若部署版本没有返回 `meta.sources[].transformMs`，transform 总耗时会显示为 0，表示服务端未上报该字段，不代表 transform 实际耗时为 0。需要模拟浏览器 SSE 时可追加 `--mode sse`，但 SSE 接口不会暴露源级 transform 诊断。
+报告包含每轮的接口状态、失败资源源、源接口失败、transform 失败、transform 总耗时和上游耗时。若部署版本没有返回 `sources[].transformMs`，transform 总耗时会显示为 0，表示服务端未上报该字段，不代表 transform 实际耗时为 0。需要模拟浏览器 SSE 时可追加 `--mode sse`，但 SSE 接口不会暴露源级 transform 诊断。
 
 ## 微信小程序登录
 

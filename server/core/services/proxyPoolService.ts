@@ -43,7 +43,6 @@ export class ProxyPoolError extends Error {
 const FAILURE_THRESHOLD = 3;
 const TEMPORARY_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_ERROR_LENGTH = 500;
-const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const SHANGHAI_DAY = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
   year: "numeric",
@@ -151,6 +150,36 @@ function errorText(error: unknown): string {
   return String(error instanceof Error ? error.message : error).slice(0, MAX_ERROR_LENGTH);
 }
 
+function shortNameHash(value: string): string {
+  let hash = 2166136261;
+  for (const character of value.normalize("NFKC")) {
+    hash ^= character.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function createNodeId(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7F]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 56);
+  const root = /^[\x00-\x7F]*$/.test(name) && slug.length >= 2
+    ? slug
+    : `proxy-${shortNameHash(name)}`;
+  const db = getSqliteDatabase();
+  let candidate = root;
+  let suffix = 2;
+  while (candidate === DIRECT_PROXY_NODE_ID || db.getRow("SELECT 1 FROM proxy_nodes WHERE id=?", candidate)) {
+    const suffixText = `-${suffix++}`;
+    candidate = `${root.slice(0, 64 - suffixText.length)}${suffixText}`;
+  }
+  return candidate;
+}
+
 export function listProxyNodes(): ProxyNode[] {
   resetDailyCounters();
   const now = Date.now();
@@ -163,11 +192,9 @@ export function createProxyNode(raw: unknown): ProxyNode {
   const value = raw && typeof raw === "object" && !Array.isArray(raw)
     ? raw as Record<string, unknown>
     : {};
-  const id = String(value.id || "").trim().toLowerCase();
-  if (!NODE_ID_PATTERN.test(id)) throw new ProxyPoolError("invalid_node", "节点 ID 格式不正确");
-  if (id === DIRECT_PROXY_NODE_ID) throw new ProxyPoolError("invalid_node", "直连节点由系统维护");
   const name = String(value.name || "").trim().slice(0, 100);
   if (!name) throw new ProxyPoolError("invalid_node", "节点名称不能为空");
+  const id = createNodeId(name);
   const baseUrl = normalizeBaseUrl(value.baseUrl);
   const dailyLimit = normalizeDailyLimit(value.dailyLimit ?? 0);
   const enabled = value.enabled !== false;

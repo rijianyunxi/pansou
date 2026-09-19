@@ -1,10 +1,5 @@
 import { createEventStream, setHeader, type H3Event } from "h3";
-import type {
-  GenericResponse,
-  SearchSourceUpdate,
-  SearchStreamCompleteData,
-  SearchStreamResultData,
-} from "../core/types/models";
+import type { SearchSourceUpdate, SearchStreamCompleteData, SearchStreamResultData } from "../core/types/models";
 import { executePreparedSearch, type PreparedSearch } from "./executeSearch";
 import { linkIdentity } from "../core/utils/resultMerge";
 import { withRequestSignal } from "./requestSignal";
@@ -17,29 +12,21 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Build a filter that only ever emits links the client has not received yet.
- *
- * Results are tracked per result id, but a link already delivered under a
- * different result id must not be repeated either, so a global link set is
- * consulted alongside the per-result one. `dedupeLinks` in
- * `core/utils/resultMerge.ts` states the same rule for the final JSON body; the
- * two must stay in step so both endpoints describe the same search.
+ * Remove duplicate links that occur inside one source update. Cross-update
+ * merging is handled by the shared link-only merge algorithm on the client and
+ * in the final response; result ids are intentionally not consulted.
  */
 function createDeltaFilter(): (update: SearchSourceUpdate) => SearchSourceUpdate {
-  const sentLinks = new Map<string, Set<string>>();
-  const sentLinkKeys = new Set<string>();
   return (update) => ({
     ...update,
     results: update.results.flatMap((result) => {
-      const seen = sentLinks.get(result.id) ?? new Set<string>();
+      const seen = new Set<string>();
       const freshLinks = result.links.filter((link) => {
         const key = linkIdentity(link);
-        if (seen.has(key) || sentLinkKeys.has(key)) return false;
+        if (seen.has(key)) return false;
         seen.add(key);
-        sentLinkKeys.add(key);
         return true;
       });
-      sentLinks.set(result.id, seen);
       if (!freshLinks.length) return [];
       return [{
         ...result,
@@ -71,11 +58,11 @@ export function sendSearchStream(
     });
   };
   const filterDelta = createDeltaFilter();
-  const queue = new SearchSseQueue((update) => push("result", {
-    code: 0,
-    message: "source_success",
-    data: { update: filterDelta(update) },
-  } satisfies GenericResponse<SearchStreamResultData>));
+  const queue = new SearchSseQueue((update) => {
+    const delta = filterDelta(update);
+    // Source identity stays server-side; clients merge batches by links alone.
+    return push("result", { results: delta.results } satisfies SearchStreamResultData);
+  });
 
   // Attach the readable side before producing events so every push is flushed as
   // soon as it is written instead of waiting behind TransformStream backpressure.
@@ -83,25 +70,17 @@ export function sendSearchStream(
   event.node.res.flushHeaders?.();
 
   void withRequestSignal(event, async (signal) => {
-    await push("start", {
-      code: 0,
-      message: "started",
-      data: { intervalMs: SEARCH_SSE_INTERVAL_MS, searchLogId: prepared.searchLogId ?? null },
-    });
+    await push("start", { intervalMs: SEARCH_SSE_INTERVAL_MS, searchLogId: prepared.searchLogId ?? null });
     const response = await executePreparedSearch(prepared, signal, (update) => queue.enqueueAndWait(update));
     await queue.finish();
     const completeData: SearchStreamCompleteData = {
       total: response.data?.total ?? 0,
     };
-    await push("complete", {
-      code: response.code,
-      message: response.message,
-      data: completeData,
-    } satisfies GenericResponse<SearchStreamCompleteData>);
+    await push("complete", completeData);
   }).catch(async (error) => {
     if (event.node.res.destroyed || event.node.res.writableEnded) return;
     try {
-      await push("error", { code: -1, message: errorMessage(error) });
+      await push("error", { message: errorMessage(error) });
     } catch {
       // The transport has already gone away.
     }

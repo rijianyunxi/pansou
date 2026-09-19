@@ -130,7 +130,7 @@ function writeSearchLog(
 export function authorizeSearch(
   event: H3Event,
   raw: unknown,
-  options: { includeMeta?: boolean } = {},
+  options: { includeDebug?: boolean } = {},
 ): AuthorizedSearch {
   // Parse before creating an anonymous session so malformed requests do not
   // create identities or execute a search.

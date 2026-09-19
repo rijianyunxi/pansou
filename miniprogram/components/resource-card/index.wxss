@@ -1,0 +1,180 @@
+/* Ported from components/ResultGroup.vue mobile layout (≤560px). */
+.resource-item {
+  padding: 30rpx 26rpx;
+  background: var(--bg-primary);
+}
+
+.resource-heading {
+  display: block;
+}
+
+.heading-main { min-width: 0; }
+
+.resource-title {
+  display: block;
+  color: var(--text-primary);
+  font-size: 32rpx;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.resource-desc { margin-top: 10rpx; }
+
+.desc-content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 26rpx;
+  line-height: 1.65;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  /* max-height backs up the line clamp: it also works on renderers that
+     ignore -webkit-box, so the collapse state never silently fails. */
+  max-height: 88rpx;
+}
+
+.resource-desc.is-expanded .desc-content {
+  display: block;
+  max-height: none;
+}
+
+.desc-toggle {
+  display: inline-block;
+  margin-top: 6rpx;
+  padding: 8rpx 0;
+  color: var(--primary);
+  font-size: 24rpx;
+  font-weight: 700;
+}
+
+.resource-date {
+  display: block;
+  margin-top: 12rpx;
+  color: var(--text-tertiary);
+  font-size: 22rpx;
+}
+
+.meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx 16rpx;
+  padding: 12rpx 0;
+}
+
+.meta-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 10rpx;
+  min-height: 56rpx;
+  padding: 8rpx 16rpx;
+  border: 1rpx solid var(--border-light);
+  border-radius: 12rpx;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 22rpx;
+  line-height: 36rpx;
+}
+
+.meta-tag.platform {
+  border-color: var(--primary-border);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.meta-tag.platform.active {
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+.tag-hover { opacity: 0.72; }
+
+.tag-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.resource-links {
+  display: grid;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+/* Mobile two-row layout: icon + provider on top, two equal action buttons below. */
+.link-row {
+  display: grid;
+  grid-template-columns: 60rpx minmax(0, 1fr);
+  align-items: center;
+  gap: 16rpx;
+  padding: 20rpx 22rpx;
+  border: 1rpx solid var(--border-light);
+  border-radius: 24rpx;
+  background: var(--bg-secondary);
+}
+
+.link-icon {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60rpx;
+  height: 60rpx;
+  border-radius: 18rpx;
+  background: var(--bg-primary);
+  color: var(--primary);
+  font-size: 28rpx;
+  line-height: 1;
+}
+
+.link-main {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8rpx 16rpx;
+  min-height: 60rpx;
+  min-width: 0;
+}
+
+.link-provider {
+  color: var(--text-primary);
+  font-size: 26rpx;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.password-badge {
+  color: var(--text-tertiary);
+  font-size: 22rpx;
+  word-break: break-all;
+}
+
+.link-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14rpx;
+}
+
+.link-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64rpx;
+  border: 1rpx solid var(--border-light);
+  border-radius: 16rpx;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 22rpx;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}

@@ -161,7 +161,21 @@ export async function executeSource(
   };
 
   const traces: SourceExecutionTrace[] = [];
-  const proxyNodes = new Set<string>();
+  const proxyNodes: import("../types/models").ProxyNodeMeta[] = [];
+  const recordProxyNode = (options: {
+    nodeId: string;
+    nodeName: string;
+    status: "success" | "failed";
+    httpStatus: number | null;
+    elapsedMs: number;
+    error?: string;
+  }): void => {
+    proxyNodes.push({
+      ...options,
+      attempt: proxyNodes.length + 1,
+      ...(options.error ? { error: options.error.slice(0, 500) } : {}),
+    });
+  };
   const recordTrace = (trace: SourceExecutionTrace): void => {
     traces.push(trace);
     options.onTrace?.(trace);
@@ -183,8 +197,6 @@ export async function executeSource(
 
     // An unbound source or a direct route does not acquire a lease, but it is
     // still useful to make the transport decision explicit in API metadata.
-    if (!shouldUseProxy) proxyNodes.add("直连");
-
     for (;;) {
       let lease: ProxyLease | undefined;
       let outboundUrl = targetUrl;
@@ -195,13 +207,11 @@ export async function executeSource(
           try {
             lease = acquireProxyRequest(targetUrl, excludedNodeIds, proxyGroupId);
             outboundUrl = lease.requestUrl;
-            proxyNodes.add(lease.nodeName);
           } catch (error) {
             if (route?.fallbackAction === "direct") {
               lease = undefined;
               outboundUrl = targetUrl;
               directFallback = true;
-              proxyNodes.add("直连");
             } else {
               throw error;
             }
@@ -229,6 +239,14 @@ export async function executeSource(
         if (lease) {
           const quotaExhausted = payload.response.headers.get("x-proxy-quota") === "exhausted";
           if (quotaExhausted || payload.response.status === 429 || payload.response.status >= 500) {
+            recordProxyNode({
+              nodeId: lease.nodeId,
+              nodeName: lease.nodeName,
+              status: "failed",
+              httpStatus: payload.response.status,
+              elapsedMs: payload.elapsedMs,
+              error: quotaExhausted ? "代理节点报告每日额度已用完" : `代理请求返回 HTTP ${payload.response.status}`,
+            });
             reportProxyFailure(lease.nodeId, {
               status: payload.response.status,
               message: quotaExhausted ? "代理节点报告每日额度已用完" : `代理请求返回 HTTP ${payload.response.status}`,
@@ -257,6 +275,13 @@ export async function executeSource(
             reportProxySuccess(lease.nodeId, payload.response.status);
           }
         }
+        recordProxyNode({
+          nodeId: lease?.nodeId || "direct",
+          nodeName: lease?.nodeName || "直连",
+          status: "success",
+          httpStatus: payload.response.status,
+          elapsedMs: payload.elapsedMs,
+        });
         recordTrace({
           stage,
           url: payload.url.toString(),
@@ -276,6 +301,16 @@ export async function executeSource(
         if (lease) {
           excludedNodeIds.add(lease.nodeId);
           reportProxyFailure(lease.nodeId, { message: error instanceof Error ? error.message : String(error) });
+        }
+        if (lease || directFallback || !shouldUseProxy) {
+          recordProxyNode({
+            nodeId: lease?.nodeId || "direct",
+            nodeName: lease?.nodeName || "直连",
+            status: "failed",
+            httpStatus: null,
+            elapsedMs: Date.now() - attemptStarted,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
         recordTrace({
           stage,
@@ -320,7 +355,7 @@ export async function executeSource(
       ...(options.context || {}),
     }).slice(0, definition.manifest.maxResults);
 
-    return { results, traces, proxyNodes: [...proxyNodes], raw, rawTruncated };
+    return { results, traces, proxyNodes, raw, rawTruncated };
   } finally {
     options.onTransformTiming?.(Date.now() - transformStarted);
   }

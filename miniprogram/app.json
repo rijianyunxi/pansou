@@ -1,5 +1,38 @@
 {
-  "pages": ["pages/login/index"],
-  "window": { "navigationBarTitleText": "盘搜账号" },
-  "style": "v2"
+  "pages": [
+    "pages/index/index",
+    "pages/profile/profile",
+    "pages/channels/channels",
+    "pages/login/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "盘搜",
+    "backgroundColor": "#f6f7f9",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#9ca3af",
+    "selectedColor": "#2563eb",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "搜索",
+        "iconPath": "assets/tab-search.png",
+        "selectedIconPath": "assets/tab-search-active.png"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的",
+        "iconPath": "assets/tab-user.png",
+        "selectedIconPath": "assets/tab-user-active.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
 }

@@ -1,0 +1,139 @@
+<view class="home theme-{{theme}}">
+  <view class="custom-nav" style="height: {{navBarHeight}}px; padding-top: {{statusBarHeight}}px;">
+    <view class="custom-nav-inner" style="height: {{navContentHeight}}px; padding-right: {{capsuleReserve}}px;">
+      <view class="brand-lockup">
+        <view class="brand-mark"></view>
+        <view class="brand-copy">
+          <text class="brand-title">盘搜</text>
+        </view>
+      </view>
+      <view class="theme-toggle" hover-class="theme-toggle-hover" bindtap="onThemeToggle">
+        <view class="theme-icon {{theme}}"></view>
+      </view>
+    </view>
+  </view>
+
+  <view class="hero">
+    <text class="hero-title">网盘资源聚合搜索</text>
+    <text class="hero-subtitle">网盘、磁力、公开频道，一个搜索框直达。</text>
+  </view>
+
+  <view class="search-workspace">
+    <view class="search-toolbar">
+      <view class="scope-control">
+        <view class="scope-btn {{scope === 'site' ? 'active' : ''}}" hover-class="none" bindtap="onScopeSite">本站搜索</view>
+        <view class="scope-btn {{scope === 'channels' ? 'active' : ''}}" bindtap="onScopeChannels">
+          <text>自定义频道</text>
+          <text wx:if="{{channelsCount}}" class="scope-badge" catchtap="onOpenChannels">{{channelsCount}}</text>
+        </view>
+      </view>
+      <view wx:if="{{scope === 'channels'}}" class="manage-channels" hover-class="btn-hover" bindtap="onOpenChannels">
+        <text class="manage-plus">＋</text>{{channelsCount ? '管理频道' : '添加频道'}}
+      </view>
+    </view>
+
+    <view class="search-card">
+    <view class="search-input-row">
+      <input
+        class="search-input"
+        value="{{keyword}}"
+        placeholder="搜索电影、剧集、资料等资源…"
+        placeholder-class="search-placeholder"
+        confirm-type="search"
+        maxlength="100"
+        bindinput="onInput"
+        bindconfirm="onSearchTap" />
+      <text wx:if="{{keyword}}" class="clear-btn" catchtap="onClearInput">✕</text>
+    </view>
+    <view class="search-actions">
+      <view class="action-left">
+        <view wx:if="{{searched && !loading}}" class="ghost-btn" hover-class="btn-hover" bindtap="onReset">重置</view>
+        <view wx:if="{{loading}}" class="ghost-btn pause" hover-class="btn-hover" bindtap="onPause">暂停</view>
+        <view wx:if="{{paused}}" class="ghost-btn continue" hover-class="btn-hover" bindtap="onContinue">继续</view>
+        <view wx:if="{{loading}}" class="spinner"></view>
+      </view>
+      <view class="search-btn {{loading ? 'disabled' : ''}}" hover-class="btn-hover" bindtap="onSearchTap"><text>搜索</text><text class="search-btn-arrow">→</text></view>
+    </view>
+    </view>
+  </view>
+
+  <view wx:if="{{!searched && showHotSearch && hotSearches.length}}" class="hot-section">
+    <view class="hot-title">热门搜索</view>
+    <view class="hot-grid">
+      <view
+        wx:for="{{hotSearches}}"
+        wx:key="term"
+        class="hot-item {{item.rank <= 3 ? 'top' : ''}}"
+        hover-class="btn-hover"
+        data-term="{{item.term}}"
+        bindtap="onHotTap">
+        <text class="hot-rank">{{item.rank}}</text>
+        <text class="hot-term">{{item.term}}</text>
+      </view>
+    </view>
+  </view>
+
+  <block wx:if="{{searched}}">
+    <view class="stats-bar card">
+      <view class="stats-main">
+        <view class="stat-item">
+          <text class="stat-label">结果</text>
+          <text class="stat-value">{{total}}</text>
+        </view>
+        <view class="stat-item">
+          <text class="stat-label">用时</text>
+          <text class="stat-value">{{elapsedText}}</text>
+        </view>
+        <view wx:if="{{paused}}" class="paused-pill">搜索已暂停</view>
+      </view>
+      <scroll-view wx:if="{{pills.length > 1}}" class="pills-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+        <view class="pills-track">
+          <view
+            wx:for="{{pills}}"
+            wx:key="type"
+            class="filter-pill {{item.active ? 'active' : ''}}"
+            hover-class="none"
+            data-type="{{item.type}}"
+            bindtap="onPillTap">
+            <text>{{item.label}}</text>
+            <text class="pill-count">{{item.count}}</text>
+          </view>
+        </view>
+      </scroll-view>
+      <picker wx:if="{{pills.length > 1}}" range="{{sortOptions}}" value="{{sortIndex}}" bindchange="onSortChange">
+        <view class="sort-picker">
+          <text class="sort-picker-icon">◷</text>
+          <text>{{sortOptions[sortIndex]}}</text>
+        </view>
+      </picker>
+    </view>
+
+    <view wx:if="{{error}}" class="error-banner">
+      <text class="error-icon">!</text>
+      <text>{{error}}</text>
+    </view>
+
+    <view wx:if="{{results.length}}" class="resource-list card">
+      <view wx:for="{{results}}" wx:key="id" class="resource-list-item">
+        <resource-card
+          item="{{item}}"
+          active-platform="{{activePlatform}}"
+          bindfilterplatform="onCardFilter"
+          bindopen="onCardOpen"
+          bindcopy="onCardCopy" />
+      </view>
+    </view>
+
+    <view wx:if="{{hasMore}}" class="load-more card" hover-class="btn-hover" bindtap="onLoadMore">
+      显示更多结果
+    </view>
+
+    <view wx:if="{{isEmpty}}" class="empty-card card">
+      <view class="empty-icon">⌕</view>
+      <view class="empty-title">未找到相关资源</view>
+      <view class="empty-desc">试试其他关键词，或检查搜索范围设置</view>
+    </view>
+  </block>
+
+  <view wx:if="{{showBackTop}}" class="back-top" bindtap="onBackTop">↑</view>
+</view>

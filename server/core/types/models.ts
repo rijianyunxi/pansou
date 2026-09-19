@@ -1,4 +1,3 @@
-import type { WarningInfo } from "../utils/errors";
 import type { CloudType } from "../../../shared/cloudTypes";
 
 export type { CloudType } from "../../../shared/cloudTypes";
@@ -26,6 +25,26 @@ export type ResourceCheckStatus = "unchecked" | "checking" | "valid" | "invalid"
 
 export type SourceExecutionStatus = "success" | "failed" | "skipped";
 
+export type ProxyNodeRequestStatus = "success" | "failed";
+
+/** One concrete proxy/direct attempt made while executing a resource source. */
+export interface ProxyNodeMeta {
+  /** Stable configured node ID, or `direct` for a direct request. */
+  nodeId: string;
+  /** Display name captured when the node was selected. */
+  nodeName: string;
+  /** Attempt order within this source request. */
+  attempt: number;
+  /** Transport-level outcome for this attempt. */
+  status: ProxyNodeRequestStatus;
+  /** HTTP status when a response was received; null for network failures/timeouts. */
+  httpStatus: number | null;
+  /** Time spent on this concrete node attempt. */
+  elapsedMs: number;
+  /** Redacted/truncated error text when this attempt failed. */
+  error?: string;
+}
+
 export interface SearchSourceMeta {
   id: string;
   name: string;
@@ -36,51 +55,45 @@ export interface SearchSourceMeta {
   elapsedMs: number;
   /** Time spent executing and validating this source transform; null when not run. */
   transformMs: number | null;
-  /** Proxy node(s) used for this source; direct requests are reported as `直连`. */
-  proxyNode: string;
+  /** Every proxy/direct attempt made for this source, in execution order. */
+  proxyNodes: ProxyNodeMeta[];
 }
 
-export interface SearchResponseMeta {
-  sources: SearchSourceMeta[];
-  warnings: WarningInfo[];
+/** Source diagnostics plus the raw results returned by that source. */
+export interface SearchDebugSource extends SearchSourceMeta {
+  results: SearchResult[];
 }
 
 /** Response assembled from source adapters. Results already use the public contract. */
 export interface SearchExecutionResponse {
   total: number;
   results: SearchResult[];
-  meta?: SearchResponseMeta;
+  sources?: SearchSourceMeta[];
 }
 
 /** The resource-level shape returned by both search APIs. */
 export interface SearchResponse {
   total: number;
   results: SearchResult[];
-  meta?: SearchResponseMeta;
 }
 
 export interface SearchSourceUpdate {
-  request: {
-    keyword: string;
-    phase: "source";
-  };
-  /** Stable source id that produced this streamed batch. */
+  /** Stable source id that produced this streamed batch. Server-side only. */
   sourceId: string;
   results: SearchResult[];
 }
 
+/**
+ * Wire shape of a streamed result batch. The source identity is deliberately
+ * omitted: the crawler catalogue is site-internal, and clients merge batches
+ * by links alone, so they never need to know which source produced a batch.
+ */
 export interface SearchStreamResultData {
-  update: SearchSourceUpdate;
+  results: SearchResult[];
 }
 
 export interface SearchStreamCompleteData {
   total: number;
-}
-
-export interface GenericResponse<T> {
-  code: number;
-  message: string;
-  data?: T;
 }
 
 export interface SearchRequest {

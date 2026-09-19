@@ -1,0 +1,47 @@
+<view class="channels">
+  <block wx:if="{{needLogin}}">
+    <view class="empty-card card">
+      <view class="empty-icon">🔐</view>
+      <view class="empty-title">需要登录</view>
+      <view class="empty-desc">自定义频道需要在微信小程序中登录后使用</view>
+      <button class="primary-btn" bindtap="onGoLogin">去登录</button>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="add-card card">
+      <view class="add-hint">输入 Telegram 公开频道用户名或链接，例如 @durov 或 t.me/s/durov</view>
+      <view class="add-row">
+        <input
+          class="add-input"
+          value="{{inputValue}}"
+          placeholder="@channel_name"
+          placeholder-class="add-placeholder"
+          confirm-type="done"
+          bindinput="onInput"
+          bindconfirm="onAdd" />
+        <view class="add-btn {{busy ? 'disabled' : ''}}" hover-class="btn-hover" bindtap="onAdd">{{busy ? '校验中' : '添加'}}</view>
+      </view>
+      <view wx:if="{{error}}" class="add-error">{{error}}</view>
+    </view>
+
+    <view class="list-card card">
+      <view class="list-header">
+        <text class="list-title">我的频道</text>
+        <text class="list-count">{{channels.length}} / {{limit}}</text>
+      </view>
+
+      <block wx:if="{{channels.length}}">
+        <view wx:for="{{channels}}" wx:key="*this" class="channel-row">
+          <text class="channel-name" user-select>@{{item}}</text>
+          <view class="remove-btn" hover-class="btn-hover" data-name="{{item}}" bindtap="onRemove">删除</view>
+        </view>
+      </block>
+      <view wx:else class="list-empty">
+        {{loading ? '加载中…' : '还没有添加频道，搜索时将默认使用本站来源'}}
+      </view>
+    </view>
+
+    <view class="footnote">搜索前在首页选择「自定义频道」即可仅在这些频道内检索</view>
+  </block>
+</view>

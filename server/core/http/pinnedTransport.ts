@@ -77,7 +77,7 @@ export interface NodePinnedTransportModules {
  * 自定义 lookup：无论系统 DNS 返回什么，一律把连接指向已校验地址。
  * 兼容 `all: true`（Happy Eyeballs）与单地址两种回调形态。
  */
-function pinnedLookup(record: DnsLookupRecord): unknown {
+function pinnedLookup(records: readonly DnsLookupRecord[]): unknown {
   return (
     _hostname: string,
     options: { all?: boolean },
@@ -88,10 +88,15 @@ function pinnedLookup(record: DnsLookupRecord): unknown {
     ) => void
   ): void => {
     if (options?.all) {
-      callback(null, [{ address: record.address, family: record.family }]);
-    } else {
-      callback(null, record.address, record.family);
+      callback(null, records.map(record => ({ address: record.address, family: record.family })));
+      return;
     }
+    const record = records[0];
+    if (!record) {
+      callback(new Error("缺少可钉住的已校验解析地址"), "", 0);
+      return;
+    }
+    callback(null, record.address, record.family);
   };
 }
 
@@ -107,7 +112,7 @@ function toWebResponseHeaders(raw: IncomingMessage["headers"]): Headers {
 function pinnedRequestOptions(
   url: URL,
   init: PinnedRequestInit,
-  record: DnsLookupRecord,
+  records: readonly DnsLookupRecord[],
 ): Record<string, unknown> {
   const isHttps = url.protocol === "https:";
   const port = url.port ? Number(url.port) : isHttps ? 443 : 80;
@@ -128,14 +133,15 @@ function pinnedRequestOptions(
     host: normalizeIpAddress(url.hostname),
     servername: normalizeIpAddress(url.hostname),
     port,
-    family: record.family,
+    ...(records.length === 1 ? { family: records[0].family } : {}),
     method: init.method,
     path: `${url.pathname}${url.search}`,
     headers,
     // 每次请求独立 socket：确保每跳真正连到该跳钉住的 IP，杜绝 keep-alive
     // 连接池把请求复用到旧地址带来的语义模糊。代价是无连接复用。
     agent: false,
-    lookup: pinnedLookup(record),
+    // Cloudflare 等多入口域名需要保留全部已校验地址，让 Node 在入口间选择。
+    lookup: pinnedLookup(records),
   };
 }
 
@@ -163,10 +169,9 @@ function nodePinnedRequest(
   pinned: readonly DnsLookupRecord[],
 ): Promise<Response> {
   if (init.signal?.aborted) return Promise.reject(abortReason(init.signal));
-  const record = pinned[0];
-  if (!record) return Promise.reject(new Error("缺少可钉住的已校验解析地址"));
+  if (!pinned.length) return Promise.reject(new Error("缺少可钉住的已校验解析地址"));
   const mod = url.protocol === "https:" ? modules.https : modules.http;
-  const requestInit = pinnedRequestOptions(url, init, record);
+  const requestInit = pinnedRequestOptions(url, init, pinned);
 
   return new Promise<Response>((resolve, reject) => {
     let settled = false;

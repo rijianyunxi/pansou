@@ -1,7 +1,25 @@
 {
-  "appid": "touristappid",
+  "appid": "wx4bfe118b5e9cf48a",
   "projectname": "panhub-login",
   "compileType": "miniprogram",
-  "miniprogramRoot": "./",
-  "setting": { "es6": true, "urlCheck": true }
+  "miniprogramRoot": "",
+  "setting": {
+    "es6": true,
+    "urlCheck": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "libVersion": "3.17.3",
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "condition": {},
+  "editorSetting": {
+    "tabIndent": "insertSpaces",
+    "tabSize": 2
+  }
 }

@@ -1,0 +1,6 @@
+{
+  "name": "panhub-miniprogram",
+  "private": true,
+  "type": "commonjs",
+  "description": "盘搜微信小程序（CommonJS，独立于 Nuxt 主项目的 ESM 设置）"
+}

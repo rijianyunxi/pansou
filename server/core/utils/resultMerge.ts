@@ -1,43 +1,54 @@
 import type { Link, SearchResult } from "../types/models";
 
+/** Normalize only URL spelling differences; the URL remains the sole identity. */
+function canonicalLinkUrl(value: string): string {
+  const raw = value.trim();
+  if (!raw) return raw;
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+$/u, "") || "/";
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
 /**
  * Identity of a single cloud-drive link.
  *
- * Two results may carry the same share link under different result ids, so every
- * stage of the pipeline — the streamed delta filter, the per-source merge and the
- * final JSON merge — must agree on one definition of "already delivered". The NUL
- * separator keeps the fields unambiguous.
+ * Result ids are intentionally ignored: source ids are not globally reliable.
+ * A password is metadata for the share URL, not part of its identity.
  */
-export function linkIdentity(link: Pick<Link, "type" | "url" | "password">): string {
-  return `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`;
+export function linkIdentity(link: Pick<Link, "url">): string {
+  return canonicalLinkUrl(link.url);
 }
 
 /**
- * Identity of a whole result. Mirrors the client-side `mergeIncremental` key so
- * the streamed view and the JSON body group results the same way.
- */
-export function resultIdentity(result: SearchResult): string {
-  return result.id || result.links[0]?.url || `${result.name}|${result.datetime || ""}`;
-}
-
-/**
- * Union of two results that share an identity. Mirrors `mergeResource` in
- * `composables/useSearch.ts`, which is what an SSE client does with repeated ids.
+ * Union of two results that share one or more link identities.
  */
 export function mergeSameResult(current: SearchResult, incoming: SearchResult): SearchResult {
-  const links = [...current.links];
-  const seen = new Set(links.map(linkIdentity));
-  for (const link of incoming.links) {
+  const links: Link[] = [];
+  const byLink = new Map<string, Link>();
+  for (const link of [...current.links, ...incoming.links]) {
     const key = linkIdentity(link);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    links.push(link);
+    const existing = byLink.get(key);
+    if (existing) {
+      if (!existing.password && link.password) existing.password = link.password;
+      continue;
+    }
+    const copy = { ...link };
+    byLink.set(key, copy);
+    links.push(copy);
   }
   const tags = [...new Set([...(current.tags ?? []), ...(incoming.tags ?? [])])];
   const images = [...new Set([...(current.images ?? []), ...(incoming.images ?? [])])];
   return {
     ...current,
     ...incoming,
+    id: current.id,
+    name: current.name,
     links,
     cloud_types: [...new Set([...current.cloud_types, ...incoming.cloud_types])],
     description: incoming.description || current.description,
@@ -48,46 +59,49 @@ export function mergeSameResult(current: SearchResult, incoming: SearchResult): 
 }
 
 /**
- * Claim every share link for the first result that carries it.
+ * Merge results by shared links in O(results + links) amortized time.
  *
- * A result keeps only the links no earlier result has claimed; when all of its
- * links are already claimed the result disappears. This is exactly what
- * `createDeltaFilter` does per delta in `server/utils/sendSearchStream.ts`, which
- * is why the streamed view and the JSON body now agree: dropping the whole result
- * on a partial link overlap (the previous behaviour) silently lost the remaining,
- * never-delivered links from the JSON response.
+ * A result with multiple links can bridge two existing groups, so a small union-
+ * find structure is used before materializing the merged result buckets. This
+ * keeps link identity as the only merge rule without nested result comparisons.
  */
-export function dedupeLinks(results: SearchResult[]): SearchResult[] {
-  const claimed = new Set<string>();
-  const output: SearchResult[] = [];
-  for (const result of results) {
-    const freshLinks = result.links.filter((link) => {
+export function mergeResultsByLink(results: SearchResult[]): SearchResult[] {
+  if (!results.length) return results;
+  const parent = results.map((_result, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[index] !== index) {
+      const next = parent[index]!;
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const a = find(left); const b = find(right);
+    if (a === b) return;
+    // Keep the earliest result as the stable bucket representative.
+    if (a < b) parent[b] = a;
+    else parent[a] = b;
+  };
+  const ownerByLink = new Map<string, number>();
+  results.forEach((result, index) => {
+    for (const link of result.links) {
       const key = linkIdentity(link);
-      if (claimed.has(key)) return false;
-      claimed.add(key);
-      return true;
-    });
-    if (!freshLinks.length) continue;
-    output.push(freshLinks.length === result.links.length
-      ? result
-      : { ...result, links: freshLinks, cloud_types: [...new Set(freshLinks.map((link) => link.type))] });
-  }
-  return output;
-}
+      const owner = ownerByLink.get(key);
+      if (owner === undefined) ownerByLink.set(key, index);
+      else union(owner, index);
+    }
+  });
 
-/**
- * The single deduplication definition for the whole search pipeline: results that
- * share an identity are merged, then every share link is claimed once, first
- * appearance winning. Order is the order of first appearance.
- */
-export function mergeResultsByIdentity(results: SearchResult[]): SearchResult[] {
-  const byId = new Map<string, SearchResult>();
-  for (const result of results) {
-    const key = resultIdentity(result);
-    const current = byId.get(key);
-    byId.set(key, current ? mergeSameResult(current, result) : result);
-  }
-  return dedupeLinks([...byId.values()]);
+  const buckets = new Map<number, SearchResult>();
+  results.forEach((result, index) => {
+    const root = find(index);
+    const current = buckets.get(root);
+    buckets.set(root, current ? mergeSameResult(current, result) : result);
+  });
+  return [...buckets.values()];
 }
 
 /**
@@ -101,5 +115,5 @@ export function mergeLocalResources(
   localResults: SearchResult[],
   sourceResults: SearchResult[],
 ): SearchResult[] {
-  return mergeResultsByIdentity([...localResults, ...sourceResults]);
+  return mergeResultsByLink([...localResults, ...sourceResults]);
 }

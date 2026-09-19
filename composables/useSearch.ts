@@ -1,12 +1,11 @@
 import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import type {
-  GenericResponse,
   SearchResult,
   SearchResponse,
-  SearchStreamCompleteData,
   SearchStreamResultData,
 } from "../server/core/types/models";
 import { consumeSearchEventStream } from "../utils/searchEventStream";
+import { mergeResultsByLink } from "../server/core/utils/resultMerge";
 
 export interface SearchOptions {
   apiBase: string;
@@ -25,29 +24,8 @@ export interface SearchState {
   results: SearchResult[];
 }
 
-function mergeResource(current: SearchResult, incoming: SearchResult): SearchResult {
-  const links = [...current.links];
-  const seen = new Set(links.map((link) => `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`));
-  for (const link of incoming.links) {
-    const key = `${link.type}\u0000${link.url}\u0000${link.password ?? ""}`;
-    if (!seen.has(key)) { seen.add(key); links.push(link); }
-  }
-  return {
-    ...current,
-    ...incoming,
-    links,
-    cloud_types: [...new Set([...current.cloud_types, ...incoming.cloud_types])],
-    description: incoming.description || current.description,
-    datetime: incoming.datetime || current.datetime,
-    tags: [...new Set([...(current.tags ?? []), ...(incoming.tags ?? [])])],
-    images: [...new Set([...(current.images ?? []), ...(incoming.images ?? [])])],
-  };
-}
-
 function mergeIncremental(current: SearchResult[], incoming: SearchResult[]): SearchResult[] {
-  const byId = new Map(current.map((result) => [result.id, result]));
-  for (const result of incoming) byId.set(result.id, byId.has(result.id) ? mergeResource(byId.get(result.id)!, result) : result);
-  return [...byId.values()];
+  return mergeResultsByLink([...current, ...incoming]);
 }
 
 export function useSearch() {
@@ -111,19 +89,17 @@ export function useSearch() {
       if (!response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("搜索接口未返回 SSE 数据流");
       await consumeSearchEventStream(response, async (event) => {
         if (mySeq !== seq || ac.signal.aborted) return;
-        const payload = JSON.parse(event.data) as GenericResponse<unknown>;
+        const payload = JSON.parse(event.data) as { results?: SearchResult[]; total?: number; searchLogId?: unknown; message?: string };
         if (event.event === "start") {
-          const start = payload.data as { searchLogId?: unknown } | undefined;
-          const id = Number(start?.searchLogId);
+          const id = Number(payload.searchLogId);
           searchLogId = Number.isSafeInteger(id) && id > 0 ? id : undefined;
         } else if (event.event === "result") {
-          const update = (payload.data as SearchStreamResultData | undefined)?.update;
-          if (update) {
+          const update = payload as SearchStreamResultData;
+          if (update.results) {
             applyResponse({ total: update.results.length, results: update.results }, false);
             await nextTick();
           }
         } else if (event.event === "complete") {
-          if (payload.code !== 0) throw new Error(payload.message || "搜索失败");
           completed = true;
         } else if (event.event === "error") throw new Error(payload.message || "搜索请求失败，请重试。");
       });
