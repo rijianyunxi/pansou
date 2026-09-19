@@ -19,6 +19,7 @@ import {
   reportProxySuccess,
   type ProxyLease,
 } from "../services/proxyPoolService";
+import { resolveProxyRoute } from "../services/proxyRoutingService";
 import {
   REDACTED,
   isSensitiveKey,
@@ -160,6 +161,7 @@ export async function executeSource(
   };
 
   const traces: SourceExecutionTrace[] = [];
+  const proxyNodes = new Set<string>();
   const recordTrace = (trace: SourceExecutionTrace): void => {
     traces.push(trace);
     options.onTrace?.(trace);
@@ -175,15 +177,35 @@ export async function executeSource(
     const targetUrl = rendered.url.toString();
     const excludedNodeIds = new Set<string>();
     let lastError: unknown;
+    const route = resolveProxyRoute(definition.manifest.id);
+    const shouldUseProxy = route?.action === "group" && Boolean(route.groupId);
+    const proxyGroupId = route?.action === "group" ? route.groupId || undefined : undefined;
+
+    // An unbound source or a direct route does not acquire a lease, but it is
+    // still useful to make the transport decision explicit in API metadata.
+    if (!shouldUseProxy) proxyNodes.add("直连");
 
     for (;;) {
       let lease: ProxyLease | undefined;
       let outboundUrl = targetUrl;
+      let directFallback = false;
       const attemptStarted = Date.now();
       try {
-        if (definition.proxyPool === "telegram") {
-          lease = acquireProxyRequest(targetUrl, excludedNodeIds);
-          outboundUrl = lease.requestUrl;
+        if (shouldUseProxy) {
+          try {
+            lease = acquireProxyRequest(targetUrl, excludedNodeIds, proxyGroupId);
+            outboundUrl = lease.requestUrl;
+            proxyNodes.add(lease.nodeName);
+          } catch (error) {
+            if (route?.fallbackAction === "direct") {
+              lease = undefined;
+              outboundUrl = targetUrl;
+              directFallback = true;
+              proxyNodes.add("直连");
+            } else {
+              throw error;
+            }
+          }
         }
         const url = outboundUrl;
         const payload = await executeSafeHttp({
@@ -248,7 +270,7 @@ export async function executeSource(
         return payload;
       } catch (error) {
         lastError = error;
-        if (!lease && definition.proxyPool === "telegram") {
+        if (!lease && (directFallback || (shouldUseProxy && route?.fallbackAction !== "direct"))) {
           throw error;
         }
         if (lease) {
@@ -265,10 +287,10 @@ export async function executeSource(
           request: requestDebugSnapshot(outboundUrl, rendered),
           error: error instanceof Error ? error.message : String(error),
         });
-        if (definition.proxyPool !== "telegram") throw error;
+        if (!shouldUseProxy || directFallback) throw error;
       }
 
-      if (definition.proxyPool !== "telegram") {
+      if (!shouldUseProxy || directFallback) {
         throw lastError;
       }
     }
@@ -298,7 +320,7 @@ export async function executeSource(
       ...(options.context || {}),
     }).slice(0, definition.manifest.maxResults);
 
-    return { results, traces, raw, rawTruncated };
+    return { results, traces, proxyNodes: [...proxyNodes], raw, rawTruncated };
   } finally {
     options.onTransformTiming?.(Date.now() - transformStarted);
   }

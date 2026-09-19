@@ -20,8 +20,6 @@ export interface SourceDefinition {
   /** A smaller value is queued and started earlier; 0 runs first. */
   priority: number;
   enabled?: boolean;
-  /** Route the request through the managed Telegram proxy/direct pool. */
-  proxyPool?: "telegram";
   request?: SourceRequestConfig;
   transform: string;
 }

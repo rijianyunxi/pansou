@@ -46,6 +46,7 @@
       :error="searchState.error"
       :has-results="hasResults"
       :platforms="platforms"
+      :platform-counts="platformCounts"
       :filter-platform="filterPlatform"
       :sort-type="sortType"
       :filtered-results="filteredResults"
@@ -267,6 +268,17 @@ const platforms = computed(() => {
   const seen = new Set<string>();
   for (const item of searchState.value.results) for (const type of item.cloud_types) seen.add(type);
   return [...seen];
+});
+
+// A resource can contain more than one kind of share link, so count each
+// resource once under every cloud type it exposes. This keeps the numbers
+// aligned with the result cards and with the platform filters.
+const platformCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {};
+  for (const item of searchState.value.results) {
+    for (const type of new Set(item.cloud_types)) counts[type] = (counts[type] || 0) + 1;
+  }
+  return counts;
 });
 
 function handlePlatformFilter(type: string) {

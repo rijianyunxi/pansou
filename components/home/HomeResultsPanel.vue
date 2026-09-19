@@ -21,7 +21,7 @@
             :class="['filter-pill', { active: filterPlatform === 'all' }]"
             :aria-pressed="filterPlatform === 'all'"
             @click="emit('update:filterPlatform', 'all')">
-            全部
+            <span>全部</span><span class="platform-count">{{ total }}</span>
           </button>
           <button
             v-for="platform in platforms"
@@ -29,7 +29,7 @@
             :class="['filter-pill', { active: filterPlatform === platform }]"
             :aria-pressed="filterPlatform === platform"
             @click="emit('update:filterPlatform', platform)">
-            {{ platformLabel(platform) }}
+            <span>{{ platformLabel(platform) }}</span><span class="platform-count">{{ platformCounts[platform] || 0 }}</span>
           </button>
         </div>
 
@@ -121,6 +121,7 @@ interface Props {
   error: string;
   hasResults: boolean;
   platforms: string[];
+  platformCounts: Record<string, number>;
   filterPlatform: string;
   sortType: SortType;
   filteredResults: SearchResult[];
@@ -155,10 +156,12 @@ function onSortChange(event: Event) {
 .pause-icon { font-size: 14px; }
 .paused-text { font-size: 13px; }
 .platform-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.filter-pill { position: relative; min-height: 32px; padding: 5px 12px; line-height: 20px; border: 1px solid var(--border-light); background: var(--bg-primary); border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); white-space: nowrap; }
+.filter-pill { position: relative; display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 5px 12px; line-height: 20px; border: 1px solid var(--border-light); background: var(--bg-primary); border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); white-space: nowrap; }
 .filter-pill:focus-visible, .time-sort-select:focus-within { outline: 2px solid var(--primary); outline-offset: 3px; }
 .filter-pill:hover { background: var(--bg-secondary); color: var(--text-primary); }
 .filter-pill.active { background: var(--primary-soft); color: var(--primary); border-color: transparent; font-weight: 600; }
+.platform-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--bg-secondary); color: var(--text-tertiary); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.filter-pill.active .platform-count { background: rgba(37, 99, 235, 0.14); color: var(--primary); }
 .time-sort-select { display: inline-flex; align-items: center; gap: 8px; width: fit-content; min-height: 40px; margin-top: 0; padding: 0 10px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-primary); color: var(--text-secondary); font-size: 13px; cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast); }
 .time-sort-select svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--primary); }
 .time-sort-select select { min-width: 92px; min-height: 38px; padding: 0 18px 0 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
@@ -205,4 +208,3 @@ function onSortChange(event: Event) {
   .stats-bar, .results-section, .empty-state, .error-alert { animation: none; }
 }
 </style>
-

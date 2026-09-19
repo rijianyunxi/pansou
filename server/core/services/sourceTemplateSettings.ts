@@ -7,7 +7,6 @@ export interface SourceTemplateSettings {
   urlTemplate: string;
   method: "GET" | "POST";
   format: "json" | "html";
-  proxyPool: "telegram";
   request: Record<string, unknown>;
   transform: string;
 }
@@ -16,7 +15,6 @@ const DEFAULTS: SourceTemplateSettings = {
   urlTemplate: "https://t.me/s/{{channel}}",
   method: "GET",
   format: "html",
-  proxyPool: "telegram",
   request: { query: { q: "{{keyword}}" }, headers: { "user-agent": "Mozilla/5.0" } },
   transform: DEFAULT_CHANNEL_TRANSFORM,
 };
@@ -36,7 +34,7 @@ function normalize(raw: unknown): SourceTemplateSettings {
   validateSourceRequestConfig({ ...request, method, url: urlTemplate });
   const transform = String(value.transform || DEFAULTS.transform).trim();
   validateSourceTransformCode(transform);
-  return { urlTemplate, method, format, proxyPool: "telegram", request, transform };
+  return { urlTemplate, method, format, request, transform };
 }
 
 export function getSourceTemplateSettings(): SourceTemplateSettings {

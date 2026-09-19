@@ -39,7 +39,10 @@ export class SqliteDatabase {
     this.ensureResourceSourceColumns();
     this.ensureUserAccountColumns();
     this.ensureManagedResourceColumns();
+    this.ensureProxyNodeSchema();
     this.ensureProxyNodeDefaults();
+    this.ensureProxyRouteSchema();
+    this.ensureProxyRoutingDefaults();
     this.ensureHotSearchColumns();
     this.ensureSearchAnalyticsColumns();
     this.ensureUserRolesAndDefaultAdmin();
@@ -231,39 +234,123 @@ export class SqliteDatabase {
     backfill();
   }
 
+  private ensureProxyNodeSchema(): void {
+    const columns = this.db.prepare("PRAGMA table_info(proxy_nodes)").all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === "kind")) {
+      // Preserve the legacy direct row as the new system-managed node before
+      // dropping its discriminator column. The empty address is its marker.
+      this.db.prepare("UPDATE proxy_nodes SET base_url='' WHERE kind='direct'").run();
+      this.db.exec("ALTER TABLE proxy_nodes DROP COLUMN kind");
+    }
+    if (columns.some((column) => column.name === "weight")) {
+      this.db.exec("DROP INDEX IF EXISTS idx_proxy_nodes_selection");
+      this.db.exec("ALTER TABLE proxy_nodes DROP COLUMN weight");
+    }
+  }
+
   private ensureProxyNodeDefaults(): void {
-    if (this.db.prepare("SELECT 1 FROM proxy_nodes LIMIT 1").get()) return;
     const now = Date.now();
+    this.db.prepare(
+      "INSERT OR IGNORE INTO proxy_nodes(id,name,base_url,enabled,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES('direct','直连目标站点','',1,0,'',0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
+    ).run(now, now);
+    const legacyDirectNodes = this.db.prepare("SELECT id FROM proxy_nodes WHERE base_url='' AND id<>'direct'").all() as Array<{ id: string }>;
+    for (const legacy of legacyDirectNodes) {
+      this.db.prepare("INSERT OR IGNORE INTO proxy_group_nodes(group_id,node_id,weight) SELECT group_id,'direct',weight FROM proxy_group_nodes WHERE node_id=?").run(legacy.id);
+      this.db.prepare("DELETE FROM proxy_nodes WHERE id=?").run(legacy.id);
+    }
+    if (this.db.prepare("SELECT 1 FROM proxy_nodes WHERE id<>'direct' LIMIT 1").get()) return;
     const defaults = [
-      {
-        id: "direct",
-        name: "直连 Telegram",
-        kind: "direct",
-        baseUrl: "",
-        weight: 1,
-      },
       {
         id: "worker-frosty-mouse",
         name: "Worker · frosty-mouse",
-        kind: "proxy",
         baseUrl: "https://frosty-mouse-58c9.691736657.workers.dev",
-        weight: 1,
       },
       {
         id: "worker-wild-glade",
         name: "Worker · wild-glade",
-        kind: "proxy",
         baseUrl: "https://wild-glade-8d69.mr-songjintao.workers.dev",
-        weight: 1,
       },
     ];
     const insert = this.db.prepare(
-      "INSERT OR IGNORE INTO proxy_nodes(id,name,kind,base_url,enabled,weight,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES(?,?,?,?,1,?,0,'',0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
+      "INSERT OR IGNORE INTO proxy_nodes(id,name,base_url,enabled,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES(?,?,?,1,0,'',0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
     );
     const seed = this.db.transaction(() => {
-      for (const item of defaults) insert.run(item.id, item.name, item.kind, item.baseUrl, item.weight, now, now);
+      for (const item of defaults) insert.run(item.id, item.name, item.baseUrl, now, now);
     });
     seed();
+  }
+
+  private ensureProxyRouteSchema(): void {
+    const columns = this.db.prepare("PRAGMA table_info(proxy_routes)").all() as Array<{ name: string }>;
+    const hasSourceIds = columns.some((column) => column.name === "source_ids_json");
+    const hasDomainFields = columns.some((column) => column.name === "match_type") || columns.some((column) => column.name === "domains_json");
+    if (!hasDomainFields && hasSourceIds) return;
+
+    this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE proxy_routes_new(
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 100,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          source_ids_json TEXT NOT NULL DEFAULT '[]',
+          action TEXT NOT NULL CHECK(action IN ('direct','group')),
+          group_id TEXT REFERENCES proxy_groups(id) ON DELETE SET NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+      const insert = this.db.prepare("INSERT INTO proxy_routes_new(id,name,priority,enabled,source_ids_json,action,group_id,created_at,updated_at) SELECT id,name,priority,enabled,'[]',action,group_id,created_at,updated_at FROM proxy_routes");
+      insert.run();
+      this.db.exec("DROP TABLE proxy_routes");
+      this.db.exec("ALTER TABLE proxy_routes_new RENAME TO proxy_routes");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_proxy_routes_order ON proxy_routes(enabled,priority,id)");
+    })();
+  }
+
+  private ensureProxyRoutingDefaults(): void {
+    const now = Date.now();
+    const shouldSeedMembers = !this.db.prepare("SELECT 1 FROM proxy_groups LIMIT 1").get();
+    const insertGroup = this.db.prepare(
+      "INSERT OR IGNORE INTO proxy_groups(id,name,description,enabled,fallback_action,created_at,updated_at) VALUES(?,?,?,1,'error',?,?)",
+    );
+    this.db.prepare("INSERT OR IGNORE INTO proxy_groups(id,name,description,enabled,fallback_action,created_at,updated_at) VALUES(?,?,?,1,?,?,?)").run("telegram", "Telegram 组", "用于 Telegram 资源源", "direct", now, now);
+    insertGroup.run("general", "通用代理组", "用于其他资源源", now, now);
+
+    if (shouldSeedMembers) {
+      const nodes = this.db.prepare("SELECT id,name,base_url FROM proxy_nodes").all() as Array<{ id: string; name: string; base_url: string }>;
+      const add = this.db.prepare("INSERT OR IGNORE INTO proxy_group_nodes(group_id,node_id,weight) VALUES(?,?,?)");
+      for (const node of nodes) {
+        const text = `${node.name} ${node.base_url}`.toLowerCase();
+        const isTencent = /腾讯|tencent|edgeone|edge\.one|qcloud/.test(text);
+        if (!isTencent && node.id !== "direct") add.run("telegram", node.id, 1);
+        if (isTencent) add.run("general", node.id, 1);
+      }
+    }
+    // Every strategy uses a node group. Convert any stale direct action while
+    // the route table is being upgraded so the direct node remains selectable.
+    const directRoutes = this.db.prepare("SELECT id,name FROM proxy_routes WHERE action='direct'").all() as Array<{ id: string; name: string }>;
+    for (const route of directRoutes) {
+      const groupId = `${route.id}-direct`.slice(0, 64);
+      this.db.prepare("INSERT OR IGNORE INTO proxy_groups(id,name,description,enabled,fallback_action,created_at,updated_at) VALUES(?,?,?,1,'error',?,?)").run(groupId, `${route.name} 节点`, "由旧版直连策略迁移", now, now);
+      this.db.prepare("INSERT OR IGNORE INTO proxy_group_nodes(group_id,node_id,weight) VALUES(?,?,1)").run(groupId, "direct");
+      this.db.prepare("UPDATE proxy_routes SET action='group',group_id=?,updated_at=? WHERE id=?").run(groupId, now, route.id);
+    }
+    const routeCount = this.db.prepare("SELECT COUNT(*) AS count FROM proxy_routes").get() as { count: number };
+    if (!routeCount.count) {
+      const addRoute = this.db.prepare("INSERT OR IGNORE INTO proxy_routes(id,name,priority,enabled,source_ids_json,action,group_id,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,?)");
+      addRoute.run("telegram", "Telegram 资源源", 10, "[]", "group", "telegram", now, now);
+      addRoute.run("general", "其他资源源", 1000, "[]", "group", "general", now, now);
+    }
+    // Bind the built-in policies to the current resource catalog once.
+    const sources = this.db.prepare("SELECT id,url FROM resource_sources WHERE NOT EXISTS (SELECT 1 FROM deleted_sources WHERE deleted_sources.id=resource_sources.id)").all() as Array<{ id: string; url: string }>;
+    const telegramIds = sources.filter((source) => {
+      try { const host = new URL(source.url).hostname.toLowerCase(); return host === "t.me" || host === "www.t.me" || host === "telegram.me" || host.endsWith(".telegram.me"); } catch { return false; }
+    }).map((source) => source.id);
+    const generalIds = sources.filter((source) => !telegramIds.includes(source.id)).map((source) => source.id);
+    const bindRoute = this.db.prepare("UPDATE proxy_routes SET source_ids_json=?,updated_at=? WHERE id=? AND (source_ids_json IS NULL OR source_ids_json='[]')");
+    if (telegramIds.length) bindRoute.run(JSON.stringify(telegramIds), now, "telegram");
+    if (generalIds.length) bindRoute.run(JSON.stringify(generalIds), now, "general");
   }
 
   private ensureHotSearchColumns(): void {
@@ -387,10 +474,8 @@ CREATE TABLE IF NOT EXISTS source_health(source_id TEXT PRIMARY KEY,snapshot_jso
 CREATE TABLE IF NOT EXISTS proxy_nodes(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('direct','proxy')),
-  base_url TEXT NOT NULL DEFAULT '',
+  base_url TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
-  weight INTEGER NOT NULL DEFAULT 1 CHECK(weight >= 1 AND weight <= 100),
   daily_limit INTEGER NOT NULL DEFAULT 0 CHECK(daily_limit >= 0),
   quota_day TEXT NOT NULL DEFAULT '',
   quota_used INTEGER NOT NULL DEFAULT 0 CHECK(quota_used >= 0),
@@ -405,7 +490,35 @@ CREATE TABLE IF NOT EXISTS proxy_nodes(
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_proxy_nodes_selection ON proxy_nodes(enabled,circuit_state,weight);
+CREATE INDEX IF NOT EXISTS idx_proxy_nodes_selection ON proxy_nodes(enabled,circuit_state);
+CREATE TABLE IF NOT EXISTS proxy_groups(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  fallback_action TEXT NOT NULL DEFAULT 'error' CHECK(fallback_action IN ('error','direct')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proxy_group_nodes(
+  group_id TEXT NOT NULL REFERENCES proxy_groups(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL REFERENCES proxy_nodes(id) ON DELETE CASCADE,
+  weight INTEGER NOT NULL DEFAULT 1 CHECK(weight >= 1 AND weight <= 100),
+  PRIMARY KEY(group_id,node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_proxy_group_nodes_group ON proxy_group_nodes(group_id,weight);
+CREATE TABLE IF NOT EXISTS proxy_routes(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source_ids_json TEXT NOT NULL DEFAULT '[]',
+  action TEXT NOT NULL CHECK(action IN ('direct','group')),
+  group_id TEXT REFERENCES proxy_groups(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proxy_routes_order ON proxy_routes(enabled,priority,id);
 CREATE TABLE IF NOT EXISTS managed_resources(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

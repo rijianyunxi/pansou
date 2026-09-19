@@ -31,10 +31,13 @@ export interface SearchSourceMeta {
   name: string;
   priority: number;
   status: SourceExecutionStatus;
+  /** Number emitted by this source before cross-source identity/link deduplication. */
   resultCount: number;
   elapsedMs: number;
   /** Time spent executing and validating this source transform; null when not run. */
   transformMs: number | null;
+  /** Proxy node(s) used for this source; direct requests are reported as `直连`. */
+  proxyNode: string;
 }
 
 export interface SearchResponseMeta {

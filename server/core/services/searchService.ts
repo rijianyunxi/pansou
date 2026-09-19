@@ -44,6 +44,7 @@ interface CachedSourceState {
   name: string;
   status: "success" | "failed";
   results: SearchResult[];
+  proxyNode?: string;
   warning?: WarningInfo;
 }
 
@@ -285,6 +286,7 @@ export class SearchService {
         resultCount: cached?.status === "success" ? cached.results.length : 0,
         elapsedMs: 0,
         transformMs: null,
+        proxyNode: cached?.proxyNode || (cached?.status === "success" ? "直连" : "未执行"),
       };
     });
     const diagnosticById = new Map(diagnostics.map((item) => [item.id, item]));
@@ -343,11 +345,18 @@ export class SearchService {
         diagnostic.status = "success";
         diagnostic.resultCount = sourceResults.length;
         diagnostic.elapsedMs = Date.now() - started;
+        diagnostic.proxyNode = result.proxyNodes.length ? result.proxyNodes.join(" → ") : "直连";
         if (trackHealth) this.recordHealth(source, true, diagnostic.elapsedMs, sourceResults.length);
         if (execution.onSourceSuccess && !execution.signal.aborted) {
           await execution.onSourceSuccess({ request: { keyword, phase: "source" }, sourceId: source.id, results: sourceResults });
         }
-        nextStates[sourceKey(source)] = { id: source.id, name: source.name, status: "success", results: clone(sourceResults) };
+        nextStates[sourceKey(source)] = {
+          id: source.id,
+          name: source.name,
+          status: "success",
+          results: clone(sourceResults),
+          proxyNode: diagnostic.proxyNode,
+        };
         return sourceResults;
       } catch (error) {
         diagnostic.status = execution.signal.aborted ? "skipped" : "failed";
@@ -400,7 +409,16 @@ export class SearchService {
       total: results.length,
       results,
       meta: {
-        sources: sources.map((source) => ({ id: source.id, name: source.name, priority: source.priority, status: "success", resultCount: entry.sources[sourceKey(source)]?.results.length || 0, elapsedMs: 0, transformMs: null })),
+        sources: sources.map((source) => ({
+          id: source.id,
+          name: source.name,
+          priority: source.priority,
+          status: "success",
+          resultCount: entry.sources[sourceKey(source)]?.results.length || 0,
+          elapsedMs: 0,
+          transformMs: null,
+          proxyNode: entry.sources[sourceKey(source)]?.proxyNode || "直连",
+        })),
         warnings: [],
       },
     };

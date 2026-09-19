@@ -91,30 +91,32 @@ export default {
         target.searchParams.append(key, value);
       }
 
-      // 仅代理 GET 请求
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("只支持 GET 和 HEAD 请求", {
+      // 仅代理来源运行时使用的 GET/HEAD/POST 请求
+      if (!["GET", "HEAD", "POST"].includes(request.method)) {
+        return new Response("只支持 GET、HEAD 和 POST 请求", {
           status: 405,
           headers: {
-            Allow: "GET, HEAD",
+            Allow: "GET, HEAD, POST",
             "Content-Type": "text/plain; charset=UTF-8",
           },
         });
       }
 
+      const upstreamHeaders = new Headers({
+        "User-Agent": request.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
+        Accept: request.headers.get("Accept") || "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": request.headers.get("Accept-Language") || "zh-CN,zh;q=0.9,en;q=0.8",
+      });
+      for (const name of ["content-type", "content-length", "authorization"]) {
+        const value = request.headers.get(name);
+        if (value) upstreamHeaders.set(name, value);
+      }
+
       // 请求源网站
       const upstream = await fetch(target.toString(), {
         method: request.method,
-        headers: {
-          "User-Agent":
-            request.headers.get("User-Agent") ||
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
-          Accept:
-            request.headers.get("Accept") ||
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language":
-            request.headers.get("Accept-Language") || "zh-CN,zh;q=0.9,en;q=0.8",
-        },
+        headers: upstreamHeaders,
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
         redirect: "manual",
       });
 

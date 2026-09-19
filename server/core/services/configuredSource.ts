@@ -30,13 +30,6 @@ export function toSourceDefinition(source: SourceDefinition): RuntimeSourceDefin
   const request = source.request;
   const transform = source.transform?.trim();
   if (!transform) throw new Error("来源必须配置 transform(payload, $, context)");
-  const sourceHost = new URL(source.url).hostname.toLowerCase();
-  const proxyPool = source.proxyPool === "telegram"
-    || sourceHost === "t.me"
-    || sourceHost === "www.t.me"
-    || sourceHost === "telegram.me"
-    ? "telegram"
-    : undefined;
   const allowedDomains = request?.allowedDomains?.length
     ? request.allowedDomains
     : [new URL(source.url).hostname];
@@ -52,7 +45,6 @@ export function toSourceDefinition(source: SourceDefinition): RuntimeSourceDefin
       schemaVersion: 1,
       outputTypes: [],
     },
-    proxyPool,
     request: {
       method: source.method,
       url: source.url,

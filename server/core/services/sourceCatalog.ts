@@ -48,7 +48,6 @@ function sanitize(raw: unknown): StoredCatalog {
       name: String(source.name || id).trim().slice(0, 100),
       description: String(source.description || "").trim().slice(0, 500),
       url, method, format, transform,
-      proxyPool: source.proxyPool === "telegram" ? "telegram" : undefined,
       priority: normalizePriority(source.priority),
       enabled: source.enabled !== false,
       request: sanitizeSourceRequest(source.request),
@@ -111,7 +110,6 @@ export function buildUserSource(channel: string): SourceDefinition {
     priority: 0,
     enabled: true,
     request: template.request as SourceDefinition["request"],
-    proxyPool: template.proxyPool,
     transform: template.transform,
   };
 }

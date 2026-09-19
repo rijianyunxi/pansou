@@ -39,7 +39,6 @@ export interface SourceResponse {
 export interface SourceDefinition {
   schemaVersion: 1;
   manifest: SourceManifest;
-  proxyPool?: "telegram";
   request: SourceRequest;
   response: SourceResponse;
 }
@@ -81,6 +80,8 @@ export interface SourceExecutionTrace {
 export interface SourceExecutionResult {
   results: import("../types/models").SearchResult[];
   traces: SourceExecutionTrace[];
+  /** Proxy nodes used while fetching this source, in attempt order. */
+  proxyNodes: string[];
   /** Admin-only debug payload preview. */
   raw: string;
   rawTruncated: boolean;

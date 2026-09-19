@@ -1,16 +1,14 @@
 import { validateOutboundUrl } from "../security/outboundUrl";
 import { getSqliteDatabase } from "../storage/sqlite";
 
-export type ProxyNodeKind = "direct" | "proxy";
 export type ProxyCircuitState = "closed" | "open" | "half-open" | "quota_exhausted";
+export const DIRECT_PROXY_NODE_ID = "direct";
 
 export interface ProxyNode {
   id: string;
   name: string;
-  kind: ProxyNodeKind;
   baseUrl: string;
   enabled: boolean;
-  weight: number;
   dailyLimit: number;
   quotaDay: string;
   quotaUsed: number;
@@ -26,7 +24,8 @@ export interface ProxyNode {
 
 export interface ProxyLease {
   nodeId: string;
-  nodeKind: ProxyNodeKind;
+  /** Display name captured at selection time for request diagnostics. */
+  nodeName: string;
   targetUrl: string;
   requestUrl: string;
 }
@@ -55,10 +54,8 @@ const SHANGHAI_DAY = new Intl.DateTimeFormat("en-CA", {
 interface ProxyNodeRow {
   id: string;
   name: string;
-  kind: ProxyNodeKind;
   base_url: string;
   enabled: number;
-  weight: number;
   daily_limit: number;
   quota_day: string;
   quota_used: number;
@@ -78,8 +75,7 @@ function today(): string {
   return SHANGHAI_DAY.format(new Date());
 }
 
-function normalizeBaseUrl(kind: ProxyNodeKind, value: unknown): string {
-  if (kind === "direct") return "";
+function normalizeBaseUrl(value: unknown): string {
   const raw = String(value || "").trim().replace(/\/+$/, "");
   if (!raw) throw new ProxyPoolError("invalid_node", "代理地址不能为空");
   const url = validateOutboundUrl(raw, { allowHttp: false });
@@ -87,14 +83,6 @@ function normalizeBaseUrl(kind: ProxyNodeKind, value: unknown): string {
     throw new ProxyPoolError("invalid_node", "代理地址不能包含查询参数、片段或凭据");
   }
   return url.toString().replace(/\/+$/, "");
-}
-
-function normalizeWeight(value: unknown): number {
-  const weight = Number(value);
-  if (!Number.isInteger(weight) || weight < 1 || weight > 100) {
-    throw new ProxyPoolError("invalid_node", "权重必须是 1 到 100 的整数");
-  }
-  return weight;
 }
 
 function normalizeDailyLimit(value: unknown): number {
@@ -124,10 +112,8 @@ function toNode(row: ProxyNodeRow, now = Date.now()): ProxyNode {
   return {
     id: row.id,
     name: row.name,
-    kind: row.kind,
     baseUrl: row.base_url,
     enabled: Boolean(row.enabled),
-    weight: row.weight,
     dailyLimit: row.daily_limit,
     quotaDay: row.quota_day,
     quotaUsed: row.quota_used,
@@ -146,12 +132,17 @@ function getRow(id: string): ProxyNodeRow | undefined {
   return getSqliteDatabase().getRow<ProxyNodeRow>("SELECT * FROM proxy_nodes WHERE id=?", id);
 }
 
-function weightedPick(nodes: ProxyNode[]): ProxyNode {
-  const total = nodes.reduce((sum, node) => sum + node.weight, 0);
+interface WeightedProxyCandidate {
+  node: ProxyNode;
+  weight: number;
+}
+
+function weightedPick(nodes: WeightedProxyCandidate[]): WeightedProxyCandidate {
+  const total = nodes.reduce((sum, item) => sum + item.weight, 0);
   let cursor = Math.random() * total;
-  for (const node of nodes) {
-    cursor -= node.weight;
-    if (cursor < 0) return node;
+  for (const item of nodes) {
+    cursor -= item.weight;
+    if (cursor < 0) return item;
   }
   return nodes[nodes.length - 1]!;
 }
@@ -164,7 +155,7 @@ export function listProxyNodes(): ProxyNode[] {
   resetDailyCounters();
   const now = Date.now();
   return getSqliteDatabase()
-    .allRows<ProxyNodeRow>("SELECT * FROM proxy_nodes ORDER BY kind ASC, name ASC, id ASC")
+    .allRows<ProxyNodeRow>("SELECT * FROM proxy_nodes ORDER BY CASE WHEN id='direct' THEN 0 ELSE 1 END, name ASC, id ASC")
     .map((row) => toNode(row, now));
 }
 
@@ -174,24 +165,21 @@ export function createProxyNode(raw: unknown): ProxyNode {
     : {};
   const id = String(value.id || "").trim().toLowerCase();
   if (!NODE_ID_PATTERN.test(id)) throw new ProxyPoolError("invalid_node", "节点 ID 格式不正确");
-  const kind: ProxyNodeKind = value.kind === "direct" ? "direct" : value.kind === "proxy" ? "proxy" : (() => { throw new ProxyPoolError("invalid_node", "节点类型必须是 direct 或 proxy"); })();
+  if (id === DIRECT_PROXY_NODE_ID) throw new ProxyPoolError("invalid_node", "直连节点由系统维护");
   const name = String(value.name || "").trim().slice(0, 100);
   if (!name) throw new ProxyPoolError("invalid_node", "节点名称不能为空");
-  const baseUrl = normalizeBaseUrl(kind, value.baseUrl);
-  const weight = normalizeWeight(value.weight ?? 1);
+  const baseUrl = normalizeBaseUrl(value.baseUrl);
   const dailyLimit = normalizeDailyLimit(value.dailyLimit ?? 0);
   const enabled = value.enabled !== false;
   const now = Date.now();
   const db = getSqliteDatabase();
   try {
     db.run(
-      "INSERT INTO proxy_nodes(id,name,kind,base_url,enabled,weight,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?, ?,0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
+      "INSERT INTO proxy_nodes(id,name,base_url,enabled,daily_limit,quota_day,quota_used,circuit_state,failure_count,probe_in_flight,opened_until,last_status,last_error,last_success_at,last_failure_at,created_at,updated_at) VALUES(?,?,?, ?,?,?,0,'closed',0,0,NULL,NULL,NULL,NULL,NULL,?,?)",
       id,
       name,
-      kind,
       baseUrl,
       enabled ? 1 : 0,
-      weight,
       dailyLimit,
       today(),
       now,
@@ -205,29 +193,22 @@ export function createProxyNode(raw: unknown): ProxyNode {
 }
 
 export function updateProxyNode(id: string, raw: unknown): ProxyNode {
+  if (id === DIRECT_PROXY_NODE_ID) throw new ProxyPoolError("invalid_node", "直连节点由系统维护");
   const current = getRow(id);
   if (!current) throw new ProxyPoolError("invalid_node", "代理节点不存在");
   const value = raw && typeof raw === "object" && !Array.isArray(raw)
     ? raw as Record<string, unknown>
     : {};
-  const kind: ProxyNodeKind = value.kind === undefined
-    ? current.kind
-    : value.kind === "direct" || value.kind === "proxy"
-      ? value.kind
-      : (() => { throw new ProxyPoolError("invalid_node", "节点类型必须是 direct 或 proxy"); })();
   const name = value.name === undefined ? current.name : String(value.name).trim().slice(0, 100);
   if (!name) throw new ProxyPoolError("invalid_node", "节点名称不能为空");
-  const baseUrl = normalizeBaseUrl(kind, value.baseUrl === undefined ? current.base_url : value.baseUrl);
-  const weight = normalizeWeight(value.weight === undefined ? current.weight : value.weight);
+  const baseUrl = normalizeBaseUrl(value.baseUrl === undefined ? current.base_url : value.baseUrl);
   const dailyLimit = normalizeDailyLimit(value.dailyLimit === undefined ? current.daily_limit : value.dailyLimit);
   const enabled = value.enabled === undefined ? Boolean(current.enabled) : value.enabled !== false;
   getSqliteDatabase().run(
-    "UPDATE proxy_nodes SET name=?,kind=?,base_url=?,enabled=?,weight=?,daily_limit=?,updated_at=? WHERE id=?",
+    "UPDATE proxy_nodes SET name=?,base_url=?,enabled=?,daily_limit=?,updated_at=? WHERE id=?",
     name,
-    kind,
     baseUrl,
     enabled ? 1 : 0,
-    weight,
     dailyLimit,
     Date.now(),
     id,
@@ -236,6 +217,7 @@ export function updateProxyNode(id: string, raw: unknown): ProxyNode {
 }
 
 export function deleteProxyNode(id: string): void {
+  if (id === DIRECT_PROXY_NODE_ID) throw new ProxyPoolError("invalid_node", "直连节点由系统维护");
   const result = getSqliteDatabase().run("DELETE FROM proxy_nodes WHERE id=?", id);
   if (!result.changes) throw new ProxyPoolError("invalid_node", "代理节点不存在");
 }
@@ -250,16 +232,26 @@ export function resetProxyNode(id: string): ProxyNode {
   return toNode(getRow(id)!);
 }
 
-export function acquireProxyRequest(targetUrl: string, excludedNodeIds: ReadonlySet<string> = new Set()): ProxyLease {
+export function acquireProxyRequest(targetUrl: string, excludedNodeIds: ReadonlySet<string> = new Set(), groupId?: string): ProxyLease {
   resetDailyCounters();
   const db = getSqliteDatabase();
   const now = Date.now();
-  const candidates = listProxyNodes().filter((node) => node.available && !excludedNodeIds.has(node.id));
+  let candidates = listProxyNodes().filter((node) => node.available && !excludedNodeIds.has(node.id)).map((node) => ({ node, weight: 1 }));
+  if (groupId) {
+    const group = db.getRow<{ enabled: number }>("SELECT enabled FROM proxy_groups WHERE id=?", groupId);
+    const members = db.allRows<{ node_id: string; weight: number }>("SELECT node_id,weight FROM proxy_group_nodes WHERE group_id=?", groupId);
+    if (!group?.enabled) candidates = [];
+    else {
+      const weights = new Map(members.map((item) => [item.node_id, item.weight]));
+      candidates = candidates.filter((item) => weights.has(item.node.id)).map((item) => ({ ...item, weight: weights.get(item.node.id)! }));
+    }
+  }
   const pending = [...candidates];
 
   while (pending.length) {
-    const node = weightedPick(pending);
-    const index = pending.findIndex((item) => item.id === node.id);
+    const picked = weightedPick(pending);
+    const node = picked.node;
+    const index = pending.findIndex((item) => item.node.id === node.id);
     pending.splice(index, 1);
     const result = db.run(
       `UPDATE proxy_nodes
@@ -275,13 +267,11 @@ export function acquireProxyRequest(targetUrl: string, excludedNodeIds: Readonly
       now,
     );
     if (!result.changes) continue;
-    const requestUrl = node.kind === "direct"
-      ? targetUrl
-      : `${node.baseUrl}/${encodeURIComponent(targetUrl)}`;
-    return { nodeId: node.id, nodeKind: node.kind, targetUrl, requestUrl };
+    const requestUrl = node.baseUrl ? `${node.baseUrl}/${encodeURIComponent(targetUrl)}` : targetUrl;
+    return { nodeId: node.id, nodeName: node.id === DIRECT_PROXY_NODE_ID ? "直连" : node.name, targetUrl, requestUrl };
   }
 
-  throw new ProxyPoolError("no_available_node", "当前没有可用的 Telegram 代理或直连节点");
+  throw new ProxyPoolError("no_available_node", "当前没有可用的代理节点");
 }
 
 export function reportProxySuccess(nodeId: string, status: number): void {
