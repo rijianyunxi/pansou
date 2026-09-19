@@ -7,8 +7,14 @@
           <text class="brand-title">盘搜</text>
         </view>
       </view>
-      <view class="theme-toggle" hover-class="theme-toggle-hover" bindtap="onThemeToggle">
-        <view class="theme-icon {{theme}}"></view>
+      <view
+        class="theme-toggle"
+        hover-class="theme-toggle-hover"
+        aria-label="{{theme === 'classic' ? '切换到明快风格' : '切换到原始风格'}}"
+        bindtap="onThemeToggle">
+        <view class="theme-toggle-surface">
+          <view class="theme-icon {{theme}}"></view>
+        </view>
       </view>
     </view>
   </view>
