@@ -30,6 +30,54 @@ export interface ProxyRouteDecision {
   fallbackAction: "error" | "direct";
 }
 
+function parseSourceIds(raw: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(raw || "[]"));
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.map((item) => String(item).trim().toLowerCase()).filter(Boolean))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remove source IDs that no longer exist from persisted proxy policies. */
+export function pruneMissingProxyRouteSources(): number {
+  const db = getSqliteDatabase();
+  const sourceIds = new Set(db.allRows<{ id: string }>("SELECT id FROM resource_sources").map((row) => String(row.id).trim().toLowerCase()));
+  const rows = db.allRows<{ id: string; source_ids_json: string }>("SELECT id,source_ids_json FROM proxy_routes");
+  const updates = rows
+    .map((row) => ({ id: row.id, sourceIds: parseSourceIds(row.source_ids_json) }))
+    .map((row) => ({ ...row, sourceIds: row.sourceIds.filter((sourceId) => sourceIds.has(sourceId)) }))
+    .filter((row, index) => JSON.stringify(row.sourceIds) !== JSON.stringify(parseSourceIds(rows[index]!.source_ids_json)));
+
+  if (!updates.length) return 0;
+  const now = Date.now();
+  db.transaction(() => {
+    for (const row of updates) db.run("UPDATE proxy_routes SET source_ids_json=?,updated_at=? WHERE id=?", JSON.stringify(row.sourceIds), now, row.id);
+  });
+  return updates.length;
+}
+
+/** Remove one deleted source from all policies immediately. */
+export function removeProxyRouteSourceReferences(sourceId: string): number {
+  const key = String(sourceId || "").trim().toLowerCase();
+  if (!key) return 0;
+  const db = getSqliteDatabase();
+  const rows = db.allRows<{ id: string; source_ids_json: string }>("SELECT id,source_ids_json FROM proxy_routes");
+  const updates = rows
+    .map((row) => ({ id: row.id, sourceIds: parseSourceIds(row.source_ids_json) }))
+    .map((row) => ({ ...row, sourceIds: row.sourceIds.filter((sourceId) => sourceId !== key) }))
+    .filter((row, index) => JSON.stringify(row.sourceIds) !== JSON.stringify(parseSourceIds(rows[index]!.source_ids_json)));
+
+  if (!updates.length) return 0;
+  const now = Date.now();
+  db.transaction(() => {
+    for (const row of updates) db.run("UPDATE proxy_routes SET source_ids_json=?,updated_at=? WHERE id=?", JSON.stringify(row.sourceIds), now, row.id);
+  });
+  return updates.length;
+}
+
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 
 function text(value: unknown, label: string, max = 100): string {
@@ -66,11 +114,11 @@ export function listProxyGroups(nodes: ProxyNode[] = []): ProxyGroup[] {
 }
 
 export function listProxyRoutes(): ProxyRoute[] {
+  // Also repair databases created before source deletion cleaned up policies.
+  pruneMissingProxyRouteSources();
   const rows = getSqliteDatabase().allRows<any>("SELECT * FROM proxy_routes ORDER BY priority ASC,id ASC");
   return rows.map((row) => {
-    let parsedSources: unknown;
-    try { parsedSources = JSON.parse(row.source_ids_json || "[]"); } catch { parsedSources = []; }
-    const sourceIds = Array.isArray(parsedSources) ? parsedSources.map((item) => String(item).trim()).filter(Boolean) : [];
+    const sourceIds = parseSourceIds(row.source_ids_json);
     return {
       id: row.id,
       name: row.name,

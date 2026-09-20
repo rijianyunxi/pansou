@@ -5,6 +5,7 @@ import { validateOutboundUrl } from "../security/outboundUrl";
 import { toSourceDefinition, getSourceConfigurationVersion } from "./configuredSource";
 import { validateSourceDefinition, validateSourceTransformCode } from "../source-runtime/validation";
 import { buildSourceFromTemplate, getSourceTemplateVersion } from "./sourceTemplateSettings";
+import { removeProxyRouteSourceReferences } from "./proxyRoutingService";
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,79}$/;
 type StoredCatalog = Record<string, SourceDefinition>;
@@ -86,6 +87,7 @@ function removePersistedSourceArtifacts(id: string): void {
   saveSearchSettings({
     sources: settings.sources?.filter((sourceId) => sourceId !== id) ?? null,
   });
+  removeProxyRouteSourceReferences(id);
 }
 export function buildUserSource(channel: string): SourceDefinition {
   const normalized = normalizeChannel(channel);
