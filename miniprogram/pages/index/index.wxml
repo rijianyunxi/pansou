@@ -20,8 +20,8 @@
   </view>
 
   <view class="hero">
-    <text class="hero-title">网盘资源聚合搜索</text>
-    <text class="hero-subtitle">网盘、磁力、公开频道，一个搜索框直达。</text>
+    <text class="hero-title">网盘聚合搜索</text>
+    <text class="hero-subtitle">网盘、磁力、公开频道一键搜索。</text>
   </view>
 
   <view class="search-workspace">

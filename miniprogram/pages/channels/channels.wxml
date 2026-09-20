@@ -10,7 +10,7 @@
 
   <block wx:else>
     <view class="add-card card">
-      <view class="add-hint">输入 Telegram 公开频道用户名或链接，例如 @durov 或 t.me/s/durov</view>
+      <view class="add-hint">输入公开频道用户名或链接，例如 durov 或 t.me/s/durov</view>
       <view class="add-row">
         <input
           class="add-input"

@@ -188,6 +188,27 @@ export function captureManagedResource(raw: unknown): { status: "created" | "dup
   return result;
 }
 export function updateManagedResource(id: string, raw: unknown): SearchResult { const resource = normalizeInput({ ...(raw as object), id }); const db = getSqliteDatabase(); const now = Date.now(); const result = db.run("UPDATE managed_resources SET name=?,description=?,datetime=?,cloud_types_json=?,links_json=?,tags_json=?,images_json=?,search_text=?,check_status='unchecked',check_message=NULL,checked_at=NULL,updated_at=? WHERE id=?", resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), now, id); if (!result.changes) throw new Error("资源不存在"); invalidateSearchCache(); return resource; }
+
+/** Replace exactly one link after an external transfer has completed. */
+export function replaceManagedResourceLink(input: { resourceId: string; linkIndex: number; expectedUrl: string; replacement: Link; transferJobId: string; provider: string }): SearchResult {
+  const db = getSqliteDatabase();
+  const row = db.getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", input.resourceId);
+  if (!row) throw new Error("资源不存在");
+  const resource = rowToResource(row);
+  const current = resource.links[input.linkIndex];
+  if (!current) throw new Error("原链接位置不存在");
+  if (current.url !== input.expectedUrl) throw new Error("资源链接已被修改，请重新发起转存");
+  const nextLinks = resource.links.map((link, index) => index === input.linkIndex ? input.replacement : link);
+  const nextResource = { ...resource, links: nextLinks, cloud_types: [...new Set(nextLinks.map((link) => link.type))] };
+  const now = Date.now();
+  db.transaction(() => {
+    db.run("UPDATE managed_resources SET cloud_types_json=?,links_json=?,search_text=?,check_status='unchecked',check_message=NULL,checked_at=NULL,updated_at=? WHERE id=?", JSON.stringify(nextResource.cloud_types), JSON.stringify(nextLinks), searchText(nextResource), now, input.resourceId);
+    db.run("INSERT INTO resource_link_history(id,resource_id,link_index,transfer_job_id,provider,old_url,old_password,new_url,new_password,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", randomUUID(), input.resourceId, input.linkIndex, input.transferJobId, input.provider, current.url, current.password, input.replacement.url, input.replacement.password, now);
+  });
+  invalidateSearchCache();
+  return nextResource;
+}
+
 export function deleteManagedResources(ids: string[]): number { const unique = [...new Set(ids.filter(Boolean))]; if (!unique.length) return 0; const changes = getSqliteDatabase().transaction(() => unique.reduce((count, id) => count + Number(getSqliteDatabase().run("DELETE FROM managed_resources WHERE id = ?", id).changes), 0)); if (changes) invalidateSearchCache(); return changes; }
 /**
  * Flip the search visibility of a set of resources.

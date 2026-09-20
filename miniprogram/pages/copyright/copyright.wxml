@@ -1,0 +1,36 @@
+<view class="copyright-page">
+  <view class="copyright-header">
+    <text class="eyebrow">盘搜 · Copyright</text>
+    <text class="page-title">版权与免责声明</text>
+    <text class="lead">盘搜提供公开网络信息的检索、索引、聚合和第三方链接跳转服务。</text>
+  </view>
+
+  <view class="copyright-card">
+    <view class="section">
+      <text class="section-title">服务说明</text>
+      <text class="section-text">盘搜主要展示第三方来源返回的资源标题、描述和链接，不主动上传、制作或托管第三方文件内容。搜索结果的准确性、时效性、可用性及合法性由相关来源或用户负责；外部网站和资源不由盘搜控制。</text>
+    </view>
+
+    <view class="section">
+      <text class="section-title">用户须知</text>
+      <text class="section-text">网络公开信息不等于无版权。用户应自行确认资源已经获得合法授权，不得利用本站从事侵权、盗版、传播违法信息或其他违法活动。</text>
+    </view>
+
+    <view class="section">
+      <text class="section-title">侵权投诉</text>
+      <text class="section-text">如果你是权利人，认为本站展示的某条结果侵犯了你的合法权益，请发送邮件至：</text>
+      <text class="email" selectable="true">pansou12345@163.com</text>
+      <text class="section-text">为了便于核实，请在邮件中提供：</text>
+      <view class="bullet-list">
+        <text class="bullet-item">• 权利人姓名（或单位名称）、联系方式；</text>
+        <text class="bullet-item">• 作品名称及具体涉嫌侵权的结果链接；</text>
+        <text class="bullet-item">• 权属证明和侵权初步证明材料；</text>
+        <text class="bullet-item">• 对通知内容真实性负责的声明；</text>
+        <text class="bullet-item">• 如由代理人提交，请附授权证明。</text>
+      </view>
+      <text class="section-text">对于材料完整、能够准确定位的投诉，盘搜将及时核实，并视情况采取删除、屏蔽或断开相关链接等措施。恶意或虚假投诉造成损失的，投诉人应依法承担相应责任。</text>
+    </view>
+  </view>
+
+  <text class="copyright-note">本页面仅用于服务说明，不构成对任何具体资源合法性的确认或法律意见。</text>
+</view>

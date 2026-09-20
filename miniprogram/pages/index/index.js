@@ -343,14 +343,14 @@ Page({
     this._snapshot = null;
     this._merged = [];
     this.stopTimer();
-    // Reset the search session but keep the typed keyword and scope, like the web.
+    // Reset the search session but keep the selected scope; the input itself should clear.
     const keep = {
       statusBarHeight: this.data.statusBarHeight,
       navContentHeight: this.data.navContentHeight,
       navBarHeight: this.data.navBarHeight,
       capsuleReserve: this.data.capsuleReserve,
       theme: this.data.theme,
-      keyword: this.data.keyword,
+      keyword: '',
       scope: this.data.scope,
       channelsCount: this.data.channelsCount,
     };
@@ -453,5 +453,9 @@ Page({
 
   onBackTop() {
     wx.pageScrollTo({ scrollTop: 0, duration: 200 });
+  },
+
+  onOpenCopyright() {
+    wx.navigateTo({ url: '/pages/copyright/copyright' });
   },
 });

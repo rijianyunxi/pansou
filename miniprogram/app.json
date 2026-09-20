@@ -3,7 +3,8 @@
     "pages/index/index",
     "pages/profile/profile",
     "pages/channels/channels",
-    "pages/login/index"
+    "pages/login/index",
+    "pages/copyright/copyright"
   ],
   "window": {
     "navigationBarBackgroundColor": "#ffffff",

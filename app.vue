@@ -3,7 +3,7 @@
   <div v-else class="layout" :class="`theme-${settings.theme}`">
     <!-- 顶部导航：左侧 Logo，右侧公共操作与账号入口 -->
     <header class="topnav" :inert="openSettings">
-      <NuxtLink to="/" class="brand">
+      <NuxtLink v-if="canOpenAdminFromBrand" to="/admin" class="brand" aria-label="进入管理后台" title="进入管理后台">
         <span class="brand-mark">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
             <circle cx="11" cy="11" r="7"></circle>
@@ -12,6 +12,15 @@
         </span>
         <span class="brand-text">{{ siteName }}</span>
       </NuxtLink>
+      <span v-else class="brand">
+        <span class="brand-mark">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20.5 20.5-4-4"></path>
+          </svg>
+        </span>
+        <span class="brand-text">{{ siteName }}</span>
+      </span>
       <nav class="topnav-actions" aria-label="主导航">
         <button
           class="theme-toggle nav-action-button"
@@ -38,6 +47,11 @@
     <main class="main" :inert="openSettings">
       <NuxtPage />
     </main>
+
+    <footer class="site-footer">
+      <NuxtLink to="/copyright">版权与免责声明</NuxtLink>
+      <span>网络公开信息不等于无版权</span>
+    </footer>
 
     <!-- 设置抽屉 -->
     <ClientOnly>
@@ -103,6 +117,7 @@ useHead(() => ({
 
 const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
 const auth = useAuth();
+const canOpenAdminFromBrand = computed(() => route.path === "/" && auth.user.value?.role === "admin");
 const themeToggleLabel = computed(() => settings.value.theme === "classic"
   ? "当前为原始风格，切换到明快风格"
   : "当前为明快风格，切换到原始风格");
@@ -644,6 +659,28 @@ button {
   animation: fadeIn 0.4s ease;
 }
 
+.site-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0 24px 28px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.site-footer a {
+  color: var(--text-secondary);
+  text-underline-offset: 3px;
+}
+
+.site-footer a:hover {
+  color: var(--primary);
+}
+
 /* Toast 通知 */
 .toast {
   position: fixed;
@@ -733,6 +770,10 @@ button {
 
   .main {
     padding: 16px;
+  }
+
+  .site-footer {
+    padding: 0 16px 22px;
   }
 
   .toast {

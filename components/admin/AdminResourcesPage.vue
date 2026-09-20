@@ -146,6 +146,8 @@
                             :aria-label="`${item.enabled === false ? '启用' : '停用'} ${item.name}`"
                             @click="setEnabled([item.id], item.enabled === false)">
                             <ConsoleIcon :name="item.enabled === false ? 'check' : 'stop'" :size="13" />
+                          </button><button v-if="canTransfer(item)" class="icon-button transfer-icon" type="button" :disabled="busy || transferBusy" :aria-label="`转存并替换 ${item.name}`" title="转存并替换原链接" @click="openTransfer(item)">
+                            <ConsoleIcon name="upload" :size="14" />
                           </button><button class="icon-button danger-icon" type="button"
                             :aria-label="`删除 ${item.name}`" title="删除" @click="remove(item)">
                             <ConsoleIcon name="trash" :size="15" />
@@ -201,6 +203,26 @@
         </form>
       </section>
     </div>
+    <div v-if="transferOpen" class="admin-modal-backdrop" @click.self="closeTransfer">
+      <section class="admin-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
+        <div class="modal-header">
+          <div><span class="eyebrow">TRANSFER &amp; REPLACE</span><h2 id="transfer-title">转存并替换链接</h2></div>
+          <button class="modal-close" type="button" :disabled="transferBusy" @click="closeTransfer">×</button>
+        </div>
+        <form class="resource-form" @submit.prevent="submitTransfer">
+          <p class="transfer-resource-name">{{ transferResource?.name }}</p>
+          <label>原链接<select v-model.number="transferLinkIndex" :disabled="transferBusy">
+            <option v-for="(link, index) in transferLinks" :key="`${link.url}-${index}`" :value="link.index">{{ cloudLabel(link.type) }} · {{ link.url }}</option>
+          </select></label>
+          <label>目标网盘<input :value="transferProviderLabel" disabled /></label>
+          <label>目标文件夹<input v-model.trim="transferFolder" :disabled="transferBusy" placeholder="例如：/PanHub/资源名称" /></label>
+          <p class="transfer-hint">仅替换成功后更新资源链接，原链接会保留在转存历史中。</p>
+          <p v-if="transferError" class="form-error">{{ transferError }}</p>
+          <p v-if="transferJob" class="transfer-progress" :class="`transfer-${transferJob.status}`">{{ transferStatusLabel(transferJob.status, transferJob.errorMessage) }}</p>
+          <div class="modal-actions"><button class="button secondary" type="button" :disabled="transferBusy" @click="closeTransfer">取消</button><button class="button primary" type="submit" :disabled="transferBusy || !transferResource">{{ transferBusy ? "转存中…" : "开始转存并替换" }}</button></div>
+        </form>
+      </section>
+    </div>
   </div>
 </template>
 <script setup lang="ts">
@@ -212,6 +234,10 @@ import type { CloudType, Link, SearchResult } from "../../server/core/types/mode
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
 type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean; approvalStatus?: "pending" | "approved" | "rejected"; checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown"; checkMessage?: string | null; checkedAt?: number | null };
+type TransferProvider = "quark" | "baidu";
+type TransferStatus = "queued" | "running" | "completed" | "failed";
+type TransferLink = Link & { index: number };
+type TransferJob = { id: string; resourceId: string; linkIndex: number; provider: TransferProvider; targetFolder: string; status: TransferStatus; replacementUrl: string | null; replacementPassword: string | null; errorMessage: string | null };
 type ApprovalStatus = NonNullable<AdminResource["approvalStatus"]>;
 type ApprovalCounts = Record<ApprovalStatus, number>;
 const approvalViews: Array<{ key: ApprovalStatus; label: string }> = [
@@ -219,7 +245,7 @@ const approvalViews: Array<{ key: ApprovalStatus; label: string }> = [
   { key: "pending", label: "待审核" },
   { key: "rejected", label: "已拒绝" },
 ];
-const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const approvalStatus = ref<ApprovalStatus>("approved"); const approvalCounts = ref<ApprovalCounts>({ approved: 0, pending: 0, rejected: 0 }); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref("");
+const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const approvalStatus = ref<ApprovalStatus>("approved"); const approvalCounts = ref<ApprovalCounts>({ approved: 0, pending: 0, rejected: 0 }); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref(""); const transferOpen = ref(false); const transferBusy = ref(false); const transferError = ref(""); const transferResource = ref<AdminResource | null>(null); const transferLinkIndex = ref(0); const transferFolder = ref(""); const transferJob = ref<TransferJob | null>(null);
 const form = ref<{ id?: string; name: string; description: string; datetime: string; links: Array<{ type: CloudType; url: string; password: string }> }>({ name: "", description: "", datetime: "", links: [{ type: "baidu", url: "", password: "" }] });
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value))); const currentKeys = computed(() => resources.value.map((item) => item.id)); const allSelected = computed(() => currentKeys.value.length > 0 && currentKeys.value.every((id) => selected.value.includes(id))); const someSelected = computed(() => selected.value.some((id) => currentKeys.value.includes(id)) && !allSelected.value);
 const activeView = computed(() => approvalViews.find((view) => view.key === approvalStatus.value) || approvalViews[0]);
@@ -229,10 +255,15 @@ const emptyLabel = computed(() => approvalStatus.value === "pending" ? "当前�
 // Selection is trimmed to the current page on every load, so the batch enable and
 // disable buttons can tell whether they would actually change anything.
 const selectedItems = computed(() => resources.value.filter((item) => selected.value.includes(item.id))); const canEnable = computed(() => selectedItems.value.some((item) => item.enabled === false)); const canDisable = computed(() => selectedItems.value.some((item) => item.enabled !== false));
+const transferLinks = computed<TransferLink[]>(() => (transferResource.value?.links || []).map((link, index) => ({ ...link, index })).filter((link) => link.type === "quark" || link.type === "baidu"));
+const selectedTransferLink = computed(() => transferLinks.value.find((link) => link.index === transferLinkIndex.value) || transferLinks.value[0] || null);
+const transferProviderLabel = computed(() => selectedTransferLink.value ? cloudLabel(selectedTransferLink.value.type) : "—");
 function cloudLabel(type: string) { return CLOUD_TYPE_SHORT_LABELS[type as CloudType] || type; }
 function checkStatusLabel(status?: AdminResource["checkStatus"]) { return status === "valid" ? "正常" : status === "invalid" ? "已失效" : status === "unknown" ? "待确认" : status === "checking" ? "检测中" : "未检测"; }
 function approvalLabel(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "待审核" : status === "rejected" ? "已拒绝" : "已通过"; }
 function approvalClass(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "approval-pending" : status === "rejected" ? "approval-rejected" : "approval-approved"; }
+function canTransfer(item: AdminResource) { return item.links.some((link) => link.type === "quark" || link.type === "baidu"); }
+function transferStatusLabel(status: TransferStatus, error?: string | null) { return status === "queued" ? "任务已排队…" : status === "running" ? "正在转存并创建分享…" : status === "completed" ? "转存完成，原链接已替换。" : `转存失败：${error || "请稍后重试"}`; }
 function statusOf(error: any) { return error?.statusCode || error?.response?.status || error?.status; } function apiError(error: any) { const status = statusOf(error); return status === 401 ? "请先登录管理员账号。" : status === 403 ? "当前账号没有管理员权限。" : error?.data?.statusMessage || error?.message || "后台请求失败。"; } function show(message: string, error = false) { notice.value = message; noticeError.value = error; }
 async function checkStatus() { checking.value = true; authError.value = ""; try { const status = await $fetch<any>("/api/account/session", { credentials: "include", cache: "no-store", retry: 0 }); authenticated.value = !!status.authenticated; locked.value = !(authenticated.value && status.user?.role === "admin"); if (!locked.value) await loadResources(); } catch (e: any) { locked.value = true; authError.value = apiError(e); } finally { checking.value = false; } }
 async function lock() { await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 }).catch(() => { }); await navigateTo("/"); }
@@ -247,6 +278,26 @@ async function setEnabled(ids: string[], enabled: boolean) { const targets = [..
 async function review(ids: string[], status: "approved" | "rejected") { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${status === "approved" ? "通过" : "拒绝"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/approval", { method: "POST", body: { ids: targets, status } }); const count = Number(result?.data?.count ?? 0); selected.value = selected.value.filter((id) => !targets.includes(id)); show(count ? `已${status === "approved" ? "通过" : "拒绝"} ${count} 条资源。` : "没有待审核资源发生变化。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 function reviewSelected(status: "approved" | "rejected") { void review(selected.value, status); }
 async function checkResources(ids: string[], label: string) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; busy.value = true; show(`正在检测 ${label}，请稍候…`); try { const result = await $fetch<any>("/api/admin/resources/check", { method: "POST", body: { ids: targets } }); const data = result?.data ?? {}; show(`检测完成：${Number(data.valid || 0)} 条正常，${Number(data.invalid || 0)} 条失效，${Number(data.unknown || 0)} 条待确认。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
+function openTransfer(item: AdminResource) { const first = item.links.findIndex((link) => link.type === "quark" || link.type === "baidu"); if (first < 0) return; transferResource.value = item; transferLinkIndex.value = first; transferFolder.value = `/PanHub/${item.id.replace(/[^a-zA-Z0-9_-]/gu, "-").slice(0, 80)}`; transferError.value = ""; transferJob.value = null; transferOpen.value = true; }
+function closeTransfer() { if (!transferBusy.value) { transferOpen.value = false; transferResource.value = null; transferJob.value = null; } }
+async function submitTransfer() {
+  if (transferBusy.value || !transferResource.value || !selectedTransferLink.value) return;
+  transferBusy.value = true; transferError.value = "";
+  try {
+    const result = await $fetch<any>("/api/admin/resources/transfer", { method: "POST", body: { resourceId: transferResource.value.id, linkIndex: selectedTransferLink.value.index, provider: selectedTransferLink.value.type, targetFolder: transferFolder.value } });
+    transferJob.value = result?.data?.job || result?.job || null;
+    if (!transferJob.value) throw new Error("服务端没有返回转存任务");
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      const statusResult = await $fetch<any>(`/api/admin/resources/transfer/${encodeURIComponent(transferJob.value.id)}`, { cache: "no-store" });
+      transferJob.value = statusResult?.data?.job || statusResult?.job || transferJob.value;
+      if (transferJob.value.status === "completed") { show("转存完成，原链接已替换。"); transferOpen.value = false; transferResource.value = null; await loadResources(); return; }
+      if (transferJob.value.status === "failed") { transferError.value = transferJob.value.errorMessage || "转存失败"; return; }
+    }
+    transferError.value = "转存任务仍在后台执行，请稍后刷新资源列表查看结果。";
+  } catch (e: any) { transferError.value = apiError(e); }
+  finally { transferBusy.value = false; }
+}
 function checkSelected() { void checkResources(selected.value, `${selected.value.length} 条资源`); }
 function checkOne(item: AdminResource) { void checkResources([item.id], `「${item.name}」`); }
 onMounted(checkStatus);
@@ -722,10 +773,56 @@ onMounted(checkStatus);
   padding: 8px 9px
 }
 
+.resource-table .transfer-icon {
+  color: #2563eb
+}
+
+.resource-table .transfer-icon:hover:not(:disabled) {
+  border-color: #93c5fd;
+  background: #eff6ff
+}
+
 .resource-drawer {
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow: auto
+}
+
+.transfer-modal {
+  width: min(560px, calc(100vw - 32px))
+}
+
+.transfer-resource-name {
+  margin: -4px 0 18px;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 700
+}
+
+.transfer-hint {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5
+}
+
+.transfer-progress {
+  margin: 14px 0 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 12px
+}
+
+.transfer-progress.transfer-failed {
+  color: #b42318;
+  background: #fef2f2
+}
+
+.transfer-progress.transfer-completed {
+  color: #0f6e56;
+  background: #e1f5ee
 }
 
 .modal-header {

@@ -268,6 +268,21 @@
                   <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存微信配置' }}</button></div>
                 </form>
               </section>
+              <section class="feature-card admin-account-card" aria-labelledby="quark-account-title">
+                <div class="policy-card-header">
+                  <div class="policy-card-copy">
+                    <h2 id="quark-account-title">夸克网盘转存</h2>
+                    <p>审核页转存任务会使用这里保存的夸克网页登录 Cookie。Cookie 只保存在服务端数据库中，页面不会回显完整内容。</p>
+                  </div>
+                  <div class="policy-card-actions">
+                    <span class="policy-count">{{ quarkSettings.configured ? '已配置' : '未配置' }}</span>
+                  </div>
+                </div>
+                <form class="admin-account-form" @submit.prevent="saveQuarkSettings">
+                  <label class="policy-field"><span><strong>夸克 Cookie</strong><small>{{ quarkCookieHint }}</small></span><textarea v-model="quarkForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="quarkSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.quark.cn 的 Cookie 请求头粘贴到这里'" /></label>
+                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !quarkForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存夸克配置' }}</button><button v-if="quarkSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearQuarkSettings">清除 Cookie</button></div>
+                </form>
+              </section>
               <section class="feature-card admin-account-card" aria-labelledby="admin-account-title">
                 <div class="policy-card-header">
                   <div class="policy-card-copy"><h2 id="admin-account-title">管理员账号</h2><p>修改后台登录用户名或密码。当前会话不会被立即退出。</p></div>
@@ -360,6 +375,8 @@ const adminAccount = ref({ username: "", password: "", confirmPassword: "" });
 type WechatEnvVersion = "release" | "trial" | "develop";
 type WechatSettingsView = { appId: string; qrPage: string; envVersion: WechatEnvVersion; secretConfigured: boolean; secretLength: number; configured: boolean };
 type WechatForm = { appId: string; secret: string; qrPage: string; envVersion: WechatEnvVersion };
+type QuarkSettingsView = { configured: boolean; cookieLength: number };
+type QuarkForm = { cookie: string };
 const DEFAULT_WECHAT_SETTINGS: WechatSettingsView = { appId: "", qrPage: "pages/login/index", envVersion: "release", secretConfigured: false, secretLength: 0, configured: false };
 // `secret` is write-only: it is never sent back, so the form always starts blank
 // and an empty field means "keep the stored secret".
@@ -368,6 +385,9 @@ const wechatForm = ref<WechatForm>({ appId: "", secret: "", qrPage: "pages/login
 const wechatSecretHint = computed(() => wechatSettings.value.secretConfigured
   ? `已保存 ${wechatSettings.value.secretLength} 位密钥，留空表示不修改`
   : "与 AppID 配套，仅保存在服务端，保存后不会回显");
+const quarkSettings = ref<QuarkSettingsView>({ configured: false, cookieLength: 0 });
+const quarkForm = ref<QuarkForm>({ cookie: "" });
+const quarkCookieHint = computed(() => quarkSettings.value.configured ? `已保存 ${quarkSettings.value.cookieLength} 个字符，留空表示不修改` : "从浏览器开发者工具复制 Cookie 请求头内容");
 const newUser = ref({ username: "", password: "", nickname: "" }); const createUserOpen = ref(false); const modalError = ref(""); const usernameInput = ref<HTMLInputElement | null>(null);
 const selectedKeys = ref<string[]>([]); const page = ref(1); const pageSize = ref(20); const total = ref(0);
 const userChannelsOpen = ref(false); const userChannelsLoading = ref(false); const userChannelsError = ref(""); const selectedUserChannels = ref<{ username: string; channels: string[] } | null>(null);
@@ -449,10 +469,11 @@ async function loadData() {
       const data = result?.data ?? result; logs.value = data.logs || data.items || []; total.value = Number(data.total || logs.value.length); page.value = Number(data.page || page.value);
       analytics.value = analyticsResult?.data ?? analytics.value;
     } else {
-      const [policyResult, accountResult, wechatResult] = await Promise.all([
+      const [policyResult, accountResult, wechatResult, quarkResult] = await Promise.all([
         $fetch<any>("/api/settings/user-policy", { cache: "no-store" }),
         $fetch<any>("/api/admin/account", { cache: "no-store" }),
         $fetch<any>("/api/settings/wechat", { cache: "no-store" }),
+        $fetch<any>("/api/settings/quark", { cache: "no-store" }),
       ]);
       const loadedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(policyResult, "policy"));
       const loadedAccount = unwrap<{ username?: string }>(accountResult, "account");
@@ -464,6 +485,8 @@ async function loadData() {
       auth.homeSearchPlaceholder.value = loadedPolicy.homeSearchPlaceholder;
       wechatSettings.value = loadedWechat;
       wechatForm.value = { appId: loadedWechat.appId, secret: "", qrPage: loadedWechat.qrPage, envVersion: loadedWechat.envVersion };
+      quarkSettings.value = unwrap<QuarkSettingsView>(quarkResult, "data");
+      quarkForm.value = { cookie: "" };
     }
   } catch (error: any) { if ([401, 403].includes(statusOf(error))) { authenticated.value = false; locked.value = true; } show(apiError(error), true); }
   finally { loading.value = false; }
@@ -592,6 +615,30 @@ async function saveWechatSettings() {
     show(saved.configured
       ? "微信配置已保存，扫码登录与小程序登录立即生效。"
       : "已保存，但 AppID 或 AppSecret 仍为空，微信登录暂不可用。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function saveQuarkSettings() {
+  if (busy.value || !quarkForm.value.cookie.trim()) return;
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/settings/quark", { method: "PUT", body: { cookie: quarkForm.value.cookie } });
+    quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
+    quarkForm.value = { cookie: "" };
+    show("夸克 Cookie 已保存，审核页转存会立即使用新的登录态。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function clearQuarkSettings() {
+  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的夸克 Cookie 吗？清除后转存功能将不可用。")) return;
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/settings/quark", { method: "PUT", body: { cookie: null } });
+    quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
+    quarkForm.value = { cookie: "" };
+    show("夸克 Cookie 已清除。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }
 }

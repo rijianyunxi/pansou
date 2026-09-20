@@ -552,6 +552,37 @@ CREATE TABLE IF NOT EXISTS managed_resources(
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_managed_resources_updated_at ON managed_resources(updated_at DESC);
+CREATE TABLE IF NOT EXISTS resource_transfer_jobs(
+  id TEXT PRIMARY KEY,
+  resource_id TEXT NOT NULL,
+  link_index INTEGER NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('quark','baidu')),
+  source_url TEXT NOT NULL,
+  source_password TEXT,
+  target_folder TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed')),
+  replacement_url TEXT,
+  replacement_password TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_transfer_jobs_resource ON resource_transfer_jobs(resource_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS resource_link_history(
+  id TEXT PRIMARY KEY,
+  resource_id TEXT NOT NULL,
+  link_index INTEGER NOT NULL,
+  transfer_job_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  old_url TEXT NOT NULL,
+  old_password TEXT,
+  new_url TEXT NOT NULL,
+  new_password TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_link_history_resource ON resource_link_history(resource_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL,
@@ -593,6 +624,7 @@ CREATE TABLE IF NOT EXISTS login_tickets(
 );
 CREATE INDEX IF NOT EXISTS idx_login_tickets_expires_at ON login_tickets(expires_at);
 CREATE TABLE IF NOT EXISTS wechat_mini_settings(id INTEGER PRIMARY KEY CHECK(id=1),app_id TEXT NOT NULL DEFAULT '',secret TEXT NOT NULL DEFAULT '',qr_page TEXT NOT NULL DEFAULT 'pages/login/index',env_version TEXT NOT NULL DEFAULT 'release',updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS cloud_account_settings(provider TEXT PRIMARY KEY CHECK(provider IN ('quark','baidu')),credential TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,

@@ -12,16 +12,21 @@
       <text class="menu-text">自定义频道管理</text>
       <text class="menu-arrow">›</text>
     </view>
+
+    <!-- <view class="menu-item" hover-class="menu-hover" bindtap="onAbout">
+      <text class="menu-text">关于盘搜</text>
+      <text class="menu-arrow">›</text>
+    </view> -->
+    <view class="menu-item" hover-class="menu-hover" bindtap="onCopyright">
+      <text class="menu-text">版权与免责声明</text>
+      <text class="menu-arrow">›</text>
+    </view>
     <view wx:if="{{authenticated}}" class="menu-item" hover-class="menu-hover" bindtap="onLogout">
       <text class="menu-text danger">退出登录</text>
       <text class="menu-arrow">›</text>
     </view>
     <view wx:else class="menu-item" hover-class="menu-hover" bindtap="onLogin">
       <text class="menu-text">微信登录</text>
-      <text class="menu-arrow">›</text>
-    </view>
-    <view class="menu-item" hover-class="menu-hover" bindtap="onAbout">
-      <text class="menu-text">关于盘搜</text>
       <text class="menu-arrow">›</text>
     </view>
   </view>

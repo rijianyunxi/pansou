@@ -3684,6 +3684,9 @@
 .admin-account-card .primary-button { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 8px 14px; border: 1px solid #2563eb; border-radius: 8px; color: #fff; background: #2563eb; font: 600 12px/1 inherit; cursor: pointer; }
 .admin-account-card .primary-button:hover:not(:disabled) { border-color: #1d4ed8; background: #1d4ed8; }
 .policy-card .primary-button:disabled, .admin-account-card .primary-button:disabled { cursor: wait; opacity: .55; }
+.admin-account-card .secondary-button { display: inline-flex; align-items: center; min-height: 38px; margin-left: 8px; padding: 8px 14px; border: 1px solid #dbe1ea; border-radius: 8px; color: #64748b; background: #fff; font: 600 12px/1 inherit; cursor: pointer; }
+.admin-account-card .secondary-button:hover:not(:disabled) { border-color: #fecaca; color: #b42318; background: #fff7f7; }
+.admin-account-card .secondary-button:disabled { cursor: wait; opacity: .55; }
 @media (max-width: 700px) {
   .policy-form-grid, .admin-account-form { grid-template-columns: 1fr; }
   .admin-account-form .policy-field:last-of-type, .admin-account-actions { grid-column: auto; }

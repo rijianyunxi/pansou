@@ -67,4 +67,8 @@ Page({
       confirmText: '知道了',
     });
   },
+
+  onCopyright() {
+    wx.navigateTo({ url: '/pages/copyright/copyright' });
+  },
 });
