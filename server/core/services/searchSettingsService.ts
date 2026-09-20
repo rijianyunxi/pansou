@@ -16,29 +16,32 @@ function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettin
 
 export function getSearchSettings(): SearchSettings {
   const db = getSqliteDatabase();
-  const row = db.getRow<{ sources_configured: number }>("SELECT sources_configured FROM search_settings WHERE id=1");
-  const sourceRows = db.allRows<{ source_id: string }>("SELECT source_id FROM search_setting_sources ORDER BY source_id");
-  const configuredSources = sourceRows.map(row => row.source_id);
-  return sanitize({ sources: row?.sources_configured ? configuredSources : null });
+  // The source catalog is the canonical source of participation state. Keep
+  // the legacy search_setting_sources table for compatibility, but never let
+  // it make the settings dialog disagree with the source manager.
+  const enabledSources = db.allRows<{ id: string }>(
+    "SELECT id FROM resource_sources WHERE enabled=1 ORDER BY id",
+  ).map((row) => row.id);
+  return sanitize({ sources: enabledSources });
 }
 export function getSearchSettingsVersion(): string | null {
   const db = getSqliteDatabase();
   const row = db.getRow<{ updated_at: number }>("SELECT updated_at FROM search_settings WHERE id=1");
   const system = db.getRow<{ updated_at: number }>("SELECT updated_at FROM system_settings WHERE id=1");
   const updatedAt = Math.max(row?.updated_at ?? 0, system?.updated_at ?? 0);
-  return `${updatedAt}:${getSearchSettings().sources?.join(",") || "*"}`;
+  const sources = getSearchSettings().sources;
+  return `${updatedAt}:${sources === null ? "*" : sources.join(",")}`;
 }
 /**
- * Keep the monitor's source enabled state and an explicit source selection in
- * sync. When sources is null, the selection means "all enabled sources" and
- * the source catalog remains the single source of truth.
+ * Keep the source catalog and the search selection in sync. The catalog's
+ * enabled flag is the single source of truth; the legacy search selection is
+ * mirrored only so older databases and callers remain compatible.
  */
 export function setSearchSourceEnabled(id: string, enabled: boolean): SearchSettings {
   const normalizedId = String(id || "").trim();
   if (!normalizedId) return getSearchSettings();
   const current = getSearchSettings();
-  if (current.sources === null) return current;
-  const sources = new Set(current.sources);
+  const sources = new Set(current.sources || []);
   if (enabled) sources.add(normalizedId);
   else sources.delete(normalizedId);
   return saveSearchSettings({ sources: [...sources] });
@@ -46,13 +49,26 @@ export function setSearchSourceEnabled(id: string, enabled: boolean): SearchSett
 
 export function saveSearchSettings(patch: unknown): SearchSettings {
   const next = sanitize({ ...getSearchSettings(), ...((patch && typeof patch === "object") ? patch as Record<string, unknown> : {}) });
-  const db = getSqliteDatabase(); const now = Date.now();
+  const db = getSqliteDatabase();
+  const catalogIds = db.allRows<{ id: string }>("SELECT id FROM resource_sources ORDER BY id").map((row) => row.id);
+  const catalogIdSet = new Set(catalogIds);
+  const sourceIds = next.sources === null
+    ? null
+    : [...new Set(next.sources.filter((id) => catalogIdSet.has(id)))];
+  const now = Date.now();
   db.transaction(() => {
-    db.run("INSERT INTO search_settings(id,concurrency,sources_configured,updated_at) VALUES(1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=NULL,sources_configured=excluded.sources_configured,updated_at=excluded.updated_at", next.sources !== null ? 1 : 0, now);
-    const sourceIds = [...new Set(next.sources || [])];
-    if (sourceIds.length) db.run(`DELETE FROM search_setting_sources WHERE source_id NOT IN (${sourceIds.map(() => "?").join(",")})`, ...sourceIds);
+    // Keep the catalog flag and the compatibility selection table aligned in
+    // one transaction, so either UI cannot drift from the other.
+    if (sourceIds !== null) {
+      const selected = new Set(sourceIds);
+      for (const id of catalogIds) {
+        db.run("UPDATE resource_sources SET enabled=?,updated_at=? WHERE id=?", selected.has(id) ? 1 : 0, now, id);
+      }
+    }
+    db.run("INSERT INTO search_settings(id,concurrency,sources_configured,updated_at) VALUES(1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=NULL,sources_configured=excluded.sources_configured,updated_at=excluded.updated_at", sourceIds !== null ? 1 : 0, now);
+    if (sourceIds?.length) db.run(`DELETE FROM search_setting_sources WHERE source_id NOT IN (${sourceIds.map(() => "?").join(",")})`, ...sourceIds);
     else db.run("DELETE FROM search_setting_sources");
-    for (const id of sourceIds) db.run("INSERT INTO search_setting_sources(source_id) VALUES(?) ON CONFLICT(source_id) DO NOTHING", id);
+    for (const id of sourceIds || []) db.run("INSERT INTO search_setting_sources(source_id) VALUES(?) ON CONFLICT(source_id) DO NOTHING", id);
   });
-  return clone(next);
+  return clone(getSearchSettings());
 }

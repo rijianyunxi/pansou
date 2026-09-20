@@ -38,9 +38,9 @@ export async function executePreparedSearch(
   const selectedSourceIds = prepared.effective.sourceIds;
   const selected = customChannelMode
     ? []
-    : selectedSourceIds?.length
-      ? configured.filter((source) => selectedSourceIds.includes(source.id))
-      : configured;
+    : selectedSourceIds === undefined
+      ? configured
+      : configured.filter((source) => selectedSourceIds.includes(source.id));
   const ephemeral = customChannelMode
     ? (requestedChannels ?? []).map((channel) => buildUserSource(channel))
     : [];

@@ -3,7 +3,7 @@
       <div class="stats-content">
         <div class="stats-main">
           <span class="stat-item">
-            <span class="stat-label">结果</span>
+            <span class="stat-label">资源</span>
             <span class="stat-value">{{ total }}</span>
           </span>
           <span class="stat-item">
@@ -21,7 +21,7 @@
             :class="['filter-pill', { active: filterPlatform === 'all' }]"
             :aria-pressed="filterPlatform === 'all'"
             @click="emit('update:filterPlatform', 'all')">
-            <span>全部</span><span class="platform-count">{{ total }}</span>
+            <span>全部资源</span><span class="platform-count">{{ total }}</span>
           </button>
           <button
             v-for="platform in platforms"
@@ -31,6 +31,7 @@
             @click="emit('update:filterPlatform', platform)">
             <span>{{ platformLabel(platform) }}</span><span class="platform-count">{{ platformCounts[platform] || 0 }}</span>
           </button>
+          <span class="platform-count-hint">网盘标签可重复：一个资源含多个网盘链接时，会同时计入多个标签</span>
         </div>
 
         <label v-if="hasResults" class="time-sort-select" title="按时间排序">
@@ -148,6 +149,7 @@ function onSortChange(event: Event) {
 <style scoped>
 .stats-bar { background: var(--bg-primary); border: 1px solid var(--border-light); border-radius: var(--radius-lg); padding: 16px; box-shadow: var(--shadow-sm); animation: fadeIn 0.4s ease; }
 .stats-content { display: flex; flex-direction: column; gap: 10px; }
+.platform-count-hint { flex: 1 0 100%; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
 .stats-main { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .stat-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-secondary); border-radius: var(--radius-md); }
 .stat-label { font-size: 13px; color: var(--text-tertiary); font-weight: 500; }
