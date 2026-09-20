@@ -1,4 +1,5 @@
 const auth = require('./auth');
+const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('./config');
 
 /**
  * All mini program calls go through here so an expired Bearer token is
@@ -26,6 +27,9 @@ function fetchSession({ fresh = false } = {}) {
         user: data.user || null,
         showHotSearch: data.showHotSearch !== false,
         anonymousCustomChannels: !!data.anonymousCustomChannels,
+        homeSearchPlaceholder: typeof data.homeSearchPlaceholder === 'string' && data.homeSearchPlaceholder.trim()
+          ? data.homeSearchPlaceholder.trim()
+          : DEFAULT_HOME_SEARCH_PLACEHOLDER,
       }))
       .catch((error) => { sessionPromise = undefined; throw error; });
   }

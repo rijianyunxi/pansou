@@ -1,3 +1,5 @@
+import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
+
 const API_BASE = "/api";
 
 export interface AuthUser {
@@ -12,7 +14,7 @@ export interface AuthUser {
   createdAt: number;
 }
 
-type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number; anonymousCustomChannels?: boolean; showHotSearch?: boolean; showAuthButtons?: boolean };
+type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: number; anonymousCustomChannels?: boolean; showHotSearch?: boolean; showAuthButtons?: boolean; homeSearchPlaceholder?: string };
 type ApiError = { statusCode?: number; statusMessage?: string; message?: string; data?: { statusMessage?: string; message?: string } };
 
 function errorStatus(error: ApiError | undefined): number | undefined {
@@ -38,6 +40,7 @@ export function useAuth() {
   const anonymousCustomChannels = useState<boolean>("auth-anonymous-custom-channels", () => false);
   const showHotSearch = useState<boolean>("auth-show-hot-search", () => true);
   const showAuthButtons = useState<boolean>("auth-show-auth-buttons", () => true);
+  const homeSearchPlaceholder = useState<string>("auth-home-search-placeholder", () => DEFAULT_HOME_SEARCH_PLACEHOLDER);
   const sessionError = useState("auth-session-error", () => "");
   const initialized = useState("auth-session-initialized", () => false);
   let initializePromise: Promise<boolean> | undefined;
@@ -58,6 +61,9 @@ export function useAuth() {
         anonymousCustomChannels.value = !!data.anonymousCustomChannels;
         showHotSearch.value = data.showHotSearch !== false;
         showAuthButtons.value = data.showAuthButtons !== false;
+        homeSearchPlaceholder.value = typeof data.homeSearchPlaceholder === "string" && data.homeSearchPlaceholder.trim()
+          ? data.homeSearchPlaceholder.trim()
+          : DEFAULT_HOME_SEARCH_PLACEHOLDER;
         sessionReady.value = true;
         initialized.value = true;
         return true;
@@ -128,7 +134,7 @@ export function useAuth() {
   }
 
   return {
-    error, user, sessionReady, sessionId, anonymousCustomChannels, showHotSearch, showAuthButtons, sessionError, initialized,
+    error, user, sessionReady, sessionId, anonymousCustomChannels, showHotSearch, showAuthButtons, homeSearchPlaceholder, sessionError, initialized,
     initializeSession, login, logout, updateProfile,
     handleSessionExpired,
   };

@@ -194,7 +194,7 @@
                     <h2 id="system-settings-title">搜索与账号配置</h2>
                   </div>
                   <div class="policy-card-actions">
-                    <span class="policy-count">17 个配置项</span>
+                    <span class="policy-count">20 个配置项</span>
                     <button class="refresh-button" type="button" :disabled="loading" @click="loadData">
                       <ConsoleIcon name="refresh" :size="14" />{{ loading ? '读取中…' : '刷新数据' }}
                     </button>
@@ -208,6 +208,7 @@
                       <label class="policy-field policy-toggle"><input v-model="policyForm.showHotSearch" type="checkbox" /><span><strong>展示热门搜索</strong><small>关闭后首页不加载或展示热门搜索区域。</small></span></label>
                       <label class="policy-field policy-toggle"><input v-model="policyForm.anonymousCustomChannels" type="checkbox" /><span><strong>允许匿名用户使用自定义频道</strong><small>关闭后自定义频道仅微信登录用户可用。</small></span></label>
                       <label class="policy-field policy-toggle"><input v-model="policyForm.showAuthButtons" type="checkbox" /><span><strong>是否展示登录按钮</strong><small>关闭后首页顶栏不再显示登录入口，扫码登录接口同时停用。</small></span></label>
+                      <label class="policy-field"><span><strong>首页搜索框提示语</strong><code>homeSearchPlaceholder</code></span><input v-model.trim="policyForm.homeSearchPlaceholder" type="text" maxlength="120" required placeholder="搜索电影、剧集、资料等资源…" /><small>只作为输入框提示文字，用户仍可自行输入关键词搜索。</small></label>
                     </div>
                   </fieldset>
                   <fieldset class="policy-group">
@@ -292,6 +293,7 @@ import AdminAccessGate from "./AdminAccessGate.vue";
 import ConsoleIcon from "../sources/ConsoleIcon.vue";
 
 import AdminPagination from "./AdminPagination.vue";
+import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 const auth = useAuth();
 type Feature = "users" | "logs" | "policies";
 type AdminUser = { id: number; username: string; nickname?: string | null; role?: "admin" | "user"; status: "active" | "disabled"; channels?: string[]; channelCount?: number; lastLoginIp?: string | null; createdAt?: number; created_at?: number };
@@ -304,6 +306,7 @@ type UserPolicy = {
   showHotSearch: boolean;
   anonymousCustomChannels: boolean;
   showAuthButtons: boolean;
+  homeSearchPlaceholder: string;
   sessionDays: number;
   customChannelLimit: number;
   defaultConcurrency: number;
@@ -326,6 +329,7 @@ const DEFAULT_POLICY: UserPolicy = {
   showHotSearch: true,
   anonymousCustomChannels: false,
   showAuthButtons: true,
+  homeSearchPlaceholder: DEFAULT_HOME_SEARCH_PLACEHOLDER,
   sessionDays: 30,
   customChannelLimit: 10,
   defaultConcurrency: 4,
@@ -457,6 +461,7 @@ async function loadData() {
       adminAccount.value = { username: String(loadedAccount.username || ""), password: "", confirmPassword: "" };
       auth.showHotSearch.value = loadedPolicy.showHotSearch;
       auth.showAuthButtons.value = loadedPolicy.showAuthButtons;
+      auth.homeSearchPlaceholder.value = loadedPolicy.homeSearchPlaceholder;
       wechatSettings.value = loadedWechat;
       wechatForm.value = { appId: loadedWechat.appId, secret: "", qrPage: loadedWechat.qrPage, envVersion: loadedWechat.envVersion };
     }
@@ -518,6 +523,7 @@ function normalizePolicy(value: unknown): UserPolicy {
     showHotSearch: typeof input.showHotSearch === "boolean" ? input.showHotSearch : DEFAULT_POLICY.showHotSearch,
     anonymousCustomChannels: typeof input.anonymousCustomChannels === "boolean" ? input.anonymousCustomChannels : DEFAULT_POLICY.anonymousCustomChannels,
     showAuthButtons: typeof input.showAuthButtons === "boolean" ? input.showAuthButtons : DEFAULT_POLICY.showAuthButtons,
+    homeSearchPlaceholder: typeof input.homeSearchPlaceholder === "string" && input.homeSearchPlaceholder.trim() ? input.homeSearchPlaceholder.trim() : DEFAULT_POLICY.homeSearchPlaceholder,
     sessionDays: typeof input.sessionDays === "number" && Number.isInteger(input.sessionDays) ? input.sessionDays : DEFAULT_POLICY.sessionDays,
     customChannelLimit: typeof input.customChannelLimit === "number" && Number.isInteger(input.customChannelLimit) ? input.customChannelLimit : DEFAULT_POLICY.customChannelLimit,
     defaultConcurrency: typeof input.defaultConcurrency === "number" && Number.isInteger(input.defaultConcurrency) ? input.defaultConcurrency : DEFAULT_POLICY.defaultConcurrency,
@@ -559,6 +565,7 @@ async function savePolicy() {
     policyForm.value = savedPolicy;
     auth.showHotSearch.value = savedPolicy.showHotSearch;
     auth.showAuthButtons.value = savedPolicy.showAuthButtons;
+    auth.homeSearchPlaceholder.value = savedPolicy.homeSearchPlaceholder;
     show("搜索配置已保存。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }

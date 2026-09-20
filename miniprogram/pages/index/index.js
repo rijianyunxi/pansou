@@ -1,4 +1,5 @@
 const api = require('../../utils/api');
+const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('../../utils/config');
 const { searchStream } = require('../../utils/searchStream');
 const { mergeResultsByLink } = require('../../utils/resultMerge');
 const { platformLabel, platformIcon } = require('../../utils/cloudTypes');
@@ -52,6 +53,7 @@ function initialState() {
     scope: 'site',
     channelsCount: 0,
     showHotSearch: true,
+    homeSearchPlaceholder: DEFAULT_HOME_SEARCH_PLACEHOLDER,
     hotSearches: [],
     searched: false,
     loading: false,
@@ -165,7 +167,7 @@ Page({
   async loadSessionFlags() {
     try {
       const session = await api.fetchSession({ fresh: true });
-      this.setData({ showHotSearch: session.showHotSearch });
+      this.setData({ showHotSearch: session.showHotSearch, homeSearchPlaceholder: session.homeSearchPlaceholder });
       if (session.showHotSearch) this.loadHotSearches();
     } catch (error) {
       this.loadHotSearches();

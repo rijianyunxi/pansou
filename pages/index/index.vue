@@ -18,7 +18,7 @@
       :searched="searched"
       :search-disabled="!settingsReady || !auth.sessionReady.value || needsChannelConfiguration"
       :disabled-description-id="needsChannelConfiguration && !searchState.loading ? 'channel-configuration-hint' : undefined"
-      :placeholder="onlyUserChannels ? '搜索自定义频道…' : placeholder"
+      :placeholder="placeholder"
       :needs-channel-configuration="needsChannelConfiguration"
       :storage-error="storageError"
       :session-error="auth.sessionError.value"
@@ -65,6 +65,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CLOUD_TYPE_LABELS } from "~/shared/cloudTypes";
+import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 import type { SearchResult } from "~/server/core/types/models";
 
 const config = useRuntimeConfig();
@@ -169,8 +170,7 @@ useHead({
 const kw = ref("");
 // Search scope is per visit, never a persisted channel preference.
 const onlyUserChannels = ref(false);
-const placeholder =
-  "搜索电影、剧集、资料等资源…";
+const placeholder = computed(() => auth.homeSearchPlaceholder.value || DEFAULT_HOME_SEARCH_PLACEHOLDER);
 
 // 排序和过滤
 const sortType = ref<"default" | "date-desc" | "date-asc">("default");

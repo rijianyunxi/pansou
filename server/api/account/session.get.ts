@@ -16,5 +16,5 @@ export default defineEventHandler((event) => {
   }
   setNoStore(event);
   const policy = getUserPolicy();
-  return { authenticated: !!context.user, user: context.user ? publicUser(context.user) : null, sessionId: context.session.id, anonymousCustomChannels: policy.anonymousCustomChannels, showHotSearch: policy.showHotSearch, showAuthButtons: policy.showAuthButtons };
+  return { authenticated: !!context.user, user: context.user ? publicUser(context.user) : null, sessionId: context.session.id, anonymousCustomChannels: policy.anonymousCustomChannels, showHotSearch: policy.showHotSearch, showAuthButtons: policy.showAuthButtons, homeSearchPlaceholder: policy.homeSearchPlaceholder };
 });

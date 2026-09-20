@@ -1,4 +1,5 @@
 import { getSqliteDatabase } from "../storage/sqlite";
+import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "../../../shared/homeSearch";
 
 /**
  * 管理后台暴露的用户、频道和搜索运行策略。
@@ -9,6 +10,7 @@ export interface UserPolicy {
   anonymousCustomChannels: boolean;
   /** Controls the homepage sign-in entry. The entry itself is WeChat QR login. */
   showAuthButtons: boolean;
+  homeSearchPlaceholder: string;
   sessionDays: number;
   customChannelLimit: number;
   defaultConcurrency: number;
@@ -31,6 +33,7 @@ export const DEFAULT_USER_POLICY: UserPolicy = {
   showHotSearch: true,
   anonymousCustomChannels: false,
   showAuthButtons: true,
+  homeSearchPlaceholder: DEFAULT_HOME_SEARCH_PLACEHOLDER,
   sessionDays: 30,
   customChannelLimit: 10,
   defaultConcurrency: 4,
@@ -84,6 +87,10 @@ const legacyPolicyKeys = [
 ] as const;
 
 function parseValue(key: string, value: unknown, fallback: unknown): unknown {
+  if (key === "homeSearchPlaceholder") {
+    const text = typeof value === "string" ? value.trim() : "";
+    return text.length >= 1 && text.length <= 120 ? text : fallback;
+  }
   if (key === "showHotSearch" || key === "anonymousCustomChannels" || key === "showAuthButtons") {
     return typeof value === "boolean" ? value : fallback;
   }
@@ -122,7 +129,7 @@ function readLegacyPerformanceValues(): Record<string, unknown> {
 }
 
 function persistMigratedValues(values: Record<string, unknown>, result: UserPolicy): void {
-  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "proxyCircuitBreakerMaxFailures", "proxyCircuitBreakerTimeoutSeconds", "searchTimeoutMs", "cacheTtlMinutes", "cacheMaxMemoryMb", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
+  const keys = ["showHotSearch", "showAuthButtons", "homeSearchPlaceholder", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "proxyCircuitBreakerMaxFailures", "proxyCircuitBreakerTimeoutSeconds", "searchTimeoutMs", "cacheTtlMinutes", "cacheMaxMemoryMb", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
   const obsoleteKeys = ["cacheMaxEntries"] as const;
   const missing = keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key));
   const hasLegacy = legacyPolicyKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
@@ -149,6 +156,7 @@ export function getUserPolicy(): UserPolicy {
     showHotSearch: parseValue("showHotSearch", values.showHotSearch, DEFAULT_USER_POLICY.showHotSearch) as boolean,
     anonymousCustomChannels: parseValue("anonymousCustomChannels", values.anonymousCustomChannels, DEFAULT_USER_POLICY.anonymousCustomChannels) as boolean,
     showAuthButtons: parseValue("showAuthButtons", values.showAuthButtons, DEFAULT_USER_POLICY.showAuthButtons) as boolean,
+    homeSearchPlaceholder: parseValue("homeSearchPlaceholder", values.homeSearchPlaceholder, DEFAULT_USER_POLICY.homeSearchPlaceholder) as string,
     // Read the old names as a one-time compatibility fallback for existing installs.
     sessionDays: parseValue("sessionDays", values.sessionDays ?? values.loginSessionDays ?? values.anonymousSessionDays, DEFAULT_USER_POLICY.sessionDays) as number,
     customChannelLimit: parseValue("customChannelLimit", values.customChannelLimit ?? values.loggedChannelLimit ?? values.anonymousChannelLimit, DEFAULT_USER_POLICY.customChannelLimit) as number,
@@ -182,6 +190,7 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
     showHotSearch: parseValue("showHotSearch", Object.prototype.hasOwnProperty.call(input, "showHotSearch") ? input.showHotSearch : current.showHotSearch, undefined) as boolean,
     anonymousCustomChannels: parseValue("anonymousCustomChannels", Object.prototype.hasOwnProperty.call(input, "anonymousCustomChannels") ? input.anonymousCustomChannels : current.anonymousCustomChannels, undefined) as boolean,
     showAuthButtons: parseValue("showAuthButtons", Object.prototype.hasOwnProperty.call(input, "showAuthButtons") ? input.showAuthButtons : current.showAuthButtons, undefined) as boolean,
+    homeSearchPlaceholder: parseValue("homeSearchPlaceholder", Object.prototype.hasOwnProperty.call(input, "homeSearchPlaceholder") ? input.homeSearchPlaceholder : current.homeSearchPlaceholder, undefined) as string,
     sessionDays: parseValue("sessionDays", Object.prototype.hasOwnProperty.call(input, "sessionDays") ? input.sessionDays : current.sessionDays, undefined) as number,
     customChannelLimit: parseValue("customChannelLimit", Object.prototype.hasOwnProperty.call(input, "customChannelLimit") ? input.customChannelLimit : current.customChannelLimit, undefined) as number,
     defaultConcurrency: parseValue("defaultConcurrency", Object.prototype.hasOwnProperty.call(input, "defaultConcurrency") ? input.defaultConcurrency : current.defaultConcurrency, undefined) as number,

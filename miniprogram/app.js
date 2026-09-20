@@ -1,10 +1,11 @@
 const auth = require('./utils/auth');
 const api = require('./utils/api');
+const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('./utils/config');
 
 App({
   globalData: {
     // Session flags loaded once after launch; pages re-read via api.fetchSession.
-    session: { authenticated: false, user: null, showHotSearch: true, anonymousCustomChannels: false },
+    session: { authenticated: false, user: null, showHotSearch: true, anonymousCustomChannels: false, homeSearchPlaceholder: DEFAULT_HOME_SEARCH_PLACEHOLDER },
     sessionReady: false,
   },
 
