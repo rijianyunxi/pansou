@@ -140,7 +140,7 @@ function normalizeSourceIds(value: unknown): string[] {
   const result = [...new Set(value.map((item) => String(item).trim().toLowerCase()).filter(Boolean))];
   const db = getSqliteDatabase();
   for (const sourceId of result) {
-    if (!db.getRow("SELECT id FROM resource_sources WHERE id=? AND NOT EXISTS (SELECT 1 FROM deleted_sources WHERE deleted_sources.id=resource_sources.id)", sourceId)) {
+    if (!db.getRow("SELECT id FROM resource_sources WHERE id=?", sourceId)) {
       throw new Error(`资源源不存在：${sourceId}`);
     }
   }

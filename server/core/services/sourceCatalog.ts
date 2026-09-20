@@ -57,15 +57,10 @@ function sanitize(raw: unknown): StoredCatalog {
 }
 function read(): StoredCatalog {
   const db = getSqliteDatabase();
-  const deletedSourceIds = new Set(
-    db.allRows<{ id: string }>("SELECT id FROM deleted_sources").map((row) => row.id),
-  );
   const rows = db.allRows<any>("SELECT id,name,description,url,method,format,priority,enabled,request_json,transform FROM resource_sources");
   const raw: Record<string, unknown> = {};
   for (const row of rows) {
     const id = normalizeId(row.id);
-    // Never expose an archived row through the active source catalog.
-    if (deletedSourceIds.has(id)) continue;
     let request: unknown = {};
     try { request = JSON.parse(row.request_json || "{}"); } catch { request = {}; }
     raw[id] = { ...row, id, request, enabled: Boolean(row.enabled) };
@@ -75,13 +70,9 @@ function read(): StoredCatalog {
 function writeSource(source: SourceDefinition): void {
   const db = getSqliteDatabase();
   db.run("INSERT INTO resource_sources(id,name,description,url,method,format,priority,enabled,request_json,transform,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,method=excluded.method,format=excluded.format,priority=excluded.priority,enabled=excluded.enabled,request_json=excluded.request_json,transform=excluded.transform,updated_at=excluded.updated_at", source.id, source.name, source.description, source.url, source.method, source.format, source.priority ?? 0, source.enabled === false ? 0 : 1, source.request ? JSON.stringify(source.request) : null, source.transform, Date.now());
-  // Saving a source with an id is an explicit resurrection. Clear the
-  // tombstone left by a previous deletion so read() does not keep hiding the
-  // newly saved row.
-  db.run("DELETE FROM deleted_sources WHERE id=?", source.id);
 }
 
-/** Remove rows that are owned by a persisted, non-archived source. */
+/** Remove the persisted source and its runtime/search metadata. */
 function removePersistedSourceArtifacts(id: string): void {
   const db = getSqliteDatabase();
   db.transaction(() => {
@@ -94,7 +85,6 @@ function removePersistedSourceArtifacts(id: string): void {
   const settings = getSearchSettings();
   saveSearchSettings({
     sources: settings.sources?.filter((sourceId) => sourceId !== id) ?? null,
-    trashedSources: settings.trashedSources.filter((sourceId) => sourceId !== id),
   });
 }
 export function buildUserSource(channel: string): SourceDefinition {
@@ -153,32 +143,7 @@ export function deleteUnifiedSource(id: string): void {
   const key = normalizeId(id);
   const source = getUnifiedSource(key);
   if (!source) throw new Error("Unknown source");
-  const db = getSqliteDatabase();
   removePersistedSourceArtifacts(key);
-  db.run("INSERT INTO deleted_sources(id,deleted_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at", key, Date.now());
-}
-export interface PurgedSourceArtifacts {
-  id: string;
-  removedSourceRows: number;
-  removedSearchEntries: number;
-  removedHealthRecords: number;
-}
-
-/** Permanently remove an archived resource source and its references. */
-export function purgeUnifiedSource(id: string): PurgedSourceArtifacts {
-  const key = normalizeId(id);
-  const db = getSqliteDatabase();
-  if (!db.getRow("SELECT 1 FROM deleted_sources WHERE id=?", key)) {
-    throw new Error("source must be in recycle bin before permanent deletion");
-  }
-  const result = db.transaction(() => {
-    const removedSourceRows = db.run("DELETE FROM resource_sources WHERE id=?", key).changes;
-    const removedSearchEntries = db.run("DELETE FROM search_setting_sources WHERE source_id=?", key).changes;
-    const removedHealthRecords = db.run("DELETE FROM source_health WHERE source_id=?", key).changes;
-    db.run("DELETE FROM deleted_sources WHERE id=?", key);
-    return { removedSourceRows, removedSearchEntries, removedHealthRecords };
-  });
-  return { id: key, ...result };
 }
 
 export function setUnifiedSourceEnabled(id: string, enabled: boolean): SourceDefinition {

@@ -1,6 +1,6 @@
 import { getSqliteDatabase } from "../storage/sqlite";
 
-export interface SearchSettings { sources: string[] | null; trashedSources: string[]; }
+export interface SearchSettings { sources: string[] | null; }
 const clone = <T>(value: T): T => structuredClone(value);
 function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettings {
   const value = raw || {};
@@ -11,17 +11,15 @@ function sanitize(raw: Partial<SearchSettings> | null | undefined): SearchSettin
     return result;
   };
   const sources = strList(value.sources, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s));
-  const trashedSources = strList(value.trashedSources, s => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s)) || [];
-  return { sources, trashedSources };
+  return { sources };
 }
 
 export function getSearchSettings(): SearchSettings {
   const db = getSqliteDatabase();
   const row = db.getRow<{ sources_configured: number }>("SELECT sources_configured FROM search_settings WHERE id=1");
-  const sourceRows = db.allRows<{ source_id: string; trashed: number }>("SELECT source_id,trashed FROM search_setting_sources ORDER BY source_id");
-  const configuredSources = sourceRows.filter(row => !row.trashed).map(row => row.source_id);
-  const trashedSources = sourceRows.filter(row => row.trashed).map(row => row.source_id);
-  return sanitize({ sources: row?.sources_configured ? configuredSources : null, trashedSources });
+  const sourceRows = db.allRows<{ source_id: string }>("SELECT source_id FROM search_setting_sources ORDER BY source_id");
+  const configuredSources = sourceRows.map(row => row.source_id);
+  return sanitize({ sources: row?.sources_configured ? configuredSources : null });
 }
 export function getSearchSettingsVersion(): string | null {
   const db = getSqliteDatabase();
@@ -51,10 +49,10 @@ export function saveSearchSettings(patch: unknown): SearchSettings {
   const db = getSqliteDatabase(); const now = Date.now();
   db.transaction(() => {
     db.run("INSERT INTO search_settings(id,concurrency,sources_configured,updated_at) VALUES(1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET concurrency=NULL,sources_configured=excluded.sources_configured,updated_at=excluded.updated_at", next.sources !== null ? 1 : 0, now);
-    const sourceIds = [...new Set([...(next.sources || []), ...next.trashedSources])];
+    const sourceIds = [...new Set(next.sources || [])];
     if (sourceIds.length) db.run(`DELETE FROM search_setting_sources WHERE source_id NOT IN (${sourceIds.map(() => "?").join(",")})`, ...sourceIds);
     else db.run("DELETE FROM search_setting_sources");
-    for (const id of sourceIds) db.run("INSERT INTO search_setting_sources(source_id,trashed) VALUES(?,?) ON CONFLICT(source_id) DO UPDATE SET trashed=excluded.trashed", id, next.trashedSources.includes(id) ? 1 : 0);
+    for (const id of sourceIds) db.run("INSERT INTO search_setting_sources(source_id) VALUES(?) ON CONFLICT(source_id) DO NOTHING", id);
   });
   return clone(next);
 }

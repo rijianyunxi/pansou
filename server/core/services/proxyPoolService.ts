@@ -1,5 +1,6 @@
 import { validateOutboundUrl } from "../security/outboundUrl";
 import { getSqliteDatabase } from "../storage/sqlite";
+import { getUserPolicy } from "./policyService";
 
 export type ProxyCircuitState = "closed" | "open" | "half-open" | "quota_exhausted";
 export const DIRECT_PROXY_NODE_ID = "direct";
@@ -40,8 +41,6 @@ export class ProxyPoolError extends Error {
   }
 }
 
-const FAILURE_THRESHOLD = 3;
-const TEMPORARY_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_ERROR_LENGTH = 500;
 const SHANGHAI_DAY = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
@@ -340,14 +339,15 @@ export function reportProxyFailure(
     return;
   }
   const failures = current.failure_count + 1;
+  const policy = getUserPolicy();
   // A failed half-open probe immediately re-opens the circuit; otherwise a
   // single probe could incorrectly make a previously unhealthy node normal.
-  const opened = current.circuit_state === "half-open" || failures >= FAILURE_THRESHOLD;
+  const opened = current.circuit_state === "half-open" || failures >= policy.proxyCircuitBreakerMaxFailures;
   db.run(
     "UPDATE proxy_nodes SET circuit_state=?,failure_count=?,probe_in_flight=0,opened_until=?,last_status=?,last_error=?,last_failure_at=?,updated_at=? WHERE id=?",
     opened ? "open" : "closed",
     failures,
-    opened ? now + TEMPORARY_COOLDOWN_MS : null,
+    opened ? now + policy.proxyCircuitBreakerTimeoutSeconds * 1000 : null,
     options.status ?? null,
     errorText(options.message || "请求失败"),
     now,

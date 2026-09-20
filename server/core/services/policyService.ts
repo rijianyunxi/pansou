@@ -14,6 +14,8 @@ export interface UserPolicy {
   defaultConcurrency: number;
   requestTimeoutMs: number;
   circuitBreakerMaxFailures: number;
+  proxyCircuitBreakerMaxFailures: number;
+  proxyCircuitBreakerTimeoutSeconds: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
   cacheMaxMemoryMb: number;
@@ -34,6 +36,8 @@ export const DEFAULT_USER_POLICY: UserPolicy = {
   defaultConcurrency: 4,
   requestTimeoutMs: 5000,
   circuitBreakerMaxFailures: 5,
+  proxyCircuitBreakerMaxFailures: 3,
+  proxyCircuitBreakerTimeoutSeconds: 300,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
   cacheMaxMemoryMb: 100,
@@ -51,6 +55,8 @@ const integerRanges: Record<string, [number, number]> = {
   defaultConcurrency: [1, 16],
   requestTimeoutMs: [1000, 60000],
   circuitBreakerMaxFailures: [1, 20],
+  proxyCircuitBreakerMaxFailures: [1, 20],
+  proxyCircuitBreakerTimeoutSeconds: [10, 3600],
   searchTimeoutMs: [1000, 120000],
   cacheTtlMinutes: [1, 10],
   cacheMaxMemoryMb: [16, 512],
@@ -116,7 +122,7 @@ function readLegacyPerformanceValues(): Record<string, unknown> {
 }
 
 function persistMigratedValues(values: Record<string, unknown>, result: UserPolicy): void {
-  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "searchTimeoutMs", "cacheTtlMinutes", "cacheMaxMemoryMb", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
+  const keys = ["showHotSearch", "showAuthButtons", "defaultConcurrency", "requestTimeoutMs", "circuitBreakerMaxFailures", "proxyCircuitBreakerMaxFailures", "proxyCircuitBreakerTimeoutSeconds", "searchTimeoutMs", "cacheTtlMinutes", "cacheMaxMemoryMb", "anonymousSearchRateLimitWindowSeconds", "anonymousSearchRateLimitPerSession", "anonymousSearchRateLimitPerIp", "loggedSearchRateLimitWindowSeconds", "loggedSearchRateLimitPerSession", "loggedSearchRateLimitPerIp"] as const;
   const obsoleteKeys = ["cacheMaxEntries"] as const;
   const missing = keys.filter((key) => !Object.prototype.hasOwnProperty.call(values, key));
   const hasLegacy = legacyPolicyKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
@@ -149,6 +155,8 @@ export function getUserPolicy(): UserPolicy {
     defaultConcurrency: parseValue("defaultConcurrency", values.defaultConcurrency ?? legacy.defaultConcurrency, DEFAULT_USER_POLICY.defaultConcurrency) as number,
     requestTimeoutMs: parseValue("requestTimeoutMs", values.requestTimeoutMs ?? legacy.requestTimeoutMs, DEFAULT_USER_POLICY.requestTimeoutMs) as number,
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", values.circuitBreakerMaxFailures, DEFAULT_USER_POLICY.circuitBreakerMaxFailures) as number,
+    proxyCircuitBreakerMaxFailures: parseValue("proxyCircuitBreakerMaxFailures", values.proxyCircuitBreakerMaxFailures, DEFAULT_USER_POLICY.proxyCircuitBreakerMaxFailures) as number,
+    proxyCircuitBreakerTimeoutSeconds: parseValue("proxyCircuitBreakerTimeoutSeconds", values.proxyCircuitBreakerTimeoutSeconds, DEFAULT_USER_POLICY.proxyCircuitBreakerTimeoutSeconds) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", values.searchTimeoutMs, DEFAULT_USER_POLICY.searchTimeoutMs) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", values.cacheTtlMinutes ?? legacy.cacheTtlMinutes, DEFAULT_USER_POLICY.cacheTtlMinutes) as number,
     cacheMaxMemoryMb: parseValue("cacheMaxMemoryMb", values.cacheMaxMemoryMb, DEFAULT_USER_POLICY.cacheMaxMemoryMb) as number,
@@ -179,6 +187,8 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
     defaultConcurrency: parseValue("defaultConcurrency", Object.prototype.hasOwnProperty.call(input, "defaultConcurrency") ? input.defaultConcurrency : current.defaultConcurrency, undefined) as number,
     requestTimeoutMs: parseValue("requestTimeoutMs", Object.prototype.hasOwnProperty.call(input, "requestTimeoutMs") ? input.requestTimeoutMs : current.requestTimeoutMs, undefined) as number,
     circuitBreakerMaxFailures: parseValue("circuitBreakerMaxFailures", Object.prototype.hasOwnProperty.call(input, "circuitBreakerMaxFailures") ? input.circuitBreakerMaxFailures : current.circuitBreakerMaxFailures, undefined) as number,
+    proxyCircuitBreakerMaxFailures: parseValue("proxyCircuitBreakerMaxFailures", Object.prototype.hasOwnProperty.call(input, "proxyCircuitBreakerMaxFailures") ? input.proxyCircuitBreakerMaxFailures : current.proxyCircuitBreakerMaxFailures, undefined) as number,
+    proxyCircuitBreakerTimeoutSeconds: parseValue("proxyCircuitBreakerTimeoutSeconds", Object.prototype.hasOwnProperty.call(input, "proxyCircuitBreakerTimeoutSeconds") ? input.proxyCircuitBreakerTimeoutSeconds : current.proxyCircuitBreakerTimeoutSeconds, undefined) as number,
     searchTimeoutMs: parseValue("searchTimeoutMs", Object.prototype.hasOwnProperty.call(input, "searchTimeoutMs") ? input.searchTimeoutMs : current.searchTimeoutMs, undefined) as number,
     cacheTtlMinutes: parseValue("cacheTtlMinutes", Object.prototype.hasOwnProperty.call(input, "cacheTtlMinutes") ? input.cacheTtlMinutes : current.cacheTtlMinutes, undefined) as number,
     cacheMaxMemoryMb: parseValue("cacheMaxMemoryMb", Object.prototype.hasOwnProperty.call(input, "cacheMaxMemoryMb") ? input.cacheMaxMemoryMb : current.cacheMaxMemoryMb, undefined) as number,

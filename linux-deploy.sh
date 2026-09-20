@@ -7,7 +7,7 @@ BRANCH="${BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/pansou}"
 TMP_DIR="${TMP_DIR:-$APP_DIR/tmp}"
 PM2_APP_NAME="${PM2_APP_NAME:-pansou}"
-LEGACY_PM2_APP_NAME="${LEGACY_PM2_APP_NAME:-panhub}"
+LEGACY_PM2_APP_NAME="${LEGACY_PM2_APP_NAME:-pansou}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "请使用 root 运行：sudo bash deploy.sh" >&2
@@ -57,14 +57,7 @@ git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$TMP_DIR"
 
 cd "$TMP_DIR"
 
-# 使用运行目录中的生产环境文件参与构建，但构建前不移动它。
-if [[ -f "$APP_DIR/.env.production" ]]; then
-  echo "复制现有生产环境配置到临时构建目录"
-  cp -a "$APP_DIR/.env.production" "$TMP_DIR/.env.production"
-elif [[ ! -f "$TMP_DIR/.env.production" ]]; then
-  echo "未找到 .env.production，请先创建：$APP_DIR/.env.production" >&2
-  exit 1
-fi
+
 
 echo "安装依赖..."
 npm install
@@ -117,9 +110,7 @@ wait_for_pm2_online() {
 
 # 构建成功后才停止旧进程，尽量缩短停机时间。
 remove_pm2_app "$PM2_APP_NAME"
-if [[ "$LEGACY_PM2_APP_NAME" != "$PM2_APP_NAME" ]]; then
-  remove_pm2_app "$LEGACY_PM2_APP_NAME"
-fi
+
 
 if [[ -e "$APP_DIR/.output" ]]; then
   echo "删除旧运行产物：$APP_DIR/.output"
@@ -135,6 +126,9 @@ chmod 600 "$APP_DIR/.env.production"
 
 echo "移动 PM2 配置到：$APP_DIR/ecosystem.config.cjs"
 mv -f -- "$TMP_DIR/ecosystem.config.cjs" "$APP_DIR/ecosystem.config.cjs"
+
+#echo "移动数据库配置到：$APP_DIR/data"
+#mv -f -- "$TMP_DIR/data" "$APP_DIR/data"
 
 cd "$APP_DIR"
 echo "启动 PM2：$PM2_APP_NAME"

@@ -6,16 +6,15 @@
 
 export type MonitorKind = "source";
 
-/** 行的归并状态：健康 / 待关注 / 异常 / 已关闭 / 已删除 / 未知。 */
+/** 行的归并状态：健康 / 待关注 / 异常 / 已关闭 / 未知。 */
 export type MonitorRowState =
   | "healthy"
   | "warning"
   | "error"
   | "disabled"
-  | "trashed"
   | "unknown";
 
-/** 状态筛选：全部 / 资源源 / 异常 / 已关闭（含已删除）。 */
+/** 状态筛选：全部 / 资源源 / 异常 / 已关闭。 */
 export type MonitorFilter = "all" | "source" | "error" | "inactive";
 
 export interface MonitorHistoryBucket {
@@ -66,7 +65,6 @@ export interface MonitorSourceEntry {
   priority?: number | null;
   kind?: string | null;
   enabled?: boolean | null;
-  trashed?: boolean | null;
   version?: string | null;
   health?: MonitorSourceHealth | null;
 }
@@ -101,7 +99,6 @@ export interface MonitorRow {
   typeLabel: string;
   state: MonitorRowState;
   enabled: boolean;
-  trashed: boolean;
   version: string;
   metrics: string[];
   detail: string;
@@ -119,7 +116,6 @@ export interface MonitorSummary {
   warning: number;
   error: number;
   inactive: number;
-  trashed: number;
 }
 
 export const STATE_LABELS: Record<MonitorRowState, string> = {
@@ -127,7 +123,6 @@ export const STATE_LABELS: Record<MonitorRowState, string> = {
   warning: "待关注",
   error: "异常",
   disabled: "已关闭",
-  trashed: "已删除",
   unknown: "未知",
 };
 
@@ -136,7 +131,6 @@ export const STATE_TONES: Record<MonitorRowState, string> = {
   warning: "warning",
   error: "error",
   disabled: "neutral",
-  trashed: "neutral",
   unknown: "neutral",
 };
 
@@ -321,7 +315,6 @@ function sourceMetrics(health: MonitorSourceHealth | null | undefined): string[]
 }
 
 export function resolveSourceState(entry: MonitorSourceEntry): MonitorRowState {
-  if (bool(entry.trashed) === true) return "trashed";
   if (bool(entry.enabled) === false) return "disabled";
   const health = entry.health;
   if (!health) return "unknown";
@@ -344,7 +337,6 @@ function buildSourceRow(entry: MonitorSourceEntry): MonitorRow | null {
     typeLabel: "资源源",
     state,
     enabled: bool(entry.enabled) !== false,
-    trashed: bool(entry.trashed) === true,
     version: text(entry.version),
     metrics: sourceMetrics(health),
     detail: text(health?.lastErrorMessage),
@@ -365,14 +357,13 @@ export function buildMonitorRows(data: MonitorData | null | undefined): MonitorR
 }
 
 export function summarizeRows(rows: MonitorRow[]): MonitorSummary {
-  const summary: MonitorSummary = { total: 0, healthy: 0, warning: 0, error: 0, inactive: 0, trashed: 0 };
+  const summary: MonitorSummary = { total: 0, healthy: 0, warning: 0, error: 0, inactive: 0 };
   for (const row of rows) {
     summary.total += 1;
     if (row.state === "healthy") summary.healthy += 1;
     else if (row.state === "warning") summary.warning += 1;
     else if (row.state === "error") summary.error += 1;
     else if (row.state === "disabled") summary.inactive += 1;
-    else if (row.state === "trashed") summary.trashed += 1;
   }
   return summary;
 }
@@ -383,14 +374,13 @@ export function filterRows(rows: MonitorRow[], filter: MonitorFilter, search: st
   return rows.filter((row) => {
     if (filter === "source" && row.kind !== "source") return false;
     if (filter === "error" && row.state !== "error") return false;
-    if (filter === "inactive" && row.state !== "disabled" && row.state !== "trashed") return false;
+    if (filter === "inactive" && row.state !== "disabled") return false;
     if (!keyword) return true;
     return `${row.name} ${row.id} ${row.detail}`.toLowerCase().includes(keyword);
   });
 }
 
 function rowStateFromFlags(row: MonitorRow): MonitorRowState {
-  if (row.trashed) return "trashed";
   if (!row.enabled) return "disabled";
   if (row.healthHealthy === true) return row.failingDimension ? "warning" : "healthy";
   if (row.healthHealthy === false) return "error";
@@ -408,14 +398,6 @@ function patchRow(rows: MonitorRow[], key: string, patch: Partial<MonitorRow>): 
 
 export function withSourceEnabled(rows: MonitorRow[], id: string, enabled: boolean): MonitorRow[] {
   return patchRow(rows, `source:${id}`, { enabled });
-}
-
-export function withRowRemoved(rows: MonitorRow[], key: string): MonitorRow[] {
-  return patchRow(rows, key, { trashed: true });
-}
-
-export function withRowRestored(rows: MonitorRow[], key: string): MonitorRow[] {
-  return patchRow(rows, key, { trashed: false, enabled: true });
 }
 
 export function checkedAtText(row: MonitorRow): string {

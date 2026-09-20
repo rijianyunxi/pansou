@@ -223,6 +223,8 @@
                       <label class="policy-field"><span><strong>默认并发请求数</strong><code>defaultConcurrency</code></span><input v-model.number="policyForm.defaultConcurrency" type="number" min="1" max="16" required /><small>范围：1–16</small></label>
                       <label class="policy-field"><span><strong>请求 / transform 超时</strong><code>requestTimeoutMs</code></span><input v-model.number="policyForm.requestTimeoutMs" type="number" min="1000" max="60000" required /><small>范围：1000–60000 ms</small></label>
                       <label class="policy-field"><span><strong>来源熔断失败次数</strong><code>circuitBreakerMaxFailures</code></span><input v-model.number="policyForm.circuitBreakerMaxFailures" type="number" min="1" max="20" required /><small>范围：1–20 次</small></label>
+                      <label class="policy-field"><span><strong>代理节点熔断失败次数</strong><code>proxyCircuitBreakerMaxFailures</code></span><input v-model.number="policyForm.proxyCircuitBreakerMaxFailures" type="number" min="1" max="20" required /><small>范围：1–20 次</small></label>
+                      <label class="policy-field"><span><strong>代理节点熔断冷却时间</strong><code>proxyCircuitBreakerTimeoutSeconds</code></span><input v-model.number="policyForm.proxyCircuitBreakerTimeoutSeconds" type="number" min="10" max="3600" required /><small>范围：10–3600 秒</small></label>
                       <label class="policy-field"><span><strong>整次搜索超时</strong><code>searchTimeoutMs</code></span><input v-model.number="policyForm.searchTimeoutMs" type="number" min="1000" max="120000" required /><small>范围：1000–120000 ms</small></label>
                       <label class="policy-field"><span><strong>搜索缓存时长</strong><code>cacheTtlMinutes</code></span><input v-model.number="policyForm.cacheTtlMinutes" type="number" min="1" max="10" required /><small>范围：1–10 分钟</small></label>
                       <label class="policy-field"><span><strong>搜索缓存容量上限</strong><code>cacheMaxMemoryMb</code></span><input v-model.number="policyForm.cacheMaxMemoryMb" type="number" min="16" max="512" required /><small>范围：16–512 MB，调小后按 LRU 立即淘汰</small></label>
@@ -307,6 +309,8 @@ type UserPolicy = {
   defaultConcurrency: number;
   requestTimeoutMs: number;
   circuitBreakerMaxFailures: number;
+  proxyCircuitBreakerMaxFailures: number;
+  proxyCircuitBreakerTimeoutSeconds: number;
   searchTimeoutMs: number;
   cacheTtlMinutes: number;
   cacheMaxMemoryMb: number;
@@ -327,6 +331,8 @@ const DEFAULT_POLICY: UserPolicy = {
   defaultConcurrency: 4,
   requestTimeoutMs: 5000,
   circuitBreakerMaxFailures: 5,
+  proxyCircuitBreakerMaxFailures: 3,
+  proxyCircuitBreakerTimeoutSeconds: 300,
   searchTimeoutMs: 30000,
   cacheTtlMinutes: 10,
   cacheMaxMemoryMb: 100,
@@ -517,6 +523,8 @@ function normalizePolicy(value: unknown): UserPolicy {
     defaultConcurrency: typeof input.defaultConcurrency === "number" && Number.isInteger(input.defaultConcurrency) ? input.defaultConcurrency : DEFAULT_POLICY.defaultConcurrency,
     requestTimeoutMs: typeof input.requestTimeoutMs === "number" && Number.isInteger(input.requestTimeoutMs) ? input.requestTimeoutMs : DEFAULT_POLICY.requestTimeoutMs,
     circuitBreakerMaxFailures: typeof input.circuitBreakerMaxFailures === "number" && Number.isInteger(input.circuitBreakerMaxFailures) ? input.circuitBreakerMaxFailures : DEFAULT_POLICY.circuitBreakerMaxFailures,
+    proxyCircuitBreakerMaxFailures: typeof input.proxyCircuitBreakerMaxFailures === "number" && Number.isInteger(input.proxyCircuitBreakerMaxFailures) ? input.proxyCircuitBreakerMaxFailures : DEFAULT_POLICY.proxyCircuitBreakerMaxFailures,
+    proxyCircuitBreakerTimeoutSeconds: typeof input.proxyCircuitBreakerTimeoutSeconds === "number" && Number.isInteger(input.proxyCircuitBreakerTimeoutSeconds) ? input.proxyCircuitBreakerTimeoutSeconds : DEFAULT_POLICY.proxyCircuitBreakerTimeoutSeconds,
     searchTimeoutMs: typeof input.searchTimeoutMs === "number" && Number.isInteger(input.searchTimeoutMs) ? input.searchTimeoutMs : DEFAULT_POLICY.searchTimeoutMs,
     cacheTtlMinutes: typeof input.cacheTtlMinutes === "number" && Number.isInteger(input.cacheTtlMinutes) ? input.cacheTtlMinutes : DEFAULT_POLICY.cacheTtlMinutes,
     cacheMaxMemoryMb: typeof input.cacheMaxMemoryMb === "number" && Number.isInteger(input.cacheMaxMemoryMb) ? input.cacheMaxMemoryMb : DEFAULT_POLICY.cacheMaxMemoryMb,

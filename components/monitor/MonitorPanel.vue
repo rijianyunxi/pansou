@@ -35,7 +35,7 @@
           {{ summary.inactive }}<span>个</span>
           <small class="metric-pill">关闭资源源 {{ summary.inactive }}</small>
         </div>
-        <p><span class="status-dot warning"></span>已移除 {{ summary.trashed }} 个，可在回收站恢复</p>
+        <p><span class="status-dot warning"></span>已关闭资源源可在此重新开启</p>
       </article>
     </section>
 
@@ -191,7 +191,7 @@
           v-for="row in filteredRows"
           :key="row.key"
           class="monitor-card"
-          :class="{ 'disabled-card': row.state === 'disabled' || row.state === 'trashed' }"
+          :class="{ 'disabled-card': row.state === 'disabled' }"
           role="listitem"
         >
           <header class="monitor-card-header">
@@ -269,11 +269,11 @@
             <span class="monitor-enable-label">开启</span>
             <button
               class="toggle monitor-card-toggle"
-              :class="{ on: row.enabled && !row.trashed }"
+              :class="{ on: row.enabled }"
               type="button"
               role="switch"
-              :aria-checked="row.enabled && !row.trashed"
-              :aria-label="`${row.enabled && !row.trashed ? '关闭' : '开启'} ${row.name}`"
+              :aria-checked="row.enabled"
+              :aria-label="`${row.enabled ? '关闭' : '开启'} ${row.name}`"
               :disabled="busyKey === row.key || deleteBusy"
               @click="toggleSource(row)"
             ><span></span></button>
@@ -334,7 +334,7 @@
         aria-labelledby="monitor-delete-source-title"
         @submit.prevent="confirmDeleteSource"
       >
-        <span class="confirm-icon archive"><ConsoleIcon name="trash" :size="22" /></span>
+        <span class="confirm-icon"><ConsoleIcon name="trash" :size="22" /></span>
         <h2 id="monitor-delete-source-title">
           删除此资源源？
         </h2>
@@ -399,8 +399,6 @@ import {
   failureRecordTime,
   filterRows,
   summarizeRows,
-  withRowRemoved,
-  withRowRestored,
   withSourceEnabled,
   type MonitorFilter,
   type MonitorRow,
@@ -422,7 +420,6 @@ const AUTO_REFRESH_SECONDS = AUTO_REFRESH_MS / 1_000;
 
 interface SearchSettingsState {
   sources: string[] | null;
-  trashedSources: string[];
 }
 
 const rows = ref<MonitorRow[]>([]);
@@ -461,7 +458,6 @@ let countdownTimer: ReturnType<typeof setInterval> | undefined;
 
 const searchSettings = ref<SearchSettingsState>({
   sources: null,
-  trashedSources: [],
 });
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
@@ -471,7 +467,6 @@ const settingsDraft = ref<{
 }>({ sources: [] });
 const sourceOptions = computed(() =>
   rows.value
-    .filter((row) => !row.trashed)
     .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 );
 
@@ -560,9 +555,8 @@ async function loadSearchSettings() {
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
       sources: data.sources ?? null,
-      trashedSources: data.trashedSources ?? [],
     };
-    const enabledRows = sourceOptions.value.filter((row) => row.enabled && !row.trashed);
+    const enabledRows = sourceOptions.value.filter((row) => row.enabled);
     const selectedSources = searchSettings.value.sources === null
       ? enabledRows.map(sourceSelectionKey)
       : (searchSettings.value.sources || []).map((id) => `source:${id}`);
@@ -609,7 +603,6 @@ async function saveSearchSettingsUi() {
     const data: Partial<SearchSettingsState> = response.data || {};
     searchSettings.value = {
       sources: data.sources ?? null,
-      trashedSources: data.trashedSources ?? [],
     };
     settingsDraft.value.sources = [
       ...(searchSettings.value.sources || []).map((id) => `source:${id}`),
@@ -659,10 +652,10 @@ watch(autoRefresh, () => syncAutoRefresh());
 /** 统一资源源启停：乐观更新 → 调用统一端点 → 重新拉取；失败回滚。 */
 async function toggleSource(row: MonitorRow) {
   if (busyKey.value || deleteBusy.value) return;
-  const next = !(row.enabled && !row.trashed);
+  const next = !row.enabled;
   const snapshot = rows.value;
   busyKey.value = row.key;
-  rows.value = next ? withRowRestored(rows.value, row.key) : withSourceEnabled(rows.value, row.id, false);
+  rows.value = withSourceEnabled(rows.value, row.id, next);
   try {
     await setSourceEnabled(row, next);
     const sources = new Set(settingsDraft.value.sources);
@@ -670,7 +663,7 @@ async function toggleSource(row: MonitorRow) {
     if (next) sources.add(key);
     else sources.delete(key);
     settingsDraft.value.sources = [...sources];
-    notify(`${row.name} 已${next ? (row.trashed ? "恢复" : "开启") : "关闭"}。`);
+    notify(`${row.name} 已${next ? "开启" : "关闭"}。`);
     await loadMonitor({ silent: true });
   } catch (error: any) {
     rows.value = snapshot;
@@ -737,7 +730,7 @@ async function confirmDeleteSource() {
       method: "DELETE",
       body: { confirmation: target.id, actor: "monitor-console" },
     });
-    rows.value = withRowRemoved(rows.value, target.key);
+    rows.value = rows.value.filter((row) => row.key !== target.key);
     sourceDeleteTarget.value = null;
     sourceDeleteConfirm.value = "";
     notify(`${target.name} 已移除。`);
@@ -1234,9 +1227,6 @@ onBeforeUnmount(() => {
     monospace;
   color: #6b7280;
   white-space: nowrap;
-}
-.monitor-restore-hint {
-  color: #b45309;
 }
 @media (prefers-reduced-motion: reduce) {
   .refresh-control { transition: none; }

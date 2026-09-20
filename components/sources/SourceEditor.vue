@@ -166,6 +166,15 @@
                 type="button"
                 class="function-action-button"
                 :disabled="readonly"
+                @click="copyTransformPrompt"
+              >
+                <ConsoleIcon name="copy" :size="14" />
+                {{ promptCopyState === "copied" ? "已复制提示词" : "复制 AI 提示词" }}
+              </button>
+              <button
+                type="button"
+                class="function-action-button"
+                :disabled="readonly"
                 @click="openTransformImport"
               >
                 <ConsoleIcon name="upload" :size="14" />
@@ -284,6 +293,7 @@ const debugKeyword = ref("三体");
 const debugReport = ref<SourceProbe>();
 const debugRunning = ref(false);
 const debugError = ref("");
+const promptCopyState = ref<"idle" | "copied" | "failed">("idle");
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -426,6 +436,104 @@ onMounted(() => {
 
 function openTransformImport() {
   transformImportInput.value?.click();
+}
+
+function promptValue(text: string): unknown {
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Keep invalid JSON visible in the prompt so the user can ask the AI to
+    // account for it instead of silently replacing the current editor value.
+    return text;
+  }
+}
+
+function promptJson(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function buildTransformPrompt(): string {
+  const request = {
+    query: promptValue(requestQueryText.value),
+    body: promptValue(requestBodyText.value),
+    headers: promptValue(requestHeadersText.value),
+    ...(form.request?.bodyType ? { bodyType: form.request.bodyType } : {}),
+    ...(form.request?.redirect ? { redirect: form.request.redirect } : {}),
+    ...(form.request?.allowedDomains ? { allowedDomains: form.request.allowedDomains } : {}),
+    ...(form.request?.maxResponseBytes !== undefined
+      ? { maxResponseBytes: form.request.maxResponseBytes }
+      : {}),
+    ...(form.request?.maxRequestBodyBytes !== undefined
+      ? { maxRequestBodyBytes: form.request.maxRequestBodyBytes }
+      : {}),
+  };
+
+  return `请帮我为下面这个资源来源编写 transform(payload, $, context) 函数。
+
+## 来源请求配置
+- 请求地址：${form.url.trim() || "（未填写）"}
+- 请求方式：${form.method}
+- 返回格式：${form.format.toUpperCase()}（${form.format === "json" ? "payload 是已解析的 JSON 对象或数组" : "payload 是原始 HTML 字符串"}）
+- 请求参数：
+${promptJson(request)}
+
+## transform 函数说明
+函数签名必须是：
+function transform(payload, $, context) {
+  // 返回标准结果数组
+}
+
+- payload：接口响应内容。JSON 返回格式下已经解析为 JavaScript 对象/数组；HTML 返回格式下是原始 HTML 字符串。
+- $：HTML 查询工具（Cheerio API），只有返回格式为 HTML 时可用；解析 JSON 时不要依赖它。
+- context：当前解析上下文对象，常用字段包括 context.keyword（当前搜索词）、context.source（来源标识）、context.url（请求地址）、context.rawBody（原始响应文本）和 context.format（json/html）。
+- 函数必须是同步函数，不要发起网络请求；即使没有匹配结果也要返回 []。
+- 返回值必须是标准结果 JSON 数组。每个结果至少包含 id、name、description、datetime、cloud_types、links，其中 links 至少包含一个 { url }；没有有效资源链接的结果不要返回。
+- 请根据当前接口的实际响应结构提取标题、描述、时间和资源链接，并尽量使用 context.keyword 过滤无关结果。
+
+## 输出要求
+请只输出可直接粘贴到编辑器的纯 JavaScript 函数代码，不要 Markdown 代码围栏，不要解释文字，不要修改请求配置。请同时兼容字段缺失、空数组和异常响应，避免抛出不必要的错误。
+
+注意：上面的请求参数可能包含密钥或 Cookie，交给第三方 AI 前请先确认并脱敏。`;
+}
+
+async function copyTransformPrompt() {
+  const prompt = buildTransformPrompt();
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(prompt);
+      copied = true;
+    }
+  } catch {
+    copied = false;
+  }
+
+  if (!copied) {
+    const textarea = document.createElement("textarea");
+    textarea.value = prompt;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    textarea.remove();
+  }
+
+  promptCopyState.value = copied ? "copied" : "failed";
+  if (!copied) {
+    error.value = "自动复制失败，请检查浏览器剪贴板权限后重试。";
+    return;
+  }
+  error.value = "";
+  window.setTimeout(() => {
+    if (promptCopyState.value === "copied") promptCopyState.value = "idle";
+  }, 1800);
 }
 
 function exportTransform() {

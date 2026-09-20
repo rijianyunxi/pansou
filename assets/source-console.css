@@ -147,13 +147,6 @@
   background: #eff6ff;
   font-weight: 600;
 }
-.source-app .nav-count {
-  margin-left: auto;
-  background: #dbeafe;
-  font-size: 10px;
-  padding: 1px 7px;
-  border-radius: 4px;
-}
 .source-app .nav-dot {
   width: 5px;
   height: 5px;
@@ -1585,7 +1578,6 @@
     gap: 6px;
     min-height: 40px;
   }
-  .source-app .nav-count,
   .source-app .nav-dot {
     display: none;
   }
@@ -1948,8 +1940,7 @@
   color: #6b7280;
 }
 .source-app .admin-gate-copy code,
-.source-app .confirm-dialog code,
-.source-app .archive-item-copy code {
+.source-app .confirm-dialog code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   color: #1d4ed8;
   background: #eff6ff;
@@ -2049,7 +2040,6 @@
   background: rgba(17, 24, 39, 0.56);
   backdrop-filter: blur(3px);
 }
-.source-app .archive-dialog,
 .source-app .confirm-dialog {
   width: min(720px, 100%);
   max-height: min(720px, calc(100vh - 48px));
@@ -2059,102 +2049,8 @@
   background: #fff;
   box-shadow: 0 24px 80px rgba(17, 24, 39, 0.25);
 }
-.source-app .archive-dialog > header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 24px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.96);
-}
-.source-app .archive-dialog h2,
 .source-app .confirm-dialog h2 {
   font-size: 19px;
-}
-.source-app .archive-dialog header p {
-  max-width: 540px;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.source-app .archive-list {
-  margin: 0;
-  padding: 8px 24px 24px;
-  list-style: none;
-}
-.source-app .archive-list li {
-  min-height: 72px;
-  padding: 14px 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-}
-.source-app .archive-list li:last-child {
-  border-bottom: 0;
-}
-.source-app .archive-item-copy {
-  min-width: 0;
-  flex: 1;
-}
-.source-app .archive-channel-link {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 6px;
-  color: #1d4ed8;
-  font-size: 15px;
-  font-weight: 720;
-  line-height: 1.35;
-  text-decoration: none;
-}
-.source-app .archive-channel-link:hover {
-  color: #1e40af;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.source-app .archive-channel-link:focus-visible {
-  border-radius: 4px;
-  outline: 2px solid rgba(37, 99, 235, 0.35);
-  outline-offset: 3px;
-}
-.source-app .archive-channel-link svg {
-  flex: 0 0 auto;
-  opacity: 0.72;
-}
-.source-app .archive-channel-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.source-app .archive-channel-meta {
-  display: block;
-  margin-top: 5px;
-  color: #8a9891;
-  font-size: 10px;
-}
-.source-app .archive-actions {
-  display: flex;
-  gap: 8px;
-}
-.source-app .archive-empty {
-  min-height: 220px;
-  padding: 36px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  color: #8a9891;
-  text-align: center;
-  font-size: 11px;
-}
-.source-app .archive-empty strong {
-  color: #111827;
-  font-size: 13px;
 }
 .source-app .confirm-dialog {
   width: min(440px, 100%);
@@ -2169,10 +2065,6 @@
   border-radius: 12px;
   color: #a94740;
   background: #fff0ee;
-}
-.source-app .confirm-icon.archive {
-  color: #8a642d;
-  background: #fff7e8;
 }
 .source-app .confirm-dialog > p {
   margin: 9px 0 20px;
@@ -2249,23 +2141,15 @@
   .source-app .session-button > span:not(.user-avatar) {
     display: none;
   }
-  .source-app .danger-zone,
-  .source-app .archive-list li {
+  .source-app .danger-zone {
     align-items: stretch;
     flex-direction: column;
   }
-  .source-app .archive-actions,
-  .source-app .archive-actions .button,
   .source-app .danger-zone .button {
     width: 100%;
   }
   .source-app .admin-gate-card {
     padding: 24px 20px;
-  }
-  .source-app .archive-dialog > header,
-  .source-app .archive-list {
-    padding-left: 18px;
-    padding-right: 18px;
   }
 }
 @media (max-width: 700px) {
@@ -2644,20 +2528,10 @@
   font: inherit;
   cursor: pointer;
 }
-.source-app .directory-add-button,
-.source-app .directory-trash-button {
+.source-app .directory-add-button {
   min-height: 44px;
   border-radius: 10px;
   padding: 0 16px;
-}
-.source-app .directory-trash-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  white-space: nowrap;
-}
-.source-app .directory-trash-button .nav-count {
-  margin-left: 1px;
 }
 .source-app .directory-panel .table-scroll {
   max-height: min(680px, calc(100vh - 285px));
@@ -2731,8 +2605,7 @@
   .source-app .directory-toolbar .source-type-filter select {
     min-width: 84px;
   }
-  .source-app .directory-add-button,
-  .source-app .directory-trash-button {
+  .source-app .directory-add-button {
     flex: 0 0 auto;
   }
   .source-app .monitor-panel .source-toolbar .source-search {
@@ -3413,8 +3286,7 @@
   color: #253247;
   font-weight: 500;
 }
-.source-app .console-main-sources .directory-add-button,
-.source-app .console-main-sources .directory-trash-button {
+.source-app .console-main-sources .directory-add-button {
   min-height: 42px;
 }
 .source-app .console-main-sources .directory-add-button {

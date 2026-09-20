@@ -16,8 +16,6 @@ export interface MonitorSourceEntry {
   kind: "source";
   /** Whether the source definition is enabled. */
   enabled: boolean;
-  /** Whether the source sits in the recycle bin. Default requests never return trashed entries. */
-  trashed: boolean;
   version: string;
   health: MonitorSourceHealth | null;
 }
@@ -128,15 +126,13 @@ function mapSourceHealth(status: SourceHealthStatus | undefined): MonitorSourceH
 function mapSource(
   source: SourceDefinition,
   healthById: Record<string, SourceHealthStatus>,
-  trashed = false,
 ): MonitorSourceEntry {
   return {
     id: source.id,
     name: source.name,
     priority: source.priority,
     kind: "source",
-    enabled: source.enabled !== false && !trashed,
-    trashed,
+    enabled: source.enabled !== false,
     // The manifest version is a pure hash of the configuration, so reading it
     // directly avoids materializing (and validating) a full runtime definition
     // just to display a version, and cannot fail on an incomplete source.

@@ -51,8 +51,6 @@ const paths: Record<string, string[]> = {
   key: ["M15 7a5 5 0 1 1-3.5 8.5L3 21v-4l2-2h3l1.5-1.5 M15 7h.01"],
   user: ["M20 21a8 8 0 0 0-16 0 M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8"],
   logout: ["M10 17l5-5-5-5 M15 12H3 M14 3h6v18h-6"],
-  archive: ["M4 7h16v14H4z M3 3h18v4H3z M9 11h6"],
-  restore: ["M4 7v5h5 M5 11a8 8 0 1 1 2 7"],
   globe: [
     "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M3 12h18 M12 3c5 5 5 13 0 18 M12 3c-5 5-5 13 0 18",
   ],

@@ -62,10 +62,6 @@
                   <ConsoleIcon name="search" :size="17" /><input v-model="search" type="search" aria-label="搜索来源名称或地址"
                     placeholder="搜索来源名称、地址或标签…" />
                 </label>
-                <button class="button secondary directory-trash-button" type="button" @click="openArchive">
-                  <ConsoleIcon name="trash" :size="15" />回收站
-                  <span class="nav-count">{{ trashCount }}</span>
-                </button>
                 <button class="button primary directory-add-button" type="button" @click="openEditor()">
                   <ConsoleIcon name="plus" :size="15" />新增来源
                 </button>
@@ -171,73 +167,6 @@
       @update:keyword="keyword = $event" />
     <SourceEditor v-if="!adminLocked && editorOpen" :source="editingSource" @close="editorOpen = false"
       @save="saveSource" />
-    <div v-if="archiveOpen" class="modal-backdrop" @click.self="closeArchive">
-      <section class="archive-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title">
-        <header>
-          <div>
-            <span class="eyebrow">LIFECYCLE MANAGEMENT</span>
-            <h2 id="archive-title">回收站</h2>
-            <p>已移除的频道来源不会参与搜索，可恢复或永久删除。</p>
-          </div>
-          <button class="icon-button" aria-label="关闭回收站" @click="closeArchive">
-            <ConsoleIcon name="close" />
-          </button>
-        </header>
-        <div v-if="archiveLoading" class="archive-empty"><span class="spinner"></span>正在加载回收站…</div>
-        <div v-else-if="!archivedChannels.length" class="archive-empty">
-          <ConsoleIcon name="trash" :size="30" />
-          <strong>回收站为空</strong>
-          <p>已移除的频道来源会显示在这里。</p>
-        </div>
-        <ul v-else class="archive-list">
-          <li v-for="channel in archivedChannels" :key="`channel-source:${channel.channel}`">
-            <span class="source-avatar" style="--source-color: #229ed9">TG</span>
-            <div class="archive-item-copy">
-              <a class="archive-channel-link" :href="`https://t.me/s/${channel.channel}`" target="_blank"
-                rel="noopener noreferrer" :aria-label="`在新标签页打开 Telegram 频道 @${channel.channel}`"
-                :title="`打开 https://t.me/s/${channel.channel}`">
-                <span class="archive-channel-name">@{{ channel.channel }}</span>
-                <ConsoleIcon name="external" :size="13" />
-              </a>
-              <span class="archive-channel-meta">{{ channel.origin === "builtin" ? "内置来源" : "自定义来源" }} · 已移除</span>
-            </div>
-            <div class="archive-actions">
-              <button class="button secondary small" :disabled="!!archiveBusyId"
-                @click="restoreArchivedChannel(channel.channel)">
-                <ConsoleIcon name="restore" :size="14" />恢复
-              </button>
-              <button class="button danger-button small" :disabled="!!archiveBusyId"
-                @click="requestPurgeArchivedChannel(channel)">
-                <ConsoleIcon name="trash" :size="14" />永久删除
-              </button>
-            </div>
-          </li>
-        </ul>
-      </section>
-    </div>
-    <div v-if="purgeTarget" class="modal-backdrop" @click.self="cancelPurgeArchivedChannel">
-      <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="purge-channel-title">
-        <div class="confirm-icon">
-          <ConsoleIcon name="trash" :size="22" />
-        </div>
-        <h2 id="purge-channel-title">永久删除频道？</h2>
-        <p>
-          此操作会永久删除 <code>@{{ purgeTarget.channel }}</code> 的频道配置、解析器绑定和健康历史，且无法恢复。
-        </p>
-        <label for="purge-channel-confirmation">请输入 <code>@{{ purgeTarget.channel }}</code> 确认</label>
-        <input id="purge-channel-confirmation" v-model="purgeConfirmation" type="text" autocomplete="off"
-          spellcheck="false" :placeholder="`@${purgeTarget.channel}`" @keydown.enter="confirmPurgeArchivedChannel" />
-        <div class="confirm-actions">
-          <button class="button secondary" type="button" :disabled="!!archiveBusyId"
-            @click="cancelPurgeArchivedChannel">取消</button>
-          <button class="button destructive" type="button" :disabled="!canConfirmPurge || !!archiveBusyId"
-            @click="confirmPurgeArchivedChannel">
-            <span v-if="archiveBusyId" class="spinner"></span>
-            <ConsoleIcon v-else name="trash" :size="15" />永久删除
-          </button>
-        </div>
-      </section>
-    </div>
     <div v-if="notice" class="console-toast" role="status">
       <ConsoleIcon name="info" :size="17" />{{ notice }}
     </div>
@@ -253,7 +182,6 @@ import SourceDetailDrawer from "../../components/sources/SourceDetailDrawer.vue"
 import SourceDebugDialog from "../../components/sources/SourceDebugDialog.vue";
 import type { SourceDefinition, SourceProbe } from "../../types/source";
 import { buildSourceCatalogUrl } from "../../utils/sourceDebugUrl";
-import { shallowRef } from "vue";
 const auth = useAuth();
 useHead({
   title: "管理后台",
@@ -267,20 +195,11 @@ useHead({
 });
 const clientReady = ref(false);
 const configuredSources = ref<SourceDefinition[]>([]);
-type ArchivedChannelSource = {
-  channel: string;
-  origin: "builtin" | "custom";
-  enabled: boolean;
-  deleted: boolean;
-};
-const monitorChannels = shallowRef<ArchivedChannelSource[]>([]);
 type SourceCircuitState = "closed" | "open" | "half-open";
 const sourceCircuitStates = ref<Record<string, SourceCircuitState>>({});
-const archivedChannels = computed(() => monitorChannels.value.filter((channel) => channel.deleted));
 const reports = ref<Record<string, SourceProbe>>({});
 // The unified catalog is the only source directory. Transform functions are source configuration, not separate sources.
 const sources = configuredSources;
-const trashCount = computed(() => archivedChannels.value.length);
 const selectedId = ref("");
 const defaultUnifiedSource: SourceDefinition = {
   id: "",
@@ -329,15 +248,8 @@ const adminChecking = ref(true);
 const adminAuthenticated = ref(false);
 const adminLocked = ref(true);
 const authError = ref("");
-const archiveOpen = ref(false);
-const archiveLoading = ref(false);
-const archiveBusyId = ref("");
 const sourceToggleId = ref("");
-const purgeTarget = ref<ArchivedChannelSource | null>(null);
-const purgeConfirmation = ref("");
-const canConfirmPurge = computed(() =>
-  purgeConfirmation.value.trim().replace(/^@/, "").toLowerCase() === purgeTarget.value?.channel,
-);const notice = ref("");
+const notice = ref("");
 useHead({ title: () => viewTitle.value });
 let noticeTimer: ReturnType<typeof setTimeout>;
 const SOURCE_COLORS = ["#4085b8", "#5b67c7", "#0f766e", "#b45309", "#9d174d", "#6d28d9"];
@@ -390,45 +302,6 @@ async function loadSourceCatalog() {
     storageError.value = apiErrorMessage(error);
   }
 }
-async function loadArchivedChannels() {
-  try {
-    const response = await $fetch<{ data?: { sources?: Array<{
-      id?: string;
-      origin?: "builtin" | "custom" | "";
-      enabled?: boolean;
-      trashed?: boolean;
-      health?: { circuitState?: SourceCircuitState | null } | null;
-    }> } }>(
-      "/api/monitor?includeDeleted=true",
-      { cache: "no-store" },
-    );
-    const monitorSources = response.data?.sources || [];
-    sourceCircuitStates.value = Object.fromEntries(
-      monitorSources
-        .filter((source) => !!source.id)
-        .map((source) => [source.id!, source.health?.circuitState || "closed"]),
-    );
-    monitorChannels.value = monitorSources
-      .filter((source) => source.trashed === true && !!source.id && !!source.origin)
-      .map((source) => ({
-        channel: source.id!,
-        origin: source.origin === "builtin" ? "builtin" : "custom",
-        enabled: source.enabled !== false,
-        deleted: true,
-      }));
-  } catch (error: any) {
-    monitorChannels.value = [];
-    sourceCircuitStates.value = {};
-    const code = error?.statusCode || error?.response?.status;
-    if ([401, 403].includes(code)) {
-      adminAuthenticated.value = false;
-      adminLocked.value = true;
-      archiveOpen.value = false;
-      return;
-    }
-    storageError.value = apiErrorMessage(error);
-  }
-}
 async function checkAdminSession() {
   adminChecking.value = true;
   authError.value = "";
@@ -453,12 +326,10 @@ async function lockAdmin() {
     await auth.logout();
   } finally {
     configuredSources.value = [];
-    monitorChannels.value = [];
     reports.value = {};
     editorOpen.value = false;
     detailDrawerOpen.value = false;
     debugDialogOpen.value = false;
-    archiveOpen.value = false;
     adminAuthenticated.value = false;
     adminLocked.value = true;
     authError.value = "";
@@ -500,7 +371,7 @@ onMounted(async () => {
   if (adminLocked.value) {
     return;
   }
-  await loadArchivedChannels();
+  await loadSourceHealth();
 });
 function openDetail(source: SourceDefinition) {
   selectedId.value = source.id;
@@ -560,12 +431,34 @@ async function toggleSource(source: SourceDefinition) {
     await $fetch(`/api/settings/sources/${encodeURIComponent(source.id)}/${enabled ? "enable" : "disable"}`, {
       method: "POST",
     });
-    await Promise.all([loadSourceCatalog(), loadArchivedChannels()]);
+    await Promise.all([loadSourceCatalog(), loadSourceHealth()]);
     notify(`${source.name} 已${enabled ? "启用" : "停用"}，下一次请求立即生效。`);
   } catch (error: any) {
     notify(apiErrorMessage(error));
   } finally {
     sourceToggleId.value = "";
+  }
+}
+async function loadSourceHealth() {
+  try {
+    const response = await $fetch<{ data?: { sources?: Array<{ id?: string; health?: { circuitState?: SourceCircuitState | null } | null }> } }>(
+      "/api/monitor",
+      { cache: "no-store" },
+    );
+    sourceCircuitStates.value = Object.fromEntries(
+      (response.data?.sources || [])
+        .filter((source) => !!source.id)
+        .map((source) => [source.id!, source.health?.circuitState || "closed"]),
+    );
+  } catch (error: any) {
+    sourceCircuitStates.value = {};
+    const code = error?.statusCode || error?.response?.status;
+    if ([401, 403].includes(code)) {
+      adminAuthenticated.value = false;
+      adminLocked.value = true;
+      return;
+    }
+    storageError.value = apiErrorMessage(error);
   }
 }
 
@@ -622,70 +515,10 @@ async function requestDeleteSource(source: SourceDefinition) {
     delete reports.value[source.id];
     detailDrawerOpen.value = false;
     debugDialogOpen.value = false;
-    await Promise.all([loadSourceCatalog(), loadArchivedChannels()]);
+    await Promise.all([loadSourceCatalog(), loadSourceHealth()]);
     notify("来源已删除，下一次请求立即生效。");
   } catch (error: any) {
     notify(apiErrorMessage(error));
-  }
-}
-async function openArchive() {
-  archiveOpen.value = true;
-  archiveLoading.value = true;
-  try {
-    await loadArchivedChannels();
-  } finally {
-    archiveLoading.value = false;
-  }
-}
-function closeArchive() {
-  archiveOpen.value = false;
-  purgeTarget.value = null;
-  purgeConfirmation.value = "";
-}
-async function restoreArchivedChannel(channel: string) {
-  const busyId = `channel-source:${channel}`;
-  if (archiveBusyId.value) return;
-  archiveBusyId.value = busyId;
-  try {
-    await $fetch(`/api/settings/sources/${encodeURIComponent(channel)}/enable`, {
-      method: "POST",
-    });
-    await loadArchivedChannels();
-    notify(`频道来源 @${channel} 已恢复。`);
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  } finally {
-    archiveBusyId.value = "";
-  }
-}
-function requestPurgeArchivedChannel(channel: ArchivedChannelSource) {
-  if (archiveBusyId.value) return;
-  purgeTarget.value = channel;
-  purgeConfirmation.value = "";
-  nextTick(() => document.querySelector<HTMLInputElement>("#purge-channel-confirmation")?.focus());
-}
-function cancelPurgeArchivedChannel() {
-  if (archiveBusyId.value) return;
-  purgeTarget.value = null;
-  purgeConfirmation.value = "";
-}
-async function confirmPurgeArchivedChannel() {
-  const channel = purgeTarget.value?.channel;
-  if (!channel || !canConfirmPurge.value || archiveBusyId.value) return;
-  archiveBusyId.value = `channel-source:${channel}`;
-  try {
-    await $fetch(`/api/settings/sources/${encodeURIComponent(channel)}/purge`, {
-      method: "DELETE",
-      body: { confirmation: channel },
-    });
-    purgeTarget.value = null;
-    purgeConfirmation.value = "";
-    await Promise.all([loadArchivedChannels(), loadSourceCatalog()]);
-    notify(`频道来源 @${channel} 已永久删除。`);
-  } catch (error: any) {
-    notify(apiErrorMessage(error));
-  } finally {
-    archiveBusyId.value = "";
   }
 }
 async function copy(text: string) {
@@ -697,14 +530,12 @@ async function copy(text: string) {
   }
 }
 function closeTopmostOverlay(event: KeyboardEvent) {
-  if (event.key !== "Escape" || archiveBusyId.value) return;
-  if (purgeTarget.value) cancelPurgeArchivedChannel();
-  else if (debugDialogOpen.value) debugDialogOpen.value = false;
+  if (event.key !== "Escape") return;
+  if (debugDialogOpen.value) debugDialogOpen.value = false;
   else if (detailDrawerOpen.value) detailDrawerOpen.value = false;
-  else if (archiveOpen.value) closeArchive();
 }
 watch(
-  () => archiveOpen.value || !!purgeTarget.value || detailDrawerOpen.value || debugDialogOpen.value,
+  () => detailDrawerOpen.value || debugDialogOpen.value,
   (open) => {
     if (import.meta.client) document.body.style.overflow = open ? "hidden" : "";
   },

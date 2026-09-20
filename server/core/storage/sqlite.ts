@@ -34,6 +34,7 @@ export class SqliteDatabase {
     this.db.pragma("temp_store = MEMORY");
     this.db.exec(SCHEMA);
     this.migrateLegacySearchSources();
+    this.retireSourceRecycleBin();
     this.ensureSessionChannelsColumn();
     this.ensureSessionTransportColumn();
     this.ensureResourceSourceColumns();
@@ -69,11 +70,25 @@ export class SqliteDatabase {
     const legacySources = this.db.prepare("SELECT channel FROM search_setting_channels ORDER BY position").all() as Array<{ channel: string }>;
     this.db.transaction(() => {
       for (const item of legacySources) {
-        this.db.prepare("INSERT INTO search_setting_sources(source_id,trashed) VALUES(?,0) ON CONFLICT(source_id) DO NOTHING").run(item.channel);
+        this.db.prepare("INSERT INTO search_setting_sources(source_id) VALUES(?) ON CONFLICT(source_id) DO NOTHING").run(item.channel);
       }
       this.db.prepare("UPDATE search_settings SET sources_configured=1,channels_configured=0,updated_at=? WHERE id=1").run(Date.now());
       this.db.exec("DELETE FROM search_setting_channels");
     })();
+  }
+
+  /** Remove the retired resource-source recycle-bin state from old databases. */
+  private retireSourceRecycleBin(): void {
+    const columns = this.db.prepare("PRAGMA table_info(search_setting_sources)").all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === "trashed")) {
+      this.db.transaction(() => {
+        this.db.exec("CREATE TABLE search_setting_sources_new(source_id TEXT PRIMARY KEY)");
+        this.db.exec("INSERT OR IGNORE INTO search_setting_sources_new(source_id) SELECT source_id FROM search_setting_sources WHERE trashed=0");
+        this.db.exec("DROP TABLE search_setting_sources");
+        this.db.exec("ALTER TABLE search_setting_sources_new RENAME TO search_setting_sources");
+      })();
+    }
+    this.db.exec("DROP TABLE IF EXISTS deleted_sources");
   }
 
   private ensureSearchAnalyticsColumns(): void {
@@ -343,7 +358,7 @@ export class SqliteDatabase {
       addRoute.run("general", "其他资源源", 1000, "[]", "group", "general", now, now);
     }
     // Bind the built-in policies to the current resource catalog once.
-    const sources = this.db.prepare("SELECT id,url FROM resource_sources WHERE NOT EXISTS (SELECT 1 FROM deleted_sources WHERE deleted_sources.id=resource_sources.id)").all() as Array<{ id: string; url: string }>;
+    const sources = this.db.prepare("SELECT id,url FROM resource_sources").all() as Array<{ id: string; url: string }>;
     const telegramIds = sources.filter((source) => {
       try { const host = new URL(source.url).hostname.toLowerCase(); return host === "t.me" || host === "www.t.me" || host === "telegram.me" || host.endsWith(".telegram.me"); } catch { return false; }
     }).map((source) => source.id);
@@ -463,10 +478,9 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS config_revisions(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision >= 0));
 CREATE TABLE IF NOT EXISTS system_settings(id INTEGER PRIMARY KEY CHECK(id=1),default_concurrency INTEGER NOT NULL,request_timeout_ms INTEGER NOT NULL,cache_ttl_minutes INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS search_settings(id INTEGER PRIMARY KEY CHECK(id=1),concurrency INTEGER,sources_configured INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS search_setting_sources(source_id TEXT PRIMARY KEY,trashed INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS search_setting_sources(source_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS resource_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,url TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 0,enabled INTEGER NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_resource_sources_enabled ON resource_sources(enabled,id);
-CREATE TABLE IF NOT EXISTS deleted_sources(id TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS source_template_settings(id INTEGER PRIMARY KEY CHECK(id=1),url_template TEXT NOT NULL,method TEXT NOT NULL,format TEXT NOT NULL,request_json TEXT,transform TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS hot_searches(term TEXT PRIMARY KEY,normalized_term TEXT NOT NULL DEFAULT '',score INTEGER NOT NULL CHECK(score >= 0),last_searched INTEGER NOT NULL,created_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'approved',source TEXT NOT NULL DEFAULT 'auto',pinned INTEGER NOT NULL DEFAULT 0,manual_weight INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_hot_searches_rank ON hot_searches(score DESC,last_searched DESC);
