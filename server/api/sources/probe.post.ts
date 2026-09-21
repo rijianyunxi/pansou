@@ -1,6 +1,6 @@
 import { createError, defineEventHandler, readBody } from "h3";
 import { getUnifiedSource } from "../../core/services/sourceCatalog";
-import { probeSourceDefinition } from "../../core/services/sourceProbe";
+import { prepareSourceForProbe, probeSourceDefinition } from "../../core/services/sourceProbe";
 import { requireAdminAuth } from "../../utils/requireAdminAuth";
 
 /** Each probe performs a real outbound request, so concurrency is capped. */
@@ -18,7 +18,17 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "kw must contain 1 to 100 characters" });
   }
 
-  const source = getUnifiedSource(sourceId);
+  let source;
+  try {
+    source = body?.source !== undefined
+      ? prepareSourceForProbe(body.source, sourceId)
+      : getUnifiedSource(sourceId);
+  } catch (error) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: error instanceof Error ? error.message : String(error),
+    });
+  }
   if (!source) throw createError({ statusCode: 404, statusMessage: "Unknown source" });
   if (active >= MAX_CONCURRENT_PROBES) {
     throw createError({ statusCode: 429, statusMessage: "At most two diagnostics may run concurrently" });

@@ -1,8 +1,8 @@
 const api = require('../../utils/api');
 const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('../../utils/config');
 const { searchStream } = require('../../utils/searchStream');
-const { mergeResultsByLink } = require('../../utils/resultMerge');
-const { platformLabel, platformIcon } = require('../../utils/cloudTypes');
+const { mergeResultsByLink, flattenResultsForDisplay } = require('../../utils/resultMerge');
+const { platformLabel, platformIcon, sortCloudTypes } = require('../../utils/cloudTypes');
 const { sortResults } = require('../../utils/format');
 
 const PAGE_SIZE = 30;
@@ -76,6 +76,7 @@ function toVM(result) {
   const description = result.description || '';
   return {
     id: result.id,
+    sourceId: result.sourceId || result.id.split('::')[0],
     name: result.name,
     dateText: result.datetime || '',
     description,
@@ -391,21 +392,21 @@ Page({
   flush() {
     const completed = !this.data.loading && !this.data.paused;
     const sortType = completed ? SORT_TYPES[this.data.sortIndex] : 'default';
-    const counts = platformCountsOf(this._merged);
-    const pills = Object.keys(counts)
+    const displayResults = flattenResultsForDisplay(this._merged);
+    const counts = platformCountsOf(displayResults);
+    const pills = sortCloudTypes(Object.keys(counts))
       .map((type) => ({
         type,
         label: platformLabel(type),
         count: counts[type],
         active: this._filterPlatform === type,
       }))
-      .sort((a, b) => b.count - a.count);
-    const total = this._merged.length;
+    const total = displayResults.length;
     pills.unshift({ type: 'all', label: '全部', count: total, active: this._filterPlatform === 'all' });
 
     let filtered = this._filterPlatform === 'all'
-      ? this._merged
-      : this._merged.filter((result) => (result.cloud_types || []).indexOf(this._filterPlatform) >= 0);
+      ? displayResults
+      : displayResults.filter((result) => (result.cloud_types || []).indexOf(this._filterPlatform) >= 0);
     if (sortType !== 'default') filtered = sortResults(filtered, sortType);
 
     const visibleCount = this.data.visibleCount || PAGE_SIZE;
@@ -444,7 +445,8 @@ Page({
 
   captureByCardEvent(event) {
     const { id, url } = event.detail;
-    const resource = this._merged.find((item) => item.id === id && (item.links || []).some((link) => link.url === url));
+    const sourceId = event.detail.sourceId || id;
+    const resource = this._merged.find((item) => item.id === sourceId && (item.links || []).some((link) => link.url === url));
     if (resource) api.captureResource(resource);
   },
 

@@ -70,6 +70,16 @@
         </div>
       </div>
 
+      <div v-if="report?.state === 'error'" class="probe-failure-card" role="alert">
+        <div class="probe-failure-title">
+          <strong>来源测试失败</strong>
+          <span v-if="report.httpStatus">HTTP {{ report.httpStatus }}</span>
+        </div>
+        <p>{{ report.message || "来源请求未完成" }}</p>
+        <p v-if="latestTrace?.error" class="probe-failure-detail">{{ latestTrace.error }}</p>
+        <small v-if="latestTrace?.stage === 'request'">请求阶段失败，transform(payload, $, context) 未执行。</small>
+      </div>
+
       <div class="debug-tabs" role="tablist" aria-label="测试响应视图">
         <button type="button" :class="{ active: responseTab === 'unified' }" @click="responseTab = 'unified'">统一结果 <span>{{ report?.results.length || 0 }}</span></button>
         <button type="button" :class="{ active: responseTab === 'raw' }" @click="responseTab = 'raw'">原始响应</button>
@@ -173,6 +183,7 @@ const responseFileName = computed(() => responseTab.value === "raw"
   ? isHtmlResponse.value && rawView.value === "preview" ? "response.preview.html" : "response.raw"
   : "results.json");
 const responseContentType = computed(() => [...(props.report?.traces || [])].reverse().find((trace) => trace.contentType)?.contentType || "");
+const latestTrace = computed(() => [...(props.report?.traces || [])].reverse().find((trace) => trace.error) || props.report?.traces?.[props.report.traces.length - 1]);
 const isHtmlResponse = computed(() => /(?:text\/html|application\/xhtml\+xml)/i.test(responseContentType.value) || (!responseContentType.value && props.source.format === "html"));
 const statusClass = computed(() => props.report?.state === "available" ? "success" : props.report?.state === "warning" ? "warning" : "error");
 const safeHtmlPreview = computed(() => sanitizeHtmlForPreview(props.report?.raw || ""));
@@ -259,6 +270,12 @@ function sanitizeHtmlFallback(html: string): string {
 .preview-safety-note { display: flex; align-items: center; gap: 5px; color: #6f7784; }
 .debug-inline-error { margin: 9px 0 0; color: #c2413b; font-size: 12px; }
 .response-error { margin-top: 12px; }
+.probe-failure-card { margin: 0 0 12px; padding: 12px 14px; border: 1px solid #f0b9b4; border-radius: 10px; background: #fff6f5; color: #8f2f2a; }
+.probe-failure-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.probe-failure-title span { font-size: 12px; font-weight: 700; }
+.probe-failure-card p { margin: 6px 0 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.probe-failure-card .probe-failure-detail { color: #a9443d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.probe-failure-card small { display: block; margin-top: 8px; color: #a16b14; }
 .probe-available { color: #168a5b; }
 .probe-warning { color: #a16b14; }
 .probe-error { color: #c84b43; }

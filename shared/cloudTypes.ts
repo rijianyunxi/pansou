@@ -2,6 +2,7 @@
 export type CloudType =
   | "baidu"
   | "quark"
+  | "guangya"
   | "aliyun"
   | "uc"
   | "mobile"
@@ -17,6 +18,7 @@ export type CloudType =
 export const CLOUD_TYPE_LABELS: Readonly<Record<string, string>> = {
   baidu: "百度网盘",
   quark: "夸克网盘",
+  guangya: "光鸭网盘",
   aliyun: "阿里云盘",
   uc: "UC网盘",
   mobile: "中国移动云盘",
@@ -34,6 +36,7 @@ export const CLOUD_TYPE_LABELS: Readonly<Record<string, string>> = {
 export const CLOUD_TYPE_SHORT_LABELS: Readonly<Record<string, string>> = {
   baidu: "百度",
   quark: "夸克",
+  guangya: "光鸭",
   aliyun: "阿里云",
   uc: "UC",
   mobile: "移动",
@@ -61,7 +64,17 @@ export const CLOUD_TYPES: CloudType[] = [
   "xunlei",
   "magnet",
   "others",
+  "guangya",
 ];
+
+/** Stable presentation order shared by the web filters and resource cards. */
+export function sortCloudTypes(types: readonly string[]): string[] {
+  const fixedRank = (type: string): number => type === "quark" ? 0 : type === "baidu" ? 1 : 2;
+  return [...new Set(types)].map((type, index) => ({ type, index })).sort((left, right) => {
+    const rankDiff = fixedRank(left.type) - fixedRank(right.type);
+    return rankDiff || left.index - right.index;
+  }).map(({ type }) => type);
+}
 
 export const CLOUD_TYPE_ALIASES: Record<string, CloudType> = {
   baidu: "baidu",
@@ -69,6 +82,9 @@ export const CLOUD_TYPE_ALIASES: Record<string, CloudType> = {
   "百度": "baidu",
   quark: "quark",
   "夸克": "quark",
+  guangya: "guangya",
+  "光鸭": "guangya",
+  "光鸭云盘": "guangya",
   aliyun: "aliyun",
   aly: "aliyun",
   alipan: "aliyun",
@@ -113,8 +129,9 @@ export const CLOUD_TYPE_ALIASES: Record<string, CloudType> = {
 /** Host suffixes used when inferring a canonical type from a URL. */
 export const CLOUD_TYPE_HOSTS: ReadonlyArray<readonly [string, CloudType]> = [
   ["pan.xunlei.com", "xunlei"],
-  ["pan.baidu.com", "baidu"],
   ["pan.quark.cn", "quark"],
+  ["pan.baidu.com", "baidu"],
+  ["guangyapan.com", "guangya"],
   ["aliyundrive.com", "aliyun"],
   ["alipan.com", "aliyun"],
   ["drive.uc.cn", "uc"],

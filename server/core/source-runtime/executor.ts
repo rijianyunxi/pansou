@@ -32,6 +32,18 @@ const RAW_PREVIEW_LIMIT = 100_000;
 const text = (value: unknown): string =>
   value == null ? "" : typeof value === "string" ? value : String(value);
 
+/** Query values may be nested objects; encode them as one JSON query value. */
+export function serializeSourceQueryValue(value: SourceValue): string {
+  if (value !== null && typeof value === "object") return JSON.stringify(value);
+  return text(value);
+}
+
+function errorHttpStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const status = Number((error as { statusCode?: unknown }).statusCode);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
 
 interface RenderedRequest {
   url: URL;
@@ -131,7 +143,7 @@ export async function executeSource(
       for (const [key, value] of Object.entries(spec.query || {})) {
         requestUrl.searchParams.set(
           key,
-          text(interpolateTemplate(value, variables, allowedNames))
+          serializeSourceQueryValue(interpolateTemplate(value, variables, allowedNames))
         );
       }
     };
@@ -295,19 +307,20 @@ export async function executeSource(
         return payload;
       } catch (error) {
         lastError = error;
+        const httpStatus = errorHttpStatus(error);
         if (!lease && (directFallback || (shouldUseProxy && route?.fallbackAction !== "direct"))) {
           throw error;
         }
         if (lease) {
           excludedNodeIds.add(lease.nodeId);
-          reportProxyFailure(lease.nodeId, { message: error instanceof Error ? error.message : String(error) });
+          reportProxyFailure(lease.nodeId, { status: httpStatus, message: error instanceof Error ? error.message : String(error) });
         }
         if (lease || directFallback || !shouldUseProxy) {
           recordProxyNode({
             nodeId: lease?.nodeId || "direct",
             nodeName: lease?.nodeName || "直连",
             status: "failed",
-            httpStatus: null,
+            httpStatus,
             elapsedMs: Date.now() - attemptStarted,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -316,7 +329,7 @@ export async function executeSource(
           stage,
           url: outboundUrl,
           method: rendered.method,
-          status: null,
+          status: httpStatus,
           elapsedMs: Date.now() - attemptStarted,
           bytes: 0,
           request: requestDebugSnapshot(outboundUrl, rendered),

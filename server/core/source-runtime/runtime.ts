@@ -23,12 +23,16 @@ function compact(value: unknown): string {
 function normalizeLink(value: unknown): Link | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  const url = text(input.url, MAX_URL);
+  return makeLink(input.url, input.password);
+}
+
+function makeLink(urlValue: unknown, passwordValue?: unknown): Link | null {
+  const url = text(urlValue, MAX_URL);
   if (!url || !validResourceUrl(url)) return null;
   return {
     url,
     type: inferDriveType(url),
-    password: text(input.password, 100) || null,
+    password: text(passwordValue, 100) || null,
   };
 }
 
@@ -43,7 +47,7 @@ function validateAndLimitResults(value: unknown, definition: SourceTransformDefi
     if (typeof input.name !== "string") return [];
     if (!(typeof input.description === "string" || input.description === null)) return [];
     if (!(typeof input.datetime === "string" || input.datetime === null)) return [];
-    if (!Array.isArray(input.cloud_types) || !input.cloud_types.length || input.cloud_types.some((type) => typeof type !== "string") || !Array.isArray(input.links)) return [];
+    if (!Array.isArray(input.links)) return [];
     const links = input.links.map(normalizeLink).filter((link): link is Link => !!link);
     if (!links.length) return [];
     const id = text(input.id, 200) || `${context.source || definition.id}-${index}`;
@@ -83,7 +87,11 @@ export function executeSourceTransform(
   }
   const payload = context.format === "json" ? JSON.parse(rawBody) : rawBody;
   const $: CheerioAPI | undefined = context.format === "html" ? load(rawBody) : undefined;
-  const safeContext = Object.freeze({ ...context });
+  const safeContext = Object.freeze({
+    ...context,
+    makeLink: (url: unknown, password?: unknown) => makeLink(url, password),
+    inferDriveType: (url: string) => inferDriveType(text(url, MAX_URL)),
+  });
   const sandbox = createContext({ payload, $, context: safeContext });
   const timeoutMs = getUnifiedRequestTimeoutMs();
   const createScript = new Script(createTransformSource(code), { filename: `transform:${definition.id}` });

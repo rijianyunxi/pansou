@@ -1,7 +1,8 @@
 /** Port of shared/cloudTypes.ts (labels only; the UI never needs the aliases). */
 const CLOUD_TYPE_LABELS = {
-  baidu: '百度网盘',
   quark: '夸克网盘',
+  baidu: '百度网盘',
+  guangya: '光鸭网盘',
   aliyun: '阿里云盘',
   uc: 'UC网盘',
   mobile: '中国移动云盘',
@@ -16,8 +17,9 @@ const CLOUD_TYPE_LABELS = {
 };
 
 const CLOUD_TYPE_SHORT_LABELS = {
-  baidu: '百度',
   quark: '夸克',
+  baidu: '百度',
+  guangya: '光鸭',
   aliyun: '阿里云',
   uc: 'UC',
   mobile: '移动',
@@ -30,6 +32,14 @@ const CLOUD_TYPE_SHORT_LABELS = {
   magnet: '磁力',
   others: '其他',
 };
+
+function sortCloudTypes(types) {
+  const fixedRank = (type) => type === 'quark' ? 0 : type === 'baidu' ? 1 : 2;
+  return Array.from(new Set(types || []))
+    .map((type, index) => ({ type, index }))
+    .sort((left, right) => fixedRank(left.type) - fixedRank(right.type) || left.index - right.index)
+    .map(({ type }) => type);
+}
 
 function platformLabel(type) {
   return CLOUD_TYPE_LABELS[type] || CLOUD_TYPE_SHORT_LABELS[type] || type || '其他';
@@ -45,4 +55,4 @@ function platformIcon(type) {
   return '\u2601\uFE0E';
 }
 
-module.exports = { CLOUD_TYPE_LABELS, CLOUD_TYPE_SHORT_LABELS, platformLabel, platformIcon };
+module.exports = { CLOUD_TYPE_LABELS, CLOUD_TYPE_SHORT_LABELS, sortCloudTypes, platformLabel, platformIcon };

@@ -31,7 +31,7 @@
             @click="emit('update:filterPlatform', platform)">
             <span>{{ platformLabel(platform) }}</span><span class="platform-count">{{ platformCounts[platform] || 0 }}</span>
           </button>
-          <span class="platform-count-hint">网盘标签可重复：一个资源含多个网盘链接时，会同时计入多个标签</span>
+          <span class="platform-count-hint">每条结果对应一个分享链接</span>
         </div>
 
         <label v-if="hasResults" class="time-sort-select" title="按时间排序">
@@ -110,6 +110,7 @@
 
 <script setup lang="ts">
 import type { Link, SearchResult } from "~/server/core/types/models";
+import type { DisplaySearchResult } from "~/utils/resultDisplay";
 
 type SortType = "default" | "date-desc" | "date-asc";
 
@@ -125,7 +126,7 @@ interface Props {
   platformCounts: Record<string, number>;
   filterPlatform: string;
   sortType: SortType;
-  filteredResults: SearchResult[];
+  filteredResults: DisplaySearchResult[];
   platformLabel: (type?: string) => string;
   showBackToTop: boolean;
 }

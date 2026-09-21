@@ -120,4 +120,15 @@ function mergeResultsByLink(results) {
   return Array.from(buckets.values());
 }
 
-module.exports = { canonicalLinkUrl, linkIdentity, mergeSameResult, mergeResultsByLink };
+// Keep the API/resource model grouped, but render one card per share link.
+function flattenResultsForDisplay(results) {
+  return (results || []).flatMap((resource) => (resource.links || []).map((link, index) => ({
+    ...resource,
+    id: `${resource.id}::${index}`,
+    sourceId: resource.id,
+    cloud_types: [link.type],
+    links: [link],
+  })));
+}
+
+module.exports = { canonicalLinkUrl, linkIdentity, mergeSameResult, mergeResultsByLink, flattenResultsForDisplay };

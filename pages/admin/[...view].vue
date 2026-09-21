@@ -115,28 +115,28 @@
                       </td>
                       <td class="action-column" data-label="操作">
                         <div class="row-actions">
-                          <button class="icon-button" :class="{ 'danger-icon': source.enabled !== false }" type="button"
+                          <button class="row-action-button" :class="{ 'danger-action': source.enabled !== false }" type="button"
                             :aria-label="`${source.enabled === false ? '启用' : '停用'} ${source.name}`"
                             :disabled="!!runningId || !!sourceToggleId"
                             :title="source.enabled === false ? '重新加入搜索来源' : '从搜索来源中停用，配置保留'"
                             @click="toggleSource(source)">
-                            <ConsoleIcon :name="source.enabled === false ? 'check' : 'stop'" :size="13" />
+                            {{ source.enabled === false ? '启用' : '停用' }}
                           </button>
-                          <button class="icon-button" type="button" :aria-label="`查看 ${source.name} 详情`" title="详情"
+                          <button class="row-action-button" type="button" :aria-label="`查看 ${source.name} 详情`" title="详情"
                             @click="openDetail(source)">
-                            <ConsoleIcon name="info" :size="15" />
+                            详情
                           </button>
-                          <button class="icon-button" type="button" :aria-label="`测试 ${source.name}`" title="测试"
+                          <button class="row-action-button" type="button" :aria-label="`测试 ${source.name}`" title="测试"
                             :disabled="!!runningId" @click="openDebug(source)">
-                            <ConsoleIcon name="play" :size="14" />
+                            测试
                           </button>
-                          <button class="icon-button" type="button" :aria-label="`修改 ${source.name}`" title="修改"
+                          <button class="row-action-button" type="button" :aria-label="`修改 ${source.name}`" title="修改"
                             @click="openEditor(source)">
-                            <ConsoleIcon name="edit" :size="15" />
+                            编辑
                           </button>
-                          <button class="icon-button danger-icon" type="button" :aria-label="`删除 ${source.name}`"
+                          <button class="row-action-button danger-action" type="button" :aria-label="`删除 ${source.name}`"
                             title="删除" :disabled="!!runningId || !!sourceToggleId" @click="requestDeleteSource(source)">
-                            <ConsoleIcon name="trash" :size="15" />
+                            删除
                           </button>
                         </div>
                       </td>

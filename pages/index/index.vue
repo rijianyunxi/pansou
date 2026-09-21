@@ -39,12 +39,12 @@
 
     <HomeResultsPanel
       :searched="searched"
-      :total="searchState.total"
+      :total="displayResults.length"
       :elapsed-ms="searchState.elapsedMs"
       :paused="searchState.paused"
       :loading="searchState.loading"
       :error="searchState.error"
-      :has-results="hasResults"
+      :has-results="displayResults.length > 0"
       :platforms="platforms"
       :platform-counts="platformCounts"
       :filter-platform="filterPlatform"
@@ -64,9 +64,10 @@
 
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { CLOUD_TYPE_LABELS } from "~/shared/cloudTypes";
+import { CLOUD_TYPE_LABELS, sortCloudTypes } from "~/shared/cloudTypes";
 import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 import type { SearchResult } from "~/server/core/types/models";
+import { flattenResultsForDisplay, type DisplaySearchResult } from "~/utils/resultDisplay";
 
 const config = useRuntimeConfig();
 const publicConfig = config.public as Record<string, unknown>;
@@ -185,7 +186,6 @@ const {
   captureResource,
   pauseSearch,
   continueSearch,
-  hasResults,
 } = useSearch();
 const settingsApi = useSettings();
 const { settings, settingsReady, storageError } = settingsApi;
@@ -195,6 +195,7 @@ const searchScopeDisabled = computed(() =>
 );
 const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
 const needsChannelConfiguration = computed(() => onlyUserChannels.value && settings.value.userChannels.length === 0);
+const displayResults = computed<DisplaySearchResult[]>(() => flattenResultsForDisplay(searchState.value.results));
 const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
 const showToast = inject<(message: string, type?: "info" | "success" | "error") => void>("showToast", () => {});
 function handleOpenChannelSettings() {
@@ -263,19 +264,16 @@ function fullReset() {
 
 const platformName = (type?: string): string => CLOUD_TYPE_LABELS[type || "others"] || type || "其他";
 
-// 网盘类型只作为前端筛选标签，不再拆分成多个结果分组。
+// 数据仍按资源合并，展示时按单个分享链接展开。
 const platforms = computed(() => {
   const seen = new Set<string>();
-  for (const item of searchState.value.results) for (const type of item.cloud_types) seen.add(type);
-  return [...seen];
+  for (const item of displayResults.value) for (const type of item.cloud_types) seen.add(type);
+  return sortCloudTypes([...seen]);
 });
 
-// A resource can contain more than one kind of share link, so count each
-// resource once under every cloud type it exposes. This keeps the numbers
-// aligned with the result cards and with the platform filters.
 const platformCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {};
-  for (const item of searchState.value.results) {
+  for (const item of displayResults.value) {
     for (const type of new Set(item.cloud_types)) counts[type] = (counts[type] || 0) + 1;
   }
   return counts;
@@ -292,8 +290,8 @@ function applyTimeSort() {
 // 先筛选再进行全局排序，保证结果始终以单一列表平铺展示。
 const filteredResults = computed(() => {
   const items = filterPlatform.value === "all"
-    ? searchState.value.results
-    : searchState.value.results.filter((item) => item.cloud_types.includes(filterPlatform.value as any));
+    ? displayResults.value
+    : displayResults.value.filter((item) => item.cloud_types.includes(filterPlatform.value as any));
   // 流式返回期间始终保持到达顺序；搜索完成后仅在用户选择了排序方式时整理一次。
   return searchState.value.loading || searchState.value.paused ? items : sortItems(items);
 });

@@ -44,7 +44,11 @@ export function redirectTarget(
 }
 
 export function validateResponseType(response: Response, expected: readonly string[]): string {
-  if (!response.ok) throw new Error("来源 HTTP 错误: " + response.status);
+  if (!response.ok) {
+    const error = new Error("来源 HTTP 错误: " + response.status) as Error & { statusCode: number };
+    error.statusCode = response.status;
+    throw error;
+  }
   const contentType = (response.headers.get("content-type")?.split(";", 1)[0] ?? "").trim().toLowerCase();
   if (!isExpectedContentType(contentType, expected)) {
     throw new Error("不允许的响应 Content-Type: " + (contentType || "missing"));

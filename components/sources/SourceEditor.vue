@@ -108,47 +108,61 @@
 
       <details class="editor-advanced" open>
         <summary>请求参数</summary>
-        <div class="editor-grid request-config-grid">
-          <label>
-            Query JSON
-            <textarea
-              v-model="requestQueryText"
-              class="code-input"
-              :readonly="readonly"
-              rows="5"
-              spellcheck="false"
-              aria-describedby="request-config-help"
-              placeholder='{"q":"{{keyword}}"}'
-            ></textarea>
-          </label>
-          <label>
-            Body JSON
-            <textarea
-              v-model="requestBodyText"
-              class="code-input"
-              :readonly="readonly"
-              rows="5"
-              spellcheck="false"
-              aria-describedby="request-config-help"
-              placeholder='{"keyword":"{{keyword}}"}'
-            ></textarea>
-          </label>
-          <label>
-            Headers JSON
-            <textarea
-              v-model="requestHeadersText"
-              class="code-input"
-              :readonly="readonly"
-              rows="5"
-              spellcheck="false"
-              aria-describedby="request-config-help"
-              placeholder='{"user-agent":"Mozilla/5.0"}'
-            ></textarea>
-          </label>
+        <div class="request-config-grid">
+          <div class="request-tabs" role="tablist" aria-label="请求参数类型">
+            <button type="button" role="tab" :aria-selected="requestTab === 'query'" :class="{ active: requestTab === 'query' }" @click="requestTab = 'query'">Query</button>
+            <button type="button" role="tab" :aria-selected="requestTab === 'body'" :class="{ active: requestTab === 'body' }" @click="requestTab = 'body'">Body</button>
+            <button type="button" role="tab" :aria-selected="requestTab === 'headers'" :class="{ active: requestTab === 'headers' }" @click="requestTab = 'headers'">Headers</button>
+          </div>
+
+          <section v-if="requestTab === 'query'" class="request-tab-panel" role="tabpanel">
+            <div class="request-fields" aria-label="Query 参数字段">
+              <div class="request-fields-toolbar">
+                <span>Query 参数</span>
+                <button type="button" class="button secondary small" :disabled="readonly" @click="addRequestField(queryFields)">添加字段</button>
+              </div>
+              <div v-if="!queryFields.length" class="request-fields-empty">暂无 Query 字段</div>
+              <div v-for="field in queryFields" :key="field.id" class="request-field-row">
+                <input v-model="field.key" :readonly="readonly" placeholder="key" aria-label="Query 字段名" />
+                <input v-model="field.value" :readonly="readonly" placeholder="value，可使用 {{keyword}}" aria-label="Query 字段值" />
+                <button type="button" class="request-field-remove" :disabled="readonly" aria-label="删除 Query 字段" @click="removeRequestField(queryFields, field.id)">删除</button>
+              </div>
+            </div>
+          </section>
+
+          <section v-else-if="requestTab === 'body'" class="request-tab-panel" role="tabpanel">
+            <div class="request-fields" aria-label="Body 参数字段">
+              <div class="request-fields-toolbar">
+                <span>Body 参数（POST 请求使用）</span>
+                <button type="button" class="button secondary small" :disabled="readonly || form.method !== 'POST'" @click="addRequestField(bodyFields)">添加字段</button>
+              </div>
+              <div v-if="!bodyFields.length" class="request-fields-empty">暂无 Body 字段</div>
+              <div v-for="field in bodyFields" :key="field.id" class="request-field-row request-field-row-body">
+                <input v-model="field.key" :readonly="readonly || form.method !== 'POST'" placeholder="key" aria-label="Body 字段名" />
+                <textarea v-model="field.value" :readonly="readonly || form.method !== 'POST'" rows="2" placeholder="value，可使用 {{keyword}} 或 JSON" aria-label="Body 字段值"></textarea>
+                <button type="button" class="request-field-remove" :disabled="readonly || form.method !== 'POST'" aria-label="删除 Body 字段" @click="removeRequestField(bodyFields, field.id)">删除</button>
+              </div>
+            </div>
+          </section>
+
+          <section v-else class="request-tab-panel" role="tabpanel">
+            <div class="request-fields" aria-label="Headers 参数字段">
+              <div class="request-fields-toolbar">
+                <span>Headers 参数</span>
+                <button type="button" class="button secondary small" :disabled="readonly" @click="addRequestField(headerFields)">添加字段</button>
+              </div>
+              <div v-if="!headerFields.length" class="request-fields-empty">暂无 Headers 字段</div>
+              <div v-for="field in headerFields" :key="field.id" class="request-field-row">
+                <input v-model="field.key" :readonly="readonly" placeholder="key" aria-label="Header 字段名" />
+                <input v-model="field.value" :readonly="readonly" placeholder="value" aria-label="Header 字段值" />
+                <button type="button" class="request-field-remove" :disabled="readonly" aria-label="删除 Header 字段" @click="removeRequestField(headerFields, field.id)">删除</button>
+              </div>
+            </div>
+          </section>
         </div>
         <p id="request-config-help" class="editor-help request-config-help">
           支持在 URL、Query、Body、Headers 中使用
-          <code>&#123;&#123;keyword&#125;&#125;</code>，请求前会替换为当前搜索词。
+          <code>&#123;&#123;keyword&#125;&#125;</code>，请求前会替换为当前搜索词；value 填写有效 JSON 时会自动识别为对象、数组、数字或布尔值。
         </p>
       </details>
 
@@ -322,41 +336,79 @@ const form = reactive<EditableSourceDefinition>(
   props.source ? cloneSource(props.source) : createBlankSource(),
 );
 
-function stringifyRequestValue(value: unknown): string {
-  if (value === undefined) return "{}";
-  return JSON.stringify(value, null, 2) ?? "{}";
+interface RequestField {
+  id: number;
+  key: string;
+  value: string;
 }
 
-const requestQueryText = ref(
-  stringifyRequestValue(form.request?.query),
-);
-const requestBodyText = ref(
-  stringifyRequestValue(form.request?.body),
-);
-const requestHeadersText = ref(
-  stringifyRequestValue(form.request?.headers),
-);
+type RequestTab = "query" | "body" | "headers";
 
-function parseEditorJson(text: string, label: string): unknown {
-  if (!text.trim()) return undefined;
+const nextRequestFieldId = ref(1);
+const requestTab = ref<RequestTab>("query");
+const queryFields = ref<RequestField[]>([]);
+const bodyFields = ref<RequestField[]>([]);
+const headerFields = ref<RequestField[]>([]);
+
+function requestFieldValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? String(value ?? "");
+}
+
+function requestFieldsFrom(value: unknown): RequestField[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => ({
+    id: nextRequestFieldId.value++,
+    key,
+    value: requestFieldValue(fieldValue),
+  }));
+}
+
+function resetRequestFields(source: SourceDefinition | null | undefined): void {
+  queryFields.value = requestFieldsFrom(source?.request?.query);
+  bodyFields.value = requestFieldsFrom(source?.request?.body);
+  headerFields.value = requestFieldsFrom(source?.request?.headers);
+}
+
+resetRequestFields(form);
+
+function addRequestField(fields: RequestField[]): void {
+  fields.push({ id: nextRequestFieldId.value++, key: "", value: "" });
+}
+
+function removeRequestField(fields: RequestField[], id: number): void {
+  const index = fields.findIndex((field) => field.id === id);
+  if (index >= 0) fields.splice(index, 1);
+}
+
+function requestFieldValueParsed(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
   try {
-    return JSON.parse(text);
+    return JSON.parse(trimmed);
   } catch {
-    throw new Error(`${label}必须是有效 JSON。`);
+    return value;
   }
+}
+
+function requestFieldsToObject(fields: RequestField[], label: string, parseValues: boolean): Record<string, unknown> | undefined {
+  const output: Record<string, unknown> = {};
+  for (const field of fields) {
+    const key = field.key.trim();
+    if (!key) throw new Error(`${label} 字段名不能为空。`);
+    if (Object.prototype.hasOwnProperty.call(output, key)) throw new Error(`${label} 字段名不能重复：${key}`);
+    output[key] = parseValues ? requestFieldValueParsed(field.value) : field.value;
+  }
+  return fields.length ? output : undefined;
 }
 
 const debugDraft = computed<{ source: EditableSourceDefinition; error: string }>(() => {
   const draft = cloneJson(form);
   try {
     if (!draft.url.trim()) throw new Error("请先填写请求地址。");
-    const query = parseEditorJson(requestQueryText.value, "Query");
-    const body = parseEditorJson(requestBodyText.value, "Body");
-    const headers = parseEditorJson(requestHeadersText.value, "Headers");
-    if (headers !== undefined && (
-      !headers || typeof headers !== "object" || Array.isArray(headers)
-      || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string")
-    )) throw new Error("Headers 必须是字符串键值 JSON。");
+    const query = requestFieldsToObject(queryFields.value, "Query", true);
+    const body = requestFieldsToObject(bodyFields.value, "Body", true);
+    const headers = requestFieldsToObject(headerFields.value, "Headers", false) as Record<string, string> | undefined;
     if (!props.source?.id) throw new Error("请先保存来源后再测试。");
     draft.id = props.source.id;
     draft.name ||= "已保存来源";
@@ -386,7 +438,7 @@ async function testDraftSource() {
   try {
     debugReport.value = await $fetch<SourceProbe>("/api/sources/probe", {
       method: "POST",
-      body: { sourceId: props.source!.id, kw: debugKeyword.value.trim() },
+      body: { sourceId: props.source!.id, kw: debugKeyword.value.trim(), source: debugDraft.value.source },
       signal: controller.signal,
       retry: 0,
     });
@@ -404,9 +456,7 @@ function syncEditor(source?: SourceDefinition | null) {
     if (!(key in next)) delete form[key];
   }
   Object.assign(form, next);
-  requestQueryText.value = stringifyRequestValue(form.request?.query);
-  requestBodyText.value = stringifyRequestValue(form.request?.body);
-  requestHeadersText.value = stringifyRequestValue(form.request?.headers);
+  resetRequestFields(form);
   error.value = "";
   debugError.value = "";
   debugReport.value = undefined;
@@ -438,26 +488,23 @@ function openTransformImport() {
   transformImportInput.value?.click();
 }
 
-function promptValue(text: string): unknown {
-  if (!text.trim()) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    // Keep invalid JSON visible in the prompt so the user can ask the AI to
-    // account for it instead of silently replacing the current editor value.
-    return text;
-  }
-}
-
 function promptJson(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? String(value);
 }
 
+function requestFieldsPreview(fields: RequestField[], parseValues: boolean): Record<string, unknown> {
+  return Object.fromEntries(
+    fields
+      .filter((field) => field.key.trim())
+      .map((field) => [field.key.trim(), parseValues ? requestFieldValueParsed(field.value) : field.value]),
+  );
+}
+
 function buildTransformPrompt(): string {
   const request = {
-    query: promptValue(requestQueryText.value),
-    body: promptValue(requestBodyText.value),
-    headers: promptValue(requestHeadersText.value),
+    query: requestFieldsPreview(queryFields.value, true),
+    body: requestFieldsPreview(bodyFields.value, true),
+    headers: requestFieldsPreview(headerFields.value, false),
     ...(form.request?.bodyType ? { bodyType: form.request.bodyType } : {}),
     ...(form.request?.redirect ? { redirect: form.request.redirect } : {}),
     ...(form.request?.allowedDomains ? { allowedDomains: form.request.allowedDomains } : {}),
@@ -487,8 +534,9 @@ function transform(payload, $, context) {
 - payload：接口响应内容。JSON 返回格式下已经解析为 JavaScript 对象/数组；HTML 返回格式下是原始 HTML 字符串。
 - $：HTML 查询工具（Cheerio API），只有返回格式为 HTML 时可用；解析 JSON 时不要依赖它。
 - context：当前解析上下文对象，常用字段包括 context.keyword（当前搜索词）、context.source（来源标识）、context.url（请求地址）、context.rawBody（原始响应文本）和 context.format（json/html）。
+- context.makeLink(url, password)：把 URL 转成标准链接对象，自动推断网盘类型；无效 URL 返回 null。context.inferDriveType(url) 可单独获取网盘类型。不要在每个来源里重复维护网盘映射表。
 - 函数必须是同步函数，不要发起网络请求；即使没有匹配结果也要返回 []。
-- 返回值必须是标准结果 JSON 数组。每个结果至少包含 id、name、description、datetime、cloud_types、links，其中 links 至少包含一个 { url }；没有有效资源链接的结果不要返回。
+- 返回值必须是标准结果 JSON 数组。每个结果至少包含 id、name、description、datetime、links，其中 links 至少包含一个 { url }；cloud_types 和 links.type 不需要填写，服务端会根据 URL 自动推断；没有有效资源链接的结果不要返回。
 - 请根据当前接口的实际响应结构提取标题、描述、时间和资源链接，并尽量使用 context.keyword 过滤无关结果。
 
 ## 输出要求
@@ -603,19 +651,10 @@ function save() {
   }
   form.priority = priority;
 
-  const parseJson = (text: string, label: string): unknown => {
-    if (!text.trim()) return undefined;
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`${label}必须是有效 JSON。`);
-    }
-  };
-
   try {
-    const query = parseJson(requestQueryText.value, "Query");
-    const body = parseJson(requestBodyText.value, "Body");
-    const headers = parseJson(requestHeadersText.value, "Headers");
+    const query = requestFieldsToObject(queryFields.value, "Query", true);
+    const body = requestFieldsToObject(bodyFields.value, "Body", true);
+    const headers = requestFieldsToObject(headerFields.value, "Headers", false) as Record<string, string> | undefined;
     if (
       headers !== undefined &&
       (!headers ||
@@ -830,27 +869,117 @@ function save() {
 }
 
 .request-config-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: start;
+  display: block;
 }
 
 .request-config-grid label {
   margin-bottom: 0;
 }
 
-.request-config-grid textarea {
-  min-height: 124px;
+.request-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #e1e8f1;
+  border-radius: 9px;
+  background: #eef3f9;
+}
+
+.request-tabs button {
+  flex: 1;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: #64748b;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.request-tabs button:hover {
+  color: #334155;
+}
+
+.request-tabs button.active {
+  color: #1d4ed8;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(30, 64, 110, 0.12);
+  font-weight: 700;
+}
+
+.request-tab-panel {
+  min-width: 0;
+}
+
+.request-fields {
+  display: grid;
+  gap: 8px;
   width: 100%;
-  box-sizing: border-box;
-  border: 1px solid #27354f;
+  margin-top: 6px;
+}
+
+.request-fields-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.request-fields-empty {
+  padding: 13px 10px;
+  border: 1px dashed #cbd5e1;
   border-radius: 8px;
-  background: #0f172a;
-  color: #dbeafe;
-  caret-color: #93c5fd;
-  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-  padding: 12px;
-  tab-size: 2;
+  color: #94a3b8;
+  background: #f8fafc;
+  font-size: 11px;
+  text-align: center;
+}
+
+.request-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  align-items: start;
+  gap: 6px;
+}
+
+.request-field-row input,
+.request-field-row textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 8px 9px;
+  border: 1px solid #d8e0eb;
+  border-radius: 7px;
+  background: #fff;
+  color: #263247;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   resize: vertical;
+}
+
+.request-field-row input:focus,
+.request-field-row textarea:focus {
+  border-color: #7899d4;
+  outline: 2px solid rgba(79, 124, 205, 0.16);
+}
+
+.request-field-remove {
+  min-height: 34px;
+  padding: 0 7px;
+  border: 1px solid #e2c5c5;
+  border-radius: 7px;
+  color: #b4534b;
+  background: #fff8f7;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.request-field-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .request-config-grid textarea::placeholder,
@@ -997,18 +1126,18 @@ function save() {
     width: calc(100vw - 32px);
   }
 
-  .editor-primary-grid,
-  .request-config-grid {
+  .editor-primary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .request-config-grid {
+    display: block;
   }
 
   .editor-connection-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .request-config-grid label:last-child {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 600px) {

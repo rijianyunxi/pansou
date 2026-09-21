@@ -96,9 +96,33 @@ export default async function onRequest(context) {
       Accept: request.headers.get("Accept") || "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": request.headers.get("Accept-Language") || "zh-CN,zh;q=0.9,en;q=0.8",
     });
-    for (const name of ["content-type", "content-length", "authorization"]) {
-      const value = request.headers.get(name);
-      if (value) upstreamHeaders.set(name, value);
+    // 默认透传普通请求头，避免每新增一种来源 Header 都要修改并重新发布 Worker。
+    // 跳过 hop-by-hop、代理内部及敏感身份 Header，Host/Content-Length 由 fetch 重新生成。
+    const blockedHeaders = new Set([
+      "host",
+      "content-length",
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "upgrade",
+      "cookie",
+      "authorization",
+      "forwarded",
+      "via",
+    ]);
+    for (const [name, value] of request.headers) {
+      const normalized = name.toLowerCase();
+      if (
+        blockedHeaders.has(normalized)
+        || normalized.startsWith("proxy-")
+        || normalized.startsWith("x-forwarded-")
+        || normalized.startsWith("cf-")
+      ) continue;
+      upstreamHeaders.set(name, value);
     }
     const upstream = await fetch(target.toString(), {
       method: request.method,

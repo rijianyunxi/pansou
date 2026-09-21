@@ -4,14 +4,6 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
   const normalize = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   const needle = normalize(keyword);
   const matches = (value) => !needle || normalize(value).includes(needle);
-  const cloudTypeOf = (value) => {
-    const url = String(value || "").toLowerCase();
-    if (/^magnet:/.test(url)) return "magnet";
-    const host = url.replace(/^https?:\/\//, "").split(/[/?#]/)[0].replace(/^www\./, "");
-    const pairs = [["pan.baidu.com", "baidu"], ["pan.quark.cn", "quark"], ["aliyundrive.com", "aliyun"], ["alipan.com", "aliyun"], ["yun.139.com", "mobile"], ["cloud.189.cn", "tianyi"], ["115.com", "115"], ["123pan.com", "123"], ["123pan.cn", "123"], ["123684.com", "123"], ["123865.com", "123"], ["drive.uc.cn", "uc"], ["jianguoyun.com", "jianguoyun"], ["pan.xunlei.com", "xunlei"]];
-    const pair = pairs.find((entry) => host === entry[0] || host.endsWith("." + entry[0]));
-    return pair ? pair[1] : /(^|\.)lanzou[a-z0-9-]*\.com$/.test(host) ? "lanzou" : "others";
-  };
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
   // Preserve structural lines before normalizing whitespace. Telegram renders
   // most message newlines as <br>, which Cheerio .text() silently discards.
@@ -53,7 +45,7 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
       const titleIndex = titleText ? source.indexOf(titleText) : -1;
       if (titleIndex >= 0) source = source.slice(titleIndex + titleText.length);
     }
-    const stop = /(?:阿里(?:云盘)?|阿里|夸克(?:网盘)?|百度(?:网盘)?|迅雷(?:云盘)?|115(?:网盘)?|UC(?:网盘)?|天翼云盘|移动云盘|坚果云|蓝奏云|123网盘|网盘|下载地址|下载链接|资源链接|链接|提取码|密码|文件大小|大小|资源类型|类型|资源标签|标签|来源|来自|频道|群组|机器人|订阅|更新时间|上映|导演|主演|制片|评分|豆瓣|TMDB|画质|视频|字幕|分享)\s*[:：]|(?:👇|🔗|📁|📂|🏷|📢|🤖|🙍|👥)/i;
+    const stop = /(?:阿里(?:云盘)?|阿里|夸克(?:网盘)?|百度(?:网盘)?|光鸭(?:云盘)?|迅雷(?:云盘)?|115(?:网盘)?|UC(?:网盘)?|天翼云盘|移动云盘|坚果云|蓝奏云|123网盘|网盘|下载地址|下载链接|资源链接|链接|提取码|密码|文件大小|大小|资源类型|类型|资源标签|标签|来源|来自|频道|群组|机器人|订阅|更新时间|上映|导演|主演|制片|评分|豆瓣|TMDB|画质|视频|字幕|分享)\s*[:：]|(?:👇|🔗|📁|📂|🏷|📢|🤖|🙍|👥)/i;
     const boundary = source.search(stop);
     if (boundary >= 0) source = source.slice(0, boundary);
     source = source.replace(/^[\s:：;；|｜,，]+/, "").replace(/[\s\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").trim();
@@ -62,16 +54,18 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
   const passwordOf = (value) => String(value || "").match(/(?:提取码|密码|pwd|pass)[:：\s]*([a-zA-Z0-9]{3,8})/i)?.[1] || "";
   const isResource = (value) => {
     const url = String(value || "").trim();
-    return /^(?:magnet:\?[^\s<>"')\]]+|https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.(?:com|cn)|123684\.com|123865\.com|drive\.uc\.cn|115\.com|jianguoyun\.com|yun\.139\.com|pan\.xunlei\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+)$/i.test(url);
+    return /^(?:magnet:\?[^\s<>"')\]]+|https?:\/\/(?![^/]*@)(?!t\.me(?:[/:]|$))(?:[^/]+\.)?(?:pan\.baidu\.com|pan\.quark\.cn|guangyapan\.com|alipan\.com|aliyundrive\.com|cloud\.189\.cn|123pan\.(?:com|cn)|123684\.com|123865\.com|drive\.uc\.cn|115\.com|jianguoyun\.com|yun\.139\.com|pan\.xunlei\.com|lanzou\w*\.com)(?:[/:]|$)[^\s<>"')\]]+)$/i.test(url);
   };
   const linksOf = (value, hrefs) => {
     const links = [];
     const seen = new Set();
     const add = (raw) => {
       const url = String(raw || "").trim().replace(/[#\p{Extended_Pictographic}\uFE0F\u200D]+$/gu, "").replace(/[，。！？；：、）》】]+$/u, "");
-      if (!isResource(url) || seen.has(url)) return;
-      seen.add(url);
-      links.push({ type: cloudTypeOf(url), url, password: passwordOf(value) || null });
+      if (!isResource(url)) return;
+      const link = context.makeLink(url, passwordOf(value) || null);
+      if (!link || seen.has(link.url)) return;
+      seen.add(link.url);
+      links.push(link);
     };
     for (const url of String(value || "").match(/(?:https?:\/\/|magnet:\?)[^\s<>"')\]]+/gi) || []) add(url);
     for (const url of hrefs || []) add(url);
@@ -91,7 +85,7 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
       const links = linksOf(text, hrefs);
       const postId = root.find(".tgme_widget_message").attr("data-post") || "";
       const datetime = root.find("time").attr("datetime") || "";
-      if (title && matches(text) && links.length) output.push({ id: String(context.source || "source") + "-" + (postId || index), name: title, description: content, datetime, cloud_types: [...new Set(links.map((link) => link.type))], links });
+      if (title && matches(text) && links.length) output.push({ id: String(context.source || "source") + "-" + (postId || index), name: title, description: content, datetime, links });
     });
   }
   return output;

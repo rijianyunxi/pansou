@@ -1,3 +1,5 @@
+import type { CloudType, Link } from "../types/models";
+
 export interface SourceManifest {
   readonly id: string;
   readonly name: string;
@@ -57,6 +59,10 @@ export interface SourceTransformContext {
   url?: string;
   rawBody: string;
   format: SourceInputFormat;
+  /** Build a canonical share-link object without duplicating provider mappings. */
+  makeLink?: (url: unknown, password?: unknown) => Link | null;
+  /** Infer the canonical provider from a share URL. */
+  inferDriveType?: (url: string) => CloudType;
   [key: string]: unknown;
 }
 

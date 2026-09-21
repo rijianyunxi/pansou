@@ -4,7 +4,7 @@
       <div class="header-mark" :style="{ '--mark-color': color }" aria-hidden="true">{{ icon }}</div>
       <div class="header-info">
         <h2 class="platform-title">{{ title }}</h2>
-        <span class="resource-count">{{ items.length }} 个资源</span>
+        <span class="resource-count">{{ items.length }} 个分享链接</span>
       </div>
       <button v-if="canToggleCollapse" class="expand-btn" type="button" @click="$emit('toggle')">
         {{ expanded ? '收起' : '展开' }}
@@ -66,7 +66,7 @@
                 rel="noopener noreferrer nofollow"
                 :aria-label="`打开${platformLabel(link.type)}链接`"
                 title="打开链接"
-                @click="$emit('open', { link, resource, resultId: resource.id })">
+                @click="open(link, resource)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M14 3h7v7"></path>
                   <path d="M10 14 21 3"></path>
@@ -101,12 +101,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { Link, SearchResult } from "~/server/core/types/models";
+import type { DisplaySearchResult } from "~/utils/resultDisplay";
 
 const props = withDefaults(defineProps<{
   title: string;
   color: string;
   icon: string;
-  items: SearchResult[];
+  items: DisplaySearchResult[];
   expanded: boolean;
   initialVisible: number;
   canToggleCollapse?: boolean;
@@ -142,10 +143,16 @@ async function copy(link: Link, resource: SearchResult) {
     return;
   }
   copiedKey.value = key;
-  emit("copy", { link, resource, resultId: resource.id });
+  const source = "sourceResource" in resource ? (resource as DisplaySearchResult).sourceResource : resource;
+  emit("copy", { link, resource: source, resultId: source.id });
   window.setTimeout(() => {
     if (copiedKey.value === key) copiedKey.value = "";
   }, 1600);
+}
+
+function open(link: Link, resource: SearchResult) {
+  const source = "sourceResource" in resource ? (resource as DisplaySearchResult).sourceResource : resource;
+  emit("open", { link, resource: source, resultId: source.id });
 }
 </script>
 

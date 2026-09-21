@@ -1,5 +1,5 @@
-// View-model (`item`) is prebuilt by the page: { id, name, dateText, description,
-// hasLongDesc, cloudTypes: [{type,label}], tags: [], links: [{key,type,label,icon,url,password}] }.
+// View-model (`item`) is prebuilt by the page: { id, sourceId, name, dateText,
+// description, hasLongDesc, cloudTypes: [{type,label}], tags: [], links: [{key,type,label,icon,url,password}] }.
 Component({
   properties: {
     item: { type: Object, value: {} },
@@ -45,7 +45,7 @@ Component({
           wx.showToast({ title: '链接已复制，请在浏览器打开', icon: 'none', duration: 2500 });
         },
       });
-      this.triggerEvent('open', { url, id: this.data.item.id });
+      this.triggerEvent('open', { url, id: this.data.item.id, sourceId: this.data.item.sourceId || this.data.item.id });
     },
 
     onCopy(event) {
@@ -57,7 +57,7 @@ Component({
         },
       });
       this.setData({ copiedKey: url });
-      this.triggerEvent('copy', { url, id: this.data.item.id });
+      this.triggerEvent('copy', { url, id: this.data.item.id, sourceId: this.data.item.sourceId || this.data.item.id });
       // Matches the web's 1.6s "已复制" feedback window.
       setTimeout(() => {
         if (this.data.copiedKey === url) this.setData({ copiedKey: '' });

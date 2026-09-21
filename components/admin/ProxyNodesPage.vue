@@ -50,7 +50,7 @@
                       <td data-label="今日用量">{{ node.quotaUsed }}<span v-if="node.dailyLimit"> / {{ node.dailyLimit }}</span><span v-else class="table-muted"> / 不限</span></td>
                       <td data-label="状态"><span class="proxy-status" :class="node.circuitState">{{ statusLabel(node) }}</span></td>
                       <td data-label="最近错误" class="break-cell" :title="node.lastError || undefined"><span class="proxy-error">{{ node.lastError || '—' }}</span></td>
-                      <td data-label="操作" class="action-column"><div class="row-actions"><button v-if="!isDirectNode(node)" class="icon-button" type="button" :aria-label="`编辑 ${node.name}`" title="编辑" @click="edit(node)"><ConsoleIcon name="edit" :size="15" /></button><button class="icon-button" type="button" :aria-label="node.circuitState === 'open' ? `解除 ${node.name} 的熔断` : `重置 ${node.name} 状态`" :title="node.circuitState === 'open' ? '解除熔断' : '重置状态'" @click="reset(node)"><ConsoleIcon name="refresh" :size="15" /></button><button v-if="!isDirectNode(node)" class="icon-button danger-icon" type="button" :aria-label="`删除 ${node.name}`" title="删除" @click="remove(node)"><ConsoleIcon name="trash" :size="15" /></button></div><span v-if="isDirectNode(node)" class="system-node-label">系统节点</span></td>
+                      <td data-label="操作" class="action-column"><div class="row-actions"><button v-if="!isDirectNode(node)" class="row-action-button" type="button" :aria-label="`编辑 ${node.name}`" title="编辑" @click="edit(node)">编辑</button><button class="row-action-button" type="button" :aria-label="node.circuitState === 'open' ? `解除 ${node.name} 的熔断` : `重置 ${node.name} 状态`" :title="node.circuitState === 'open' ? '解除熔断' : '重置状态'" @click="reset(node)">{{ node.circuitState === 'open' ? '解除熔断' : '重置状态' }}</button><button v-if="!isDirectNode(node)" class="row-action-button danger-action" type="button" :aria-label="`删除 ${node.name}`" title="删除" @click="remove(node)">删除</button></div><span v-if="isDirectNode(node)" class="system-node-label">系统节点</span></td>
                     </tr>
                     <tr v-if="!nodes.length"><td colspan="5" class="empty-cell">暂无代理节点。</td></tr>
                   </tbody>
@@ -299,11 +299,11 @@ onMounted(load);
 .system-node-label { font-size: 11px; }
 .proxy-error { display: -webkit-box; max-width: 100%; overflow: hidden; color: #b45309; line-height: 1.45; overflow-wrap: anywhere; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .proxy-table { min-width: 1040px; table-layout: fixed; }
-.proxy-table th:nth-child(1), .proxy-table td:nth-child(1) { width: 35%; }
-.proxy-table th:nth-child(2), .proxy-table td:nth-child(2) { width: 16%; }
-.proxy-table th:nth-child(3), .proxy-table td:nth-child(3) { width: 13%; }
-.proxy-table th:nth-child(4), .proxy-table td:nth-child(4) { width: 21%; }
-.proxy-table th:nth-child(5), .proxy-table td:nth-child(5) { width: 15%; min-width: 150px; }
+.proxy-table th:nth-child(1), .proxy-table td:nth-child(1) { width: 30%; }
+.proxy-table th:nth-child(2), .proxy-table td:nth-child(2) { width: 14%; }
+.proxy-table th:nth-child(3), .proxy-table td:nth-child(3) { width: 14%; }
+.proxy-table th:nth-child(4), .proxy-table td:nth-child(4) { width: 20%; }
+.proxy-table th:nth-child(5), .proxy-table td:nth-child(5) { width: 22%; min-width: 150px; }
 .proxy-table .action-column { white-space: nowrap; }
 @media (max-width: 760px) {
   .strategy-overview { padding: 18px; }.strategy-overview-header { flex-direction: column; }.strategy-cards { grid-template-columns: 1fr; }.strategy-empty { align-items: flex-start; flex-wrap: wrap; }.strategy-empty .button { width: 100%; margin-left: 0; }

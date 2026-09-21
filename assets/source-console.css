@@ -3742,3 +3742,160 @@
   cursor: not-allowed;
   opacity: .45;
 }
+
+/* Admin table actions use visible labels so the available operation is clear
+   without relying on an icon, hover state, or tooltip. Keep the controls in a
+   single predictable row on desktop; the table container handles overflow on
+   narrower screens instead of squeezing cells into distorted shapes. */
+.source-app .admin-data-table .row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+.source-app .admin-data-table .row-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 42px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  color: #526176;
+  background: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background-color 140ms ease;
+}
+.source-app .admin-data-table .row-action-button:hover:not(:disabled) {
+  border-color: #93c5fd;
+  color: #2563eb;
+  background: #eff6ff;
+}
+.source-app .admin-data-table .row-action-button.danger-action {
+  border-color: #f1c3be;
+  color: #b42318;
+  background: #fffafa;
+}
+.source-app .admin-data-table .row-action-button.danger-action:hover:not(:disabled) {
+  border-color: #e58b82;
+  color: #9f1d16;
+  background: #fff1ef;
+}
+.source-app .admin-data-table .row-action-button.transfer-action {
+  border-color: #bfdbfe;
+  color: #2563eb;
+  background: #eff6ff;
+}
+.source-app .admin-data-table .row-action-button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.source-app .admin-data-table td.action-column {
+  white-space: nowrap;
+}
+.source-app .admin-data-table th:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 5;
+  background: #f3f6fa;
+  box-shadow: -10px 0 16px rgba(30, 64, 110, .06);
+}
+.source-app .admin-data-table td.action-column {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: #fff;
+  box-shadow: -10px 0 16px rgba(30, 64, 110, .06);
+}
+.source-app .admin-data-table tbody tr:nth-child(even) td.action-column {
+  background: #fcfdff;
+}
+.source-app .admin-data-table tbody tr:hover td.action-column {
+  background: #f5f8fc;
+}
+.source-app .admin-data-table tbody tr.selected-row td.action-column {
+  background: #eff6ff;
+}
+
+/* Reserve enough room for the labelled action groups. Without these explicit
+   widths, table-layout: fixed compresses the last cell first and makes labels
+   wrap or push the rest of the row out of alignment. */
+.source-app .directory-table th:nth-child(1),
+.source-app .directory-table td:nth-child(1) { width: 6%; }
+.source-app .directory-table th:nth-child(2),
+.source-app .directory-table td:nth-child(2) { width: 27%; }
+.source-app .directory-table th:nth-child(3),
+.source-app .directory-table td:nth-child(3) { width: 12%; }
+.source-app .directory-table th:nth-child(4),
+.source-app .directory-table td:nth-child(4) { width: 8%; }
+.source-app .directory-table th:nth-child(5),
+.source-app .directory-table td:nth-child(5) { width: 17%; }
+.source-app .directory-table th:nth-child(6),
+.source-app .directory-table td:nth-child(6) { width: 30%; }
+
+.source-app .resource-table {
+  min-width: 1480px !important;
+}
+.source-app .resource-table th:nth-child(3),
+.source-app .resource-table td:nth-child(3) { width: 14%; }
+.source-app .resource-table th:nth-child(6),
+.source-app .resource-table td:nth-child(6) { width: 18%; }
+.source-app .resource-table th:nth-child(10),
+.source-app .resource-table td:nth-child(10) { width: 6%; }
+.source-app .resource-table th:nth-child(11),
+.source-app .resource-table td:nth-child(11) { width: 21%; }
+
+.source-app .proxy-table {
+  min-width: 1080px;
+}
+.source-app .proxy-table th:nth-child(1),
+.source-app .proxy-table td:nth-child(1) { width: 30%; }
+.source-app .proxy-table th:nth-child(2),
+.source-app .proxy-table td:nth-child(2) { width: 14%; }
+.source-app .proxy-table th:nth-child(3),
+.source-app .proxy-table td:nth-child(3) { width: 14%; }
+.source-app .proxy-table th:nth-child(4),
+.source-app .proxy-table td:nth-child(4) { width: 20%; }
+.source-app .proxy-table th:nth-child(5),
+.source-app .proxy-table td:nth-child(5) { width: 22%; }
+
+.source-app .hot-search-table {
+  min-width: 1120px !important;
+}
+.source-app .hot-search-table th:nth-child(8),
+.source-app .hot-search-table td:nth-child(8) { width: 21%; }
+
+.source-app .user-table {
+  min-width: 1300px !important;
+}
+.source-app .log-table {
+  min-width: 1260px !important;
+}
+
+@media (max-width: 700px) {
+  .source-app .admin-data-table .row-actions {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .source-app .admin-data-table .row-action-button {
+    min-width: 40px;
+    min-height: 30px;
+    padding-inline: 8px;
+    font-size: 10px;
+  }
+  .source-app .admin-data-table td.action-column {
+    white-space: normal;
+    position: static;
+    box-shadow: none;
+  }
+  .source-app .admin-data-table th:last-child { position: static; box-shadow: none; }
+}
