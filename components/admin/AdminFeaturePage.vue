@@ -82,7 +82,7 @@
                         <td><span :class="['role-badge', item.role === 'admin' ? 'admin' : 'user']">{{ item.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
                         <td><span :class="['status-badge', item.status]">{{ item.status === 'active' ? '正常' : '已禁用' }}</span></td>
                         <td><button class="channel-count-button" type="button" @click="openUserChannels(item)">{{ item.channelCount ?? item.channels?.length ?? 0 }}</button></td><td>{{ item.lastLoginIp || '—' }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td>
-                        <td class="action-column"><div class="row-actions"><button class="icon-button" :class="{ 'danger-icon': item.status === 'active' }" type="button" :title="item.status === 'active' ? '禁用' : '启用'" :aria-label="`${item.status === 'active' ? '禁用' : '启用'}用户 ${item.username}`" @click="toggleUser(item)"><ConsoleIcon :name="item.status === 'active' ? 'lock' : 'unlock'" :size="15" /></button><button class="icon-button danger-icon" type="button" title="退出会话" :aria-label="`退出用户 ${item.username} 的会话`" @click="revokeUser(item)"><ConsoleIcon name="logout" :size="15" /></button><button class="icon-button danger-icon" type="button" title="删除" :aria-label="`删除用户 ${item.username}`" @click="deleteUser(item)"><ConsoleIcon name="trash" :size="15" /></button></div></td>
+                        <td class="action-column"><div class="row-actions"><button class="row-action-button" :class="{ 'danger-action': item.status === 'active' }" type="button" :title="item.status === 'active' ? '禁用' : '启用'" :aria-label="`${item.status === 'active' ? '禁用' : '启用'}用户 ${item.username}`" @click="toggleUser(item)">{{ item.status === 'active' ? '禁用' : '启用' }}</button><button class="row-action-button danger-action" type="button" title="退出会话" :aria-label="`退出用户 ${item.username} 的会话`" @click="revokeUser(item)">退出会话</button><button class="row-action-button danger-action" type="button" title="删除" :aria-label="`删除用户 ${item.username}`" @click="deleteUser(item)">删除</button></div></td>
                       </tr>
                       <tr v-if="!users.length"><td colspan="10" class="empty-cell">暂无用户数据，或服务端用户管理接口尚未启用。</td></tr>
                     </tbody>
@@ -146,7 +146,7 @@
                   <table class="source-table directory-table admin-data-table log-table">
                     <thead><tr><th class="checkbox-column"><input type="checkbox" :checked="allCurrentSelected" :indeterminate="someCurrentSelected" aria-label="选择当前页全部日志" @change="toggleAllCurrent" /></th><th class="serial-column">序号</th><th>时间</th><th>关键词</th><th>用户</th><th>结果</th><th>搜索范围</th><th>操作</th></tr></thead>
                     <tbody>
-                      <tr v-for="(item, index) in logs" :key="item.id" :class="{ 'selected-row': isSelected(item.id) }"><td class="checkbox-column"><input type="checkbox" :checked="isSelected(item.id)" :aria-label="`选择日志 ${item.id}`" @change="toggleSelection(item.id)" /></td><td class="serial-column">{{ rowNumber(index) }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td><td class="break-cell">{{ item.keyword || item.kw || '—' }}</td><td>{{ item.username || item.userId || '未登录' }}</td><td>{{ logResultCountLabel(item) }}</td><td><button v-if="isCustomScope(item)" class="scope-link" type="button" @click="openLogChannels(item)">自定义频道</button><span v-else>{{ searchScopeLabel(item) }}</span></td><td class="action-column"><div class="row-actions"><button class="icon-button" type="button" aria-label="查看日志详情" title="详情" @click="openLogDetail(item)"><ConsoleIcon name="info" :size="16" /></button><button class="icon-button danger-icon" type="button" aria-label="删除日志" title="删除日志" @click="deleteLog(item)"><ConsoleIcon name="trash" :size="16" /></button></div></td></tr>
+                      <tr v-for="(item, index) in logs" :key="item.id" :class="{ 'selected-row': isSelected(item.id) }"><td class="checkbox-column"><input type="checkbox" :checked="isSelected(item.id)" :aria-label="`选择日志 ${item.id}`" @change="toggleSelection(item.id)" /></td><td class="serial-column">{{ rowNumber(index) }}</td><td>{{ formatTime(item.createdAt || item.created_at) }}</td><td class="break-cell">{{ item.keyword || item.kw || '—' }}</td><td>{{ item.username || item.userId || '未登录' }}</td><td>{{ logResultCountLabel(item) }}</td><td><button v-if="isCustomScope(item)" class="scope-link" type="button" @click="openLogChannels(item)">自定义频道</button><span v-else>{{ searchScopeLabel(item) }}</span></td><td class="action-column"><div class="row-actions"><button class="row-action-button" type="button" aria-label="查看日志详情" title="详情" @click="openLogDetail(item)">详情</button><button class="row-action-button danger-action" type="button" aria-label="删除日志" title="删除日志" @click="deleteLog(item)">删除</button></div></td></tr>
                       <tr v-if="!logs.length"><td colspan="8" class="empty-cell">暂无日志数据，或服务端日志接口尚未启用。</td></tr>
                     </tbody>
                   </table>
@@ -188,7 +188,23 @@
             </template>
 
           <template v-else>
-              <section class="feature-card policy-card" aria-labelledby="system-settings-title">
+              <nav class="settings-tabs" aria-label="系统设置分类" role="tablist">
+                <button
+                  v-for="tab in settingsTabs"
+                  :key="tab.key"
+                  :id="`settings-tab-${tab.key}`"
+                  class="settings-tab"
+                  :class="{ active: activeSettingsTab === tab.key }"
+                  type="button"
+                  role="tab"
+                  :aria-selected="activeSettingsTab === tab.key"
+                  :aria-controls="`settings-panel-${tab.key}`"
+                  @click="activeSettingsTab = tab.key">
+                  <strong>{{ tab.label }}</strong>
+                  <small>{{ tab.description }}</small>
+                </button>
+              </nav>
+              <section v-if="activeSettingsTab === 'search'" id="settings-panel-search" class="feature-card policy-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-search">
                 <div class="policy-card-header">
                   <div class="policy-card-copy">
                     <h2 id="system-settings-title">搜索与账号配置</h2>
@@ -244,7 +260,7 @@
                   </fieldset>
                 </form>
               </section>
-              <section class="feature-card admin-account-card" aria-labelledby="wechat-mini-title">
+              <section v-else-if="activeSettingsTab === 'wechat'" id="settings-panel-wechat" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-wechat">
                 <div class="policy-card-header">
                   <div class="policy-card-copy">
                     <h2 id="wechat-mini-title">微信小程序</h2>
@@ -268,7 +284,7 @@
                   <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存微信配置' }}</button></div>
                 </form>
               </section>
-              <section class="feature-card admin-account-card" aria-labelledby="quark-account-title">
+              <section v-else-if="activeSettingsTab === 'quark'" id="settings-panel-quark" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-quark">
                 <div class="policy-card-header">
                   <div class="policy-card-copy">
                     <h2 id="quark-account-title">夸克网盘转存</h2>
@@ -283,7 +299,22 @@
                   <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !quarkForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存夸克配置' }}</button><button v-if="quarkSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearQuarkSettings">清除 Cookie</button></div>
                 </form>
               </section>
-              <section class="feature-card admin-account-card" aria-labelledby="admin-account-title">
+              <section v-else-if="activeSettingsTab === 'baidu'" id="settings-panel-baidu" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-baidu">
+                <div class="policy-card-header">
+                  <div class="policy-card-copy">
+                    <h2 id="baidu-account-title">百度网盘转存</h2>
+                    <p>审核页转存任务会优先使用这里保存的百度网页登录 Cookie。请粘贴包含 BDUSS、BAIDUID、STOKEN 的完整 Cookie；内容只保存在服务端数据库中，页面不会回显。</p>
+                  </div>
+                  <div class="policy-card-actions">
+                    <span class="policy-count">{{ baiduSettings.configured ? '已配置' : '未配置' }}</span>
+                  </div>
+                </div>
+                <form class="admin-account-form" @submit.prevent="saveBaiduSettings">
+                  <label class="policy-field"><span><strong>百度 Cookie</strong><small>{{ baiduCookieHint }}</small></span><textarea v-model="baiduForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="baiduSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.baidu.com 的完整 Cookie 请求头粘贴到这里'" /></label>
+                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !baiduForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存百度配置' }}</button><button v-if="baiduSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearBaiduSettings">清除 Cookie</button></div>
+                </form>
+              </section>
+              <section v-else-if="activeSettingsTab === 'admin'" id="settings-panel-admin" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-admin">
                 <div class="policy-card-header">
                   <div class="policy-card-copy"><h2 id="admin-account-title">管理员账号</h2><p>修改后台登录用户名或密码。当前会话不会被立即退出。</p></div>
                 </div>
@@ -366,6 +397,15 @@ const DEFAULT_POLICY: UserPolicy = {
 const props = defineProps<{ feature: Feature }>();
 const feature = computed(() => props.feature);
 const title = computed(() => ({ users: "用户管理", logs: "搜索日志", policies: "系统设置" })[props.feature]);
+const settingsTabs = [
+  { key: "search", label: "搜索配置", description: "首页与搜索策略" },
+  { key: "wechat", label: "微信小程序", description: "登录与小程序码" },
+  { key: "quark", label: "夸克转存", description: "夸克 Cookie" },
+  { key: "baidu", label: "百度转存", description: "百度 Cookie" },
+  { key: "admin", label: "管理员账号", description: "登录账号与密码" },
+] as const;
+type SettingsTab = typeof settingsTabs[number]["key"];
+const activeSettingsTab = ref<SettingsTab>("search");
 const checking = ref(true); const ready = ref(false); const authenticated = ref(false); const locked = ref(true);
 const loading = ref(false); const busy = ref(false); const authError = ref(""); const notice = ref(""); const noticeIsError = ref(false);
 const users = ref<AdminUser[]>([]); const logs = ref<AdminLog[]>([]); const userQuery = ref(""); const userStatus = ref(""); const logQuery = ref("");
@@ -377,6 +417,8 @@ type WechatSettingsView = { appId: string; qrPage: string; envVersion: WechatEnv
 type WechatForm = { appId: string; secret: string; qrPage: string; envVersion: WechatEnvVersion };
 type QuarkSettingsView = { configured: boolean; cookieLength: number };
 type QuarkForm = { cookie: string };
+type BaiduSettingsView = { configured: boolean; cookieLength: number };
+type BaiduForm = { cookie: string };
 const DEFAULT_WECHAT_SETTINGS: WechatSettingsView = { appId: "", qrPage: "pages/login/index", envVersion: "release", secretConfigured: false, secretLength: 0, configured: false };
 // `secret` is write-only: it is never sent back, so the form always starts blank
 // and an empty field means "keep the stored secret".
@@ -388,6 +430,9 @@ const wechatSecretHint = computed(() => wechatSettings.value.secretConfigured
 const quarkSettings = ref<QuarkSettingsView>({ configured: false, cookieLength: 0 });
 const quarkForm = ref<QuarkForm>({ cookie: "" });
 const quarkCookieHint = computed(() => quarkSettings.value.configured ? `已保存 ${quarkSettings.value.cookieLength} 个字符，留空表示不修改` : "从浏览器开发者工具复制 Cookie 请求头内容");
+const baiduSettings = ref<BaiduSettingsView>({ configured: false, cookieLength: 0 });
+const baiduForm = ref<BaiduForm>({ cookie: "" });
+const baiduCookieHint = computed(() => baiduSettings.value.configured ? `已保存 ${baiduSettings.value.cookieLength} 个字符，留空表示不修改` : "需包含 BDUSS、BAIDUID，建议同时包含 STOKEN");
 const newUser = ref({ username: "", password: "", nickname: "" }); const createUserOpen = ref(false); const modalError = ref(""); const usernameInput = ref<HTMLInputElement | null>(null);
 const selectedKeys = ref<string[]>([]); const page = ref(1); const pageSize = ref(20); const total = ref(0);
 const userChannelsOpen = ref(false); const userChannelsLoading = ref(false); const userChannelsError = ref(""); const selectedUserChannels = ref<{ username: string; channels: string[] } | null>(null);
@@ -469,11 +514,12 @@ async function loadData() {
       const data = result?.data ?? result; logs.value = data.logs || data.items || []; total.value = Number(data.total || logs.value.length); page.value = Number(data.page || page.value);
       analytics.value = analyticsResult?.data ?? analytics.value;
     } else {
-      const [policyResult, accountResult, wechatResult, quarkResult] = await Promise.all([
+      const [policyResult, accountResult, wechatResult, quarkResult, baiduResult] = await Promise.all([
         $fetch<any>("/api/settings/user-policy", { cache: "no-store" }),
         $fetch<any>("/api/admin/account", { cache: "no-store" }),
         $fetch<any>("/api/settings/wechat", { cache: "no-store" }),
         $fetch<any>("/api/settings/quark", { cache: "no-store" }),
+        $fetch<any>("/api/settings/baidu", { cache: "no-store" }),
       ]);
       const loadedPolicy = normalizePolicy(unwrap<Partial<UserPolicy>>(policyResult, "policy"));
       const loadedAccount = unwrap<{ username?: string }>(accountResult, "account");
@@ -487,6 +533,8 @@ async function loadData() {
       wechatForm.value = { appId: loadedWechat.appId, secret: "", qrPage: loadedWechat.qrPage, envVersion: loadedWechat.envVersion };
       quarkSettings.value = unwrap<QuarkSettingsView>(quarkResult, "data");
       quarkForm.value = { cookie: "" };
+      baiduSettings.value = unwrap<BaiduSettingsView>(baiduResult, "data");
+      baiduForm.value = { cookie: "" };
     }
   } catch (error: any) { if ([401, 403].includes(statusOf(error))) { authenticated.value = false; locked.value = true; } show(apiError(error), true); }
   finally { loading.value = false; }
@@ -639,6 +687,30 @@ async function clearQuarkSettings() {
     quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
     quarkForm.value = { cookie: "" };
     show("夸克 Cookie 已清除。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function saveBaiduSettings() {
+  if (busy.value || !baiduForm.value.cookie.trim()) return;
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/settings/baidu", { method: "PUT", body: { cookie: baiduForm.value.cookie } });
+    baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
+    baiduForm.value = { cookie: "" };
+    show("百度 Cookie 已保存，审核页转存会立即使用新的登录态。");
+  } catch (error: any) { show(apiError(error), true); }
+  finally { busy.value = false; }
+}
+
+async function clearBaiduSettings() {
+  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的百度 Cookie 吗？清除后转存功能将使用桥接器（如已配置）。")) return;
+  busy.value = true;
+  try {
+    const result = await $fetch<any>("/api/settings/baidu", { method: "PUT", body: { cookie: null } });
+    baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
+    baiduForm.value = { cookie: "" };
+    show("百度 Cookie 已清除。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }
 }
@@ -833,4 +905,101 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 @media (max-width: 820px) { .feature-heading { flex-direction: column; align-items: stretch; }.query-toolbar { align-items: stretch; }.query-input { min-width: 100%; }.query-select { width: 100%; flex: 1 1 100%; }.query-actions { width: 100%; }.query-actions .button { flex: 1 1 auto; } }
 @media (max-width: 820px) { .analytics-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .admin-data-table { min-width: 820px !important; }.query-toolbar { padding: 12px 16px; }.table-scroll { max-height: min(58vh, 560px); }.query-panel { top: calc(var(--console-topbar-height) + 6px); padding: 0; }.query-actions .button { flex: 1 1 calc(50% - 7px); }.admin-modal { padding: 20px; } }
+.settings-tabs {
+  position: sticky;
+  top: calc(var(--console-topbar-height) + 10px);
+  z-index: 10;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  width: min(980px, 100%);
+  margin: 0 auto 16px;
+  padding: 6px;
+  border: 1px solid #dfe7f1;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 10px 24px rgba(31, 48, 72, .08);
+  backdrop-filter: blur(12px);
+}
+.settings-tab {
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #64748b;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background-color 140ms ease;
+}
+.settings-tab strong {
+  overflow: hidden;
+  max-width: 100%;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-tab small {
+  overflow: hidden;
+  max-width: 100%;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-tab:hover {
+  border-color: #dbeafe;
+  background: #f8fbff;
+}
+.settings-tab.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.settings-tab.active strong { color: #1d4ed8; }
+.settings-tab.active small { color: #5281c7; }
+.settings-tab:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+.settings-tab-panel {
+  animation: settings-panel-in 160ms ease-out;
+}
+@keyframes settings-panel-in {
+  from { opacity: .5; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 900px) {
+  .settings-tabs {
+    display: flex;
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tab {
+    width: 156px;
+    flex: 0 0 156px;
+  }
+}
+@media (max-width: 700px) {
+  .settings-tabs {
+    top: calc(var(--console-topbar-height) + 6px);
+    margin-bottom: 12px;
+  }
+  .settings-tab {
+    min-height: 50px;
+    padding-inline: 10px;
+  }
+  .settings-tab small { display: none; }
+}
 </style>

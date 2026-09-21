@@ -139,7 +139,8 @@ POST `/api/search`：
 资源审核列表中的上传图标会创建一个异步转存任务。任务成功后才会把原资源链接替换成管理员网盘的新分享链接，同时把旧链接写入 `resource_link_history`，避免转存失败或进程中断造成原链接丢失。
 
 - 夸克：服务端直接请求转存、任务轮询和创建分享接口，不依赖 `quarkpan` CLI。登录 Cookie 在管理后台「系统设置 → 夸克网盘转存」中填写，服务端只返回是否已配置和字符数，不会回显完整 Cookie。
-- 百度：通过 `PANHUB_BAIDU_TRANSFER_BIN` 配置外部桥接器。程序以 JSON 写入桥接器标准输入：`{"url":"原分享链接","password":"提取码或 null","name":"资源名","targetFolder":"目标目录"}`；桥接器必须在成功时输出 `{"url":"新的分享链接","password":null}`，失败时返回非 0 或输出 `{"error":"原因"}`。
+- 百度：优先使用管理后台「系统设置 → 百度网盘转存」中保存的网页登录 Cookie，直接完成校验、转存和创建分享；未配置 Cookie 时才使用 `PANHUB_BAIDU_TRANSFER_BIN` 外部桥接器。目标目录已有资源时会复用现有资源创建分享，避免重复转存。
+- 百度和夸克：资源管理列表的链接旁提供“删云端”操作，使用对应 Cookie 根据分享链接定位并删除云端资源；删除前会二次确认，盘搜中的链接记录不会自动删除。
 
 当前版本只做同网盘转存：夸克链接转夸克、百度链接转百度；跨网盘需要下载再上传，暂不自动执行。
 
@@ -152,13 +153,12 @@ function transform(payload, $, context) {
     name: "资源标题",
     description: null,
     datetime: null,
-    cloud_types: ["baidu"],
-    links: [{ type: "baidu", url: "https://pan.baidu.com/s/xxx", password: null }]
+    links: [{ url: "https://pan.baidu.com/s/xxx", password: null }]
   }];
 }
 ```
 
-`payload` 是本次唯一请求的原始响应，`$` 是 HTML 查询工具，`context` 至少包含 `keyword`、`source`、`format` 和 `rawBody`。解析函数只负责转换结果，不负责发起网络请求。
+`payload` 是本次唯一请求的原始响应，`$` 是 HTML 查询工具，`context` 至少包含 `keyword`、`source`、`format` 和 `rawBody`，并提供 `context.makeLink(url, password)` 自动生成带网盘类型的标准链接对象。解析函数只负责转换结果，不负责发起网络请求。
 
 ## 目录结构
 
