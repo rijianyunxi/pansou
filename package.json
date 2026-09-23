@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "cross-env PANHUB_BUILD_DIR=.nuxt-dev nuxt dev --dotenv .env.development --host 127.0.0.1",
+    "dev": "cross-env PANHUB_BUILD_DIR=.nuxt-dev nuxt dev --dotenv .env.development --host ::",
     "build": "cross-env PANHUB_BUILD_DIR=.nuxt nuxt build",
     "preview": "nuxt preview"
   },

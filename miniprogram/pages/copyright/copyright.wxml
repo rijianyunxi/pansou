@@ -1,4 +1,4 @@
-<view class="copyright-page">
+<view class="copyright-page themed-page theme-{{theme}}">
   <view class="copyright-header">
     <text class="eyebrow">盘搜 · Copyright</text>
     <text class="page-title">版权与免责声明</text>
@@ -33,4 +33,5 @@
   </view>
 
   <text class="copyright-note">本页面仅用于服务说明，不构成对任何具体资源合法性的确认或法律意见。</text>
+  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

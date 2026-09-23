@@ -21,19 +21,8 @@
           <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
         </div>
 
-        <div v-if="resource.cloud_types.length || resource.tags?.length" class="resource-meta">
+        <div v-if="resource.tags?.length" class="resource-meta">
           <div class="meta-tags">
-            <button
-              v-for="type in resource.cloud_types"
-              :key="type"
-              type="button"
-              :class="['meta-tag', 'platform', { active: activePlatform === type }]"
-              :aria-pressed="activePlatform === type"
-              :title="`${platformLabel(type)}：点击筛选`"
-              @click="$emit('filter-platform', type)">
-              <span class="tag-dot" aria-hidden="true"></span>
-              {{ platformLabel(type) }}
-            </button>
             <span v-for="tag in resource.tags" :key="tag" class="meta-tag tag">{{ tag }}</span>
           </div>
         </div>
@@ -112,12 +101,10 @@ const props = withDefaults(defineProps<{
   initialVisible: number;
   canToggleCollapse?: boolean;
   showHeader?: boolean;
-  activePlatform?: string;
   platformLabel?: (type: string) => string;
 }>(), {
   canToggleCollapse: false,
   showHeader: true,
-  activePlatform: "all",
   platformLabel: (type: string) => type || "其他",
 });
 
@@ -125,7 +112,6 @@ const emit = defineEmits<{
   (event: "toggle"): void;
   (event: "copy", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
   (event: "open", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
-  (event: "filter-platform", type: string): void;
 }>();
 
 const copiedKey = ref("");
@@ -221,11 +207,6 @@ function open(link: Link, resource: SearchResult) {
 .resource-meta { margin-top: 8px; }
 .meta-tags { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px 8px; padding: 6px 0; }
 .meta-tag { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 8px; border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 11px; line-height: 18px; }
-button.meta-tag { position: relative; min-height: 32px; cursor: pointer; font-family: inherit; font-weight: 600; color: var(--primary); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 20%, var(--bg-primary)); }
-button.meta-tag::after { content: ""; position: absolute; inset: -6px 0; }
-button.meta-tag:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
-button.meta-tag:hover, button.meta-tag.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--border-light)); color: var(--primary); background: var(--primary-soft); }
-.tag-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 .resource-links { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; max-width: 100%; min-width: 0; margin-top: 14px; }
 .link-row { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); overflow: hidden; }

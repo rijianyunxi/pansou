@@ -1,1 +1,1 @@
-Page({});
+require('../../utils/theme').themedPage({});

@@ -1,0 +1,33 @@
+.notice-position { position: fixed; z-index: 1200; left: 24rpx; right: 24rpx; display: flex; justify-content: center; pointer-events: none; }
+.notice { display: flex; align-items: center; gap: 16rpx; max-width: 620rpx; box-sizing: border-box; padding: 16rpx 26rpx 16rpx 16rpx; border: 2rpx solid rgba(255,255,255,.95); border-radius: 32rpx; background: rgba(248,251,255,.96); color: #26364d; box-shadow: 0 10rpx 32rpx rgba(25,40,65,.12), inset 0 2rpx 0 #fff; animation: arrive .18s ease-out; }
+.message { min-width: 0; font-size: 26rpx; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.status-badge { display: flex; align-items: center; justify-content: center; width: 44rpx; height: 44rpx; flex-shrink: 0; border-radius: 50%; background: #e8effa; color: #2563eb; }
+.success .status-badge { background: #e7f4ef; color: #237458; }
+.error .status-badge { background: #fff0ed; color: #b42318; }
+.check-icon { width: 17rpx; height: 10rpx; border-left: 3rpx solid currentColor; border-bottom: 3rpx solid currentColor; transform: translateY(-2rpx) rotate(-45deg); }
+.info-icon { position: relative; width: 4rpx; height: 14rpx; border-radius: 3rpx; background: currentColor; }
+.info-icon::after { content: ''; position: absolute; left: 0; bottom: -7rpx; width: 4rpx; height: 4rpx; border-radius: 50%; background: currentColor; }
+.spinner { width: 22rpx; height: 22rpx; box-sizing: border-box; border: 3rpx solid #bfd1ef; border-top-color: #2563eb; border-radius: 50%; animation: turn .8s linear infinite; }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .theme-classic .notice { background: linear-gradient(135deg, rgba(255,255,255,.86), rgba(239,246,255,.72)); -webkit-backdrop-filter: blur(40rpx) saturate(150%); backdrop-filter: blur(40rpx) saturate(150%); }
+}
+.scrim { position: fixed; z-index: 1300; inset: 0; background: rgba(15,23,42,.42); display: flex; align-items: flex-start; justify-content: center; padding: 220rpx 40rpx 40rpx; }
+.dialog { width: 100%; max-width: 640rpx; box-sizing: border-box; padding: 36rpx; border: 2rpx solid #fff; border-radius: 32rpx; background: #f8fbff; box-shadow: 0 24rpx 80rpx rgba(15,23,42,.2); }
+.title { display: block; font-size: 34rpx; font-weight: 700; color: #17243b; }
+.content { display: block; margin-top: 20rpx; font-size: 28rpx; line-height: 1.75; color: #526077; max-height: 50vh; overflow-y: auto; white-space: pre-wrap; }
+.actions { display: flex; gap: 20rpx; margin-top: 32rpx; }
+button { flex: 1; min-width: 0; min-height: 88rpx; margin: 0; padding: 12rpx; display: flex; align-items: center; justify-content: center; font-size: 28rpx; line-height: 1.5; border-radius: 18rpx; background: #e9eef5; color: #26364d; }
+button::after { border: 0; }
+.confirm { background: #2563eb; color: #fff; }
+.pressed { opacity: .7; }
+.theme-geometric .notice, .theme-geometric .dialog { border: 4rpx solid #20201e; border-radius: 12rpx; background: #fffbed; color: #20201e; box-shadow: 6rpx 6rpx 0 #20201e; }
+.theme-geometric .notice { padding: 14rpx 24rpx 14rpx 14rpx; border-radius: 12rpx; background: #fffefa; box-shadow: 4rpx 4rpx 0 #20201e; }
+.theme-geometric .message { font-weight: 600; }
+.theme-geometric .status-badge { border: 2rpx solid #20201e; border-radius: 8rpx; background: #ffe48a; color: #20201e; }
+.theme-geometric .loading .status-badge { background: #e1e4fc; }
+.theme-geometric .error .status-badge { background: #ffcbab; }
+.theme-geometric button { border: 4rpx solid #20201e; border-radius: 8rpx; box-shadow: 4rpx 4rpx 0 #20201e; }
+.theme-geometric .confirm { background: #ffe48a; color: #20201e; }
+@keyframes turn { to { transform: rotate(360deg); } }
+@keyframes arrive { from { opacity: 0; transform: translateY(-12rpx); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .spinner, .notice { animation: none; } }

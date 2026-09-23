@@ -1,4 +1,4 @@
-<view class="home theme-{{theme}}">
+<view class="home themed-page tab-page theme-{{theme}}">
   <view class="custom-nav" style="height: {{navBarHeight}}px; padding-top: {{statusBarHeight}}px;">
     <view class="custom-nav-inner" style="height: {{navContentHeight}}px; padding-right: {{capsuleReserve}}px;">
       <view class="brand-lockup">
@@ -49,14 +49,13 @@
         maxlength="100"
         bindinput="onInput"
         bindconfirm="onSearchTap" />
-      <text wx:if="{{keyword}}" class="clear-btn" catchtap="onClearInput">✕</text>
+      <button wx:if="{{keyword}}" class="clear-btn" catchtap="onClearInput" hover-class="clear-pressed" aria-label="清空搜索关键词"><view class="clear-surface"><view class="clear-symbol" aria-hidden="true"></view></view></button>
     </view>
     <view class="search-actions">
       <view class="action-left">
-        <view wx:if="{{searched && !loading}}" class="ghost-btn" hover-class="btn-hover" bindtap="onReset">重置</view>
-        <view wx:if="{{loading}}" class="ghost-btn pause" hover-class="btn-hover" bindtap="onPause">暂停</view>
-        <view wx:if="{{paused}}" class="ghost-btn continue" hover-class="btn-hover" bindtap="onContinue">继续</view>
-        <view wx:if="{{loading}}" class="spinner"></view>
+        <button wx:if="{{searched && !loading}}" class="reset-button" hover-class="reset-pressed" bindtap="onReset" aria-label="重置搜索，清空关键词和结果"><image class="reset-symbol" src="/assets/reset-{{theme}}.svg" mode="aspectFit" aria-hidden="true" /><text>重置</text></button>
+        <button wx:if="{{loading}}" class="search-control pause-control" hover-class="control-pressed" bindtap="onPause"><view class="pause-symbol" aria-hidden="true"></view><text>暂停</text></button>
+        <button wx:if="{{paused}}" class="search-control continue-control" hover-class="control-pressed" bindtap="onContinue"><view class="continue-symbol" aria-hidden="true"></view><text>继续</text></button>
       </view>
       <view class="search-btn {{loading ? 'disabled' : ''}}" hover-class="btn-hover" bindtap="onSearchTap"><text>搜索</text><text class="search-btn-arrow">→</text></view>
     </view>
@@ -106,12 +105,12 @@
           </view>
         </view>
       </scroll-view>
-      <picker wx:if="{{pills.length > 1}}" range="{{sortOptions}}" value="{{sortIndex}}" bindchange="onSortChange">
-        <view class="sort-picker">
-          <text class="sort-picker-icon">◷</text>
-          <text>{{sortOptions[sortIndex]}}</text>
+      <view wx:if="{{total > 0}}" class="sort-toolbar">
+        <view class="sort-heading"><text wx:if="{{loading || paused}}" class="sort-hint">搜索完成后可排序</text></view>
+        <view class="sort-options">
+          <button wx:for="{{sortOptions}}" wx:key="*this" class="sort-option {{sortIndex === index ? 'is-selected' : ''}}" data-index="{{index}}" bindtap="onSortTap" disabled="{{loading || paused}}" hover-class="sort-pressed" aria-label="{{item}}{{sortIndex === index ? '，已选中' : ''}}">{{item}}</button>
         </view>
-      </picker>
+      </view>
     </view>
 
     <view wx:if="{{error}}" class="error-banner">
@@ -122,10 +121,8 @@
     <view wx:if="{{results.length}}" class="resource-list card">
       <view wx:for="{{results}}" wx:key="id" class="resource-list-item">
         <resource-card
+          theme="{{theme}}"
           item="{{item}}"
-          active-platform="{{activePlatform}}"
-          bindfilterplatform="onCardFilter"
-          bindopen="onCardOpen"
           bindcopy="onCardCopy" />
       </view>
     </view>
@@ -142,4 +139,5 @@
   </block>
 
   <view wx:if="{{showBackTop}}" class="back-top" bindtap="onBackTop">↑</view>
+  <app-feedback top="{{navBarHeight}}" theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在搜索…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

@@ -1,4 +1,4 @@
-<view class="resource-item">
+<view class="resource-item theme-{{theme}}">
   <view class="resource-heading">
     <view class="heading-main">
       <text class="resource-title" user-select>{{item.name}}</text>
@@ -10,18 +10,7 @@
     <text wx:if="{{item.dateText}}" class="resource-date">{{item.dateText}}</text>
   </view>
 
-  <view wx:if="{{item.cloudTypes.length || item.tags.length}}" class="meta-tags">
-    <view
-      wx:for="{{item.cloudTypes}}"
-      wx:for-item="ct"
-      wx:key="type"
-      class="meta-tag platform {{activePlatform === ct.type ? 'active' : ''}}"
-      hover-class="tag-hover"
-      data-type="{{ct.type}}"
-      bindtap="onTagTap">
-      <view class="tag-dot"></view>
-      <text>{{ct.label}}</text>
-    </view>
+  <view wx:if="{{item.tags.length}}" class="meta-tags">
     <view wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this" class="meta-tag plain">
       <text>{{tag}}</text>
     </view>
@@ -35,8 +24,7 @@
         <text wx:if="{{link.password}}" class="password-badge">提取码 {{link.password}}</text>
       </view>
       <view class="link-actions">
-        <view class="link-btn" hover-class="btn-hover" data-url="{{link.url}}" bindtap="onOpen">打开链接</view>
-        <view class="link-btn" hover-class="btn-hover" data-url="{{link.url}}" bindtap="onCopy">{{copiedKey === link.key ? '已复制' : '复制'}}</view>
+        <view class="link-btn" hover-class="btn-hover" data-url="{{link.url}}" data-key="{{link.key}}" bindtap="onCopy">{{copiedKey === link.key ? '已复制' : '复制链接'}}</view>
       </view>
     </view>
   </view>

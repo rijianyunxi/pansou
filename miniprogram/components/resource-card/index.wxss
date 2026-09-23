@@ -1,4 +1,9 @@
 /* Ported from components/ResultGroup.vue mobile layout (≤560px). */
+.theme-geometric {
+  --bg-primary: #fffefa; --bg-secondary: #fffbed; --primary: #3155e7;
+  --primary-soft: #e1e4fc; --text-primary: #20201e; --text-secondary: #56564f;
+  --text-tertiary: #69695f; --border-light: #20201e; --radius-md: 10rpx;
+}
 .resource-item {
   padding: 30rpx 26rpx;
   background: var(--bg-primary);
@@ -77,46 +82,26 @@
   line-height: 36rpx;
 }
 
-.meta-tag.platform {
-  border-color: var(--primary-border);
-  background: var(--primary-soft);
-  color: var(--primary);
-  font-weight: 600;
-}
-
-.meta-tag.platform.active {
-  border-color: rgba(37, 99, 235, 0.45);
-}
-
-.tag-hover { opacity: 0.72; }
-
-.tag-dot {
-  width: 12rpx;
-  height: 12rpx;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 .resource-links {
   display: grid;
   gap: 16rpx;
   margin-top: 24rpx;
 }
 
-/* Mobile two-row layout: icon + provider on top, two equal action buttons below. */
+/* Keep provider, extraction code, and copy action on one compact row. */
 .link-row {
-  display: grid;
-  grid-template-columns: 60rpx minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 16rpx;
-  padding: 20rpx 22rpx;
+  min-width: 0;
+  padding: 16rpx 18rpx;
   border: 1rpx solid var(--border-light);
   border-radius: 24rpx;
   background: var(--bg-secondary);
 }
 
 .link-icon {
-  grid-column: 1;
+  flex: 0 0 60rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -130,39 +115,54 @@
 }
 
 .link-main {
-  grid-column: 2;
+  flex: 1 1 auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8rpx 16rpx;
   min-height: 60rpx;
   min-width: 0;
+  overflow: hidden;
 }
 
 .link-provider {
+  min-width: 0;
+  max-width: 54%;
+  overflow: hidden;
   color: var(--text-primary);
   font-size: 26rpx;
   font-weight: 700;
-  word-break: break-all;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .password-badge {
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
   color: var(--text-tertiary);
   font-size: 22rpx;
-  word-break: break-all;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .link-actions {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14rpx;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .link-btn {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: 0 1 auto;
+  min-width: 148rpx;
+  max-width: 100%;
+  padding: 0 22rpx;
+  box-sizing: border-box;
   min-height: 64rpx;
   border: 1rpx solid var(--border-light);
   border-radius: 16rpx;

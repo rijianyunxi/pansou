@@ -1,4 +1,4 @@
-<view class="channels">
+<view class="channels themed-page theme-{{theme}}">
   <block wx:if="{{needLogin}}">
     <view class="empty-card card">
       <view class="empty-icon">🔐</view>
@@ -10,7 +10,8 @@
 
   <block wx:else>
     <view class="add-card card">
-      <view class="add-hint">输入公开频道用户名或链接，例如 durov 或 t.me/s/durov</view>
+      <view class="add-hint">输入公开频道名称，例如 gotopan</view>
+      <!-- <view class="add-hint">输入公开频道用户名或链接，例如 durov 或 t.me/s/durov</view> -->
       <view class="add-row">
         <input
           class="add-input"
@@ -44,4 +45,5 @@
 
     <view class="footnote">搜索前在首页选择「自定义频道」即可仅在这些频道内检索</view>
   </block>
+  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

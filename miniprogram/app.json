@@ -14,6 +14,7 @@
     "backgroundTextStyle": "dark"
   },
   "tabBar": {
+    "custom": true,
     "color": "#9ca3af",
     "selectedColor": "#2563eb",
     "backgroundColor": "#ffffff",
@@ -33,6 +34,7 @@
       }
     ]
   },
+  "usingComponents": { "app-feedback": "/components/app-feedback/index" },
   "style": "v2",
   "lazyCodeLoading": "requiredComponents",
   "sitemapLocation": "sitemap.json"

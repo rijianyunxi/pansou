@@ -1,3 +1,4 @@
+const feedback = require('../../utils/feedback');
 const api = require('../../utils/api');
 const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('../../utils/config');
 const { searchStream } = require('../../utils/searchStream');
@@ -48,7 +49,7 @@ function initialState() {
     navContentHeight: 44,
     navBarHeight: 44,
     capsuleReserve: 0,
-    theme: 'classic',
+    theme: 'geometric',
     keyword: '',
     scope: 'site',
     channelsCount: 0,
@@ -61,7 +62,6 @@ function initialState() {
     elapsedText: '0ms',
     total: 0,
     pills: [],
-    activePlatform: 'all',
     sortOptions: SORT_OPTIONS,
     sortIndex: 0,
     results: [],
@@ -81,7 +81,6 @@ function toVM(result) {
     dateText: result.datetime || '',
     description,
     hasLongDesc: description.length > DESC_TOGGLE_LENGTH,
-    cloudTypes: (result.cloud_types || []).map((type) => ({ type, label: platformLabel(type) })),
     tags: result.tags || [],
     links: (result.links || []).map((link) => ({
       key: `${link.type}|${link.url}|${link.password || ''}`,
@@ -104,7 +103,7 @@ function platformCountsOf(results) {
   return counts;
 }
 
-Page({
+require('../../utils/theme').themedPage({
   data: initialState(),
 
   // Page-private state kept out of setData during streaming.
@@ -120,11 +119,7 @@ Page({
   _flushTimer: null,
 
   onLoad(options) {
-    let theme = 'classic';
-    try {
-      theme = wx.getStorageSync('panhub.theme') === 'geometric' ? 'geometric' : 'classic';
-    } catch (error) { /* use the classic theme when storage is unavailable */ }
-    this.setData(Object.assign(getNavigationMetrics(), { theme }));
+    this.setData(getNavigationMetrics());
     this.loadSessionFlags();
     if (options && options.q) {
       const keyword = decodeURIComponent(options.q);
@@ -138,12 +133,6 @@ Page({
     this.setData(getNavigationMetrics());
     // Returning from the channels page may have changed the channel list.
     this.refreshChannelsCount();
-  },
-
-  onThemeToggle() {
-    const theme = this.data.theme === 'geometric' ? 'classic' : 'geometric';
-    try { wx.setStorageSync('panhub.theme', theme); } catch (error) { /* visual toggle still works for this session */ }
-    this.setData({ theme });
   },
 
   onUnload() {
@@ -219,7 +208,7 @@ Page({
     try {
       const session = await api.fetchSession();
       if (!session.authenticated && !session.anonymousCustomChannels) {
-        wx.showModal({
+        feedback.showModal({
           title: '需要登录',
           content: '自定义频道需要登录后使用，是否前往登录？',
           confirmText: '去登录',
@@ -233,7 +222,7 @@ Page({
       this._userChannels = channels;
       this.setData({ scope: 'channels', channelsCount: channels.length });
     } catch (error) {
-      wx.showToast({ title: error.message, icon: 'none' });
+      feedback.showToast({ title: error.message, icon: 'none' });
     }
   },
 
@@ -245,11 +234,11 @@ Page({
     if (this.data.loading) return;
     const keyword = (this.data.keyword || '').trim();
     if (!keyword) {
-      wx.showToast({ title: '请输入搜索关键词', icon: 'none' });
+      feedback.showToast({ title: '请输入搜索关键词', icon: 'none' });
       return;
     }
     if (this.data.scope === 'channels' && !this._userChannels.length) {
-      wx.showToast({ title: '请先添加至少一个公开频道，再搜索自定义频道', icon: 'none', duration: 2500 });
+      feedback.showToast({ title: '请先添加至少一个公开频道，再搜索自定义频道', icon: 'none', duration: 2500 });
       return;
     }
     this.startSearch(keyword);
@@ -258,7 +247,7 @@ Page({
   startSearch(keyword) {
     const userChannels = this.data.scope === 'channels' ? this._userChannels.slice() : undefined;
     if (this.data.scope === 'channels' && !userChannels.length) {
-      wx.showToast({ title: '请先添加至少一个公开频道，再搜索自定义频道', icon: 'none', duration: 2500 });
+      feedback.showToast({ title: '请先添加至少一个公开频道，再搜索自定义频道', icon: 'none', duration: 2500 });
       return;
     }
     this.cancelActiveSearch();
@@ -279,7 +268,6 @@ Page({
       total: 0,
       results: [],
       pills: [],
-      activePlatform: 'all',
       sortIndex: 0,
       visibleCount: PAGE_SIZE,
       hasMore: false,
@@ -422,20 +410,15 @@ Page({
 
   onPillTap(event) {
     this._filterPlatform = event.currentTarget.dataset.type;
-    this.setData({ activePlatform: this._filterPlatform });
     this.flush();
   },
 
-  onCardFilter(event) {
-    const type = event.detail.type;
-    this._filterPlatform = this._filterPlatform === type ? 'all' : type;
-    this.setData({ activePlatform: this._filterPlatform });
+  onSortTap(event) {
+    if (this.data.loading || this.data.paused) return;
+    const index = Number(event.currentTarget.dataset.index);
+    if (!Number.isInteger(index) || !SORT_TYPES[index] || index === this.data.sortIndex) return;
+    this.setData({ sortIndex: index });
     this.flush();
-  },
-
-  onSortChange(event) {
-    this.setData({ sortIndex: Number(event.detail.value) });
-    if (!this.data.loading && !this.data.paused) this.flush();
   },
 
   onLoadMore() {
@@ -450,7 +433,6 @@ Page({
     if (resource) api.captureResource(resource);
   },
 
-  onCardOpen(event) { this.captureByCardEvent(event); },
   onCardCopy(event) { this.captureByCardEvent(event); },
 
   onBackTop() {

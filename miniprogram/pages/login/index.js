@@ -10,7 +10,7 @@ function readScene(value) {
   return SCENE_PATTERN.test(text) ? text : '';
 }
 
-Page({
+require('../../utils/theme').themedPage({
   data: { busy: false, user: null, error: '', scene: '', confirmed: false },
 
   onLoad(options) {

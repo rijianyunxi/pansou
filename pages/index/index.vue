@@ -54,7 +54,6 @@
       :show-back-to-top="showBackToTop"
       @update:filter-platform="filterPlatform = $event"
       @update:sort-type="sortType = $event"
-      @filter-platform="handlePlatformFilter"
       @copy="captureResource"
       @open="captureResource"
       @apply-time-sort="applyTimeSort"
@@ -278,10 +277,6 @@ const platformCounts = computed<Record<string, number>>(() => {
   }
   return counts;
 });
-
-function handlePlatformFilter(type: string) {
-  filterPlatform.value = filterPlatform.value === type ? "all" : type;
-}
 
 function applyTimeSort() {
   sortType.value = "date-desc";

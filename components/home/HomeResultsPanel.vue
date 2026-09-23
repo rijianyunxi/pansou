@@ -59,9 +59,7 @@
           :expanded="true"
           :initial-visible="0"
           :show-header="false"
-          :active-platform="filterPlatform"
           :platform-label="platformLabel"
-          @filter-platform="emit('filter-platform', $event)"
           @copy="emit('copy', $event)"
           @open="emit('open', $event)" />
       </div>
@@ -135,7 +133,6 @@ defineProps<Props>();
 const emit = defineEmits<{
   (event: "update:filterPlatform", value: string): void;
   (event: "update:sortType", value: SortType): void;
-  (event: "filter-platform", value: string): void;
   (event: "copy", value: { link: Link; resource: SearchResult; resultId: string }): void;
   (event: "open", value: { link: Link; resource: SearchResult; resultId: string }): void;
   (event: "apply-time-sort"): void;

@@ -1,4 +1,4 @@
-<view class="page">
+<view class="page themed-page theme-{{theme}}">
   <view class="hero">
     <view class="logo">盘搜</view>
     <view class="title">盘搜账号</view>
@@ -10,7 +10,7 @@
     </block>
     <block wx:else>
       <view class="hint">确认在网页端登录盘搜账号。</view>
-      <button class="primary-btn" type="primary" bindtap="onConfirmQr" loading="{{busy}}" disabled="{{busy}}">确认登录</button>
+      <button class="primary-btn" type="primary" bindtap="onConfirmQr" disabled="{{busy}}">确认登录</button>
       <view class="hint">首次确认会自动创建账号，无需注册，也不需要设置密码。</view>
     </block>
   </block>
@@ -25,9 +25,10 @@
 
   <block wx:else>
     <view class="hint">使用微信身份登录盘搜，管理自己的频道与搜索记录。</view>
-    <button class="primary-btn" type="primary" bindtap="onLogin" loading="{{busy}}" disabled="{{busy}}">微信登录</button>
+    <button class="primary-btn" type="primary" bindtap="onLogin" disabled="{{busy}}">微信登录</button>
     <view class="hint">首次微信登录会自动创建账号，无需注册，也不需要设置密码。</view>
   </block>
 
   <view wx:if="{{error}}" class="error" role="alert">{{error}}</view>
+  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>
