@@ -3,12 +3,17 @@ import type { H3Event } from "h3";
 import { createError, getCookie, getHeader, getRequestURL, setHeader } from "h3";
 import { getSqliteDatabase } from "../core/storage/sqlite";
 import { getUserPolicy } from "../core/services/policyService";
+import { MemoryRateLimiter } from "../core/security/rateLimit";
 import { MAX_USER_CHANNELS } from "../../utils/customChannels";
+import { getClientIp } from "./clientIp";
 
 export const USER_SESSION_COOKIE = "panhub_session";
 const COOKIE_PATH = "/";
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{4,32}$/;
 const MAX_NICKNAME_LENGTH = 32;
+const ANONYMOUS_SESSION_LIMIT = 60;
+const ANONYMOUS_SESSION_WINDOW_MS = 60_000;
+const anonymousSessionLimiter = new MemoryRateLimiter();
 
 type SessionRow = {
   id: number; token_hash: string; user_id: number | null; kind: "anonymous" | "user";
@@ -89,6 +94,14 @@ function userForSession(session: SessionRow): UserRow | null {
 }
 
 export function createAnonymousSession(event: H3Event): UserSessionContext {
+  const decision = anonymousSessionLimiter.check(`anonymous-session:${getClientIp(event)}`, {
+    limit: ANONYMOUS_SESSION_LIMIT,
+    windowMs: ANONYMOUS_SESSION_WINDOW_MS,
+  });
+  if (!decision.allowed) {
+    setHeader(event, "Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1000)));
+    throw createError({ statusCode: 429, statusMessage: "访问过于频繁，请稍后重试" });
+  }
   const db = getSqliteDatabase(); const token = createToken(); const timestamp = now();
   const result = db.run("INSERT INTO sessions(token_hash,user_id,kind,created_at,expires_at,last_seen_at,custom_channels_json) VALUES(?,?,?,?,?,?,?)", tokenHash(token), null, "anonymous", timestamp, sessionExpiry(), timestamp, "[]");
   const session = db.getRow<SessionRow>("SELECT * FROM sessions WHERE id = ?", result.lastInsertRowid as number)!;
@@ -141,7 +154,7 @@ export function rotateSession(context: UserSessionContext, event: H3Event, user:
   // A user session never needs its own channel copy. Clearing this field when
   // logging out guarantees that the next anonymous session starts empty.
   db.run("UPDATE sessions SET token_hash = ?, user_id = ?, kind = ?, expires_at = ?, last_seen_at = ?, custom_channels_json = ? WHERE id = ?", tokenHash(token), user?.id ?? null, kind, expiresAt, timestamp, "[]", context.session.id);
-  setSessionCookie(event, token, (expiresAt - timestamp) / 1000);
+  setSessionCookie(event, token, Math.max(0, Math.floor((expiresAt - timestamp) / 1000)));
   const session = db.getRow<SessionRow>("SELECT * FROM sessions WHERE id = ?", context.session.id)!;
   return { session, user, token };
 }

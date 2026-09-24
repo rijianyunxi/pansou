@@ -5,7 +5,8 @@ import { normalizeChannelNames } from "../../../../utils/customChannels";
 import { validateChannelSource, type ChannelValidationResult } from "../../../core/services/channelValidation";
 import { MemoryRateLimiter } from "../../../core/security/rateLimit";
 import { setPrivateNoStore } from "../../../utils/apiResponse";
-import { getStoredChannels, getStoredSessionChannels, getUserSession } from "../../../utils/userAuth";
+import { getStoredChannels, getStoredSessionChannels, getUserSession, requireSameOriginUserRequest } from "../../../utils/userAuth";
+import { getClientIp } from "../../../utils/clientIp";
 
 const VALIDATIONS_PER_MINUTE = 12;
 /** Each validation performs a real outbound request, so concurrency is capped. */
@@ -22,6 +23,7 @@ let active = 0;
  */
 export default defineEventHandler(async (event): Promise<ChannelValidationResult> => {
   setPrivateNoStore(event);
+  requireSameOriginUserRequest(event);
   const body = await readBody(event);
   const channel = parseCustomChannelInput(typeof body?.channel === "string" ? body.channel : "");
   if (!channel) {
@@ -48,9 +50,13 @@ export default defineEventHandler(async (event): Promise<ChannelValidationResult
     limit: VALIDATIONS_PER_MINUTE,
     windowMs: 60 * 1000,
   });
-  setHeader(event, "X-RateLimit-Remaining", String(decision.remaining));
-  if (!decision.allowed) {
-    setHeader(event, "Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1000)));
+  const ipDecision = limiter.check(`channel-validation:ip:${getClientIp(event)}`, {
+    limit: VALIDATIONS_PER_MINUTE * 4,
+    windowMs: 60 * 1000,
+  });
+  setHeader(event, "X-RateLimit-Remaining", String(Math.min(decision.remaining, ipDecision.remaining)));
+  if (!decision.allowed || !ipDecision.allowed) {
+    setHeader(event, "Retry-After", Math.max(1, Math.ceil(Math.max(decision.retryAfterMs, ipDecision.retryAfterMs) / 1000)));
     throw createError({ statusCode: 429, statusMessage: "频道验证请求过于频繁，请稍后再试。" });
   }
   if (active >= MAX_CONCURRENT_VALIDATIONS) {

@@ -225,8 +225,12 @@ export function saveUserPolicy(input: Partial<UserPolicy>): UserPolicy {
 }
 
 const SEARCH_LOG_RETENTION_DAYS = 90;
+const CLEANUP_INTERVAL_MS = 60_000;
+let lastCleanupAt = 0;
 
 export function cleanupUserData(now = Date.now()): void {
+  if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+  lastCleanupAt = now;
   const db = getSqliteDatabase();
   db.run("DELETE FROM sessions WHERE expires_at <= ?", now);
   db.run("DELETE FROM search_logs WHERE created_at < ?", now - SEARCH_LOG_RETENTION_DAYS * 86400000);

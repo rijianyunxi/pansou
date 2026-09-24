@@ -86,8 +86,19 @@ export function createResourceTransferJob(input: { resourceId: string; linkIndex
   const now = Date.now();
   const id = randomUUID();
   const db = getSqliteDatabase();
-  db.run("INSERT INTO resource_transfer_jobs(id,resource_id,link_index,provider,source_url,source_password,target_folder,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'queued',?,?)", id, resource.id, input.linkIndex, input.provider, link.url, link.password, targetFolder, now, now);
-  return getResourceTransferJob(id)!;
+  return db.transaction(() => {
+    const existing = db.getRow<TransferJobRow>(
+      "SELECT * FROM resource_transfer_jobs WHERE resource_id=? AND link_index=? AND provider=? AND source_url=? AND target_folder=? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",
+      resource.id,
+      input.linkIndex,
+      input.provider,
+      link.url,
+      targetFolder,
+    );
+    if (existing) return rowToJob(existing);
+    db.run("INSERT INTO resource_transfer_jobs(id,resource_id,link_index,provider,source_url,source_password,target_folder,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'queued',?,?)", id, resource.id, input.linkIndex, input.provider, link.url, link.password, targetFolder, now, now);
+    return getResourceTransferJob(id)!;
+  })();
 }
 
 export function getResourceTransferJob(id: string): ResourceTransferJob | null {
@@ -158,6 +169,34 @@ async function listQuarkFolder(folderId: string): Promise<QuarkJson[]> {
   return Array.isArray(listed.data?.list) ? listed.data.list : [];
 }
 
+function cloudItemName(item: QuarkJson): string {
+  return String(item.file_name ?? item.server_filename ?? item.name ?? "");
+}
+
+function cloudItemMatches(source: QuarkJson, target: QuarkJson): boolean {
+  if (cloudItemName(source) !== cloudItemName(target)) return false;
+  const sourceType = source.file_type ?? source.isdir;
+  const targetType = target.file_type ?? target.isdir;
+  if (sourceType !== undefined && targetType !== undefined && String(sourceType) !== String(targetType)) return false;
+  const sourceMd5 = source.md5 ?? source.md5str;
+  const targetMd5 = target.md5 ?? target.md5str;
+  if (sourceMd5 && targetMd5 && String(sourceMd5) !== String(targetMd5)) return false;
+  const sourceSize = Number(source.size ?? source.file_size);
+  const targetSize = Number(target.size ?? target.file_size);
+  if (Number.isFinite(sourceSize) && Number.isFinite(targetSize) && sourceSize !== targetSize) return false;
+  return true;
+}
+
+function containsAllCloudItems(sourceItems: QuarkJson[], targetItems: QuarkJson[]): boolean {
+  const used = new Set<number>();
+  return sourceItems.every((source) => {
+    const index = targetItems.findIndex((target, targetIndex) => !used.has(targetIndex) && cloudItemMatches(source, target));
+    if (index < 0) return false;
+    used.add(index);
+    return true;
+  });
+}
+
 function parseQuarkShare(url: string, password: string | null): { shareId: string; password: string } {
   const match = url.match(/pan\.quark\.cn\/s\/([A-Za-z0-9_-]+)/iu);
   if (!match) throw new Error("夸克分享链接格式不正确");
@@ -183,13 +222,20 @@ async function runQuarkTransfer(input: { url: string; password: string | null; n
   const { shareId, password } = parseQuarkShare(input.url, input.password);
   const targetFolderId = await ensureQuarkFolder(input.targetFolder);
   const existingItems = await listQuarkFolder(targetFolderId);
-  if (!existingItems.length) {
-    const tokenResponse = await quarkRequest(QUARK_SHARE_BASE, "share/sharepage/token", { method: "POST", body: { pwd_id: shareId, passcode: password, support_visit_limit_private_share: true } });
-    const token = tokenResponse.data?.stoken;
-    if (!token) throw new Error("夸克分享访问令牌获取失败，请检查链接或提取码");
+  const tokenResponse = await quarkRequest(QUARK_SHARE_BASE, "share/sharepage/token", { method: "POST", body: { pwd_id: shareId, passcode: password, support_visit_limit_private_share: true } });
+  const token = tokenResponse.data?.stoken;
+  if (!token) throw new Error("夸克分享访问令牌获取失败，请检查链接或提取码");
+  const sourceDetail = await quarkRequest(QUARK_SHARE_BASE, "share/sharepage/detail", {
+    params: { pwd_id: shareId, stoken: token, pdir_fid: "0", _page: 1, _size: 1000, _fetch_total: 1, _sort: "file_type:asc,file_name:asc" },
+  });
+  const sourceItems = Array.isArray(sourceDetail.data?.list) ? sourceDetail.data.list : [];
+  if (!sourceItems.length) throw new Error("夸克分享中没有可转存的文件");
+  if (!containsAllCloudItems(sourceItems, existingItems)) {
     const saved = await quarkRequest(QUARK_SHARE_BASE, "share/sharepage/save", { method: "POST", body: { fid_list: [], fid_token_list: [], to_pdir_fid: targetFolderId, pwd_id: shareId, stoken: token, pdir_fid: "0", pdir_save_all: true, exclude_fids: [], scene: "link" } });
     const saveTaskId = saved.data?.task_id;
     if (saveTaskId) await waitQuarkTask(String(saveTaskId), Math.max(30_000, Number(process.env.PANHUB_TRANSFER_TIMEOUT_MS || 180_000)));
+    const refreshedItems = await listQuarkFolder(targetFolderId);
+    if (!containsAllCloudItems(sourceItems, refreshedItems)) throw new Error("夸克转存任务完成，但目标文件夹内容尚未完整刷新");
   }
   const shared = await quarkRequest(QUARK_PC_BASE, "share", { method: "POST", body: { fid_list: [targetFolderId], title: input.name, url_type: 1, expired_type: 1 } });
   const shareTaskId = shared.data?.task_id;
@@ -372,12 +418,32 @@ async function ensureBaiduFolder(client: BaiduWebClient, folder: string, bdstoke
   return folderId;
 }
 
-async function waitForBaiduDirectoryItems(client: BaiduWebClient, path: string, minimumCount: number): Promise<BaiduJson[]> {
+function baiduItemMatches(source: BaiduJson, target: BaiduJson): boolean {
+  const sourceName = String(source.server_filename || source.filename || "");
+  const targetName = String(target.server_filename || target.filename || "");
+  if (!sourceName || sourceName !== targetName) return false;
+  if (source.isdir !== undefined && target.isdir !== undefined && Number(source.isdir) !== Number(target.isdir)) return false;
+  if (source.md5 && target.md5 && String(source.md5) !== String(target.md5)) return false;
+  if (source.size !== undefined && target.size !== undefined && Number(source.size) !== Number(target.size)) return false;
+  return true;
+}
+
+function containsAllBaiduItems(sourceItems: BaiduJson[], targetItems: BaiduJson[]): boolean {
+  const used = new Set<number>();
+  return sourceItems.every((source) => {
+    const index = targetItems.findIndex((target, targetIndex) => !used.has(targetIndex) && baiduItemMatches(source, target));
+    if (index < 0) return false;
+    used.add(index);
+    return true;
+  });
+}
+
+async function waitForBaiduDirectoryItems(client: BaiduWebClient, path: string, sourceItems: BaiduJson[]): Promise<BaiduJson[]> {
   const deadline = Date.now() + baiduTimeoutMs();
   let items: BaiduJson[] = [];
   while (Date.now() < deadline) {
     items = await listBaiduDirectory(client, path);
-    if (items.length >= minimumCount) return items;
+    if (containsAllBaiduItems(sourceItems, items)) return items;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   return items;
@@ -417,15 +483,15 @@ async function runBaiduCookieTransfer(input: { url: string; password: string | n
   const bdstoken = await loadBaiduToken(client);
   const targetFolderId = await ensureBaiduFolder(client, input.targetFolder, bdstoken, cookie);
   let targetItems = await listBaiduDirectory(client, input.targetFolder);
-  if (!targetItems.length) {
+  if (!containsAllBaiduItems(sourceItems, targetItems)) {
     await client.json("/share/transfer", {
       method: "POST",
       params: { shareid: shareId, from: uk, sekey, bdstoken: "", channel: "chunlei", web: 1, app_id: 250528, clienttype: 0 },
       body: { path: input.targetFolder, async: "2", fsidlist: JSON.stringify(fsids), type: "0" },
       referer: `${BAIDU_BASE}/s/1${surl}`,
     });
-    targetItems = await waitForBaiduDirectoryItems(client, input.targetFolder, sourceItems.length);
-    if (targetItems.length < sourceItems.length) throw new Error("百度转存任务超时，目标文件夹内容尚未完整刷新");
+    targetItems = await waitForBaiduDirectoryItems(client, input.targetFolder, sourceItems);
+    if (!containsAllBaiduItems(sourceItems, targetItems)) throw new Error("百度转存任务超时，目标文件夹内容尚未完整刷新");
   }
   if (!targetItems.length) throw new Error("百度转存已提交，但目标文件夹中没有可分享的文件");
   const newPassword = randomBaiduPassword();
