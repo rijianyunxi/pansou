@@ -51,15 +51,9 @@
           <section class="feature-content">
             <p v-if="notice" class="feature-notice" :class="{ error: noticeError }" role="status">{{ notice }}</p>
             <section class="query-panel" aria-label="资源查询与操作">
-              <div class="resource-tabs" role="tablist" aria-label="资源审核状态">
-                <button v-for="view in approvalViews" :key="view.key" class="resource-tab" :class="{ active: approvalStatus === view.key }"
-                  type="button" role="tab" :aria-selected="approvalStatus === view.key" @click="switchApprovalView(view.key)">
-                  <span>{{ view.label }}</span><span class="resource-tab-count" :class="{ pending: view.key === 'pending' }">{{ approvalCounts[view.key] }}</span>
-                </button>
-              </div>
               <div class="resource-view-hint">
-                <ConsoleIcon :name="approvalStatus === 'pending' ? 'clock' : approvalStatus === 'rejected' ? 'close' : 'database'" :size="15" />
-                <span>{{ viewDescription }}</span>
+                <ConsoleIcon name="database" :size="15" />
+                <span>资源库由管理员直接维护，新增资源后立即进入列表和前台搜索。</span>
               </div>
               <form class="query-toolbar" @submit.prevent="loadResources"><label class="query-input">
                   <ConsoleIcon name="search" :size="16" /><input v-model.trim="query" type="search"
@@ -77,13 +71,13 @@
                     class="button danger-button" type="button" :disabled="!selected.length || busy"
                     @click="deleteSelected"><ConsoleIcon name="trash" :size="14" />批量删除<span v-if="selected.length" class="action-count">{{ selected.length
                     }}</span></button><button class="button secondary" type="button" :disabled="!canEnable || busy"
-                    v-if="approvalStatus === 'approved'" @click="setEnabled(selected, true)">批量启用</button><button
-                    v-if="approvalStatus === 'approved'" class="button danger-button" type="button" :disabled="!canDisable || busy" @click="setEnabled(selected, false)"><ConsoleIcon name="stop" :size="14" />批量停用</button><button
+                    @click="setEnabled(selected, true)">批量启用</button><button
+                    class="button danger-button" type="button" :disabled="!canDisable || busy" @click="setEnabled(selected, false)"><ConsoleIcon name="stop" :size="14" />批量停用</button><button
                     class="button primary" type="button" @click="openCreate">
                     <ConsoleIcon name="plus" :size="14" />新增资源
-                  </button><button v-if="approvalStatus === 'pending'" class="button primary" type="button" :disabled="!selected.length || busy" @click="reviewSelected('approved')">批量通过</button><button v-if="approvalStatus === 'pending'" class="button danger-button" type="button" :disabled="!selected.length || busy" @click="reviewSelected('rejected')">批量拒绝</button></div>
+                  </button></div>
               </form>
-              <div class="query-meta">已选 {{ selected.length }} 项 · {{ viewLabel }} {{ total }} 条</div>
+              <div class="query-meta">已选 {{ selected.length }} 项 · 共 {{ total }} 条</div>
             </section>
             <section class="sources-panel directory-panel table-panel" aria-label="资源列表">
               <div class="table-scroll">
@@ -99,7 +93,6 @@
                       <th>链接</th>
                       <th>资源时间</th>
                       <th>状态</th>
-                      <th>审核状态</th>
                       <th>检测状态</th>
                       <th>操作</th>
                     </tr>
@@ -129,24 +122,21 @@
                       <td>{{ item.datetime || "—" }}</td>
                       <td><span class="resource-status" :class="{ off: item.enabled === false }">{{ item.enabled === false ?
                         "已停用" : "已启用" }}</span></td>
-                      <td><span class="resource-status" :class="approvalClass(item.approvalStatus)">{{ approvalLabel(item.approvalStatus) }}</span></td>
                       <td><span class="resource-check-status" :class="`check-${item.checkStatus || 'unchecked'}`"
                           :title="item.checkMessage || ''">{{ checkStatusLabel(item.checkStatus) }}</span><small
                           v-if="item.checkMessage" class="check-message">{{ item.checkMessage }}</small></td>
                       <td class="action-column">
                         <div class="row-actions"><button class="row-action-button" type="button"
                             :aria-label="`编辑 ${item.name}`" title="编辑" @click="openEdit(item)">
-                            编辑</button><button v-if="item.approvalStatus === 'pending'" class="row-action-button" type="button" :disabled="busy" aria-label="通过审核" title="通过审核" @click="review([item.id], 'approved')">通过</button><button v-if="item.approvalStatus === 'pending'" class="row-action-button danger-action" type="button" :disabled="busy" aria-label="拒绝审核" title="拒绝审核" @click="review([item.id], 'rejected')">拒绝</button><button class="row-action-button" type="button" :disabled="busy"
+                            编辑</button><button class="row-action-button" type="button" :disabled="busy"
                             :aria-label="`检测 ${item.name}`" title="检测此资源的链接状态" @click="checkOne(item)">
                             检测
-                          </button><button v-if="approvalStatus === 'approved'"
+                          </button><button
                             class="row-action-button" :class="{ 'danger-action': item.enabled !== false }" type="button" :disabled="busy"
                             :title="item.enabled === false ? '重新出现在搜索结果里' : '从搜索结果里隐藏，数据保留'"
                             :aria-label="`${item.enabled === false ? '启用' : '停用'} ${item.name}`"
                             @click="setEnabled([item.id], item.enabled === false)">
                             {{ item.enabled === false ? '启用' : '停用' }}
-                          </button><button v-if="canTransfer(item)" class="row-action-button transfer-action" type="button" :disabled="busy || transferBusy" :aria-label="`转存并替换 ${item.name}`" title="转存并替换原链接" @click="openTransfer(item)">
-                            转存替换
                           </button><button class="row-action-button danger-action" type="button"
                             :aria-label="`删除 ${item.name}`" title="删除" @click="remove(item)">
                             删除
@@ -154,13 +144,13 @@
                       </td>
                     </tr>
                     <tr v-if="!loading && !resources.length">
-                      <td colspan="11" class="empty-cell">{{ query || cloudType
+                      <td colspan="10" class="empty-cell">{{ query || cloudType
                         ? "没有匹配的资源。此处与前台搜索使用同一套分词规则（会忽略 1080p / 4K 等噪声词），关键词至少需要 2 个字符。"
                         : emptyLabel }}
                       </td>
                     </tr>
                     <tr v-if="loading">
-                      <td colspan="11" class="empty-cell">正在加载资源…</td>
+                      <td colspan="10" class="empty-cell">正在加载资源…</td>
                     </tr>
                   </tbody>
                 </table>
@@ -202,26 +192,6 @@
         </form>
       </section>
     </div>
-    <div v-if="transferOpen" class="admin-modal-backdrop" @click.self="closeTransfer">
-      <section class="admin-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
-        <div class="modal-header">
-          <div><span class="eyebrow">TRANSFER &amp; REPLACE</span><h2 id="transfer-title">转存并替换链接</h2></div>
-          <button class="modal-close" type="button" :disabled="transferBusy" @click="closeTransfer">×</button>
-        </div>
-        <form class="resource-form" @submit.prevent="submitTransfer">
-          <p class="transfer-resource-name">{{ transferResource?.name }}</p>
-          <label>原链接<select v-model.number="transferLinkIndex" :disabled="transferBusy">
-            <option v-for="(link, index) in transferLinks" :key="`${link.url}-${index}`" :value="link.index">{{ cloudLabel(link.type) }} · {{ link.url }}</option>
-          </select></label>
-          <label>目标网盘<input :value="transferProviderLabel" disabled /></label>
-          <label>目标文件夹<input v-model.trim="transferFolder" :disabled="transferBusy" placeholder="例如：/PanHub/资源名称" /></label>
-          <p class="transfer-hint">仅替换成功后更新资源链接，原链接会保留在转存历史中。</p>
-          <p v-if="transferError" class="form-error">{{ transferError }}</p>
-          <p v-if="transferJob" class="transfer-progress" :class="`transfer-${transferJob.status}`">{{ transferStatusLabel(transferJob.status, transferJob.errorMessage) }}</p>
-          <div class="modal-actions"><button class="button secondary" type="button" :disabled="transferBusy" @click="closeTransfer">取消</button><button class="button primary" type="submit" :disabled="transferBusy || !transferResource">{{ transferBusy ? "转存中…" : "开始转存并替换" }}</button></div>
-        </form>
-      </section>
-    </div>
   </div>
 </template>
 <script setup lang="ts">
@@ -232,72 +202,28 @@ import ConsoleIcon from "../sources/ConsoleIcon.vue";
 import type { CloudType, Link, SearchResult } from "../../server/core/types/models";
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
-type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean; approvalStatus?: "pending" | "approved" | "rejected"; checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown"; checkMessage?: string | null; checkedAt?: number | null };
-type TransferProvider = "quark" | "baidu";
-type TransferStatus = "queued" | "running" | "completed" | "failed";
-type TransferLink = Link & { index: number };
-type TransferJob = { id: string; resourceId: string; linkIndex: number; provider: TransferProvider; targetFolder: string; status: TransferStatus; replacementUrl: string | null; replacementPassword: string | null; errorMessage: string | null };
-type ApprovalStatus = NonNullable<AdminResource["approvalStatus"]>;
-type ApprovalCounts = Record<ApprovalStatus, number>;
-const approvalViews: Array<{ key: ApprovalStatus; label: string }> = [
-  { key: "approved", label: "资源库" },
-  { key: "pending", label: "待审核" },
-  { key: "rejected", label: "已拒绝" },
-];
-const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const approvalStatus = ref<ApprovalStatus>("approved"); const approvalCounts = ref<ApprovalCounts>({ approved: 0, pending: 0, rejected: 0 }); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref(""); const transferOpen = ref(false); const transferBusy = ref(false); const transferError = ref(""); const transferResource = ref<AdminResource | null>(null); const transferLinkIndex = ref(0); const transferFolder = ref(""); const transferJob = ref<TransferJob | null>(null); const cloudDeleteBusyKey = ref("");
+type AdminResource = SearchResult & { createdAt?: number; updatedAt?: number; enabled?: boolean; checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown"; checkMessage?: string | null; checkedAt?: number | null };
+const cloudTypes = ref<CloudType[]>([]); const resources = ref<AdminResource[]>([]); const query = ref(""); const cloudType = ref(""); const page = ref(1); const pageSize = ref(20); const total = ref(0); const selected = ref<string[]>([]); const loading = ref(false); const busy = ref(false); const notice = ref(""); const noticeError = ref(false); const checking = ref(true); const authenticated = ref(false); const locked = ref(true); const authError = ref(""); const drawerOpen = ref(false); const editing = ref(false); const formError = ref(""); const tagText = ref(""); const imageText = ref(""); const cloudDeleteBusyKey = ref("");
 const form = ref<{ id?: string; name: string; description: string; datetime: string; links: Array<{ type: CloudType; url: string; password: string }> }>({ name: "", description: "", datetime: "", links: [{ type: "baidu", url: "", password: "" }] });
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value))); const currentKeys = computed(() => resources.value.map((item) => item.id)); const allSelected = computed(() => currentKeys.value.length > 0 && currentKeys.value.every((id) => selected.value.includes(id))); const someSelected = computed(() => selected.value.some((id) => currentKeys.value.includes(id)) && !allSelected.value);
-const activeView = computed(() => approvalViews.find((view) => view.key === approvalStatus.value) || approvalViews[0]);
-const viewLabel = computed(() => activeView.value.label);
-const viewDescription = computed(() => approvalStatus.value === "pending" ? "新提交的资源会先进入这里；审核通过后才会进入资源库并参与前台搜索。" : approvalStatus.value === "rejected" ? "已拒绝的提交会保留在这里，方便复核或清理。" : "资源库只展示已通过审核的资源；停用只会隐藏搜索结果，不会删除数据。");
-const emptyLabel = computed(() => approvalStatus.value === "pending" ? "当前没有待审核资源。" : approvalStatus.value === "rejected" ? "当前没有已拒绝的资源。" : "还没有已入库资源，点击右上角新增资源。");
+const emptyLabel = "还没有资源，点击右上角新增资源。";
 // Selection is trimmed to the current page on every load, so the batch enable and
 // disable buttons can tell whether they would actually change anything.
 const selectedItems = computed(() => resources.value.filter((item) => selected.value.includes(item.id))); const canEnable = computed(() => selectedItems.value.some((item) => item.enabled === false)); const canDisable = computed(() => selectedItems.value.some((item) => item.enabled !== false));
-const transferLinks = computed<TransferLink[]>(() => (transferResource.value?.links || []).map((link, index) => ({ ...link, index })).filter((link) => link.type === "quark" || link.type === "baidu"));
-const selectedTransferLink = computed(() => transferLinks.value.find((link) => link.index === transferLinkIndex.value) || transferLinks.value[0] || null);
-const transferProviderLabel = computed(() => selectedTransferLink.value ? cloudLabel(selectedTransferLink.value.type) : "—");
 function cloudLabel(type: string) { return CLOUD_TYPE_SHORT_LABELS[type as CloudType] || type; }
 function checkStatusLabel(status?: AdminResource["checkStatus"]) { return status === "valid" ? "正常" : status === "invalid" ? "已失效" : status === "unknown" ? "待确认" : status === "checking" ? "检测中" : "未检测"; }
-function approvalLabel(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "待审核" : status === "rejected" ? "已拒绝" : "已通过"; }
-function approvalClass(status?: AdminResource["approvalStatus"]) { return status === "pending" ? "approval-pending" : status === "rejected" ? "approval-rejected" : "approval-approved"; }
-function canTransfer(item: AdminResource) { return item.links.some((link) => link.type === "quark" || link.type === "baidu"); }
-function transferStatusLabel(status: TransferStatus, error?: string | null) { return status === "queued" ? "任务已排队…" : status === "running" ? "正在检查资源并创建分享…" : status === "completed" ? "转存完成，原链接已替换。" : `转存失败：${error || "请稍后重试"}`; }
 function statusOf(error: any) { return error?.statusCode || error?.response?.status || error?.status; } function apiError(error: any) { const status = statusOf(error); return status === 401 ? "请先登录管理员账号。" : status === 403 ? "当前账号没有管理员权限。" : error?.data?.statusMessage || error?.message || "后台请求失败。"; } function show(message: string, error = false) { notice.value = message; noticeError.value = error; }
 async function checkStatus() { checking.value = true; authError.value = ""; try { const status = await $fetch<any>("/api/account/session", { credentials: "include", cache: "no-store", retry: 0 }); authenticated.value = !!status.authenticated; locked.value = !(authenticated.value && status.user?.role === "admin"); if (!locked.value) await loadResources(); } catch (e: any) { locked.value = true; authError.value = apiError(e); } finally { checking.value = false; } }
 async function lock() { await $fetch("/api/account/logout", { method: "POST", credentials: "include", retry: 0 }).catch(() => { }); await navigateTo("/"); }
-async function loadResources() { loading.value = true; try { const result = await $fetch<any>("/api/admin/resources", { query: { q: query.value || undefined, cloudType: cloudType.value || undefined, approvalStatus: approvalStatus.value, page: page.value, pageSize: pageSize.value }, cache: "no-store" }); const data = result?.data ?? result; resources.value = data.items || []; total.value = Number(data.total || 0); cloudTypes.value = data.cloudTypes || cloudTypes.value; if (data.approvalCounts) approvalCounts.value = { ...approvalCounts.value, ...data.approvalCounts }; selected.value = selected.value.filter((id) => currentKeys.value.includes(id)); } catch (e: any) { show(apiError(e), true); if (statusOf(e) === 401) locked.value = true; } finally { loading.value = false; } }
-function switchApprovalView(next: ApprovalStatus) { if (approvalStatus.value === next || busy.value) return; approvalStatus.value = next; page.value = 1; selected.value = []; void loadResources(); }
+async function loadResources() { loading.value = true; try { const result = await $fetch<any>("/api/admin/resources", { query: { q: query.value || undefined, cloudType: cloudType.value || undefined, page: page.value, pageSize: pageSize.value }, cache: "no-store" }); const data = result?.data ?? result; resources.value = data.items || []; total.value = Number(data.total || 0); cloudTypes.value = data.cloudTypes || cloudTypes.value; selected.value = selected.value.filter((id) => currentKeys.value.includes(id)); } catch (e: any) { show(apiError(e), true); if (statusOf(e) === 401) locked.value = true; } finally { loading.value = false; } }
 function resetQuery() { query.value = ""; cloudType.value = ""; page.value = 1; void loadResources(); } function goPage(next: number) { if (next >= 1 && next <= pageCount.value && next !== page.value) { page.value = next; void loadResources(); } } function changePageSize(size: number) { pageSize.value = size; page.value = 1; void loadResources(); } function toggle(id: string) { selected.value = selected.value.includes(id) ? selected.value.filter((item) => item !== id) : [...selected.value, id]; } function toggleAll(event: Event) { const checked = (event.target as HTMLInputElement).checked; selected.value = checked ? [...new Set([...selected.value, ...currentKeys.value])] : selected.value.filter((id) => !currentKeys.value.includes(id)); }
 function blank() { return { name: "", description: "", datetime: "", links: [{ type: (cloudTypes.value[0] || "baidu") as CloudType, url: "", password: "" }] }; } function openCreate() { editing.value = false; formError.value = ""; form.value = blank(); tagText.value = ""; imageText.value = ""; drawerOpen.value = true; } function openEdit(item: AdminResource) { editing.value = true; formError.value = ""; form.value = { id: item.id, name: item.name, description: item.description || "", datetime: item.datetime || "", links: item.links.map((link: Link) => ({ type: link.type, url: link.url, password: link.password || "" })) }; tagText.value = (item.tags || []).join(", "); imageText.value = (item.images || []).join(", "); drawerOpen.value = true; } function closeDrawer() { if (!busy.value) drawerOpen.value = false; } function addLink() { form.value.links.push({ type: (cloudTypes.value[0] || "baidu") as CloudType, url: "", password: "" }); } function removeLink(index: number) { if (form.value.links.length > 1) form.value.links.splice(index, 1); }
-async function save() { if (busy.value) return; formError.value = ""; busy.value = true; const isCreating = !editing.value; const body = { name: form.value.name, description: form.value.description || null, datetime: form.value.datetime || null, links: form.value.links, tags: tagText.value.split(",").map((v) => v.trim()).filter(Boolean), images: imageText.value.split(",").map((v) => v.trim()).filter(Boolean) }; try { await $fetch(isCreating ? "/api/admin/resources" : `/api/admin/resources/${encodeURIComponent(form.value.id!)}`, { method: isCreating ? "POST" : "PUT", body }); drawerOpen.value = false; if (isCreating) { approvalStatus.value = "pending"; page.value = 1; selected.value = []; } show(isCreating ? "资源已提交审核，请通过后再进入资源库。" : "资源已更新。"); await loadResources(); } catch (e: any) { formError.value = apiError(e); } finally { busy.value = false; } }
+async function save() { if (busy.value) return; formError.value = ""; busy.value = true; const isCreating = !editing.value; const body = { name: form.value.name, description: form.value.description || null, datetime: form.value.datetime || null, links: form.value.links, tags: tagText.value.split(",").map((v) => v.trim()).filter(Boolean), images: imageText.value.split(",").map((v) => v.trim()).filter(Boolean) }; try { await $fetch(isCreating ? "/api/admin/resources" : `/api/admin/resources/${encodeURIComponent(form.value.id!)}`, { method: isCreating ? "POST" : "PUT", body }); drawerOpen.value = false; if (isCreating) { page.value = 1; selected.value = []; } show(isCreating ? "资源已加入资源库。" : "资源已更新。"); await loadResources(); } catch (e: any) { formError.value = apiError(e); } finally { busy.value = false; } }
 async function remove(item: AdminResource) { if (busy.value || !window.confirm(`确定删除「${item.name}」吗？`)) return; busy.value = true; try { await $fetch(`/api/admin/resources/${encodeURIComponent(item.id)}`, { method: "DELETE" }); selected.value = selected.value.filter((id) => id !== item.id); page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - 1) / pageSize.value))); show("资源已删除。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function deleteCloudLink(item: AdminResource, linkIndex: number) { const link = item.links[linkIndex]; if (!link || (link.type !== "baidu" && link.type !== "quark") || busy.value || cloudDeleteBusyKey.value) return; if (!window.confirm(`将删除${cloudLabel(link.type)}网盘中的「${item.name}」资源，删除后分享链接会失效。确认继续吗？`)) return; cloudDeleteBusyKey.value = `${item.id}:${linkIndex}`; try { const result = await $fetch<any>("/api/admin/resources/cloud-delete", { method: "POST", body: { resourceId: item.id, linkIndex } }); const count = Number(result?.data?.deletedCount || 0); show(`${cloudLabel(link.type)}云端资源已删除${count ? `（${count} 项）` : ""}。盘搜中的链接记录仍保留，可用检测功能确认失效。`); } catch (e: any) { show(apiError(e), true); } finally { cloudDeleteBusyKey.value = ""; } }
 async function deleteSelected() { if (!selected.value.length || !window.confirm(`确定删除选中的 ${selected.value.length} 条资源吗？`)) return; busy.value = true; try { await $fetch("/api/admin/resources/batch-delete", { method: "POST", body: { ids: selected.value } }); const count = selected.value.length; selected.value = []; page.value = Math.min(page.value, Math.max(1, Math.ceil((total.value - count) / pageSize.value))); show(`已删除 ${count} 条资源。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
 async function setEnabled(ids: string[], enabled: boolean) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${enabled ? "启用" : "停用"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/enabled", { method: "POST", body: { ids: targets, enabled } }); const count = Number(result?.data?.count ?? 0); show(count ? `已${enabled ? "启用" : "停用"} ${count} 条资源。` : "所选资源已经是该状态，未做改动。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
-async function review(ids: string[], status: "approved" | "rejected") { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; if (targets.length > 1 && !window.confirm(`确定${status === "approved" ? "通过" : "拒绝"}选中的 ${targets.length} 条资源吗？`)) return; busy.value = true; try { const result = await $fetch<any>("/api/admin/resources/approval", { method: "POST", body: { ids: targets, status } }); const count = Number(result?.data?.count ?? 0); selected.value = selected.value.filter((id) => !targets.includes(id)); show(count ? `已${status === "approved" ? "通过" : "拒绝"} ${count} 条资源。` : "没有待审核资源发生变化。"); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
-function reviewSelected(status: "approved" | "rejected") { void review(selected.value, status); }
 async function checkResources(ids: string[], label: string) { const targets = [...new Set(ids)].filter(Boolean); if (!targets.length || busy.value) return; busy.value = true; show(`正在检测 ${label}，请稍候…`); try { const result = await $fetch<any>("/api/admin/resources/check", { method: "POST", body: { ids: targets } }); const data = result?.data ?? {}; show(`检测完成：${Number(data.valid || 0)} 条正常，${Number(data.invalid || 0)} 条失效，${Number(data.unknown || 0)} 条待确认。`); await loadResources(); } catch (e: any) { show(apiError(e), true); } finally { busy.value = false; } }
-function openTransfer(item: AdminResource) { const first = item.links.findIndex((link) => link.type === "quark" || link.type === "baidu"); if (first < 0) return; transferResource.value = item; transferLinkIndex.value = first; transferFolder.value = `/PanHub/${item.id.replace(/[^a-zA-Z0-9_-]/gu, "-").slice(0, 80)}`; transferError.value = ""; transferJob.value = null; transferOpen.value = true; }
-function closeTransfer() { if (!transferBusy.value) { transferOpen.value = false; transferResource.value = null; transferJob.value = null; } }
-async function submitTransfer() {
-  if (transferBusy.value || !transferResource.value || !selectedTransferLink.value) return;
-  transferBusy.value = true; transferError.value = "";
-  try {
-    const result = await $fetch<any>("/api/admin/resources/transfer", { method: "POST", body: { resourceId: transferResource.value.id, linkIndex: selectedTransferLink.value.index, provider: selectedTransferLink.value.type, targetFolder: transferFolder.value } });
-    transferJob.value = result?.data?.job || result?.job || null;
-    if (!transferJob.value) throw new Error("服务端没有返回转存任务");
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      const statusResult = await $fetch<any>(`/api/admin/resources/transfer/${encodeURIComponent(transferJob.value.id)}`, { cache: "no-store" });
-      transferJob.value = statusResult?.data?.job || statusResult?.job || transferJob.value;
-      if (transferJob.value.status === "completed") { show("转存完成，原链接已替换。"); transferOpen.value = false; transferResource.value = null; await loadResources(); return; }
-      if (transferJob.value.status === "failed") { transferError.value = transferJob.value.errorMessage || "转存失败"; return; }
-    }
-    transferError.value = "转存任务仍在后台执行，请稍后刷新资源列表查看结果。";
-  } catch (e: any) { transferError.value = apiError(e); }
-  finally { transferBusy.value = false; }
-}
 function checkSelected() { void checkResources(selected.value, `${selected.value.length} 条资源`); }
 function checkOne(item: AdminResource) { void checkResources([item.id], `「${item.name}」`); }
 onMounted(checkStatus);
@@ -338,66 +264,6 @@ onMounted(checkStatus);
   box-shadow: 0 10px 30px rgba(40, 62, 92, .06);
   overflow: visible;
   backdrop-filter: blur(12px)
-}
-
-.resource-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  padding: 10px 16px 0;
-  border-bottom: 1px solid #edf1f6;
-  background: #fff
-}
-
-.resource-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 42px;
-  padding: 0 12px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: #64748b;
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-  transition: color .18s ease, border-color .18s ease, background-color .18s ease
-}
-
-.resource-tab:hover,
-.resource-tab.active {
-  color: #2563eb;
-  border-bottom-color: #2563eb
-}
-
-.resource-tab:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: -2px
-}
-
-.resource-tab.active {
-  background: #f8fbff
-}
-
-.resource-tab-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: #64748b;
-  background: #f1f5f9;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums
-}
-
-.resource-tab-count.pending {
-  color: #9a6700;
-  background: #fff4ce
 }
 
 .resource-view-hint {
@@ -723,21 +589,6 @@ onMounted(checkStatus);
   background: #f1f5f9
 }
 
-.resource-status.approval-pending {
-  color: #9a6700;
-  background: #fff4ce
-}
-
-.resource-status.approval-rejected {
-  color: #b42318;
-  background: #fee4e2
-}
-
-.resource-status.approval-approved {
-  color: #0f6e56;
-  background: #e1f5ee
-}
-
 .resource-check-status {
   display: inline-block;
   padding: 2px 7px;
@@ -799,56 +650,10 @@ onMounted(checkStatus);
   padding: 8px 9px
 }
 
-.resource-table .transfer-icon {
-  color: #2563eb
-}
-
-.resource-table .transfer-icon:hover:not(:disabled) {
-  border-color: #93c5fd;
-  background: #eff6ff
-}
-
 .resource-drawer {
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow: auto
-}
-
-.transfer-modal {
-  width: min(560px, calc(100vw - 32px))
-}
-
-.transfer-resource-name {
-  margin: -4px 0 18px;
-  color: #111827;
-  font-size: 15px;
-  font-weight: 700
-}
-
-.transfer-hint {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.5
-}
-
-.transfer-progress {
-  margin: 14px 0 0;
-  padding: 9px 11px;
-  border-radius: 8px;
-  color: #2563eb;
-  background: #eff6ff;
-  font-size: 12px
-}
-
-.transfer-progress.transfer-failed {
-  color: #b42318;
-  background: #fef2f2
-}
-
-.transfer-progress.transfer-completed {
-  color: #0f6e56;
-  background: #e1f5ee
 }
 
 .modal-header {
@@ -979,14 +784,6 @@ onMounted(checkStatus);
 }
 
 @media(max-width:820px) {
-  .resource-tabs {
-    overflow-x: auto
-  }
-
-  .resource-tab {
-    flex: 0 0 auto
-  }
-
   .query-toolbar {
     align-items: stretch
   }
@@ -1094,12 +891,6 @@ onMounted(checkStatus);
 
 .resource-table th:nth-child(10),
 .resource-table td:nth-child(10) {
-  width: 7%;
-  white-space: nowrap
-}
-
-.resource-table th:nth-child(11),
-.resource-table td:nth-child(11) {
   width: 16%;
   white-space: nowrap
 }

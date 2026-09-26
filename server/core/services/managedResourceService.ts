@@ -18,9 +18,8 @@ const SEARCH_CACHE_TTL_MS = 30_000;
 const SEARCH_CACHE_MAX_ENTRIES = 256;
 
 type ManagedResourceInput = Partial<SearchResult> & { id?: unknown };
-export type ManagedResourceApprovalStatus = "pending" | "approved" | "rejected";
 export type ManagedResourceCheckStatus = ResourceCheckStatus;
-type ResourceRow = { id: string; name: string; description: string | null; datetime: string | null; cloud_types_json: string; links_json: string; tags_json: string; images_json: string; search_text: string; enabled: number; approval_status: ManagedResourceApprovalStatus; check_status: ManagedResourceCheckStatus; check_message: string | null; checked_at: number | null; created_at: number; updated_at: number };
+type ResourceRow = { id: string; name: string; description: string | null; datetime: string | null; cloud_types_json: string; links_json: string; tags_json: string; images_json: string; search_text: string; enabled: number; check_status: ManagedResourceCheckStatus; check_message: string | null; checked_at: number | null; created_at: number; updated_at: number };
 
 function parseJson<T>(value: string, fallback: T): T { try { return JSON.parse(value) as T; } catch { return fallback; } }
 function cleanString(value: unknown, field: string, max: number, nullable = false): string | null {
@@ -74,42 +73,17 @@ function rowToResource(row: ResourceRow): SearchResult {
   const tags = parseJson<string[]>(row.tags_json, []); const images = parseJson<string[]>(row.images_json, []);
   return { id: row.id, name: row.name, description: row.description, datetime: row.datetime, cloud_types: parseJson<CloudType[]>(row.cloud_types_json, []), links: parseJson<Link[]>(row.links_json, []), ...(tags.length ? { tags } : {}), ...(images.length ? { images } : {}) };
 }
-function rowToAdmin(row: ResourceRow) { return { ...rowToResource(row), enabled: row.enabled !== 0, approvalStatus: row.approval_status, checkStatus: row.check_status, checkMessage: row.check_message, checkedAt: row.checked_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
+function rowToAdmin(row: ResourceRow) { return { ...rowToResource(row), enabled: row.enabled !== 0, checkStatus: row.check_status, checkMessage: row.check_message, checkedAt: row.checked_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
 function searchText(resource: SearchResult): string {
   return normalizeSearchKeyword([resource.name, resource.description || "", ...(resource.tags || [])].join(" "));
 }
-function toRow(resource: SearchResult, now: number, approvalStatus: ManagedResourceApprovalStatus, enabled: boolean) { return [resource.id, resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), enabled ? 1 : 0, approvalStatus, now, now]; }
+function toRow(resource: SearchResult, now: number, enabled: boolean) { return [resource.id, resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), enabled ? 1 : 0, now, now]; }
 
-function linkKey(url: string): string {
-  const value = url.trim();
-  try {
-    const parsed = new URL(value);
-    parsed.hash = "";
-    parsed.hostname = parsed.hostname.toLowerCase();
-    return parsed.toString().replace(/\/$/u, "").toLowerCase();
-  } catch {
-    return value.toLowerCase();
-  }
-}
-
-function linkKeys(resource: SearchResult): Set<string> {
-  return new Set(resource.links.map((link) => linkKey(link.url)));
-}
-
-function findDuplicateResource(resource: SearchResult): ResourceRow | undefined {
-  const wanted = linkKeys(resource);
-  for (const row of getSqliteDatabase().allRows<ResourceRow>("SELECT * FROM managed_resources")) {
-    const existing = parseJson<Link[]>(row.links_json, []);
-    if (existing.some((link) => wanted.has(linkKey(link.url)))) return row;
-  }
-  return undefined;
-}
-
-function insertResource(resource: SearchResult, approvalStatus: ManagedResourceApprovalStatus, enabled: boolean): void {
+function insertResource(resource: SearchResult, enabled: boolean): void {
   const now = Date.now();
   getSqliteDatabase().run(
-    "INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,enabled,approval_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    ...toRow(resource, now, approvalStatus, enabled),
+    "INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ...toRow(resource, now, enabled),
   );
 }
 
@@ -152,10 +126,9 @@ function cloneResults(results: SearchResult[]): SearchResult[] {
   }));
 }
 
-export function listManagedResources(options: { q?: string; cloudType?: string; approvalStatus?: ManagedResourceApprovalStatus; page: number; pageSize: number }) {
+export function listManagedResources(options: { q?: string; cloudType?: string; page: number; pageSize: number }) {
   const db = getSqliteDatabase(); const q = options.q?.trim() || ""; const cloudType = options.cloudType && CLOUD_TYPE_SET.has(options.cloudType) ? options.cloudType : "";
-  const approvalStatus = options.approvalStatus || "approved";
-  const conditions: string[] = ["approval_status = ?"]; const params: unknown[] = [approvalStatus];
+  const conditions: string[] = []; const params: unknown[] = [];
   // Same predicate as the search path. The projection already covers name,
   // description and tags, so matching it is both cheaper and consistent.
   const predicate = keywordPredicate(q);
@@ -166,48 +139,9 @@ export function listManagedResources(options: { q?: string; cloudType?: string; 
   const rows = db.allRows<ResourceRow>(`SELECT * FROM managed_resources ${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`, ...params, options.pageSize, (options.page - 1) * options.pageSize);
   return { items: rows.map(rowToAdmin), total, page: options.page, pageSize: options.pageSize };
 }
-export function countManagedResourcesByApproval(): Record<ManagedResourceApprovalStatus, number> {
-  const counts: Record<ManagedResourceApprovalStatus, number> = { pending: 0, approved: 0, rejected: 0 };
-  for (const row of getSqliteDatabase().allRows<{ approval_status: ManagedResourceApprovalStatus; count: number }>("SELECT approval_status, COUNT(*) AS count FROM managed_resources GROUP BY approval_status")) {
-    if (row.approval_status in counts) counts[row.approval_status] = Number(row.count || 0);
-  }
-  return counts;
-}
 export function getManagedResource(id: string): SearchResult | null { const row = getSqliteDatabase().getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", id); return row ? rowToResource(row) : null; }
-export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); insertResource(resource, "pending", false); invalidateSearchCache(); return resource; }
-
-export function captureManagedResource(raw: unknown): { status: "created" | "duplicate"; resource: SearchResult } {
-  const resource = normalizeInput({ ...(raw as object), id: `captured-${randomUUID()}` });
-  const result = getSqliteDatabase().transaction(() => {
-    const duplicate = findDuplicateResource(resource);
-    if (duplicate) return { status: "duplicate" as const, resource: rowToResource(duplicate) };
-    insertResource(resource, "pending", false);
-    return { status: "created" as const, resource };
-  });
-  invalidateSearchCache();
-  return result;
-}
+export function createManagedResource(raw: unknown): SearchResult { const resource = normalizeInput(raw); insertResource(resource, true); invalidateSearchCache(); return resource; }
 export function updateManagedResource(id: string, raw: unknown): SearchResult { const resource = normalizeInput({ ...(raw as object), id }); const db = getSqliteDatabase(); const now = Date.now(); const result = db.run("UPDATE managed_resources SET name=?,description=?,datetime=?,cloud_types_json=?,links_json=?,tags_json=?,images_json=?,search_text=?,check_status='unchecked',check_message=NULL,checked_at=NULL,updated_at=? WHERE id=?", resource.name, resource.description, resource.datetime, JSON.stringify(resource.cloud_types), JSON.stringify(resource.links), JSON.stringify(resource.tags || []), JSON.stringify(resource.images || []), searchText(resource), now, id); if (!result.changes) throw new Error("资源不存在"); invalidateSearchCache(); return resource; }
-
-/** Replace exactly one link after an external transfer has completed. */
-export function replaceManagedResourceLink(input: { resourceId: string; linkIndex: number; expectedUrl: string; replacement: Link; transferJobId: string; provider: string }): SearchResult {
-  const db = getSqliteDatabase();
-  const row = db.getRow<ResourceRow>("SELECT * FROM managed_resources WHERE id = ?", input.resourceId);
-  if (!row) throw new Error("资源不存在");
-  const resource = rowToResource(row);
-  const current = resource.links[input.linkIndex];
-  if (!current) throw new Error("原链接位置不存在");
-  if (current.url !== input.expectedUrl) throw new Error("资源链接已被修改，请重新发起转存");
-  const nextLinks = resource.links.map((link, index) => index === input.linkIndex ? input.replacement : link);
-  const nextResource = { ...resource, links: nextLinks, cloud_types: [...new Set(nextLinks.map((link) => link.type))] };
-  const now = Date.now();
-  db.transaction(() => {
-    db.run("UPDATE managed_resources SET cloud_types_json=?,links_json=?,search_text=?,check_status='unchecked',check_message=NULL,checked_at=NULL,updated_at=? WHERE id=?", JSON.stringify(nextResource.cloud_types), JSON.stringify(nextLinks), searchText(nextResource), now, input.resourceId);
-    db.run("INSERT INTO resource_link_history(id,resource_id,link_index,transfer_job_id,provider,old_url,old_password,new_url,new_password,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", randomUUID(), input.resourceId, input.linkIndex, input.transferJobId, input.provider, current.url, current.password, input.replacement.url, input.replacement.password, now);
-  });
-  invalidateSearchCache();
-  return nextResource;
-}
 
 export function deleteManagedResources(ids: string[]): number { const unique = [...new Set(ids.filter(Boolean))]; if (!unique.length) return 0; const changes = getSqliteDatabase().transaction(() => unique.reduce((count, id) => count + Number(getSqliteDatabase().run("DELETE FROM managed_resources WHERE id = ?", id).changes), 0)); if (changes) invalidateSearchCache(); return changes; }
 /**
@@ -227,17 +161,6 @@ export function setManagedResourcesEnabled(ids: string[], enabled: boolean): num
   return changes;
 }
 
-export function setManagedResourceApproval(ids: string[], status: Exclude<ManagedResourceApprovalStatus, "pending">): number {
-  const unique = [...new Set(ids.filter(Boolean))];
-  if (!unique.length) return 0;
-  const db = getSqliteDatabase();
-  const enabled = status === "approved" ? 1 : 0;
-  // Only pending submissions can enter the inventory. This prevents a stale
-  // admin tab from silently changing an already approved/rejected resource.
-  const changes = db.transaction(() => unique.reduce((count, id) => count + Number(db.run("UPDATE managed_resources SET approval_status=?,enabled=?,updated_at=? WHERE id=? AND approval_status='pending'", status, enabled, Date.now(), id).changes), 0));
-  if (changes) invalidateSearchCache();
-  return changes;
-}
 
 export interface ResourceCheckResult {
   id: string;
@@ -307,6 +230,171 @@ function classifyQuarkTokenResponse(body: string): LinkCheckResult {
   return { status: "unknown", message: `夸克接口暂时无法确认链接状态（${message || `code ${code}`}）` };
 }
 
+type BaiduCheckPayload = {
+  errno?: unknown;
+  err_msg?: unknown;
+  show_msg?: unknown;
+  message?: unknown;
+  randsk?: unknown;
+  list?: unknown;
+};
+
+function baiduPayloadMessage(payload: BaiduCheckPayload): string {
+  return typeof payload.err_msg === "string"
+    ? payload.err_msg
+    : typeof payload.show_msg === "string"
+      ? payload.show_msg
+      : typeof payload.message === "string"
+        ? payload.message
+        : "";
+}
+
+function classifyBaiduApiFailure(body: string, fallback: string): LinkCheckResult {
+  let payload: BaiduCheckPayload;
+  try {
+    payload = JSON.parse(body) as BaiduCheckPayload;
+  } catch {
+    return { status: "unknown", message: `${fallback}：百度接口返回了无法解析的响应` };
+  }
+
+  const message = baiduPayloadMessage(payload);
+  const lowerMessage = message.toLowerCase();
+  if (/分享不存在|链接不存在|资源不存在|页面不存在|分享已取消|链接已失效|资源已失效|expired|not found|removed|deleted/.test(lowerMessage)) {
+    return { status: "invalid", message: `百度接口确认分享已失效（${message || fallback}）` };
+  }
+  // 提取码错误或缺少提取码说明分享可能仍然存在，不能直接判定为失效。
+  if (/提取码|密码|请输入|校验|验证|passcode|password|verify/.test(lowerMessage)) {
+    return { status: "unknown", message: `百度分享仍存在，但提取码未通过校验（${message || fallback}）` };
+  }
+  return { status: "unknown", message: `${fallback}（${message || "未知错误"}）` };
+}
+
+function parseBaiduCheckLink(link: Link): { surl: string; password: string; pageUrl: string } | LinkCheckResult {
+  let url: URL;
+  try {
+    url = new URL(link.url);
+  } catch {
+    return { status: "invalid", message: "百度链接地址格式不正确" };
+  }
+
+  const hostname = url.hostname.toLowerCase();
+  if (hostname !== "pan.baidu.com" && !hostname.endsWith(".pan.baidu.com")) {
+    return { status: "invalid", message: "百度链接域名不正确" };
+  }
+  const pathMatch = url.pathname.match(/^\/s\/([^/]+)\/?$/iu);
+  const rawSurl = pathMatch?.[1] || url.searchParams.get("surl") || "";
+  const surl = rawSurl.replace(/^1/u, "");
+  if (!surl) return { status: "invalid", message: "无法从百度链接中提取分享 ID" };
+
+  return {
+    surl,
+    password: link.password || url.searchParams.get("pwd") || "",
+    pageUrl: `https://pan.baidu.com/s/1${surl}`,
+  };
+}
+
+function parseBaiduCheckJson(body: string, fallback: string): BaiduCheckPayload | LinkCheckResult {
+  let payload: BaiduCheckPayload;
+  try {
+    payload = JSON.parse(body) as BaiduCheckPayload;
+  } catch {
+    return { status: "unknown", message: `${fallback}：百度接口返回了无法解析的响应` };
+  }
+  const errno = Number(payload.errno);
+  if (Number.isFinite(errno) && errno !== 0) return classifyBaiduApiFailure(body, fallback);
+  return payload;
+}
+
+async function checkBaiduLink(link: Link, timeoutMs: number): Promise<LinkCheckResult> {
+  const parsed = parseBaiduCheckLink(link);
+  if ("status" in parsed) return parsed;
+
+  const requestHeaders = {
+    accept: "application/json, text/html, application/xhtml+xml, text/plain, */*",
+    "accept-language": "zh-CN,zh;q=0.9",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+  };
+  const requestOptions = {
+    timeoutMs,
+    maxRequestBodyBytes: 8 * 1024,
+    maxResponseBytes: 256 * 1024,
+    maxRedirects: 3,
+    followRedirects: true,
+    expectedContentTypes: ["application/json", "text/html", "application/xhtml+xml", "text/plain"] as const,
+    allowedDomains: ["pan.baidu.com"] as const,
+    allowHttp: false,
+  };
+
+  const pageResponse = await executeSafeHttp({
+    method: "GET",
+    url: parsed.pageUrl,
+    headers: { ...requestHeaders, referer: parsed.pageUrl },
+    ...requestOptions,
+  });
+  const pageText = pageResponse.body.slice(0, 256_000);
+  const pageStatus = classifyLinkResponse(pageResponse.response.status, pageText);
+  if (pageStatus.status === "invalid") return pageStatus;
+
+  const shareId = pageText.match(/shareid\s*:\s*["']?(\d+)/iu)?.[1] || "";
+  const uk = pageText.match(/share_uk\s*:\s*["']?(\d+)/iu)?.[1] || "";
+  if (!shareId || !uk) {
+    return { status: "unknown", message: "百度分享页可访问，但未提取到分享信息，暂无法确认文件状态" };
+  }
+
+  const verifyParams = new URLSearchParams({
+    surl: parsed.surl,
+    t: String(Date.now()),
+    channel: "chunlei",
+    web: "1",
+    app_id: "250528",
+    clienttype: "0",
+  });
+  const verifyResponse = await executeSafeHttp({
+    method: "POST",
+    url: `https://pan.baidu.com/share/verify?${verifyParams.toString()}`,
+    headers: {
+      ...requestHeaders,
+      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "x-requested-with": "XMLHttpRequest",
+      referer: parsed.pageUrl,
+    },
+    body: new URLSearchParams({ pwd: parsed.password, vcode: "", vcode_str: "" }).toString(),
+    ...requestOptions,
+  });
+  const verified = parseBaiduCheckJson(verifyResponse.body, "百度分享提取码校验失败");
+  if ("status" in verified) return verified;
+  const rawSekey = typeof verified.randsk === "string" ? verified.randsk : "";
+  if (!rawSekey) return { status: "unknown", message: "百度分享页存在，但接口未返回分享访问令牌" };
+  let sekey = rawSekey;
+  try { sekey = decodeURIComponent(rawSekey); } catch { /* keep the server response as-is */ }
+
+  const listParams = new URLSearchParams({
+    shareid: shareId,
+    uk,
+    sekey,
+    type: "0",
+    root: "1",
+    page: "1",
+    num: "100",
+    order: "other",
+    desc: "1",
+    channel: "chunlei",
+    web: "1",
+    app_id: "250528",
+    clienttype: "0",
+  });
+  const listResponse = await executeSafeHttp({
+    method: "GET",
+    url: `https://pan.baidu.com/share/list?${listParams.toString()}`,
+    headers: { ...requestHeaders, referer: parsed.pageUrl },
+    ...requestOptions,
+  });
+  const listed = parseBaiduCheckJson(listResponse.body, "百度分享内容获取失败");
+  if ("status" in listed) return listed;
+  if (!Array.isArray(listed.list)) return { status: "unknown", message: "百度分享接口未返回文件列表" };
+  return { status: "valid", message: `百度分享有效，已成功获取分享内容（${listed.list.length} 项）` };
+}
+
 async function checkQuarkLink(link: Link, timeoutMs: number): Promise<LinkCheckResult> {
   let url: URL;
   try {
@@ -350,6 +438,7 @@ async function checkLink(link: Link, timeoutMs: number): Promise<LinkCheckResult
   if (link.type === "others" && /^ed2k:\/\//iu.test(link.url)) return { status: "unknown", message: "ed2k 链接不支持通过网页请求检测" };
   try {
     if (link.type === "quark") return await checkQuarkLink(link, timeoutMs);
+    if (link.type === "baidu") return await checkBaiduLink(link, timeoutMs);
     const url = new URL(link.url);
     const response = await executeSafeHttp({
       method: "GET",
@@ -418,7 +507,7 @@ export function searchManagedResources(keyword: string): SearchResult[] {
   const placeholders = variants.map(() => "instr(search_text, ?) > 0").join(" OR ");
   const results: SearchResult[] = [];
   for (const row of getSqliteDatabase().iterate<ResourceRow>(
-    `SELECT * FROM managed_resources WHERE enabled = 1 AND approval_status = 'approved' AND (${placeholders}) ` +
+    `SELECT * FROM managed_resources WHERE enabled = 1 AND (${placeholders}) ` +
     `ORDER BY CASE WHEN instr(search_text, ?) > 0 THEN instr(search_text, ?) ELSE 2147483647 END, updated_at DESC, id`,
     ...variants, variants[0], variants[0],
   )) {

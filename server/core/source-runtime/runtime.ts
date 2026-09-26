@@ -16,6 +16,94 @@ function text(value: unknown, max = MAX_DESCRIPTION): string {
   return value == null ? "" : String(value).trim().slice(0, max);
 }
 
+function normalizeImages(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : value == null ? [] : [value];
+  const images: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const rawText = text(raw, MAX_URL);
+    const image = rawText.startsWith("//") ? `https:${rawText}` : rawText;
+    // Image metadata is exposed directly to clients, so discard relative
+    // paths, javascript URLs and other values that cannot be opened safely.
+    if (!/^https?:\/\//iu.test(image) || seen.has(image)) continue;
+    seen.add(image);
+    images.push(image);
+    if (images.length >= 10) break;
+  }
+  return images;
+}
+
+const IMAGE_FIELD = /^(?:image|images|img|pic|picture|pictures|photo|photos|poster|posters|cover|covers|thumbnail|thumbnails|thumb|vod_pic)(?:_?(?:url|src|thumb|original))?$/iu;
+
+function imageUrlsFromValue(value: unknown, output: unknown[] = [], depth = 0): unknown[] {
+  if (depth > 5 || output.length >= 20 || value == null) return output;
+  if (Array.isArray(value)) {
+    for (const item of value) imageUrlsFromValue(item, output, depth + 1);
+    return output;
+  }
+  if (typeof value !== "object") {
+    output.push(value);
+    return output;
+  }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (IMAGE_FIELD.test(key)) imageUrlsFromValue(item, output, depth + 1);
+    else if (item && typeof item === "object") imageUrlsFromValue(item, output, depth + 1);
+    if (output.length >= 20) break;
+  }
+  return output;
+}
+
+function valueContainsIdentity(value: unknown, result: Record<string, unknown>): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  const identities = [result.id, result.name].map((item) => String(item ?? "").trim()).filter(Boolean);
+  const candidates = [source.id, source.key, source.name, source.title, source.vod_id, source.vod_name, source.url];
+  return identities.some((identity) => candidates.some((candidate) => String(candidate ?? "").trim() === identity));
+}
+
+function inferJsonImages(payload: unknown, result: Record<string, unknown>): string[] {
+  const candidates: unknown[] = [];
+  const walk = (value: unknown, depth = 0): void => {
+    if (depth > 6 || candidates.length >= 20 || value == null) return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (valueContainsIdentity(value, result)) imageUrlsFromValue(value, candidates);
+    for (const item of Object.values(value as Record<string, unknown>)) walk(item, depth + 1);
+  };
+  walk(payload);
+  return normalizeImages(candidates);
+}
+
+function inferHtmlImages($: CheerioAPI | undefined, result: Record<string, unknown>): string[] {
+  if (!$) return [];
+  const selectors = ".tgme_widget_message_wrap,.tgme_widget_message,article,li,tr";
+  const candidates: unknown[] = [];
+  const name = String(result.name || "").trim();
+  const links = Array.isArray(result.links) ? result.links : [];
+  $(selectors).each((_, element) => {
+    if (candidates.length >= 20) return;
+    const root = $(element);
+    const markup = root.html() || "";
+    const matched = (name && root.text().includes(name)) || links.some((link) => {
+      const url = link && typeof link === "object" ? String((link as Record<string, unknown>).url || "") : "";
+      return !!url && markup.includes(url);
+    });
+    if (!matched) return;
+    root.find("img[src],img[data-src]").not(".tgme_widget_message_user_photo img,.tgme_widget_message_author_photo img,[class*='avatar'] img,[class*='avatar']").each((__, image) => {
+      candidates.push($(image).attr("src") || $(image).attr("data-src"));
+    });
+    root.find("[style*='background-image']").not(".tgme_widget_message_user_photo,.tgme_widget_message_author_photo,[class*='avatar']").each((__, node) => {
+      const style = String($(node).attr("style") || "");
+      const match = style.match(/url\(\s*["']?([^"')]+)["']?\s*\)/iu);
+      if (match) candidates.push(match[1]);
+    });
+  });
+  return normalizeImages(candidates);
+}
+
 function compact(value: unknown): string {
   return String(value ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
@@ -36,7 +124,7 @@ function makeLink(urlValue: unknown, passwordValue?: unknown): Link | null {
   };
 }
 
-function validateAndLimitResults(value: unknown, definition: SourceTransformDefinition, context: SourceTransformContext): SearchResult[] {
+function validateAndLimitResults(value: unknown, definition: SourceTransformDefinition, context: SourceTransformContext, payload: unknown, $?: CheerioAPI): SearchResult[] {
   // Transforms have one output contract. A source must return the same
   // resource-level fields that the public search API exposes.
   if (!Array.isArray(value)) return [];
@@ -63,7 +151,13 @@ function validateAndLimitResults(value: unknown, definition: SourceTransformDefi
       cloud_types: [...new Set(links.map((link) => link.type))],
       links,
       ...(Array.isArray(input.tags) ? { tags: input.tags.map((tag) => text(tag, 80)).filter(Boolean).slice(0, 20) } : {}),
-      ...(Array.isArray(input.images) ? { images: input.images.map((image) => text(image, MAX_URL)).filter(Boolean).slice(0, 10) } : {}),
+      ...(() => {
+        const images = normalizeImages(input.images);
+        const inferred = images.length ? images : context.format === "html"
+          ? inferHtmlImages($, input)
+          : inferJsonImages(payload, input);
+        return inferred.length ? { images: inferred } : {};
+      })(),
     } satisfies SearchResult];
   });
 }
@@ -101,5 +195,5 @@ export function executeSourceTransform(
   const result = new Script("transform(payload, $, context)", { filename: `transform:${definition.id}:invoke` })
     .runInContext(sandbox, { timeout: timeoutMs });
   if (result && typeof result.then === "function") throw new Error("transform 必须是同步函数，不允许异步网络请求");
-  return validateAndLimitResults(result, definition, context);
+  return validateAndLimitResults(result, definition, context, payload, $);
 }

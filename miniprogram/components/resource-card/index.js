@@ -1,4 +1,4 @@
-// View-model (`item`) is prebuilt by the page: { id, sourceId, name, dateText,
+// View-model (`item`) is prebuilt by the page: { id, name, dateText,
 // description, hasLongDesc, tags: [], links: [{key,type,label,icon,url,password}] }.
 const { copyLink } = require('../../utils/clipboard');
 Component({
@@ -42,7 +42,6 @@ Component({
       if (!await copyLink(url) || this._gone || this.data.item.id !== item.id) return;
       clearTimeout(this._copyTimer);
       this.setData({ copiedKey: key });
-      this.triggerEvent('copy', { url, id: item.id, sourceId: item.sourceId || item.id });
       this._copyTimer = setTimeout(() => {
         if (!this._gone) this.setData({ copiedKey: '' });
       }, 2400);

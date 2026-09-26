@@ -76,12 +76,12 @@ function toVM(result) {
   const description = result.description || '';
   return {
     id: result.id,
-    sourceId: result.sourceId || result.id.split('::')[0],
     name: result.name,
     dateText: result.datetime || '',
     description,
     hasLongDesc: description.length > DESC_TOGGLE_LENGTH,
     tags: result.tags || [],
+    images: result.images || [],
     links: (result.links || []).map((link) => ({
       key: `${link.type}|${link.url}|${link.password || ''}`,
       type: link.type,
@@ -425,15 +425,6 @@ require('../../utils/theme').themedPage({
     this.setData({ visibleCount: (this.data.visibleCount || PAGE_SIZE) + PAGE_SIZE });
     this.flush();
   },
-
-  captureByCardEvent(event) {
-    const { id, url } = event.detail;
-    const sourceId = event.detail.sourceId || id;
-    const resource = this._merged.find((item) => item.id === sourceId && (item.links || []).some((link) => link.url === url));
-    if (resource) api.captureResource(resource);
-  },
-
-  onCardCopy(event) { this.captureByCardEvent(event); },
 
   onBackTop() {
     wx.pageScrollTo({ scrollTop: 0, duration: 200 });

@@ -125,7 +125,6 @@ function flattenResultsForDisplay(results) {
   return (results || []).flatMap((resource) => (resource.links || []).map((link, index) => ({
     ...resource,
     id: `${resource.id}::${index}`,
-    sourceId: resource.id,
     cloud_types: [link.type],
     links: [link],
   })));

@@ -536,7 +536,8 @@ function transform(payload, $, context) {
 - context：当前解析上下文对象，常用字段包括 context.keyword（当前搜索词）、context.source（来源标识）、context.url（请求地址）、context.rawBody（原始响应文本）和 context.format（json/html）。
 - context.makeLink(url, password)：把 URL 转成标准链接对象，自动推断网盘类型；无效 URL 返回 null。context.inferDriveType(url) 可单独获取网盘类型。不要在每个来源里重复维护网盘映射表。
 - 函数必须是同步函数，不要发起网络请求；即使没有匹配结果也要返回 []。
-- 返回值必须是标准结果 JSON 数组。每个结果至少包含 id、name、description、datetime、links，其中 links 至少包含一个 { url }；cloud_types 和 links.type 不需要填写，服务端会根据 URL 自动推断；没有有效资源链接的结果不要返回。
+- 返回值必须是标准结果 JSON 数组。每个结果至少包含 id、name、description、datetime、links，其中 links 至少包含一个 { url }；可选返回 images 数组保存图片/封面 URL（没有图片时省略）；cloud_types 和 links.type 不需要填写，服务端会根据 URL 自动推断；没有有效资源链接的结果不要返回。
+- 如果原始数据包含 poster、cover、image、img、thumbnail、vod_pic 等资源图片字段，请映射到 images 数组；HTML 中也可以从资源区域的 img[src]、data-src 或 background-image 提取图片，但不要把头像、用户头像或 avatar 字段写入 images。
 - 请根据当前接口的实际响应结构提取标题、描述、时间和资源链接，并尽量使用 context.keyword 过滤无关结果。
 
 ## 输出要求

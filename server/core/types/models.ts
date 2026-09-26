@@ -18,6 +18,7 @@ export interface SearchResult {
   cloud_types: CloudType[];
   links: Link[];
   tags?: string[];
+  /** Optional poster/cover URLs collected by a source transform. */
   images?: string[];
 }
 

@@ -71,6 +71,25 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
     for (const url of hrefs || []) add(url);
     return links;
   };
+  const imagesOf = (root) => {
+    const images = [];
+    const seen = new Set();
+    const add = (raw) => {
+      const image = String(raw || "").trim();
+      if (!/^https?:\/\//i.test(image) || seen.has(image)) return;
+      seen.add(image);
+      images.push(image);
+    };
+    root.find("img[src], img[data-src]").not(".tgme_widget_message_user_photo img, .tgme_widget_message_author_photo img, [class*='avatar'] img, [class*='avatar']").each((_, image) => {
+      add($(image).attr("src") || $(image).attr("data-src"));
+    });
+    root.find("[style*='background-image']").not(".tgme_widget_message_user_photo, .tgme_widget_message_author_photo, [class*='avatar']").each((_, element) => {
+      const style = String($(element).attr("style") || "");
+      const match = style.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
+      if (match) add(match[1]);
+    });
+    return images.slice(0, 10);
+  };
   const output = [];
   if (context.format === "html" && $) {
     $(".tgme_widget_message_wrap").each((index, element) => {
@@ -83,9 +102,10 @@ export const DEFAULT_CHANNEL_TRANSFORM = String.raw`function transform(payload, 
       const content = descriptionOf(text, title, false);
       const hrefs = root.find(".tgme_widget_message_text a[href]").map((_, link) => $(link).attr("href") || "").get();
       const links = linksOf(text, hrefs);
+      const images = imagesOf(root);
       const postId = root.find(".tgme_widget_message").attr("data-post") || "";
       const datetime = root.find("time").attr("datetime") || "";
-      if (title && matches(text) && links.length) output.push({ id: String(context.source || "source") + "-" + (postId || index), name: title, description: content, datetime, links });
+      if (title && matches(text) && links.length) output.push({ id: String(context.source || "source") + "-" + (postId || index), name: title, description: content, datetime, links, ...(images.length ? { images } : {}) });
     });
   }
   return output;

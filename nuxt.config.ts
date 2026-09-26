@@ -1,6 +1,6 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
-  buildDir: process.env.PANHUB_BUILD_DIR || ".nuxt",
+  buildDir: process.env.BUILD_DIR || ".nuxt",
   // 工作区中的临时截图/替换文件不是应用页面，避免被 Nuxt typecheck 扫描。
   compatibilityDate: "2025-07-15",
   devtools: { enabled: false },
@@ -56,9 +56,8 @@ export default defineNuxtConfig({
     "/api/health": { swr: false, cache: false },
     // 管理端搜索设置不缓存
     "/api/settings/**": { swr: false, cache: false },
-    // 热搜接口不缓存，否则 POST 写入后 GET 仍返回旧数据
+    // 热搜列表不缓存，确保搜索词写入后 GET 立即读取最新数据
     "/api/hot-searches": { swr: false, cache: false },
-    "/api/hot-search-stats": { swr: false, cache: false },
     // 普通用户会话与账号写接口必须保留 Cookie 和请求体，禁止全局 SWR 接管
     "/api/account/**": { swr: false, cache: false },
     "/api/admin/**": { swr: false, cache: false },

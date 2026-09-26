@@ -122,8 +122,7 @@
       <view wx:for="{{results}}" wx:key="id" class="resource-list-item">
         <resource-card
           theme="{{theme}}"
-          item="{{item}}"
-          bindcopy="onCardCopy" />
+          item="{{item}}" />
       </view>
     </view>
 

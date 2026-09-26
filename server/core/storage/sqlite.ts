@@ -3,6 +3,7 @@ import { randomBytes, randomInt, scryptSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { normalizeSearchKeyword } from "../utils/searchKeyword";
+import { DEFAULT_CHANNEL_TRANSFORM } from "../source-runtime/defaults";
 
 const DEFAULT_PATH = process.env.PANHUB_SQLITE_DB || "./data/panhub.sqlite";
 const connections = new Map<string, SqliteDatabase>();
@@ -38,8 +39,11 @@ export class SqliteDatabase {
     this.ensureSessionChannelsColumn();
     this.ensureSessionTransportColumn();
     this.ensureResourceSourceColumns();
+    this.ensureSourceTransformImages();
     this.ensureUserAccountColumns();
     this.ensureManagedResourceColumns();
+    this.retireManagedResourceApproval();
+    this.retireResourceTransferStorage();
     this.ensureProxyNodeSchema();
     this.ensureProxyNodeDefaults();
     this.ensureProxyRouteSchema();
@@ -151,6 +155,27 @@ export class SqliteDatabase {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_resource_sources_priority ON resource_sources(priority,enabled,id)");
   }
 
+  /** Upgrade the built-in Telegram transform so existing sources retain media URLs. */
+  private ensureSourceTransformImages(): void {
+    const isLegacyTelegramTransform = (code: unknown): code is string => {
+      const value = typeof code === "string" ? code : "";
+      return value.includes("const output = [];")
+        && value.includes(".tgme_widget_message_wrap")
+        && !value.includes("imagesOf");
+    };
+    const sources = this.db.prepare("SELECT id,transform FROM resource_sources").all() as Array<{ id: string; transform: string }>;
+    const template = this.db.prepare("SELECT transform FROM source_template_settings WHERE id=1").get() as { transform?: string } | undefined;
+    const updateSource = this.db.prepare("UPDATE resource_sources SET transform=?,updated_at=? WHERE id=?");
+    const updateTemplate = this.db.prepare("UPDATE source_template_settings SET transform=?,updated_at=? WHERE id=1");
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const source of sources) {
+        if (isLegacyTelegramTransform(source.transform)) updateSource.run(DEFAULT_CHANNEL_TRANSFORM, now, source.id);
+      }
+      if (template && isLegacyTelegramTransform(template.transform)) updateTemplate.run(DEFAULT_CHANNEL_TRANSFORM, now);
+    })();
+  }
+
   private ensureUserAccountColumns(): void {
     const columns = this.db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "last_login_ip")) {
@@ -199,6 +224,12 @@ export class SqliteDatabase {
     if (!columns.some((column) => column.name === "search_text")) {
       this.db.exec("ALTER TABLE managed_resources ADD COLUMN search_text TEXT NOT NULL DEFAULT ''");
     }
+    // Images were added after the first managed-resource schema. Keep older
+    // databases writable so resource rows can retain the same image metadata
+    // returned by the search APIs.
+    if (!columns.some((column) => column.name === "images_json")) {
+      this.db.exec("ALTER TABLE managed_resources ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'");
+    }
     // The search projection is queried with `instr()`, which cannot use a
     // B-tree index, so the former idx_managed_resources_search_text only ever
     // added write cost. Drop it on existing databases too.
@@ -209,9 +240,6 @@ export class SqliteDatabase {
     // enabled rows; the console lists both states.
     if (!columns.some((column) => column.name === "enabled")) {
       this.db.exec("ALTER TABLE managed_resources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
-    }
-    if (!columns.some((column) => column.name === "approval_status")) {
-      this.db.exec("ALTER TABLE managed_resources ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'");
     }
     if (!columns.some((column) => column.name === "check_status")) {
       this.db.exec("ALTER TABLE managed_resources ADD COLUMN check_status TEXT NOT NULL DEFAULT 'unchecked'");
@@ -247,6 +275,20 @@ export class SqliteDatabase {
       }
     });
     backfill();
+  }
+
+  /** Resource submissions and their approval workflow are no longer used. */
+  private retireManagedResourceApproval(): void {
+    const columns = this.db.prepare("PRAGMA table_info(managed_resources)").all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === "approval_status")) {
+      this.db.exec("ALTER TABLE managed_resources DROP COLUMN approval_status");
+    }
+  }
+
+  /** Transfer-and-replace jobs and link history are no longer part of resource management. */
+  private retireResourceTransferStorage(): void {
+    this.db.exec("DROP TABLE IF EXISTS resource_link_history");
+    this.db.exec("DROP TABLE IF EXISTS resource_transfer_jobs");
   }
 
   private ensureProxyNodeSchema(): void {
@@ -544,7 +586,6 @@ CREATE TABLE IF NOT EXISTS managed_resources(
   images_json TEXT NOT NULL DEFAULT '[]',
   search_text TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
-  approval_status TEXT NOT NULL DEFAULT 'approved' CHECK(approval_status IN ('pending','approved','rejected')),
   check_status TEXT NOT NULL DEFAULT 'unchecked',
   check_message TEXT,
   checked_at INTEGER,
@@ -552,37 +593,6 @@ CREATE TABLE IF NOT EXISTS managed_resources(
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_managed_resources_updated_at ON managed_resources(updated_at DESC);
-CREATE TABLE IF NOT EXISTS resource_transfer_jobs(
-  id TEXT PRIMARY KEY,
-  resource_id TEXT NOT NULL,
-  link_index INTEGER NOT NULL,
-  provider TEXT NOT NULL CHECK(provider IN ('quark','baidu')),
-  source_url TEXT NOT NULL,
-  source_password TEXT,
-  target_folder TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed')),
-  replacement_url TEXT,
-  replacement_password TEXT,
-  error_message TEXT,
-  created_at INTEGER NOT NULL,
-  started_at INTEGER,
-  finished_at INTEGER,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_resource_transfer_jobs_resource ON resource_transfer_jobs(resource_id,created_at DESC);
-CREATE TABLE IF NOT EXISTS resource_link_history(
-  id TEXT PRIMARY KEY,
-  resource_id TEXT NOT NULL,
-  link_index INTEGER NOT NULL,
-  transfer_job_id TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  old_url TEXT NOT NULL,
-  old_password TEXT,
-  new_url TEXT NOT NULL,
-  new_password TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_resource_link_history_resource ON resource_link_history(resource_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL,

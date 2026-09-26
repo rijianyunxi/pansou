@@ -54,11 +54,13 @@ const merged = mergeResultsByLink([
     id: 'r1', name: 'A', description: '', datetime: null,
     cloud_types: ['baidu'],
     links: [{ type: 'baidu', url: 'https://Pan.Baidu.com/s/1abc#frag/', password: null }],
+    images: ['https://img.example.com/a.jpg'],
   },
   {
     id: 'r2', name: 'B', description: 'desc from B', datetime: '2025/09/18 21:30',
     cloud_types: ['quark', 'baidu'],
     links: [{ type: 'baidu', url: 'https://pan.baidu.com/s/1abc', password: 'x9k2' }],
+    images: ['https://img.example.com/b.jpg'],
   },
   {
     id: 'r3', name: 'C', description: null, datetime: null,
@@ -73,11 +75,11 @@ assert.strictEqual(first.links.length, 1);
 assert.strictEqual(first.links[0].password, 'x9k2');
 assert.strictEqual(first.description, 'desc from B');
 assert.strictEqual(first.datetime, '2025/09/18 21:30');
+assert.deepStrictEqual(first.images.sort(), ['https://img.example.com/a.jpg', 'https://img.example.com/b.jpg']);
 assert.strictEqual(canonicalLinkUrl('HTTPS://Example.COM/Path//?a=1#h'), 'https://example.com/Path?a=1');
 const display = flattenResultsForDisplay(merged);
 assert.strictEqual(display.length, 2);
 assert.strictEqual(display[0].links.length, 1);
-assert.strictEqual(display[0].sourceId, 'r1');
 assert.deepStrictEqual(sortCloudTypes(['others', 'baidu', 'guangya', 'quark']), ['quark', 'baidu', 'others', 'guangya']);
 console.log('resultMerge OK');
 

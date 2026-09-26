@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, readBody } from "h3";
 import { requireAdminAuth } from "../../../utils/requireAdminAuth";
 import { getManagedResource } from "../../../core/services/managedResourceService";
-import { deleteCloudResource } from "../../../core/services/resourceTransferService";
+import { deleteCloudResource, type CloudProvider } from "../../../core/services/cloudResourceService";
 
 export default defineEventHandler(async (event) => {
   requireAdminAuth(event);
@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
   const link = resource.links[linkIndex];
   if (!link || (link.type !== "quark" && link.type !== "baidu")) throw createError({ statusCode: 400, statusMessage: "当前链接不是百度或夸克分享链接" });
   try {
-    const result = await deleteCloudResource({ provider: link.type, url: link.url, password: link.password });
+    const result = await deleteCloudResource({ provider: link.type as CloudProvider, url: link.url, password: link.password });
     return { code: 0, message: "deleted", data: { provider: link.type, deletedCount: result.deletedCount } };
   } catch (error) {
     throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : "云端资源删除失败" });

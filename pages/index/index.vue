@@ -54,8 +54,6 @@
       :show-back-to-top="showBackToTop"
       @update:filter-platform="filterPlatform = $event"
       @update:sort-type="sortType = $event"
-      @copy="captureResource"
-      @open="captureResource"
       @apply-time-sort="applyTimeSort"
       @scroll-to-top="scrollToTop" />
   </div>
@@ -182,7 +180,6 @@ const {
   searched,
   performSearch,
   resetSearch,
-  captureResource,
   pauseSearch,
   continueSearch,
 } = useSearch();

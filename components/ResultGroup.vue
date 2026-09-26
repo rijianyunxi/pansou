@@ -6,7 +6,7 @@
         <h2 class="platform-title">{{ title }}</h2>
         <span class="resource-count">{{ items.length }} 个分享链接</span>
       </div>
-      <button v-if="canToggleCollapse" class="expand-btn" type="button" @click="$emit('toggle')">
+      <button v-if="canToggleCollapse" class="expand-btn" type="button" @click="emit('toggle')">
         {{ expanded ? '收起' : '展开' }}
       </button>
     </header>
@@ -54,8 +54,7 @@
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 :aria-label="`打开${platformLabel(link.type)}链接`"
-                title="打开链接"
-                @click="open(link, resource)">
+                title="打开链接">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M14 3h7v7"></path>
                   <path d="M10 14 21 3"></path>
@@ -63,7 +62,7 @@
                 </svg>
                 打开链接
               </a>
-              <button class="copy-btn" type="button" :aria-label="`复制${platformLabel(link.type)}链接`" @click="copy(link, resource)">
+              <button class="copy-btn" type="button" :aria-label="`复制${platformLabel(link.type)}链接`" @click="copy(link)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <rect x="9" y="9" width="13" height="13" rx="2"></rect>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -77,7 +76,7 @@
     </ul>
 
     <footer v-if="!expanded && items.length > initialVisible" class="card-footer">
-      <button class="load-more-btn" type="button" @click="$emit('toggle')">
+      <button class="load-more-btn" type="button" @click="emit('toggle')">
         显示更多 {{ items.length - initialVisible }} 个资源
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M12 5v14M5 12l7 7 7-7"></path>
@@ -89,7 +88,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { Link, SearchResult } from "~/server/core/types/models";
+import type { Link } from "~/server/core/types/models";
 import type { DisplaySearchResult } from "~/utils/resultDisplay";
 
 const props = withDefaults(defineProps<{
@@ -110,8 +109,6 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: "toggle"): void;
-  (event: "copy", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
-  (event: "open", interaction: { link: Link; resource: SearchResult; resultId: string }): void;
 }>();
 
 const copiedKey = ref("");
@@ -121,7 +118,7 @@ function linkKey(link: Link): string {
   return `${link.type}|${link.url}|${link.password || ""}`;
 }
 
-async function copy(link: Link, resource: SearchResult) {
+async function copy(link: Link) {
   const key = linkKey(link);
   try {
     await navigator.clipboard.writeText(link.url);
@@ -129,17 +126,11 @@ async function copy(link: Link, resource: SearchResult) {
     return;
   }
   copiedKey.value = key;
-  const source = "sourceResource" in resource ? (resource as DisplaySearchResult).sourceResource : resource;
-  emit("copy", { link, resource: source, resultId: source.id });
   window.setTimeout(() => {
     if (copiedKey.value === key) copiedKey.value = "";
   }, 1600);
 }
 
-function open(link: Link, resource: SearchResult) {
-  const source = "sourceResource" in resource ? (resource as DisplaySearchResult).sourceResource : resource;
-  emit("open", { link, resource: source, resultId: source.id });
-}
 </script>
 
 <style scoped>

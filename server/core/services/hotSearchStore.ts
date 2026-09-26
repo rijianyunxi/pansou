@@ -13,12 +13,6 @@ export interface IHotSearchStore {
    */
   getHotSearches(limit: number): Promise<HotSearchItem[]>;
 
-  /**
-   * 获取热搜统计信息
-   */
-  getStats(): Promise<HotSearchStats>;
-
-
 }
 
 export interface HotSearchItem {
@@ -48,9 +42,4 @@ export function normalizeHotSearchTerm(value: string): string {
 /** Stable key used for de-duplicating hot-search terms, not content moderation. */
 export function compactHotSearchTerm(value: string): string {
   return normalizeHotSearchTerm(value).replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-export interface HotSearchStats {
-  total: number;
-  topTerms: HotSearchItem[];
 }

@@ -1,4 +1,4 @@
-import { compactHotSearchTerm, normalizeHotSearchTerm, type IHotSearchStore, type HotSearchItem, type HotSearchStats } from "./hotSearchStore";
+import { compactHotSearchTerm, normalizeHotSearchTerm, type IHotSearchStore, type HotSearchItem } from "./hotSearchStore";
 import { getSqliteDatabase } from "../storage/sqlite";
 
 const MAX_ENTRIES = 30;
@@ -56,8 +56,4 @@ export class SqliteHotSearchStore implements IHotSearchStore {
   }
 
   async getHotSearches(limit: number): Promise<HotSearchItem[]> { return read(limit); }
-  async getStats(): Promise<HotSearchStats> {
-    const all = read();
-    return { total: all.length, topTerms: all.slice(0, 10) };
-  }
 }

@@ -1,12 +1,12 @@
 {
-  "name": "panhub.shenzjd.com",
+  "name": "pansou",
   "version": "1.0.0",
-  "description": "PanHub · 全网最全的网盘搜索工具",
+  "description": "pansou · 全网最全的网盘搜索工具",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "cross-env PANHUB_BUILD_DIR=.nuxt-dev nuxt dev --dotenv .env.development --host ::",
-    "build": "cross-env PANHUB_BUILD_DIR=.nuxt nuxt build",
+    "dev": "cross-env BUILD_DIR=.nuxt-dev nuxt dev --dotenv .env.development --host ::",
+    "build": "cross-env BUILD_DIR=.nuxt nuxt build",
     "preview": "nuxt preview"
   },
   "dependencies": {

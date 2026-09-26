@@ -284,35 +284,32 @@
                   <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存微信配置' }}</button></div>
                 </form>
               </section>
-              <section v-else-if="activeSettingsTab === 'quark'" id="settings-panel-quark" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-quark">
+              <section v-else-if="activeSettingsTab === 'cloud'" id="settings-panel-cloud" class="feature-card admin-account-card settings-tab-panel cloud-operations-card" role="tabpanel" aria-labelledby="settings-tab-cloud">
                 <div class="policy-card-header">
                   <div class="policy-card-copy">
-                    <h2 id="quark-account-title">夸克网盘转存</h2>
-                    <p>审核页转存任务会使用这里保存的夸克网页登录 Cookie。Cookie 只保存在服务端数据库中，页面不会回显完整内容。</p>
+                    <h2 id="cloud-operations-title">云端操作</h2>
+                    <p>配置网盘网页登录 Cookie，用于资源管理中的云端删除。Cookie 只保存在服务端数据库中，页面不会回显完整内容。</p>
                   </div>
                   <div class="policy-card-actions">
-                    <span class="policy-count">{{ quarkSettings.configured ? '已配置' : '未配置' }}</span>
+                    <span class="policy-count">{{ Number(quarkSettings.configured) + Number(baiduSettings.configured) }}/2 已配置</span>
                   </div>
                 </div>
-                <form class="admin-account-form" @submit.prevent="saveQuarkSettings">
-                  <label class="policy-field"><span><strong>夸克 Cookie</strong><small>{{ quarkCookieHint }}</small></span><textarea v-model="quarkForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="quarkSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.quark.cn 的 Cookie 请求头粘贴到这里'" /></label>
-                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !quarkForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存夸克配置' }}</button><button v-if="quarkSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearQuarkSettings">清除 Cookie</button></div>
-                </form>
-              </section>
-              <section v-else-if="activeSettingsTab === 'baidu'" id="settings-panel-baidu" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-baidu">
-                <div class="policy-card-header">
-                  <div class="policy-card-copy">
-                    <h2 id="baidu-account-title">百度网盘转存</h2>
-                    <p>审核页转存任务会优先使用这里保存的百度网页登录 Cookie。请粘贴包含 BDUSS、BAIDUID、STOKEN 的完整 Cookie；内容只保存在服务端数据库中，页面不会回显。</p>
-                  </div>
-                  <div class="policy-card-actions">
-                    <span class="policy-count">{{ baiduSettings.configured ? '已配置' : '未配置' }}</span>
-                  </div>
+                <div class="cloud-account-grid">
+                  <section class="cloud-provider-card" aria-labelledby="quark-account-title">
+                    <div class="cloud-provider-heading"><div><h3 id="quark-account-title">夸克网盘</h3><p>用于删除夸克云端资源</p></div><span class="policy-count">{{ quarkSettings.configured ? '已配置' : '未配置' }}</span></div>
+                    <form class="admin-account-form" @submit.prevent="saveQuarkSettings">
+                      <label class="policy-field"><span><strong>夸克 Cookie</strong><small>{{ quarkCookieHint }}</small></span><textarea v-model="quarkForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="quarkSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.quark.cn 的 Cookie 请求头粘贴到这里'" /></label>
+                      <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !quarkForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存夸克配置' }}</button><button v-if="quarkSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearQuarkSettings">清除 Cookie</button></div>
+                    </form>
+                  </section>
+                  <section class="cloud-provider-card" aria-labelledby="baidu-account-title">
+                    <div class="cloud-provider-heading"><div><h3 id="baidu-account-title">百度网盘</h3><p>用于删除百度云端资源</p></div><span class="policy-count">{{ baiduSettings.configured ? '已配置' : '未配置' }}</span></div>
+                    <form class="admin-account-form" @submit.prevent="saveBaiduSettings">
+                      <label class="policy-field"><span><strong>百度 Cookie</strong><small>{{ baiduCookieHint }}</small></span><textarea v-model="baiduForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="baiduSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.baidu.com 的完整 Cookie 请求头粘贴到这里'" /></label>
+                      <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !baiduForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存百度配置' }}</button><button v-if="baiduSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearBaiduSettings">清除 Cookie</button></div>
+                    </form>
+                  </section>
                 </div>
-                <form class="admin-account-form" @submit.prevent="saveBaiduSettings">
-                  <label class="policy-field"><span><strong>百度 Cookie</strong><small>{{ baiduCookieHint }}</small></span><textarea v-model="baiduForm.cookie" rows="4" maxlength="50000" autocomplete="off" :placeholder="baiduSettings.configured ? '留空表示不修改已保存的 Cookie' : '从浏览器复制 pan.baidu.com 的完整 Cookie 请求头粘贴到这里'" /></label>
-                  <div class="admin-account-actions"><button class="primary-button" type="submit" :disabled="busy || !baiduForm.cookie.trim()"><ConsoleIcon name="check" :size="14" />{{ busy ? '保存中…' : '保存百度配置' }}</button><button v-if="baiduSettings.configured" class="secondary-button" type="button" :disabled="busy" @click="clearBaiduSettings">清除 Cookie</button></div>
-                </form>
               </section>
               <section v-else-if="activeSettingsTab === 'admin'" id="settings-panel-admin" class="feature-card admin-account-card settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-admin">
                 <div class="policy-card-header">
@@ -400,8 +397,7 @@ const title = computed(() => ({ users: "用户管理", logs: "搜索日志", pol
 const settingsTabs = [
   { key: "search", label: "搜索配置", description: "首页与搜索策略" },
   { key: "wechat", label: "微信小程序", description: "登录与小程序码" },
-  { key: "quark", label: "夸克转存", description: "夸克 Cookie" },
-  { key: "baidu", label: "百度转存", description: "百度 Cookie" },
+  { key: "cloud", label: "云端操作", description: "夸克 / 百度 Cookie" },
   { key: "admin", label: "管理员账号", description: "登录账号与密码" },
 ] as const;
 type SettingsTab = typeof settingsTabs[number]["key"];
@@ -674,13 +670,13 @@ async function saveQuarkSettings() {
     const result = await $fetch<any>("/api/settings/quark", { method: "PUT", body: { cookie: quarkForm.value.cookie } });
     quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
     quarkForm.value = { cookie: "" };
-    show("夸克 Cookie 已保存，审核页转存会立即使用新的登录态。");
+    show("夸克 Cookie 已保存，删云端操作会立即使用新的登录态。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }
 }
 
 async function clearQuarkSettings() {
-  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的夸克 Cookie 吗？清除后转存功能将不可用。")) return;
+  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的夸克 Cookie 吗？清除后删云端操作将不可用。")) return;
   busy.value = true;
   try {
     const result = await $fetch<any>("/api/settings/quark", { method: "PUT", body: { cookie: null } });
@@ -698,13 +694,13 @@ async function saveBaiduSettings() {
     const result = await $fetch<any>("/api/settings/baidu", { method: "PUT", body: { cookie: baiduForm.value.cookie } });
     baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
     baiduForm.value = { cookie: "" };
-    show("百度 Cookie 已保存，审核页转存会立即使用新的登录态。");
+    show("百度 Cookie 已保存，删云端操作会立即使用新的登录态。");
   } catch (error: any) { show(apiError(error), true); }
   finally { busy.value = false; }
 }
 
 async function clearBaiduSettings() {
-  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的百度 Cookie 吗？清除后转存功能将使用桥接器（如已配置）。")) return;
+  if (busy.value || !import.meta.client || !window.confirm("确定清除已保存的百度 Cookie 吗？清除后删云端操作将不可用。")) return;
   busy.value = true;
   try {
     const result = await $fetch<any>("/api/settings/baidu", { method: "PUT", body: { cookie: null } });
@@ -905,12 +901,36 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", handleModalKeydown
 @media (max-width: 820px) { .feature-heading { flex-direction: column; align-items: stretch; }.query-toolbar { align-items: stretch; }.query-input { min-width: 100%; }.query-select { width: 100%; flex: 1 1 100%; }.query-actions { width: 100%; }.query-actions .button { flex: 1 1 auto; } }
 @media (max-width: 820px) { .analytics-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .admin-data-table { min-width: 820px !important; }.query-toolbar { padding: 12px 16px; }.table-scroll { max-height: min(58vh, 560px); }.query-panel { top: calc(var(--console-topbar-height) + 6px); padding: 0; }.query-actions .button { flex: 1 1 calc(50% - 7px); }.admin-modal { padding: 20px; } }
+.cloud-account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 21px;
+}
+.cloud-provider-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #e2eaf4;
+  border-radius: 13px;
+  background: #fbfcfe;
+}
+.cloud-provider-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cloud-provider-heading h3 { margin: 0; color: #1f2937; font-size: 16px; }
+.cloud-provider-heading p { margin: 5px 0 0; color: #8290a3; font-size: 11px; }
+.cloud-provider-card .admin-account-form { grid-template-columns: 1fr; margin-top: 16px; }
+.cloud-provider-card .admin-account-form .policy-field:last-of-type { grid-column: auto; }
+@media (max-width: 700px) { .cloud-account-grid { grid-template-columns: 1fr; } }
 .settings-tabs {
   position: sticky;
   top: calc(var(--console-topbar-height) + 10px);
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   width: min(980px, 100%);
   margin: 0 auto 16px;

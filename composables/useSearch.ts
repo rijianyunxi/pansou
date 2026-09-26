@@ -146,17 +146,11 @@ export function useSearch() {
   }
   async function continueSearch(_options?: SearchOptions) { if (!state.value.paused || !snapshot) return; await run(snapshot); }
   function resetSearch() { cancelActiveRequests(); snapshot = undefined; searchLogId = undefined; accumulated = 0; state.value = initial(); }
-  function captureResource(interaction: { resource: SearchResult }) {
-    if (!snapshot || typeof window === "undefined") return;
-    const url = `${snapshot.apiBase.replace(/\/+$/, "")}/search/resources`;
-    const body = JSON.stringify({ resource: interaction.resource });
-    void fetch(url, { method: "POST", credentials: "include", keepalive: true, headers: { "Content-Type": "application/json" }, body }).catch(() => undefined);
-  }
   // Leaving the home page should abort the SSE request immediately instead of
   // letting the server continue querying sources for an abandoned search.
   onBeforeUnmount(cancelActiveRequests);
   return {
     state, loading: computed(() => state.value.loading), paused: computed(() => state.value.paused), error: computed(() => state.value.error), searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs), total: computed(() => state.value.total), results: computed(() => state.value.results), hasResults: computed(() => state.value.results.length > 0),
-    performSearch, resetSearch, captureResource, cancelActiveRequests, pauseSearch, continueSearch,
+    performSearch, resetSearch, cancelActiveRequests, pauseSearch, continueSearch,
   };
 }

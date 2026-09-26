@@ -134,15 +134,9 @@ POST `/api/search`：
 - `/admin/sources`：资源源配置、启停、导入导出、用户频道模板和来源诊断。
 - `/admin/monitor`：资源源和频道健康状态。
 
-### 审核页转存并替换
+### 云端资源删除
 
-资源审核列表中的上传图标会创建一个异步转存任务。任务成功后才会把原资源链接替换成管理员网盘的新分享链接，同时把旧链接写入 `resource_link_history`，避免转存失败或进程中断造成原链接丢失。
-
-- 夸克：服务端直接请求转存、任务轮询和创建分享接口，不依赖 `quarkpan` CLI。登录 Cookie 在管理后台「系统设置 → 夸克网盘转存」中填写，服务端只返回是否已配置和字符数，不会回显完整 Cookie。
-- 百度：优先使用管理后台「系统设置 → 百度网盘转存」中保存的网页登录 Cookie，直接完成校验、转存和创建分享；未配置 Cookie 时才使用 `PANHUB_BAIDU_TRANSFER_BIN` 外部桥接器。目标目录已有资源时会复用现有资源创建分享，避免重复转存。
-- 百度和夸克：资源管理列表的链接旁提供“删云端”操作，使用对应 Cookie 根据分享链接定位并删除云端资源；删除前会二次确认，盘搜中的链接记录不会自动删除。
-
-当前版本只做同网盘转存：夸克链接转夸克、百度链接转百度；跨网盘需要下载再上传，暂不自动执行。
+资源管理列表的链接旁提供“删云端”操作，使用对应网盘 Cookie 根据分享链接定位并删除云端资源；删除前会二次确认，盘搜中的链接记录不会自动删除。
 
 资源源的 transform 形式：
 
@@ -153,7 +147,8 @@ function transform(payload, $, context) {
     name: "资源标题",
     description: null,
     datetime: null,
-    links: [{ url: "https://pan.baidu.com/s/xxx", password: null }]
+    links: [{ url: "https://pan.baidu.com/s/xxx", password: null }],
+    images: ["https://example.com/poster.jpg"]
   }];
 }
 ```

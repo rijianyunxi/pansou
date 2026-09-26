@@ -10,7 +10,7 @@ miniprogram/
   utils/
     config.js        API_BASE（默认 https://pan.letus.lol，需与微信后台合法域名一致）
     auth.js          wx.request 封装、静默登录 ensureLogin、token 过期管理
-    api.js           session/热搜/频道 CRUD/validate/资源上报，401 清 token 重登重试一次
+    api.js           session/热搜/频道 CRUD/validate，401 清 token 重登重试一次
     searchStream.js  SSE 流式搜索：wx.request enableChunked + onChunkReceived +
                      流式 UTF-8 解码（处理跨块多字节截断）+ SSE 事件解析
     resultMerge.js   按链接 URL 合并（并查集，移植 server/core/utils/resultMerge.ts）
@@ -40,7 +40,7 @@ miniprogram/
 
 - `POST /api/account/wechat/login`：需在管理后台配置小程序 AppID/Secret（`/api/settings/wechat`）。
 - `POST /api/search`（SSE）、`GET /api/hot-searches`、`GET /api/account/session`、
-  `/api/account/channels*`、`POST /api/search/resources` 均已就绪，服务端无需改动
+  `/api/account/channels*` 均已就绪，服务端无需改动
   （小程序 `wx.request` 不发送 Origin 头，不受同源校验影响）。
 
 ## 行为说明
@@ -48,7 +48,6 @@ miniprogram/
 - **登录**：启动时静默 `wx.login`，用户无感知；登录失败仍可匿名搜索（服务端一次性匿名会话，限流按 IP）。
 - **搜索**：SSE 按来源流式返回，客户端按链接合并去重（与服务端同规则）；结果>30 条分页渲染。
 - **打开链接**：第三方网盘域名无法加入 web-view 业务域名白名单，故「打开链接/复制」均为复制到剪贴板，
-  前者额外提示去浏览器打开；磁力链接同样复制。两个动作均上报 `POST /api/search/resources` 进管理员收录队列
-  （该接口接受匿名会话，与网页匿名访客行为一致；上报失败静默）。
+  前者额外提示去浏览器打开；磁力链接同样复制。复制和打开不会向服务端提交资源收录请求。
 - **暂停/继续**：暂停即中断流并保留已收结果；继续会重新发起搜索（服务端有缓存，通常很快返回）。
 - **token 过期**：请求前检查 `expiresAt`，401 时清除本地会话、静默重登并重试一次。

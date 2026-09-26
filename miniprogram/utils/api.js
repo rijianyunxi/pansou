@@ -61,12 +61,4 @@ async function deleteChannel(name) {
   await requestWithLoginRetry(`/api/account/channels/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
-/**
- * Report a copied/opened resource into the admin capture queue. Best effort:
- * failures must never disturb the copy/open interaction itself.
- */
-function captureResource(resource) {
-  auth.request('/api/search/resources', { method: 'POST', data: { resource } }).catch(() => undefined);
-}
-
-module.exports = { requestWithLoginRetry, fetchSession, fetchHotSearches, fetchChannels, validateChannel, saveChannels, deleteChannel, captureResource };
+module.exports = { requestWithLoginRetry, fetchSession, fetchHotSearches, fetchChannels, validateChannel, saveChannels, deleteChannel };

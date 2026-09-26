@@ -1,4 +1,4 @@
-import type { IHotSearchStore, HotSearchItem, HotSearchStats } from "./hotSearchStore";
+import type { IHotSearchStore, HotSearchItem } from "./hotSearchStore";
 import { SqliteHotSearchStore } from "./sqliteHotSearchStore";
 
 /**
@@ -10,7 +10,6 @@ import { SqliteHotSearchStore } from "./sqliteHotSearchStore";
  */
 export class HotSearchService {
   private readonly store: IHotSearchStore;
-  private readonly storeType = "sqlite" as const;
 
   constructor() {
     this.store = new SqliteHotSearchStore();
@@ -24,12 +23,6 @@ export class HotSearchService {
     return this.store.getHotSearches(limit);
   }
 
-  async getStats(): Promise<{ total: number; topTerms: HotSearchItem[]; mode: string }> {
-    const stats = await this.store.getStats();
-    return { ...stats, mode: this.storeType };
-  }
-
-  getStoreType(): "sqlite" { return this.storeType; }
 }
 
 const HOT_SEARCH_SERVICE_KEY = "__panhub_hot_search_service_v2__";
@@ -42,4 +35,4 @@ export function getOrCreateHotSearchService(): HotSearchService {
   return service;
 }
 
-export type { HotSearchItem, HotSearchStats };
+export type { HotSearchItem };
