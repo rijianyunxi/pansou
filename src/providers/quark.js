@@ -34,6 +34,16 @@ export function isQuarkShareUrl(url) {
   return /pan\.quark\.cn\/s\//iu.test(String(url || ""));
 }
 
+/**
+ * 判断是否为有效的夸克 fid。
+ *
+ * 注意：夸克 fid 是 32 位**十六进制**串（如 4208105bd6034246836d3671829d9349），
+ * 不是纯数字——用 /^\d+$/ 校验会把绝大多数 fid 误杀。这里只排除空值与根目录 "0"。
+ */
+export function isQuarkFid(fid) {
+  return typeof fid === "string" && fid.length > 0 && fid !== "0" && /^[0-9A-Za-z_-]+$/u.test(fid);
+}
+
 export class QuarkClient {
   /** @param {{ cookie?: string }} options */
   constructor({ cookie } = {}) {
@@ -277,10 +287,15 @@ export class QuarkClient {
     const stoken = await this.shareToken(pwdId, passcode);
     const detail = await this.shareDetail(pwdId, stoken);
     const list = Array.isArray(detail?.data?.list) ? detail.data.list : [];
-    const fids = list.map((item) => String(item.fid || "")).filter((fid) => /^\d+$/u.test(fid) && fid !== "0");
-    if (!fids.length) throw new WangpanError("该分享中没有可删除的资源", { provider: "quark" });
-    const { deleted } = await this.deleteFiles(fids);
-    return { deleted, fids };
+    if (!list.length) throw new WangpanError("该分享根目录为空，没有可删除的资源", { provider: "quark" });
+
+    const targets = list
+      .map((item) => ({ fid: String(item.fid || ""), name: item.file_name || item.filename || "", isDir: Boolean(item.dir) }))
+      .filter((item) => isQuarkFid(item.fid));
+    if (!targets.length) throw new WangpanError("该分享中没有可删除的资源（未能识别有效 fid）", { provider: "quark" });
+
+    const { deleted } = await this.deleteFiles(targets.map((item) => item.fid));
+    return { deleted, fids: targets.map((item) => item.fid), names: targets.map((item) => item.name) };
   }
 
   /** 校验 Cookie 是否可用（尝试列根目录）。 */

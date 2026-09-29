@@ -197,12 +197,29 @@ const actions = {
 
   async del() {
     const url = $("delUrl").value.trim();
+    const password = $("delPwd").value.trim();
     if (!url) return toast("请填写你的分享链接", true);
-    if (!window.confirm("确认要按这个分享链接删除你网盘中的资源吗？此操作不可撤销。")) return;
+
+    // 先读出分享内容，把"要删什么"摆给用户确认，避免误删
+    loading("正在读取分享内容…");
+    const info = await api("/api/check", { url, password, provider: state.provider });
+    if (!info.valid) {
+      resultEl.className = "result";
+      resultEl.innerHTML = `<span class="pill err">✗ 链接无效</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(info.reason)}</p>`;
+      return;
+    }
+    const names = info.files.map((file) => file.name).filter(Boolean);
+    const preview = names.slice(0, 10).map((name) => `· ${name}`).join("\n");
+    const more = names.length > 10 ? `\n… 共 ${names.length} 项` : "";
+    if (!window.confirm(`确认从你的网盘删除以下 ${info.fileCount} 项？\n\n${preview}${more}\n\n此操作不可撤销。`)) return;
+
     loading("正在删除…");
-    const data = await api("/api/delete", { url, password: $("delPwd").value.trim(), provider: state.provider });
+    const data = await api("/api/delete", { url, password, provider: state.provider });
     resultEl.className = "result";
-    resultEl.innerHTML = `<span class="pill ok">✓ 已删除</span><div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>删除数量 <b>${data.deleted}</b></span></div>`;
+    resultEl.innerHTML =
+      `<span class="pill ok">✓ 已删除</span>` +
+      `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>删除数量 <b>${data.deleted}</b></span></div>` +
+      renderFiles((data.names || []).map((name) => ({ name })));
   },
 
   async mine() {

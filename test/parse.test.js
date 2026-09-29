@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseQuarkShareUrl, isQuarkShareUrl } from "../src/providers/quark.js";
+import { parseQuarkShareUrl, isQuarkShareUrl, isQuarkFid } from "../src/providers/quark.js";
 import { parseBaiduShareUrl, isBaiduShareUrl } from "../src/providers/baidu.js";
 import { detectProvider } from "../src/index.js";
 import { cookieValue, mergeSetCookies, formatSize } from "../src/lib/util.js";
@@ -13,6 +13,17 @@ test("夸克链接解析：pwd_id 与提取码", () => {
   assert.equal(isQuarkShareUrl("https://pan.quark.cn/s/abc"), true);
   assert.equal(isQuarkShareUrl("https://pan.baidu.com/s/1abc"), false);
   assert.throws(() => parseQuarkShareUrl("https://example.com/x"), /格式不正确/);
+});
+
+test("夸克 fid 校验：十六进制串必须被接受", () => {
+  // 回归用例：这个真实 fid 曾被 /^\d+$/ 误杀，导致"该分享中没有可删除的资源"
+  assert.equal(isQuarkFid("4208105bd6034246836d3671829d9349"), true);
+  assert.equal(isQuarkFid("123456"), true);
+  assert.equal(isQuarkFid("abcDEF123_-"), true);
+  assert.equal(isQuarkFid("0"), false);
+  assert.equal(isQuarkFid(""), false);
+  assert.equal(isQuarkFid(null), false);
+  assert.equal(isQuarkFid("has space"), false);
 });
 
 test("百度链接解析：surl 与提取码", () => {

@@ -126,14 +126,21 @@ async function main() {
     case "delete": {
       const url = positionals[0];
       if (!url) throw new WangpanError("缺少我的分享链接参数");
+
+      // 先读出将删除的内容，便于确认
+      const info = await checkLink(url, { provider, password });
+      if (!info.valid) throw new WangpanError(info.reason || "分享链接无效");
       if (!flags.yes) {
-        console.log("这是删除操作，请加 --yes 确认执行：");
-        console.log(`  node src/cli.js delete "${url}" --yes`);
+        console.log(`\n将从你的网盘删除 ${info.fileCount} 项：`);
+        printFileList(info.files);
+        console.log(`\n确认无误后加 --yes 执行：\n  node src/cli.js delete "${url}" --yes`);
         return;
       }
+
       const result = await deleteMyShare(url, { provider, password });
       if (asJson) return console.log(JSON.stringify(result, null, 2));
-      console.log(`\n✓ 已从你的网盘删除 ${result.deleted} 个资源`);
+      console.log(`\n✓ 已从你的网盘删除 ${result.deleted} 个资源：`);
+      for (const name of result.names || []) console.log(`  ${name}`);
       return;
     }
 
