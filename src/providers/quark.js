@@ -304,21 +304,25 @@ export class QuarkClient {
     const taskStartedAt = Date.now();
     if (inlineStatus !== 2 && taskId) taskResult = await this.waitTask(taskId);
     const taskMs = Date.now() - taskStartedAt;
-    // 诊断：把「转存了多少项」和「任务等了多久」对上，用来判断任务耗时是否与内容量相关
-    if (process.env.WANGPAN_LOG !== "0") {
-      console.log(
-        `[quark] 转存 ${list.length} 个顶层条目，任务等待 ${taskMs}ms` +
-          `（${inlineStatus === 2 ? "响应内已同步完成" : `轮询 ${this.trace.filter((t) => t.step === "等待任务").length} 次`}）`,
-      );
-    }
-    this.#reportSaveAs(taskResult, list.length);
 
     // 转存会在我网盘里生成**新的 fid**，不能复用分享里的 fid。
-    // 优先用任务响应里已经给出的新 fid，省掉一次「列目录」（实测 100~200ms）；
-    // 数量对不上（多条目转存、字段缺失）就回退到按名称列目录找回。
+    // 优先用任务响应里已经给出的新 fid，省掉一次「列目录」（A/B 实测中位 107ms）；
+    // 数量对不上、或建分享时发现该 fid 已失效，就回退到按名称列目录找回。
     // WANGPAN_NO_TOP_FIDS=1 可强制走回退路径，用于 A/B 回归对比。
     const knownFids =
       process.env.WANGPAN_NO_TOP_FIDS === "1" ? null : this.topFidsFromTask(taskResult, list.length);
+
+    if (process.env.WANGPAN_LOG !== "0") {
+      const waited =
+        inlineStatus === 2
+          ? "响应内已同步完成"
+          : `轮询 ${this.trace.filter((t) => t.step === "等待任务").length} 次`;
+      console.log(
+        `[quark] 转存 ${list.length} 个顶层条目，任务等待 ${taskMs}ms（${waited}）` +
+          ` ｜ ${knownFids ? "用任务给的 fid" : "回退列目录"}`,
+      );
+    }
+
     const share = autoShare ? await this.#shareSavedByName(names, toPdirFid, knownFids) : null;
     return { saved: true, taskId, toPdirFid, files: list.length, names, share };
   }
@@ -326,15 +330,16 @@ export class QuarkClient {
   /**
    * 从转存任务的返回里取出新生成的**顶层 fid**。
    *
-   * 夸克的任务响应带 `save_as.save_as_top_fids`。实测 6 次（文件数 2 / 19 / 57 / 844 / 1091）
-   * 该字段与「列目录找回的 fid」**完全一致**，所以可以直接拿来建分享，
-   * 省掉转存后那次列目录（实测 100~200ms）。
+   * 夸克的任务响应带 `save_as.save_as_top_fids`，多数情况下与「列目录找回的 fid」一致，
+   * 直接拿来建分享可以省掉转存后那次列目录（A/B 实测中位 **107ms**）。
    *
-   * 但只认**数量完全对得上**的情况：转存 N 个顶层条目就该拿到 N 个新 fid。
-   * 对不上（字段缺失、夸克改了返回结构、多条目转存）一律返回 null，
-   * 由调用方回退到列目录——猜错的最坏结果是慢一点，而不是分享到错误的文件。
+   * 但它**并不总是可信**，已知两种翻车场景：
+   *  1. 转存刚完成、文件还没就绪——任务报「已完成」，可立刻用它给的 fid 建分享会报「文件不存在」；
+   *  2. 同一个分享「转存 → 删除 → 再转存」——夸克会拿回上一次那个已被删除的 fid。
+   * 所以这里只做「数量对得上」的粗筛，真正的兜底在 `#shareSavedByName`：
+   * 建分享失败就退回列目录找回。猜错的最坏结果是慢一点，而不是分享到错误的文件。
    *
-   * @returns {string[]|null} 可用的新 fid 列表；不可信时返回 null
+   * @returns {string[]|null} 可用的新 fid 列表；数量对不上时返回 null
    */
   topFidsFromTask(taskResult, expectedCount) {
     if (!taskResult || !Number.isFinite(expectedCount) || expectedCount <= 0) return null;
@@ -343,25 +348,6 @@ export class QuarkClient {
     if (!Array.isArray(fids) || fids.length !== expectedCount) return null;
     const cleaned = fids.map((fid) => String(fid ?? "")).filter(Boolean);
     return cleaned.length === expectedCount ? cleaned : null;
-  }
-
-  /** 诊断：转存任务的返回里到底有什么，以及这次是否用上了任务给的新 fid。 */
-  #reportSaveAs(taskResult, expectedCount) {
-    if (process.env.WANGPAN_LOG === "0" || !taskResult) return;
-    const saveAs = taskResult.save_as ?? taskResult.task_resp?.data?.save_as ?? null;
-    const fids = this.topFidsFromTask(taskResult, expectedCount);
-    const enabled = process.env.WANGPAN_NO_TOP_FIDS !== "1";
-    const verdict = !fids
-      ? "不采用（数量对不上，回退列目录）"
-      : enabled
-        ? "采用（跳过列目录）"
-        : "可用，但被 WANGPAN_NO_TOP_FIDS 关掉（A/B 对照组）";
-    console.log(
-      `[quark] 转存任务字段：${Object.keys(taskResult).join(", ") || "(空)"}` +
-        ` ｜ 保存文件总数=${saveAs?.save_as_sum_num ?? "?"}` +
-        ` ｜ 任务给的新 fid=${Array.isArray(saveAs?.save_as_top_fids) ? saveAs.save_as_top_fids.join(",") : "无"}` +
-        ` ｜ ${verdict}`,
-    );
   }
 
   /**
