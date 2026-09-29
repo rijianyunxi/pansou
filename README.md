@@ -47,6 +47,27 @@ node src/cli.js ping --provider quark
 
 ---
 
+## 图形界面
+
+内置一个零依赖的本地 Web 服务：
+
+```bash
+npm run web        # 打开 http://127.0.0.1:8787
+```
+
+界面包含：
+
+- **登录态**：粘贴夸克 / 百度 Cookie，仅保存在进程内存，不落盘
+- **网盘选择**：自动识别 / 夸克 / 百度
+- **① 链接校验**：填链接即出「有效 / 无效 + 原因 + 文件清单」
+- **② 转存 / 去重**：勾选「先去重」→ 已有则直接复用并给出分享链接，没有则照常转存
+- **② 删除我的资源**：按自己的分享链接删除（带二次确认）
+- **我的网盘**：列目录
+
+服务只监听 `127.0.0.1`，可用 `WANGPAN_PORT` / `WANGPAN_HOST` 调整。
+
+---
+
 ## 命令用法
 
 ```bash
@@ -138,6 +159,8 @@ await deleteMyShare("https://pan.quark.cn/s/myshare");
 - **删除逻辑**：按"自己的分享链接"删除时，依赖分享内条目 id 与你网盘内 id 一致
   （自己的分享成立，转存来的第三方分享不成立）。
 - 转存目标目录：夸克用目录 fid，百度用目录路径字符串。
+- **超时保护**：请求与读响应体共用同一个超时窗口（`WANGPAN_TIMEOUT_MS`，默认 30s）。
+  上游返回响应头后 body 迟迟不结束时也能在超时后失败，不会无限挂起。
 
 ---
 
@@ -146,10 +169,12 @@ await deleteMyShare("https://pan.quark.cn/s/myshare");
 ```text
 src/
   cli.js               命令行入口
+  server.js            本地 Web 服务（图形界面后端）
   index.js             统一工作流（check / save / dedup / delete）
-  lib/util.js          Cookie、延时、格式化、错误类型
+  lib/util.js          Cookie、超时请求、延时、格式化、错误类型
   providers/quark.js   夸克实现
   providers/baidu.js   百度实现
+public/                图形界面（index.html / style.css / app.js）
 test/parse.test.js     离线自测（node:test，无需网络）
 docs/cloud-drive-research.md   各网盘接入能力调研
 ```

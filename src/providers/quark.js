@@ -7,7 +7,7 @@
  * 说明：夸克没有公开的第三方 API，这里走的是 Web 端（Cookie）接口，
  * 接口可能随官方改版失效。所有域名可通过环境变量覆盖。
  */
-import { WangpanError, cookieValue, delay, timeoutMs } from "../lib/util.js";
+import { WangpanError, cookieValue, delay, httpRequest } from "../lib/util.js";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -60,7 +60,7 @@ export class QuarkClient {
 
   async #request(base, path, { method = "GET", params = {}, body = null, referer = "https://pan.quark.cn/" } = {}) {
     const url = `${base}/${path}?${this.#params(params)}`;
-    const response = await fetch(url, {
+    const { ok, status, body: raw } = await httpRequest(url, {
       method,
       headers: {
         accept: "application/json, text/plain, */*",
@@ -72,19 +72,17 @@ export class QuarkClient {
         "user-agent": UA,
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs()),
     });
-    const text = await response.text();
     let payload;
     try {
-      payload = JSON.parse(text);
+      payload = JSON.parse(raw);
     } catch {
-      throw new WangpanError(`夸克接口 ${path} 返回非 JSON（HTTP ${response.status}）`, { provider: "quark" });
+      throw new WangpanError(`夸克接口 ${path} 返回非 JSON（HTTP ${status}）`, { provider: "quark" });
     }
     const code = Number(payload?.code);
-    const ok = response.ok && payload?.status !== "error" && (payload?.code === undefined || code === 0);
-    if (!ok) {
-      const message = payload?.message || payload?.error || `夸克接口请求失败（HTTP ${response.status}）`;
+    const success = ok && payload?.status !== "error" && (payload?.code === undefined || code === 0);
+    if (!success) {
+      const message = payload?.message || payload?.error || `夸克接口请求失败（HTTP ${status}）`;
       throw new WangpanError(message, { code: Number.isFinite(code) ? code : null, provider: "quark" });
     }
     return payload;

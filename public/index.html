@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>网盘工具箱 · 夸克 / 百度</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <div class="hero-main">
+          <div class="logo">盘</div>
+          <div>
+            <h1>网盘工具箱</h1>
+            <p class="sub">链接校验 · 转存 · 去重复用 · 删除　<span class="tag">夸克 / 百度</span></p>
+          </div>
+        </div>
+        <button class="ghost" id="toggleCookie">Cookie 设置</button>
+      </header>
+
+      <!-- Cookie 配置 -->
+      <section class="card collapse" id="cookiePanel">
+        <div class="card-head">
+          <h2>登录态</h2>
+          <span class="hint">仅保存在本机进程内存中，不写入磁盘，重启即失效</span>
+        </div>
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">
+              夸克 Cookie
+              <em class="badge" id="quarkState">未配置</em>
+            </span>
+            <textarea id="quarkCookie" rows="3" placeholder="从 pan.quark.cn 复制完整 Cookie"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">
+              百度 Cookie
+              <em class="badge" id="baiduState">未配置</em>
+            </span>
+            <textarea id="baiduCookie" rows="3" placeholder="从 pan.baidu.com/disk/main 复制完整 Cookie（需含 BDUSS / BAIDUID / STOKEN）"></textarea>
+          </label>
+        </div>
+        <div class="row-end">
+          <button class="primary" id="saveCookie">保存登录态</button>
+        </div>
+      </section>
+
+      <!-- 网盘选择 -->
+      <section class="card">
+        <div class="card-head">
+          <h2>网盘</h2>
+          <span class="hint">留「自动」则按链接域名识别</span>
+        </div>
+        <div class="segmented" id="providerSwitch">
+          <button data-provider="" class="active">自动识别</button>
+          <button data-provider="quark">夸克</button>
+          <button data-provider="baidu">百度</button>
+        </div>
+        <div class="row-end">
+          <button class="ghost small" id="pingBtn">检测登录态是否可用</button>
+        </div>
+      </section>
+
+      <!-- 主功能区 -->
+      <section class="card">
+        <div class="tabs" id="tabs">
+          <button data-tab="check" class="active">① 链接校验</button>
+          <button data-tab="save">② 转存 / 去重</button>
+          <button data-tab="del">② 删除我的资源</button>
+          <button data-tab="mine">我的网盘</button>
+        </div>
+
+        <!-- 校验 -->
+        <div class="panel active" data-panel="check">
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">分享链接</span>
+              <input id="checkUrl" type="text" placeholder="https://pan.quark.cn/s/xxxx  或  https://pan.baidu.com/s/1xxxx?pwd=abcd" />
+            </label>
+            <label class="field">
+              <span class="field-label">提取码（可选）</span>
+              <input id="checkPwd" type="text" placeholder="链接里带 pwd 可留空" />
+            </label>
+          </div>
+          <div class="row-end">
+            <button class="primary" data-action="check">校验链接</button>
+          </div>
+        </div>
+
+        <!-- 转存 -->
+        <div class="panel" data-panel="save">
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">分享链接</span>
+              <input id="saveUrl" type="text" placeholder="要转存到自己网盘的分享链接" />
+            </label>
+            <label class="field">
+              <span class="field-label">提取码（可选）</span>
+              <input id="savePwd" type="text" placeholder="链接里带 pwd 可留空" />
+            </label>
+            <label class="field">
+              <span class="field-label">目标目录 <em class="muted">夸克填目录 fid，百度填路径</em></span>
+              <input id="saveTo" type="text" placeholder="留空 = 根目录（百度可填 /来自分享）" />
+            </label>
+            <label class="field checkbox-field">
+              <input id="saveDedup" type="checkbox" checked />
+              <span>先去重：若我的网盘已有该资源，直接复用已有资源生成分享链接，不重复转存</span>
+            </label>
+          </div>
+          <div class="row-end">
+            <button class="primary" data-action="save">开始转存</button>
+          </div>
+        </div>
+
+        <!-- 删除 -->
+        <div class="panel" data-panel="del">
+          <div class="warn">按「我自己的分享链接」删除我网盘中的资源。此操作不可撤销，请谨慎使用。</div>
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">我的分享链接</span>
+              <input id="delUrl" type="text" placeholder="https://pan.quark.cn/s/我的分享" />
+            </label>
+            <label class="field">
+              <span class="field-label">提取码（可选）</span>
+              <input id="delPwd" type="text" placeholder="私密分享需要" />
+            </label>
+          </div>
+          <div class="row-end">
+            <button class="danger" data-action="del">删除资源</button>
+          </div>
+        </div>
+
+        <!-- 我的网盘 -->
+        <div class="panel" data-panel="mine">
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">目录 <em class="muted">夸克填 fid（默认 0），百度填路径</em></span>
+              <input id="mineDir" type="text" placeholder="留空使用默认根目录" />
+            </label>
+          </div>
+          <div class="row-end">
+            <button class="primary" data-action="mine">列出文件</button>
+          </div>
+        </div>
+
+        <div id="result" class="result empty">结果会显示在这里</div>
+      </section>
+
+      <footer class="foot">
+        本工具走网盘 Web 接口（非官方 API），可能随官方改版失效 · 仅供个人使用
+      </footer>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

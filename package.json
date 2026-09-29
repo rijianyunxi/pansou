@@ -12,6 +12,7 @@
   },
   "scripts": {
     "check": "node src/cli.js check",
+    "web": "node src/server.js",
     "test": "node --test test/*.test.js",
     "start": "node src/cli.js"
   }

@@ -7,7 +7,7 @@
  * 说明：走的是百度网盘 Web 端（Cookie）接口，需要完整 Cookie
  * （BDUSS / BDUSS_BFESS + BAIDUID + STOKEN）。接口可能随官方改版失效。
  */
-import { WangpanError, cookieValue, mergeSetCookies, delay, timeoutMs } from "../lib/util.js";
+import { WangpanError, cookieValue, mergeSetCookies, delay, httpRequest } from "../lib/util.js";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -76,7 +76,7 @@ export class BaiduClient {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) search.set(key, String(value));
     const url = `${BASE()}${path}${search.size ? `?${search.toString()}` : ""}`;
-    const response = await fetch(url, {
+    const { ok, status, headers, body: raw } = await httpRequest(url, {
       method,
       headers: {
         accept: text ? "text/html,application/xhtml+xml" : "application/json, text/plain, */*",
@@ -87,24 +87,22 @@ export class BaiduClient {
         "x-requested-with": "XMLHttpRequest",
       },
       body: body ? new URLSearchParams(body).toString() : undefined,
-      signal: AbortSignal.timeout(timeoutMs()),
     });
-    this.cookie = mergeSetCookies(this.cookie, response);
-    const raw = await response.text();
+    this.cookie = mergeSetCookies(this.cookie, headers);
     if (text) {
-      if (!response.ok) throw new WangpanError(`百度接口 ${path} 请求失败（HTTP ${response.status}）`, { provider: "baidu" });
+      if (!ok) throw new WangpanError(`百度接口 ${path} 请求失败（HTTP ${status}）`, { provider: "baidu" });
       return raw;
     }
     let payload;
     try {
       payload = JSON.parse(raw);
     } catch {
-      throw new WangpanError(`百度接口 ${path} 返回非 JSON（HTTP ${response.status}）`, { provider: "baidu" });
+      throw new WangpanError(`百度接口 ${path} 返回非 JSON（HTTP ${status}）`, { provider: "baidu" });
     }
     const errno = payload?.errno;
-    if (!response.ok || (errno !== undefined && Number(errno) !== 0)) {
-      throw new WangpanError(payload?.err_msg || payload?.show_msg || baiduErrorText(errno ?? response.status), {
-        code: errno ?? response.status,
+    if (!ok || (errno !== undefined && Number(errno) !== 0)) {
+      throw new WangpanError(payload?.err_msg || payload?.show_msg || baiduErrorText(errno ?? status), {
+        code: errno ?? status,
         provider: "baidu",
       });
     }
