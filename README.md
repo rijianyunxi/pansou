@@ -1,7 +1,7 @@
 # wangpan · 夸克 / 百度网盘链接工具
 
 > 纯 Node.js（零依赖）实现的网盘链接处理工具，支持 **夸克网盘** 与 **百度网盘**。
-> 这是 `wangpan` 分支的探索性实现，原 PanHub 项目代码在 `main` / `rust` 分支。
+> 提供本地图形界面（`npm run web`）。这是 `wangpan` 分支的探索性实现，原 PanHub 项目代码在 `main` / `rust` 分支。
 
 各网盘的接入能力调研见 [docs/cloud-drive-research.md](./docs/cloud-drive-research.md)。
 
@@ -9,13 +9,13 @@
 
 ## 能力
 
-| 能力 | 说明 | 命令 |
+| 能力 | 说明 | 界面 |
 |------|------|------|
-| ① 链接校验 | 判断分享链接是否有效（失效 / 提取码错误 / 正常），并列出文件清单 | `check` |
-| ② 转存到自己网盘 | 把分享内容保存到自己的网盘，**成功后自动生成「我自己的分享链接」并返回** | `save` |
-| ② 按自己的分享链接删除 | 用"我自己的分享链接"定位并删除我网盘中的资源（删除前先列出清单确认） | `delete` |
-| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘，命中则直接为已有资源创建分享 | `save --dedup` |
-| 辅助 | 列出我网盘目录 / 校验 Cookie 可用性 | `mine` / `ping` |
+| ① 链接校验 | 判断分享链接是否有效（失效 / 提取码错误 / 正常），并列出文件清单 | 「链接校验」标签页 |
+| ② 转存到自己网盘 | 把分享内容保存到自己的网盘，**成功后自动生成「我自己的分享链接」并返回** | 「转存 / 去重」标签页 |
+| ② 按自己的分享链接删除 | 用"我自己的分享链接"定位并删除我网盘中的资源（删除前先列出清单确认） | 「删除我的资源」标签页 |
+| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘，命中则直接为已有资源创建分享 | 「转存 / 去重」标签页的「先去重」 |
+| 辅助 | 列出我网盘目录 / 校验 Cookie 可用性 | 「我的网盘」/「检测登录态」 |
 
 > 重点实现的是 ① 和 ②；③ 为尽力实现（启发式匹配，见下）。
 
@@ -76,9 +76,11 @@ cp .env.example .env
 # 2. 跑一遍离线自测（不需要 Cookie）
 npm test
 
-# 3. 使用
-node src/cli.js ping --provider quark
+# 3. 启动图形界面
+npm run web        # 打开 http://127.0.0.1:8787
 ```
+
+> **改完 `.env` 需要重启服务**才会生效。
 
 ### 获取 Cookie
 
@@ -100,42 +102,53 @@ npm run web        # 打开 http://127.0.0.1:8787
 
 界面包含：
 
-- **登录态**：粘贴夸克 / 百度 Cookie，仅保存在进程内存，不落盘
+- **登录态**：粘贴夸克 / 百度 Cookie，仅保存在进程内存，不落盘；徽标会标明来源（来自 .env / 本次输入）
 - **网盘选择**：自动识别 / 夸克 / 百度
 - **① 链接校验**：填链接即出「有效 / 无效 + 原因 + 文件清单」
-- **② 转存 / 去重**：勾选「先去重」→ 已有则直接复用并给出分享链接，没有则照常转存
-- **② 删除我的资源**：按自己的分享链接删除（带二次确认）
+- **② 转存 / 去重**：勾选「先去重」→ 已有则直接复用并给出分享链接，没有则照常转存；
+  勾选「转存后生成我的分享链接」→ 转存成功即返回你自己的分享链接
+- **② 删除我的资源**：按自己的分享链接删除，**弹窗先列出将删除的条目**再确认
 - **我的网盘**：列目录
 
 服务只监听 `127.0.0.1`，可用 `WANGPAN_PORT` / `WANGPAN_HOST` 调整。
 
 ---
 
-## 命令用法
+## HTTP 接口
+
+界面就是调这些接口，也可以直接用：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/config` | 查看登录态（是否配置、长度、来源 `env`/`memory`/`none`） |
+| POST | `/api/config` | 设置登录态（空值不修改） |
+| POST | `/api/config/clear` | 清除界面填写的登录态，回落到 `.env` |
+| POST | `/api/check` | ① 校验链接 → `{ valid, reason, fileCount, files }` |
+| POST | `/api/save` | ② 转存（`dedup` 去重、`autoShare` 默认 true 返回分享链接） |
+| POST | `/api/delete` | ② 按自己的分享链接删除 |
+| POST | `/api/mine` | 列出我网盘目录 |
+| POST | `/api/ping` | 检测登录态是否可用 |
+
+请求体为 JSON。示例：
 
 ```bash
-# ① 校验链接是否有效
-node src/cli.js check "https://pan.quark.cn/s/abcdef123456"
-node src/cli.js check "https://pan.baidu.com/s/1abcdef?pwd=abcd"
+# ① 校验
+curl -X POST http://127.0.0.1:8787/api/check \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://pan.quark.cn/s/abcdef123456"}'
 
-# ② 转存到自己的网盘（百度 --to 传目录路径，夸克 --to 传目录 fid，默认根目录）
-#    默认转存成功后生成「我自己的分享链接」并打印；加 --no-share 可关闭
-node src/cli.js save "https://pan.quark.cn/s/abcdef123456"
-node src/cli.js save "https://pan.baidu.com/s/1abcdef?pwd=abcd" --to "/来自分享"
-node src/cli.js save "https://pan.quark.cn/s/abcdef123456" --no-share
+# ② 转存并拿到自己的分享链接（--to：百度传目录路径，夸克传目录 fid）
+curl -X POST http://127.0.0.1:8787/api/save \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://pan.quark.cn/s/abcdef123456","toDir":"","dedup":true,"autoShare":true}'
 
-# ③ 先检测是否已存在，命中则直接复用已有资源的分享链接
-node src/cli.js save "https://pan.quark.cn/s/abcdef123456" --dedup
-
-# ② 按"我自己的分享链接"删除我网盘中的资源（删除需 --yes 确认）
-node src/cli.js delete "https://pan.quark.cn/s/myshare" --yes
-
-# 辅助
-node src/cli.js mine --provider baidu --dir "/"
-node src/cli.js ping --provider baidu
+# ② 删除（删除前建议先调 /api/check 确认要删什么）
+curl -X POST http://127.0.0.1:8787/api/delete \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://pan.quark.cn/s/myshare"}'
 ```
 
-加 `--json` 可输出机器可读的 JSON。
+响应统一为 `{ ok: true, data }` 或 `{ ok: false, error, provider }`。
 
 ---
 
@@ -213,8 +226,7 @@ await deleteMyShare("https://pan.quark.cn/s/myshare");
 
 ```text
 src/
-  cli.js               命令行入口
-  server.js            本地 Web 服务（图形界面后端）
+  server.js            本地 Web 服务（界面后端 + HTTP 接口）
   index.js             统一工作流（check / save / dedup / delete）
   lib/util.js          Cookie、超时请求、延时、格式化、错误类型
   providers/quark.js   夸克实现
