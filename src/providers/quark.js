@@ -138,18 +138,23 @@ export class QuarkClient {
   /**
    * 轮询夸克异步任务，直到完成（status=2）或失败（status=3）。
    *
-   * 间隔策略：
-   *  - 上游会在 metadata.tq_gap 里给建议间隔（实测 100ms），优先采用它——
-   *    这是夸克自家前端用的节奏，照着走能更早发现任务完成（300ms 轮询平均要多等 150ms）。
-   *  - 上游没给建议值时，前 3 秒用 200ms 快轮询，之后降到 1 秒，避免长任务把请求打爆。
-   *  - minIntervalMs 是下限，防止上游给 0/极小值时把请求打爆。
+   * 关于间隔——这里有个坑，实测数据如下（一次 save 里 5 次轮询）：
+   *
+   *   上游 metadata.tq_gap 给的是 **500ms**（第二轮起 1000ms），这是给**长任务**的建议值。
+   *   但夸克这类元数据任务通常几十~几百毫秒就执行完了（实测首次轮询还在 status=1，
+   *   第二次就已经 status=2）。照 500ms 等，只是让我们**晚 500ms 才发现任务已经完成**——
+   *   实测一次 save 有 1.5s 全耗在这种白等上（3041ms 里各步网络耗时只有 1393ms）。
+   *
+   * 所以策略是：
+   *  - 前 fastWindowMs（3 秒）内**不让 tq_gap 拖慢我们**，按 fastIntervalMs（150ms）轮询；
+   *  - 超过 3 秒说明确实是长任务，这时才采纳 tq_gap（夹在 [minIntervalMs, slowIntervalMs]）。
    *
    * 另外「间隔」按**轮询周期**算：从请求发出那一刻起计时。若写成「请求返回后再 sleep 一个间隔」，
-   * 实际周期会变成 请求耗时 + 间隔（暖连接下也多出 ~80ms/轮），比建议值大出一截。
+   * 实际周期会变成 请求耗时 + 间隔（暖连接下也多出 ~80ms/轮）。
    */
   async waitTask(
     taskId,
-    { maxWaitMs = 120_000, minIntervalMs = 150, fastIntervalMs = 200, fastWindowMs = 3000, slowIntervalMs = 1000 } = {},
+    { maxWaitMs = 120_000, minIntervalMs = 120, fastIntervalMs = 150, fastWindowMs = 3000, slowIntervalMs = 1000 } = {},
   ) {
     const startedAt = Date.now();
     const deadline = startedAt + maxWaitMs;
@@ -164,14 +169,19 @@ export class QuarkClient {
       if (status === 2) return result.data;
       if (status === 3) throw new WangpanError(result?.data?.message || "夸克任务执行失败", { provider: "quark" });
 
+      const inFastWindow = Date.now() - startedAt < fastWindowMs;
+      let interval = inFastWindow ? fastIntervalMs : slowIntervalMs;
       const suggested = Number(result?.metadata?.tq_gap);
-      const elapsed = Date.now() - startedAt;
-      let interval = elapsed < fastWindowMs ? fastIntervalMs : slowIntervalMs;
-      if (Number.isFinite(suggested) && suggested > 0) {
+      if (Number.isFinite(suggested) && suggested > 0 && !inFastWindow) {
         interval = Math.min(Math.max(suggested, minIntervalMs), slowIntervalMs);
       }
       const remaining = interval - (Date.now() - pollStartedAt);
-      if (remaining > 0) await delay(remaining);
+      if (remaining > 0) {
+        await delay(remaining);
+        // 把等待也记进 trace：否则日志里各步之和会明显小于总耗时，
+        // 排查时看不出时间花在哪（这次就是 1.6s 藏在这里）。
+        this.#record("轮询等待", remaining);
+      }
     }
     throw new WangpanError("夸克任务超时", { provider: "quark" });
   }

@@ -91,7 +91,7 @@ function renderTimings(timings, elapsedMs = null) {
     .map(([step, ms]) => `${escapeHtml(step)} ${ms}ms`)
     .join(" · ");
   const wall = elapsedMs === null ? "" : `接口往返 <b>${elapsedMs} ms</b>（含本地开销）｜`;
-  return `<p class="timings">${wall}上游请求 ${timings.length} 次，各步累计 ${sum} ms：${parts}</p>`;
+  return `<p class="timings">${wall}共 ${timings.length} 步，累计 ${sum} ms：${parts}</p>`;
 }
 
 /* ---------- Cookie 配置 ---------- */
