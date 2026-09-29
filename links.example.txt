@@ -1,0 +1,17 @@
+# 回归测试用的分享链接清单
+#
+# 每行一个链接；空行与 # 开头的行会被忽略。
+# 如果分享需要提取码，在链接后用空格跟一个提取码，例如：
+#   https://pan.quark.cn/s/0008f0de04df 1234
+#
+# 用法（在仓库根目录）：
+#   cp links.example.txt links.txt
+#   npm run regress links.txt                 # 依次转存并统计耗时
+#   npm run regress links.txt -- --delete     # 存完再删掉，方便反复跑
+#   npm run regress links.txt -- --no-top-fids  # A/B 对照：强制走「列目录找回 fid」
+#   npm run regress links.txt -- --json out.json
+#
+# 注意：真实链接请写进 links.txt（已在 .gitignore 中忽略），不要写进本文件。
+
+# https://pan.quark.cn/s/xxxxxxxxxxxx
+# https://pan.quark.cn/s/yyyyyyyyyyyy

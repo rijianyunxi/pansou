@@ -16,7 +16,8 @@ logs/
 
 # 回归测试：真实分享链接清单与结果（本地用，勿提交）
 links.txt
-links.*.txt
+links*.txt
+!links.example.txt
 regress-*.json
 
 # IDE / OS
