@@ -170,9 +170,12 @@ export class QuarkClient {
 
   /**
    * 能力 2：把分享内容转存到自己的网盘。
-   * @returns {Promise<{saved:boolean, taskId:string|null, toPdirFid:string, files:Array}>}
+   * @param {object} options
+   * @param {string} [options.toPdirFid] 目标目录 fid，默认根目录 "0"
+   * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接
+   * @returns {Promise<{saved:boolean, taskId:string|null, toPdirFid:string, files:number, names:string[], share:object|null}>}
    */
-  async saveShare(url, password = null, { toPdirFid = "0" } = {}) {
+  async saveShare(url, password = null, { toPdirFid = "0", autoShare = false } = {}) {
     this.requireLogin();
     const { pwdId, passcode } = parseQuarkShareUrl(url, password);
     const stoken = await this.shareToken(pwdId, passcode);
@@ -182,6 +185,8 @@ export class QuarkClient {
 
     const fidList = list.map((item) => String(item.fid));
     const fidTokenList = list.map((item) => item.share_fid_token || "");
+    const names = list.map((item) => item.file_name || item.filename || "").filter(Boolean);
+
     const response = await this.#request(PC_BASE(), "share/sharepage/save", {
       method: "POST",
       body: {
@@ -197,7 +202,21 @@ export class QuarkClient {
     });
     const taskId = response?.data?.task_id ? String(response.data.task_id) : null;
     if (taskId) await this.waitTask(taskId);
-    return { saved: true, taskId, toPdirFid, files: list.length };
+
+    // 转存会在我网盘里生成**新的 fid**，所以必须回到目标目录按名称找回，不能复用分享里的 fid
+    const share = autoShare ? await this.#shareSavedByName(names, toPdirFid) : null;
+    return { saved: true, taskId, toPdirFid, files: list.length, names, share };
+  }
+
+  /** 在目标目录里按名称找回刚转存进来的条目，并生成分享链接。 */
+  async #shareSavedByName(names, pdirFid) {
+    if (!names.length) return null;
+    const mine = await this.listDir(pdirFid);
+    const wanted = new Set(names);
+    let matched = mine.filter((item) => wanted.has(item.name));
+    if (!matched.length) matched = mine.filter((item) => names.some((name) => item.name.startsWith(name)));
+    if (!matched.length) return null;
+    return this.createShare(matched.map((item) => item.fid), {});
   }
 
   /** 列出自己网盘某个目录下的文件。 */

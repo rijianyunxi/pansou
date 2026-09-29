@@ -44,18 +44,19 @@ export async function checkLink(url, { provider = null, password = null } = {}) 
  * 能力 2：把链接资源转存到自己的网盘。
  * @param {object} options
  * @param {string} [options.toDir] 百度：目标目录路径（默认 "/"）；夸克：目标目录 fid（默认 "0"）
- * @returns {Promise<{provider:string, saved:boolean, count:number, target:string, taskId?:string}>}
+ * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接并一并返回
+ * @returns {Promise<{provider:string, saved:boolean, count:number, target:string, names:string[], share:object|null}>}
  */
-export async function saveLink(url, { provider = null, password = null, toDir = null } = {}) {
+export async function saveLink(url, { provider = null, password = null, toDir = null, autoShare = false } = {}) {
   const target = resolve(provider, url);
   const client = createClient(target);
   if (target === "quark") {
     const toPdirFid = toDir || "0";
-    const result = await client.saveShare(url, password, { toPdirFid });
+    const result = await client.saveShare(url, password, { toPdirFid, autoShare });
     return { provider: target, ...result, count: result.files, target: toPdirFid };
   }
   const targetDir = toDir || "/";
-  const result = await client.saveShare(url, password, { toDir: targetDir });
+  const result = await client.saveShare(url, password, { toDir: targetDir, autoShare });
   return { provider: target, ...result, target: targetDir };
 }
 
@@ -81,7 +82,11 @@ export async function checkExistingAndShare(url, { provider = null, password = n
     return { provider: target, alreadyExists: exists, matched, missing, share: null };
   }
 
-  const ids = matched.map((pair) => (target === "quark" ? pair.mine.fid : pair.mine.fsId));
+  const ids = matched
+    .map((pair) => (target === "quark" ? pair.mine.fid : pair.mine.fsId))
+    .filter((id) => id);
+  if (!ids.length) return { provider: target, alreadyExists: exists, matched, missing, share: null };
+
   const share = await client.createShare(ids, {});
   return { provider: target, alreadyExists: true, matched, missing, share };
 }

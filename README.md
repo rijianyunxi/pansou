@@ -12,12 +12,55 @@
 | 能力 | 说明 | 命令 |
 |------|------|------|
 | ① 链接校验 | 判断分享链接是否有效（失效 / 提取码错误 / 正常），并列出文件清单 | `check` |
-| ② 转存到自己网盘 | 把分享内容保存到自己的网盘 | `save` |
-| ② 按自己的分享链接删除 | 用"我自己的分享链接"定位并删除我网盘中的资源 | `delete` |
-| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘（名称+大小，百度优先 md5），命中则直接为已有资源创建分享 | `save --dedup` |
+| ② 转存到自己网盘 | 把分享内容保存到自己的网盘，**成功后自动生成「我自己的分享链接」并返回** | `save` |
+| ② 按自己的分享链接删除 | 用"我自己的分享链接"定位并删除我网盘中的资源（删除前先列出清单确认） | `delete` |
+| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘，命中则直接为已有资源创建分享 | `save --dedup` |
 | 辅助 | 列出我网盘目录 / 校验 Cookie 可用性 | `mine` / `ping` |
 
-> 重点实现的是 ① 和 ②；③ 为尽力实现（基于文件名+大小/md5 的启发式匹配）。
+> 重点实现的是 ① 和 ②；③ 为尽力实现（启发式匹配，见下）。
+
+### 去重逻辑（能力 ③）
+
+`checkExistingAndShare()` 的判定过程：
+
+1. 解析分享，拿到根目录条目（名称、大小，百度还可能有 md5）；
+2. 列出**你网盘目标目录**的内容；
+3. 逐条比对：
+   - **百度**：优先 `md5` 精确匹配；缺失时退化为 `名称 + 大小`
+   - **夸克**：`名称 + 大小`（文件夹 size 恒为 0，实际等价于按名称匹配）
+4. 命中任意一条 → `alreadyExists = true`，并对**你网盘里已有的那份**直接建分享；
+   全部未命中 → `alreadyExists = false`，走正常转存。
+
+**已知误判**：文件被改名、同名不同内容、同内容不同大小都会判错。百度有 md5 时最可靠；
+夸克没有 md5，只能靠名称+大小。
+
+### 转存后返回分享链接（能力 ②）
+
+转存会在你网盘里生成**新的 id**（夸克新 fid、百度新 fs_id），和分享里的 id 不同。
+所以 `save` 的流程是：
+
+```
+转存成功 → 回到目标目录按名称找回刚保存的条目 → 对它创建分享 → 返回 { url, password }
+```
+
+返回结构：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "provider": "quark",
+    "mode": "saved",
+    "saved": true,
+    "count": 1,
+    "target": "0",
+    "names": ["快乐星球电视剧版（1-5季）"],
+    "share": { "url": "https://pan.quark.cn/s/xxxx", "password": "abcd" }
+  }
+}
+```
+
+若转存成功但在目标目录找不到对应条目，`share` 为 `null`，界面会给出提示。
 
 ---
 
@@ -76,8 +119,10 @@ node src/cli.js check "https://pan.quark.cn/s/abcdef123456"
 node src/cli.js check "https://pan.baidu.com/s/1abcdef?pwd=abcd"
 
 # ② 转存到自己的网盘（百度 --to 传目录路径，夸克 --to 传目录 fid，默认根目录）
+#    默认转存成功后生成「我自己的分享链接」并打印；加 --no-share 可关闭
 node src/cli.js save "https://pan.quark.cn/s/abcdef123456"
 node src/cli.js save "https://pan.baidu.com/s/1abcdef?pwd=abcd" --to "/来自分享"
+node src/cli.js save "https://pan.quark.cn/s/abcdef123456" --no-share
 
 # ③ 先检测是否已存在，命中则直接复用已有资源的分享链接
 node src/cli.js save "https://pan.quark.cn/s/abcdef123456" --dedup

@@ -60,6 +60,12 @@ function printFileList(files) {
   }
 }
 
+function printShare(share) {
+  if (!share?.url) return;
+  console.log(`\n你的分享链接：${share.url}`);
+  if (share.password) console.log(`提取码：${share.password}`);
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const { flags, positionals } = parseArgs(rest);
 const asJson = Boolean(flags.json);
@@ -93,22 +99,25 @@ async function main() {
       const url = positionals[0];
       if (!url) throw new WangpanError("缺少分享链接参数");
       const target = typeof flags.to === "string" ? flags.to : null;
+      const autoShare = !flags["no-share"]; // 默认转存后生成"我自己的分享链接"
 
       if (flags.dedup) {
-        const dup = await checkExistingAndShare(url, { provider, password, dir: target });
+        const dup = await checkExistingAndShare(url, { provider, password, dir: target, autoShare });
         if (asJson) return console.log(JSON.stringify(dup, null, 2));
         if (dup.alreadyExists) {
           console.log(`\n✓ 已存在于你的网盘，直接复用已有资源：`);
           for (const pair of dup.matched) console.log(`  ${pair.mine.name}（${formatSize(pair.mine.size)}）`);
-          if (dup.share) console.log(`\n分享链接：${dup.share.url}${dup.share.password ? `  提取码：${dup.share.password}` : ""}`);
+          printShare(dup.share);
           return;
         }
         console.log("\n未在网盘中发现同名资源，开始转存…");
       }
 
-      const result = await saveLink(url, { provider, password, toDir: target });
+      const result = await saveLink(url, { provider, password, toDir: target, autoShare });
       if (asJson) return console.log(JSON.stringify(result, null, 2));
       console.log(`\n✓ 转存成功：${result.count} 个文件 → ${result.target}`);
+      if (autoShare && !result.share) console.log("  注意：未能在目标目录定位到刚保存的条目，未生成分享链接。");
+      printShare(result.share);
       return;
     }
 
@@ -155,10 +164,14 @@ async function main() {
     default:
       console.log(`用法：
   node src/cli.js check  <分享链接> [--pwd 提取码] [--provider quark|baidu]
-  node src/cli.js save   <分享链接> [--pwd 提取码] [--to 目标目录] [--dedup]
+  node src/cli.js save   <分享链接> [--pwd 提取码] [--to 目标目录] [--dedup] [--no-share]
   node src/cli.js mine   [--provider quark|baidu] [--dir 目录]
   node src/cli.js delete <我的分享链接> [--pwd 提取码] [--yes]
   node src/cli.js ping   [--provider quark|baidu]
+
+说明：
+  save 默认在转存成功后生成"我自己的分享链接"并打印；加 --no-share 可关闭。
+  --dedup 会先查你网盘是否已有该资源，命中则直接复用已有资源生成分享链接。
 
 示例：
   node src/cli.js check "https://pan.quark.cn/s/abcdef123456"

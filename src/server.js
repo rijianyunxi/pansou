@@ -133,10 +133,14 @@ const routes = {
 
   "POST /api/save": async (body) => {
     const provider = resolveProvider(body.provider, body.url);
-    const options = { provider, password: body.password ?? null, toDir: body.toDir || null };
+    const toDir = body.toDir || null;
+    // 默认转存成功后生成"我自己的分享链接"并随响应返回；传 autoShare:false 可关闭
+    const autoShare = body.autoShare !== false;
+    const options = { provider, password: body.password ?? null, toDir, autoShare };
+
     // 勾选去重：先查我网盘是否已有 → 有则复用已有资源建分享；没有则照常转存
     if (body.dedup) {
-      const dup = await checkExistingAndShare(body.url, { ...options, autoShare: true });
+      const dup = await checkExistingAndShare(body.url, { provider, password: options.password, dir: toDir, autoShare });
       if (dup.alreadyExists) return { provider, mode: "reused", ...dup };
       const saved = await saveLink(body.url, options);
       return { provider, mode: "saved", dedup: { matched: [], missing: dup.missing }, ...saved };

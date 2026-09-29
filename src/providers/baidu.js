@@ -213,15 +213,19 @@ export class BaiduClient {
 
   /**
    * 能力 2：把分享内容转存到自己的网盘。
-   * @returns {Promise<{saved:boolean, count:number, target:string}>}
+   * @param {object} options
+   * @param {string} [options.toDir] 目标目录路径，默认 "/"
+   * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接
+   * @returns {Promise<{saved:boolean, count:number, target:string, names:string[], share:object|null}>}
    */
-  async saveShare(url, password = null, { toDir = "/" } = {}) {
+  async saveShare(url, password = null, { toDir = "/", autoShare = false } = {}) {
     const { surl, password: sharePassword } = parseBaiduShareUrl(url, password);
     const { shareId, uk } = await this.resolveShareMeta(surl, url);
     const sekey = await this.verifyShare(surl, sharePassword);
     const items = await this.listShareRoot(shareId, uk, surl, sekey);
     const fsIds = items.map((item) => Number(item.fs_id)).filter((id) => Number.isSafeInteger(id) && id > 0);
     if (!fsIds.length) throw new WangpanError("百度分享中没有可转存的文件", { provider: "baidu" });
+    const names = items.map((item) => item.server_filename || "").filter(Boolean);
 
     const bdstoken = await this.loadToken();
     const result = await this.#request("/share/transfer", {
@@ -244,7 +248,21 @@ export class BaiduClient {
     });
     const failed = Array.isArray(result?.info) ? result.info.filter((item) => Number(item.errno) !== 0) : [];
     if (failed.length) throw new WangpanError(baiduErrorText(failed[0].errno), { code: failed[0].errno, provider: "baidu" });
-    return { saved: true, count: fsIds.length, target: toDir };
+
+    // 转存会生成新的 fs_id，回到目标目录按名称找回后再分享
+    const share = autoShare ? await this.#shareSavedByName(names, toDir) : null;
+    return { saved: true, count: fsIds.length, target: toDir, names, share };
+  }
+
+  /** 在目标目录里按名称找回刚转存进来的条目，并生成分享链接。 */
+  async #shareSavedByName(names, dir) {
+    if (!names.length) return null;
+    const mine = await this.listDir(dir);
+    const wanted = new Set(names);
+    let matched = mine.filter((item) => wanted.has(item.name));
+    if (!matched.length) matched = mine.filter((item) => names.some((name) => item.name.startsWith(name)));
+    if (!matched.length) return null;
+    return this.createShare(matched.map((item) => item.fsId));
   }
 
   /** 列出自己网盘某个目录下的文件。 */
