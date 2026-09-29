@@ -239,28 +239,33 @@ export function closeAgents() {
  * 网盘接口在 drive-pc.quark.cn），每个域名的首次请求都要付一次握手（实测 220~360ms）。
  * 页面加载时先把连接握好，用户真正点操作时就是热连接（~80ms）。
  *
- * 这里故意只打一个无关紧要的请求（GET /）——只要握手完成、socket 进池就达到目的，
- * 响应内容不重要，失败也完全不影响主流程。
+ * 两个坑，都是实测出来的：
+ *  1. **必须用 GET，不能用 HEAD**。Node 的 http.Agent 不会把 HEAD 请求的 socket
+ *     放回 freeSockets，下一条请求仍会重新握手。
+ *  2. **要打真实的 API 路径，不能只打域名根**。打 `GET https://drive.quark.cn/` 时
+ *     socket 有时留不下来（首步 141ms / 83ms 来回跳）；打 API 路径则稳定在 80ms。
  *
- * 注意必须用 **GET 而不是 HEAD**：实测 Node 的 http.Agent 不会把 HEAD 请求的 socket
- * 放回 freeSockets（下一条请求仍会重新握手），GET 才会正常复用。
+ * 响应内容不重要（大概率是个错误响应），只要握手完成、socket 进池就达到目的；
+ * 失败也完全不影响主流程。
  */
 export async function warmConnections(urls) {
-  const origins = [...new Set(urls.filter(Boolean).map((url) => {
+  const byOrigin = new Map();
+  for (const url of urls.filter(Boolean)) {
     try {
-      return new URL(url).origin;
+      const parsed = new URL(url);
+      if (!byOrigin.has(parsed.origin)) byOrigin.set(parsed.origin, parsed.toString());
     } catch {
-      return null;
+      /* 忽略非法地址 */
     }
-  }).filter(Boolean))];
+  }
   await Promise.all(
-    origins.map(async (origin) => {
+    [...byOrigin.values()].map(async (url) => {
       try {
-        await pooledRequest(origin, { method: "GET", headers: { "user-agent": "PanHub-Warmup/1.0" } });
+        await pooledRequest(url, { method: "GET", headers: { "user-agent": "PanHub-Warmup/1.0" } });
       } catch {
         /* 预热失败无所谓 */
       }
     }),
   );
-  return origins;
+  return [...byOrigin.keys()];
 }

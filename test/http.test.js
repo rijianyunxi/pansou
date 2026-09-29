@@ -107,7 +107,9 @@ test("非法 URL 立即报错，不会挂起", async () => {
 });
 
 test("预热连接：预握手后首个真实请求不再付冷连接代价", async () => {
+  const seen = [];
   const server = await startServer((request, response) => {
+    seen.push(request.url);
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
   });
@@ -120,6 +122,8 @@ test("预热连接：预握手后首个真实请求不再付冷连接代价", as
     // 预热：只握手、不发业务请求
     const origins = await warmConnections([`${server.origin}/1/clouddrive`, `${server.origin}/other-path`]);
     assert.deepEqual(origins, [server.origin], "同一域名的多个地址应去重成一次预热");
+    // 回归用例：必须打真实 API 路径，不能只打域名根（实测打根时 socket 有时留不下来）
+    assert.equal(seen.at(-1), "/1/clouddrive", "预热应打真实 API 路径");
 
     // 预热不该新建连接（复用刚才那条）
     assert.equal(server.connections(), 1, "预热应复用已有连接而不是新建");
