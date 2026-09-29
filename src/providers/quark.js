@@ -311,40 +311,64 @@ export class QuarkClient {
           `（${inlineStatus === 2 ? "响应内已同步完成" : `轮询 ${this.trace.filter((t) => t.step === "等待任务").length} 次`}）`,
       );
     }
-    this.#reportSaveAs(taskResult);
+    this.#reportSaveAs(taskResult, list.length);
 
-    // 转存会在我网盘里生成**新的 fid**，所以必须回到目标目录按名称找回，不能复用分享里的 fid
-    const share = autoShare ? await this.#shareSavedByName(names, toPdirFid) : null;
+    // 转存会在我网盘里生成**新的 fid**，不能复用分享里的 fid。
+    // 优先用任务响应里已经给出的新 fid，省掉一次「列目录」（实测 100~200ms）；
+    // 数量对不上（多条目转存、字段缺失）就回退到按名称列目录找回。
+    const knownFids = this.topFidsFromTask(taskResult, list.length);
+    const share = autoShare ? await this.#shareSavedByName(names, toPdirFid, knownFids) : null;
     return { saved: true, taskId, toPdirFid, files: list.length, names, share };
   }
 
   /**
-   * 诊断（临时）：转存任务的返回里到底有没有新 fid？
+   * 从转存任务的返回里取出新生成的**顶层 fid**。
    *
-   * 如果有稳定可用的 `save_as.save_as_top_fids`，就能省掉后面那次「列目录」（实测 ~140ms）。
-   * 但之前没有可复现的第三方分享来验证这个字段，猜错会分享到**错误的文件**，
-   * 所以先只观察、不改变行为：每次真实转存打一行日志，攒够样本再决定要不要用。
+   * 夸克的任务响应带 `save_as.save_as_top_fids`。实测 6 次（文件数 2 / 19 / 57 / 844 / 1091）
+   * 该字段与「列目录找回的 fid」**完全一致**，所以可以直接拿来建分享，
+   * 省掉转存后那次列目录（实测 100~200ms）。
+   *
+   * 但只认**数量完全对得上**的情况：转存 N 个顶层条目就该拿到 N 个新 fid。
+   * 对不上（字段缺失、夸克改了返回结构、多条目转存）一律返回 null，
+   * 由调用方回退到列目录——猜错的最坏结果是慢一点，而不是分享到错误的文件。
+   *
+   * @returns {string[]|null} 可用的新 fid 列表；不可信时返回 null
    */
-  #reportSaveAs(taskResult) {
+  topFidsFromTask(taskResult, expectedCount) {
+    if (!taskResult || !Number.isFinite(expectedCount) || expectedCount <= 0) return null;
+    const saveAs = taskResult.save_as ?? taskResult.task_resp?.data?.save_as ?? null;
+    const fids = saveAs?.save_as_top_fids;
+    if (!Array.isArray(fids) || fids.length !== expectedCount) return null;
+    const cleaned = fids.map((fid) => String(fid ?? "")).filter(Boolean);
+    return cleaned.length === expectedCount ? cleaned : null;
+  }
+
+  /** 诊断：转存任务的返回里到底有什么，以及这次是否用上了任务给的新 fid。 */
+  #reportSaveAs(taskResult, expectedCount) {
     if (process.env.WANGPAN_LOG === "0" || !taskResult) return;
     const saveAs = taskResult.save_as ?? taskResult.task_resp?.data?.save_as ?? null;
-    const fids = saveAs?.save_as_top_fids ?? saveAs?.save_as_select_top_fids ?? null;
+    const fids = this.topFidsFromTask(taskResult, expectedCount);
     console.log(
       `[quark] 转存任务字段：${Object.keys(taskResult).join(", ") || "(空)"}` +
-        ` ｜ save_as=${saveAs ? JSON.stringify(saveAs) : "无"}` +
-        ` ｜ 可用新 fid=${Array.isArray(fids) && fids.length ? fids.join(",") : "无"}`,
+        ` ｜ 保存文件总数=${saveAs?.save_as_sum_num ?? "?"}` +
+        ` ｜ 任务给的新 fid=${Array.isArray(saveAs?.save_as_top_fids) ? saveAs.save_as_top_fids.join(",") : "无"}` +
+        ` ｜ ${fids ? "采用（跳过列目录）" : "不采用（数量对不上，回退列目录）"}`,
     );
   }
 
-  /** 在目标目录里按名称找回刚转存进来的条目，并生成分享链接。 */
-  async #shareSavedByName(names, pdirFid) {
+  /**
+   * 在目标目录里按名称找回刚转存进来的条目，并生成分享链接。
+   * @param {string[]|null} knownFids 任务响应里已给出的新 fid；给了就跳过列目录
+   */
+  async #shareSavedByName(names, pdirFid, knownFids = null) {
+    if (knownFids?.length) return this.createShare(knownFids, {});
     if (!names.length) return null;
     const mine = await this.listDir(pdirFid);
     const wanted = new Set(names);
     let matched = mine.filter((item) => wanted.has(item.name));
     if (!matched.length) matched = mine.filter((item) => names.some((name) => item.name.startsWith(name)));
     if (!matched.length) return null;
-    // 诊断用：这是「列目录」找回的 fid，可以和上面 save_as 里的新 fid 对比
+    // 回退路径：这是「列目录」找回的 fid
     if (process.env.WANGPAN_LOG !== "0") {
       console.log(`[quark] 列目录找回的 fid：${matched.map((item) => `${item.name}=${item.fid}`).join(", ")}`);
     }

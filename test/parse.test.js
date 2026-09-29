@@ -90,6 +90,30 @@ test("百度去重比对：优先 md5，退化到名称 + 大小", () => {
   assert.equal(dir.exists, false);
 });
 
+test("夸克转存任务的新 fid：数量对得上才采用，否则回退列目录", () => {
+  const client = new QuarkClient({});
+  const task = (fids, extra = {}) => ({ status: 2, save_as: { save_as_top_fids: fids, save_as_sum_num: 19, ...extra } });
+
+  // 正常：1 个顶层条目 → 1 个新 fid
+  assert.deepEqual(client.topFidsFromTask(task(["abc123"]), 1), ["abc123"]);
+  // 多条目也对得上
+  assert.deepEqual(client.topFidsFromTask(task(["a1", "b2"]), 2), ["a1", "b2"]);
+  // 嵌在 task_resp 里也认
+  assert.deepEqual(client.topFidsFromTask({ task_resp: { data: { save_as: { save_as_top_fids: ["x9"] } } } }, 1), ["x9"]);
+
+  // 数量对不上 → 一律回退（宁可慢一点，也不能分享到错误的文件）
+  assert.equal(client.topFidsFromTask(task(["a1"]), 2), null);
+  assert.equal(client.topFidsFromTask(task(["a1", "b2"]), 1), null);
+  // 字段缺失 / 空 / 非法入参
+  assert.equal(client.topFidsFromTask(task([]), 1), null);
+  assert.equal(client.topFidsFromTask({ status: 2 }, 1), null);
+  assert.equal(client.topFidsFromTask(null, 1), null);
+  assert.equal(client.topFidsFromTask(task(["a1"]), 0), null);
+  assert.equal(client.topFidsFromTask(task(["a1"]), undefined), null);
+  // 有空洞也算对不上（过滤后数量变了）
+  assert.equal(client.topFidsFromTask(task(["a1", ""]), 2), null);
+});
+
 test("体积格式化", () => {
   assert.equal(formatSize(0), "0 B");
   assert.equal(formatSize(1024), "1.00 KB");
