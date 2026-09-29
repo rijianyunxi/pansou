@@ -59,16 +59,36 @@ function renderFiles(files, { showHit = false } = {}) {
 }
 
 /* ---------- Cookie 配置 ---------- */
+const COOKIE_HINT = {
+  quark: "从 pan.quark.cn 复制完整 Cookie",
+  baidu: "从 pan.baidu.com/disk/main 复制完整 Cookie（需含 BDUSS / BAIDUID / STOKEN）",
+};
+
+/**
+ * 徽标与提示语必须反映真实来源，避免出现"未配置却说已从 .env 读取"这种自相矛盾。
+ * source：env = 来自 .env；memory = 界面本次填写；none = 未配置。
+ */
+function applyCookieState(provider, info) {
+  const el = $(`${provider}Cookie`);
+  const badge = $(`${provider}State`);
+  badge.className = `badge${info.configured ? " on" : ""}`;
+  if (!info.configured) {
+    badge.textContent = "未配置";
+    el.placeholder = COOKIE_HINT[provider];
+    return;
+  }
+  badge.textContent = `已配置 ${info.length} 字符 · ${info.source === "env" ? "来自 .env" : "本次输入"}`;
+  el.placeholder =
+    info.source === "env"
+      ? `已从 .env 读取（${info.length} 字符），留空表示不修改`
+      : `已在界面设置（${info.length} 字符），重新填写可覆盖`;
+}
+
 async function refreshConfig() {
   try {
     const data = await api("/api/config");
-    const apply = (el, badge, info) => {
-      badge.textContent = info.configured ? `已配置 ${info.length} 字符` : "未配置";
-      badge.className = `badge${info.configured ? " on" : ""}`;
-      if (!el.value && info.configured) el.placeholder = "已从 .env 读取，留空表示不修改";
-    };
-    apply($("quarkCookie"), $("quarkState"), data.quark);
-    apply($("baiduCookie"), $("baiduState"), data.baidu);
+    applyCookieState("quark", data.quark);
+    applyCookieState("baidu", data.baidu);
   } catch (error) {
     toast(error.message, true);
   }
@@ -76,16 +96,36 @@ async function refreshConfig() {
 
 $("toggleCookie").addEventListener("click", () => $("cookiePanel").classList.toggle("open"));
 
+// 深链：#cookie 直接展开登录态面板
+if (location.hash === "#cookie") $("cookiePanel").classList.add("open");
+
 $("saveCookie").addEventListener("click", async () => {
+  const quark = $("quarkCookie").value.trim();
+  const baidu = $("baiduCookie").value.trim();
+  if (!quark && !baidu) return toast("两个输入框都是空的，没有可保存的内容", true);
   try {
-    await api("/api/config", { quark: $("quarkCookie").value, baidu: $("baiduCookie").value });
+    await api("/api/config", { quark, baidu });
     $("quarkCookie").value = "";
     $("baiduCookie").value = "";
     await refreshConfig();
-    toast("登录态已保存到内存");
+    toast("登录态已更新");
   } catch (error) {
     toast(error.message, true);
   }
+});
+
+document.querySelectorAll("[data-clear]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const provider = button.dataset.clear;
+    try {
+      await api("/api/config/clear", { provider });
+      $(`${provider}Cookie`).value = "";
+      await refreshConfig();
+      toast(`${providerName(provider)} 登录态已清除`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 });
 
 /* ---------- 网盘选择 ---------- */

@@ -78,6 +78,13 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 }
 .badge.on { background: var(--ok-soft); color: var(--ok); }
 
+/* 行内文字按钮（如"清除"） */
+.link {
+  border: none; background: transparent; color: #9aa4b2; font-size: 12px;
+  padding: 0; margin-left: auto; text-decoration: underline; text-underline-offset: 2px;
+}
+.link:hover { color: var(--err); }
+
 /* 按钮 */
 button { font-family: inherit; cursor: pointer; border-radius: 10px; font-size: 14px; transition: all 0.15s; }
 .primary { background: var(--accent); color: #fff; border: 1px solid var(--accent); padding: 9px 18px; font-weight: 600; }

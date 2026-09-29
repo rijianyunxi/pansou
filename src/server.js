@@ -43,6 +43,14 @@ function clientFor(provider, override) {
   return createClient(provider, { cookie: cookieFor(provider, override) });
 }
 
+/** 登录态信息：是否已配置、长度、来源（memory=界面填写 / env=.env / none=未配置）。 */
+function cookieInfo(provider) {
+  const envKey = provider === "quark" ? "QUARK_COOKIE" : "BAIDU_COOKIE";
+  const value = cookieFor(provider);
+  if (!value) return { configured: false, length: 0, source: "none" };
+  return { configured: true, length: value.length, source: memoryCookies[provider] ? "memory" : process.env[envKey] ? "env" : "none" };
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -98,17 +106,23 @@ function resolveProvider(provider, url) {
 
 const routes = {
   "GET /api/config": () => ({
-    quark: { configured: cookieFor("quark").length > 0, length: cookieFor("quark").length, fromEnv: Boolean(process.env.QUARK_COOKIE) },
-    baidu: { configured: cookieFor("baidu").length > 0, length: cookieFor("baidu").length, fromEnv: Boolean(process.env.BAIDU_COOKIE) },
+    quark: cookieInfo("quark"),
+    baidu: cookieInfo("baidu"),
   }),
 
+  // 只在填写了非空值时才覆盖；留空 = 不修改（与界面提示一致）
   "POST /api/config": (body) => {
-    if (typeof body.quark === "string") memoryCookies.quark = body.quark.trim();
-    if (typeof body.baidu === "string") memoryCookies.baidu = body.baidu.trim();
-    return {
-      quark: { configured: cookieFor("quark").length > 0, length: cookieFor("quark").length },
-      baidu: { configured: cookieFor("baidu").length > 0, length: cookieFor("baidu").length },
-    };
+    if (typeof body.quark === "string" && body.quark.trim()) memoryCookies.quark = body.quark.trim();
+    if (typeof body.baidu === "string" && body.baidu.trim()) memoryCookies.baidu = body.baidu.trim();
+    return { quark: cookieInfo("quark"), baidu: cookieInfo("baidu") };
+  },
+
+  // 清除界面填写的覆盖值（若来源是 .env，清除后仍会回落到 .env）
+  "POST /api/config/clear": (body) => {
+    const provider = body.provider;
+    if (provider !== "quark" && provider !== "baidu") throw new WangpanError("provider 必须是 quark 或 baidu");
+    memoryCookies[provider] = "";
+    return { quark: cookieInfo("quark"), baidu: cookieInfo("baidu") };
   },
 
   "POST /api/check": async (body) => {

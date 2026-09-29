@@ -26,20 +26,22 @@
           <span class="hint">仅保存在本机进程内存中，不写入磁盘，重启即失效</span>
         </div>
         <div class="grid-2">
-          <label class="field">
-            <span class="field-label">
-              夸克 Cookie
+          <div class="field">
+            <div class="field-label">
+              <label for="quarkCookie">夸克 Cookie</label>
               <em class="badge" id="quarkState">未配置</em>
-            </span>
+              <button type="button" class="link" data-clear="quark">清除</button>
+            </div>
             <textarea id="quarkCookie" rows="3" placeholder="从 pan.quark.cn 复制完整 Cookie"></textarea>
-          </label>
-          <label class="field">
-            <span class="field-label">
-              百度 Cookie
+          </div>
+          <div class="field">
+            <div class="field-label">
+              <label for="baiduCookie">百度 Cookie</label>
               <em class="badge" id="baiduState">未配置</em>
-            </span>
+              <button type="button" class="link" data-clear="baidu">清除</button>
+            </div>
             <textarea id="baiduCookie" rows="3" placeholder="从 pan.baidu.com/disk/main 复制完整 Cookie（需含 BDUSS / BAIDUID / STOKEN）"></textarea>
-          </label>
+          </div>
         </div>
         <div class="row-end">
           <button class="primary" id="saveCookie">保存登录态</button>
