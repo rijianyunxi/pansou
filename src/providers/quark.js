@@ -298,13 +298,33 @@ export class QuarkClient {
     });
     const taskId = response?.data?.task_id ? String(response.data.task_id) : null;
     // 夸克对这类元数据任务常常**同步执行完**（响应里带 task_sync: true 与完整的 task_resp）。
-    // 已经完成就不用再轮询，能省掉 1~4 个来回（每轮 ~380ms）。没有 task_resp 时照旧轮询。
+    // 已经完成就不用再轮询，能省掉 1~4 个来回。没有 task_resp 时照旧轮询。
     const inlineStatus = Number(response?.data?.task_resp?.data?.status);
-    if (inlineStatus !== 2 && taskId) await this.waitTask(taskId);
+    let taskResult = response?.data?.task_resp?.data || null;
+    if (inlineStatus !== 2 && taskId) taskResult = await this.waitTask(taskId);
+    this.#reportSaveAs(taskResult);
 
     // 转存会在我网盘里生成**新的 fid**，所以必须回到目标目录按名称找回，不能复用分享里的 fid
     const share = autoShare ? await this.#shareSavedByName(names, toPdirFid) : null;
     return { saved: true, taskId, toPdirFid, files: list.length, names, share };
+  }
+
+  /**
+   * 诊断（临时）：转存任务的返回里到底有没有新 fid？
+   *
+   * 如果有稳定可用的 `save_as.save_as_top_fids`，就能省掉后面那次「列目录」（实测 ~140ms）。
+   * 但之前没有可复现的第三方分享来验证这个字段，猜错会分享到**错误的文件**，
+   * 所以先只观察、不改变行为：每次真实转存打一行日志，攒够样本再决定要不要用。
+   */
+  #reportSaveAs(taskResult) {
+    if (process.env.WANGPAN_LOG === "0" || !taskResult) return;
+    const saveAs = taskResult.save_as ?? taskResult.task_resp?.data?.save_as ?? null;
+    const fids = saveAs?.save_as_top_fids ?? saveAs?.save_as_select_top_fids ?? null;
+    console.log(
+      `[quark] 转存任务字段：${Object.keys(taskResult).join(", ") || "(空)"}` +
+        ` ｜ save_as=${saveAs ? JSON.stringify(saveAs) : "无"}` +
+        ` ｜ 可用新 fid=${Array.isArray(fids) && fids.length ? fids.join(",") : "无"}`,
+    );
   }
 
   /** 在目标目录里按名称找回刚转存进来的条目，并生成分享链接。 */
@@ -315,6 +335,10 @@ export class QuarkClient {
     let matched = mine.filter((item) => wanted.has(item.name));
     if (!matched.length) matched = mine.filter((item) => names.some((name) => item.name.startsWith(name)));
     if (!matched.length) return null;
+    // 诊断用：这是「列目录」找回的 fid，可以和上面 save_as 里的新 fid 对比
+    if (process.env.WANGPAN_LOG !== "0") {
+      console.log(`[quark] 列目录找回的 fid：${matched.map((item) => `${item.name}=${item.fid}`).join(", ")}`);
+    }
     return this.createShare(matched.map((item) => item.fid), {});
   }
 
