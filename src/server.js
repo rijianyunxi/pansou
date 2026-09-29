@@ -143,7 +143,12 @@ const routes = {
       const dup = await checkExistingAndShare(body.url, { provider, password: options.password, dir: toDir, autoShare });
       if (dup.alreadyExists) return { provider, mode: "reused", ...dup };
       const saved = await saveLink(body.url, options);
-      return { provider, mode: "saved", dedup: { matched: [], missing: dup.missing }, ...saved };
+      return {
+        provider,
+        mode: "saved",
+        ...saved,
+        timings: [...(dup.timings || []), ...(saved.timings || [])],
+      };
     }
     const saved = await saveLink(body.url, options);
     return { provider, mode: "saved", ...saved };
@@ -158,14 +163,16 @@ const routes = {
   "POST /api/mine": async (body) => {
     const provider = resolveProvider(body.provider, null);
     const dir = body.dir || (provider === "quark" ? "0" : "/");
-    const files = await clientFor(provider, body.cookie).listDir(dir);
-    return { provider, dir, files };
+    const client = clientFor(provider, body.cookie);
+    const files = await client.listDir(dir);
+    return { provider, dir, files, timings: client.trace };
   },
 
   "POST /api/ping": async (body) => {
     const provider = resolveProvider(body.provider, null);
-    const result = await clientFor(provider, body.cookie).ping();
-    return { provider, ...result };
+    const client = clientFor(provider, body.cookie);
+    const result = await client.ping();
+    return { provider, ...result, timings: client.trace };
   },
 };
 

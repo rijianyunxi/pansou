@@ -140,6 +140,9 @@ button { font-family: inherit; cursor: pointer; border-radius: 10px; font-size: 
 .share-box { margin-top: 12px; background: #f7f9fc; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .share-box code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all; }
 
+/* 上游耗时分布 */
+.timings { margin: 12px 0 0; color: #9aa4b2; font-size: 12px; line-height: 1.7; }
+
 /* toast */
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px);

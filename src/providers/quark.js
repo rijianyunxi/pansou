@@ -48,6 +48,13 @@ export class QuarkClient {
   /** @param {{ cookie?: string }} options */
   constructor({ cookie } = {}) {
     this.cookie = String(cookie || process.env.QUARK_COOKIE || "").trim();
+    /** 每个上游请求的耗时记录，用于诊断性能瓶颈。 */
+    this.trace = [];
+  }
+
+  /** 记录一步耗时，供上层做性能诊断。 */
+  #record(step, ms) {
+    this.trace.push({ step, ms });
   }
 
   requireLogin() {
@@ -68,21 +75,29 @@ export class QuarkClient {
     return params.toString();
   }
 
-  async #request(base, path, { method = "GET", params = {}, body = null, referer = "https://pan.quark.cn/" } = {}) {
+  async #request(base, path, { method = "GET", params = {}, body = null, referer = "https://pan.quark.cn/", step = null } = {}) {
     const url = `${base}/${path}?${this.#params(params)}`;
-    const { ok, status, body: raw } = await httpRequest(url, {
-      method,
-      headers: {
-        accept: "application/json, text/plain, */*",
-        "accept-language": "zh-CN,zh;q=0.9",
-        "content-type": "application/json",
-        cookie: this.cookie,
-        origin: "https://pan.quark.cn",
-        referer,
-        "user-agent": UA,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await httpRequest(url, {
+        method,
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "accept-language": "zh-CN,zh;q=0.9",
+          "content-type": "application/json",
+          cookie: this.cookie,
+          origin: "https://pan.quark.cn",
+          referer,
+          "user-agent": UA,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } finally {
+      // 放在 finally 里，超时/失败的那一步也能被记录下来
+      this.#record(step || path, Date.now() - startedAt);
+    }
+    const { ok, status, body: raw } = response;
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -98,16 +113,33 @@ export class QuarkClient {
     return payload;
   }
 
-  /** 轮询夸克异步任务，直到完成（status=2）或失败（status=3）。 */
-  async waitTask(taskId, { maxWaitMs = 120_000, intervalMs = 1000 } = {}) {
-    const deadline = Date.now() + maxWaitMs;
+  /**
+   * 轮询夸克异步任务，直到完成（status=2）或失败（status=3）。
+   *
+   * 间隔策略：任务大多在 1~3 秒内完成，所以前 3 秒用 300ms 快轮询尽快拿到结果，
+   * 之后降到 1 秒避免长任务把请求打爆；若上游返回 metadata.tq_gap（建议间隔）则优先采用。
+   * 原实现固定等 1 秒，短任务会被白白拖慢最多 1 秒。
+   */
+  async waitTask(taskId, { maxWaitMs = 120_000, fastIntervalMs = 300, fastWindowMs = 3000, slowIntervalMs = 1000 } = {}) {
+    const startedAt = Date.now();
+    const deadline = startedAt + maxWaitMs;
     let retryIndex = 0;
     while (Date.now() < deadline) {
-      const result = await this.#request(PC_BASE(), "task", { params: { task_id: taskId, retry_index: retryIndex++ } });
+      const result = await this.#request(PC_BASE(), "task", {
+        params: { task_id: taskId, retry_index: retryIndex++ },
+        step: "等待任务",
+      });
       const status = Number(result?.data?.status);
       if (status === 2) return result.data;
       if (status === 3) throw new WangpanError(result?.data?.message || "夸克任务执行失败", { provider: "quark" });
-      await delay(intervalMs);
+
+      const suggested = Number(result?.metadata?.tq_gap);
+      const elapsed = Date.now() - startedAt;
+      let interval = elapsed < fastWindowMs ? fastIntervalMs : slowIntervalMs;
+      if (Number.isFinite(suggested) && suggested > 0) {
+        interval = Math.min(Math.max(suggested, fastIntervalMs), slowIntervalMs);
+      }
+      await delay(interval);
     }
     throw new WangpanError("夸克任务超时", { provider: "quark" });
   }
@@ -117,6 +149,7 @@ export class QuarkClient {
     const response = await this.#request(SHARE_BASE(), "share/sharepage/token", {
       method: "POST",
       body: { pwd_id: pwdId, passcode: passcode || "", support_visit_limit_private_share: true },
+      step: "取分享令牌",
     });
     const stoken = response?.data?.stoken;
     if (!stoken) throw new WangpanError("夸克分享令牌获取失败，请检查链接或提取码", { provider: "quark" });
@@ -136,6 +169,7 @@ export class QuarkClient {
         _sort: "file_type:asc,file_name:asc",
       },
       referer: `https://pan.quark.cn/s/${pwdId}`,
+      step: "读分享详情",
     });
   }
 
@@ -199,6 +233,7 @@ export class QuarkClient {
         to_pdir_fid: toPdirFid,
       },
       referer: `https://pan.quark.cn/s/${pwdId}`,
+      step: "转存",
     });
     const taskId = response?.data?.task_id ? String(response.data.task_id) : null;
     if (taskId) await this.waitTask(taskId);
@@ -230,6 +265,7 @@ export class QuarkClient {
         _fetch_total: 1,
         _sort: "file_type:asc,updated_at:desc",
       },
+      step: "列目录",
     });
     const list = Array.isArray(response?.data?.list) ? response.data.list : [];
     return list.map((item) => ({
@@ -242,11 +278,10 @@ export class QuarkClient {
   }
 
   /**
-   * 能力 3：判断分享中的文件是否已存在于自己网盘（按 名称 + 大小 匹配）。
-   * @returns {Promise<{exists:boolean, matched:Array, missing:Array}>}
+   * 纯比对逻辑：把分享条目与"我网盘目录"条目按 名称 + 大小 匹配（无网络请求）。
+   * 拆出来是为了让调用方能把 listDir 与解析分享并行执行。
    */
-  async findExisting(files, pdirFid = "0") {
-    const mine = await this.listDir(pdirFid);
+  matchExisting(files, mine) {
     const key = (name, size) => `${String(name).trim()}::${Number(size)}`;
     const index = new Map(mine.map((item) => [key(item.name, item.size), item]));
     const matched = [];
@@ -259,12 +294,21 @@ export class QuarkClient {
     return { exists: matched.length > 0, matched, missing };
   }
 
+  /**
+   * 能力 3：判断分享中的文件是否已存在于自己网盘（按 名称 + 大小 匹配）。
+   * @returns {Promise<{exists:boolean, matched:Array, missing:Array}>}
+   */
+  async findExisting(files, pdirFid = "0") {
+    return this.matchExisting(files, await this.listDir(pdirFid));
+  }
+
   /** 对自己网盘中的文件创建分享链接。 */
   async createShare(fids, { title = "PanHub 分享", expiredType = 1 } = {}) {
     this.requireLogin();
     const created = await this.#request(PC_BASE(), "share", {
       method: "POST",
       body: { fid_list: fids, title, url_type: 1, expired_type: expiredType, expire_time: 0 },
+      step: "创建分享",
     });
     let shareId = created?.data?.task_resp?.data?.share_id || created?.data?.share_id || "";
     const taskId = created?.data?.task_id;
@@ -276,6 +320,7 @@ export class QuarkClient {
     const passwordInfo = await this.#request(PC_BASE(), "share/password", {
       method: "POST",
       body: { share_id: shareId },
+      step: "取分享链接",
     });
     return {
       shareId,
@@ -291,6 +336,7 @@ export class QuarkClient {
     const response = await this.#request(PC_BASE(), "file/delete", {
       method: "POST",
       body: { action_type: 2, filelist: fids, exclude_fids: [] },
+      step: "删除",
     });
     const taskId = response?.data?.task_id;
     if (taskId) await this.waitTask(String(taskId));

@@ -37,7 +37,7 @@ export async function checkLink(url, { provider = null, password = null } = {}) 
   const target = resolve(provider, url);
   const client = createClient(target);
   const result = await client.validateShare(url, password);
-  return { provider: target, ...result };
+  return { provider: target, ...result, timings: client.trace };
 }
 
 /**
@@ -53,11 +53,11 @@ export async function saveLink(url, { provider = null, password = null, toDir = 
   if (target === "quark") {
     const toPdirFid = toDir || "0";
     const result = await client.saveShare(url, password, { toPdirFid, autoShare });
-    return { provider: target, ...result, count: result.files, target: toPdirFid };
+    return { provider: target, ...result, count: result.files, target: toPdirFid, timings: client.trace };
   }
   const targetDir = toDir || "/";
   const result = await client.saveShare(url, password, { toDir: targetDir, autoShare });
-  return { provider: target, ...result, target: targetDir };
+  return { provider: target, ...result, target: targetDir, timings: client.trace };
 }
 
 /**
@@ -72,34 +72,38 @@ export async function saveLink(url, { provider = null, password = null, toDir = 
 export async function checkExistingAndShare(url, { provider = null, password = null, dir = null, autoShare = true } = {}) {
   const target = resolve(provider, url);
   const client = createClient(target);
-  const meta = await client.validateShare(url, password);
+  const scanDir = dir ?? (target === "quark" ? "0" : "/");
+
+  // 列目录与解析分享互不依赖，并行执行可省一个网络来回
+  const [meta, mine] = await Promise.all([client.validateShare(url, password), client.listDir(scanDir)]);
   if (!meta.valid) throw new WangpanError(meta.reason || "分享链接无效", { provider: target });
 
-  const scanDir = dir ?? (target === "quark" ? "0" : "/");
-  const { exists, matched, missing } = await client.findExisting(meta.files, scanDir);
+  const { exists, matched, missing } = client.matchExisting(meta.files, mine);
 
   if (!exists || !autoShare) {
-    return { provider: target, alreadyExists: exists, matched, missing, share: null };
+    return { provider: target, alreadyExists: exists, matched, missing, share: null, timings: client.trace };
   }
 
   const ids = matched
     .map((pair) => (target === "quark" ? pair.mine.fid : pair.mine.fsId))
     .filter((id) => id);
-  if (!ids.length) return { provider: target, alreadyExists: exists, matched, missing, share: null };
+  if (!ids.length) {
+    return { provider: target, alreadyExists: exists, matched, missing, share: null, timings: client.trace };
+  }
 
   const share = await client.createShare(ids, {});
-  return { provider: target, alreadyExists: true, matched, missing, share };
+  return { provider: target, alreadyExists: true, matched, missing, share, timings: client.trace };
 }
 
 /**
  * 按"我自己的分享链接"删除我网盘里的资源。
- * @returns {Promise<{provider:string, deleted:number}>}
+ * @returns {Promise<{provider:string, deleted:number, timings:Array}>}
  */
 export async function deleteMyShare(url, { provider = null, password = null } = {}) {
   const target = resolve(provider, url);
   const client = createClient(target);
   const result = await client.deleteByShareUrl(url, password);
-  return { provider: target, ...result };
+  return { provider: target, ...result, timings: client.trace };
 }
 
 /** 校验当前 Cookie 是否可用。 */

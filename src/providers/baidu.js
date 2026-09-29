@@ -56,6 +56,13 @@ export class BaiduClient {
   constructor({ cookie } = {}) {
     this.cookie = String(cookie || process.env.BAIDU_COOKIE || "").trim();
     this.bdstoken = "";
+    /** 每个上游请求的耗时记录，用于诊断性能瓶颈。 */
+    this.trace = [];
+  }
+
+  /** 记录一步耗时，供上层做性能诊断。 */
+  #record(step, ms) {
+    this.trace.push({ step, ms });
   }
 
   requireLogin() {
@@ -72,22 +79,30 @@ export class BaiduClient {
     return Buffer.from(cookieValue(this.cookie, "BAIDUID"), "utf8").toString("base64");
   }
 
-  async #request(path, { method = "GET", params = {}, body = null, referer = `${BASE()}/disk/main`, text = false } = {}) {
+  async #request(path, { method = "GET", params = {}, body = null, referer = `${BASE()}/disk/main`, text = false, step = null } = {}) {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) search.set(key, String(value));
     const url = `${BASE()}${path}${search.size ? `?${search.toString()}` : ""}`;
-    const { ok, status, headers, body: raw } = await httpRequest(url, {
-      method,
-      headers: {
-        accept: text ? "text/html,application/xhtml+xml" : "application/json, text/plain, */*",
-        "content-type": body ? "application/x-www-form-urlencoded; charset=UTF-8" : "application/json",
-        cookie: this.cookie,
-        referer,
-        "user-agent": UA,
-        "x-requested-with": "XMLHttpRequest",
-      },
-      body: body ? new URLSearchParams(body).toString() : undefined,
-    });
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await httpRequest(url, {
+        method,
+        headers: {
+          accept: text ? "text/html,application/xhtml+xml" : "application/json, text/plain, */*",
+          "content-type": body ? "application/x-www-form-urlencoded; charset=UTF-8" : "application/json",
+          cookie: this.cookie,
+          referer,
+          "user-agent": UA,
+          "x-requested-with": "XMLHttpRequest",
+        },
+        body: body ? new URLSearchParams(body).toString() : undefined,
+      });
+    } finally {
+      // 放在 finally 里，超时/失败的那一步也能被记录下来
+      this.#record(step || path, Date.now() - startedAt);
+    }
+    const { ok, status, headers, body: raw } = response;
     this.cookie = mergeSetCookies(this.cookie, headers);
     if (text) {
       if (!ok) throw new WangpanError(`百度接口 ${path} 请求失败（HTTP ${status}）`, { provider: "baidu" });
@@ -120,6 +135,7 @@ export class BaiduClient {
         web: 1,
         fields: JSON.stringify(["bdstoken", "token", "uk", "isdocuser", "servertime"]),
       },
+      step: "取 bdstoken",
     });
     const token = payload?.result?.bdstoken;
     if (!token) throw new WangpanError("百度未获取到 bdstoken，Cookie 可能已过期", { provider: "baidu" });
@@ -129,7 +145,7 @@ export class BaiduClient {
 
   /** 解析分享页，拿到 shareid 与分享者 uk。 */
   async resolveShareMeta(surl, refererUrl) {
-    const html = await this.#request(`/s/1${surl}`, { text: true, referer: refererUrl });
+    const html = await this.#request(`/s/1${surl}`, { text: true, referer: refererUrl, step: "解析分享页" });
     const shareId = html.match(/shareid\s*:\s*["']?(\d+)/iu)?.[1] || "";
     const uk = html.match(/share_uk\s*:\s*["']?(\d+)/iu)?.[1] || "";
     if (!shareId || !uk) {
@@ -145,6 +161,7 @@ export class BaiduClient {
       params: { surl, t: Date.now(), logid: this.#logId(), channel: "chunlei", web: 1, app_id: APP_ID, clienttype: 0 },
       body: { pwd: sharePassword || "", vcode: "", vcode_str: "" },
       referer: `${BASE()}/s/1${surl}`,
+      step: "校验提取码",
     });
     const randsk = payload?.randsk;
     if (!randsk) throw new WangpanError("百度分享校验未返回 sekey，请检查提取码", { provider: "baidu" });
@@ -172,6 +189,7 @@ export class BaiduClient {
           clienttype: 0,
         },
         referer: `${BASE()}/s/1${surl}`,
+        step: "读分享列表",
       });
       const pageItems = Array.isArray(payload?.list) ? payload.list : [];
       items.push(...pageItems);
@@ -245,6 +263,7 @@ export class BaiduClient {
       },
       body: { fsidlist: JSON.stringify(fsIds), path: toDir },
       referer: `${BASE()}/s/1${surl}`,
+      step: "转存",
     });
     const failed = Array.isArray(result?.info) ? result.info.filter((item) => Number(item.errno) !== 0) : [];
     if (failed.length) throw new WangpanError(baiduErrorText(failed[0].errno), { code: failed[0].errno, provider: "baidu" });
@@ -270,6 +289,7 @@ export class BaiduClient {
     const bdstoken = await this.loadToken();
     const payload = await this.#request("/api/list", {
       params: { order: "time", desc: 1, showempty: 0, web: 1, page: 1, num: 1000, dir, bdstoken },
+      step: "列目录",
     });
     const list = Array.isArray(payload?.list) ? payload.list : [];
     return list.map((item) => ({
@@ -283,11 +303,10 @@ export class BaiduClient {
   }
 
   /**
-   * 能力 3：判断分享中的文件是否已存在于自己网盘（优先 md5，其次 名称 + 大小）。
-   * @returns {Promise<{exists:boolean, matched:Array, missing:Array}>}
+   * 纯比对逻辑：把分享条目与"我网盘目录"条目匹配（无网络请求）。
+   * 优先 md5 精确匹配，退化到 名称 + 大小。拆出来是为了支持并行执行。
    */
-  async findExisting(files, dir = "/") {
-    const mine = await this.listDir(dir);
+  matchExisting(files, mine) {
     const byMd5 = new Map();
     const byKey = new Map();
     for (const item of mine) {
@@ -309,6 +328,14 @@ export class BaiduClient {
     return { exists: matched.length > 0, matched, missing };
   }
 
+  /**
+   * 能力 3：判断分享中的文件是否已存在于自己网盘（优先 md5，其次 名称 + 大小）。
+   * @returns {Promise<{exists:boolean, matched:Array, missing:Array}>}
+   */
+  async findExisting(files, dir = "/") {
+    return this.matchExisting(files, await this.listDir(dir));
+  }
+
   /** 对自己网盘中的文件创建分享链接。 */
   async createShare(fsIds, { period = 0, password = "" } = {}) {
     const bdstoken = await this.loadToken();
@@ -324,6 +351,7 @@ export class BaiduClient {
         schannel: "4",
         fid_list: JSON.stringify(fsIds.map((id) => Number(id))),
       },
+      step: "创建分享",
     });
     if (!payload?.link) throw new WangpanError("百度创建分享未返回链接", { provider: "baidu" });
     return { url: payload.link, password: pwd, shareId: String(payload.shareid || "") };
@@ -346,6 +374,7 @@ export class BaiduClient {
         clienttype: 0,
       },
       body: { filelist: JSON.stringify(fsIds.map((fsId) => ({ fs_id: Number(fsId) }))) },
+      step: "删除",
     });
     const failed = Array.isArray(payload?.info) ? payload.info.filter((item) => Number(item.errno) !== 0) : [];
     if (failed.length) throw new WangpanError(baiduErrorText(failed[0].errno), { code: failed[0].errno, provider: "baidu" });

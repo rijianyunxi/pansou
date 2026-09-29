@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseQuarkShareUrl, isQuarkShareUrl, isQuarkFid } from "../src/providers/quark.js";
-import { parseBaiduShareUrl, isBaiduShareUrl } from "../src/providers/baidu.js";
+import { parseQuarkShareUrl, isQuarkShareUrl, isQuarkFid, QuarkClient } from "../src/providers/quark.js";
+import { parseBaiduShareUrl, isBaiduShareUrl, BaiduClient } from "../src/providers/baidu.js";
 import { detectProvider } from "../src/index.js";
 import { cookieValue, mergeSetCookies, formatSize } from "../src/lib/util.js";
 
@@ -50,6 +50,44 @@ test("Cookie 取值与合并", () => {
   const merged = mergeSetCookies(cookie, response);
   assert.match(merged, /BDUSS=newvalue/);
   assert.match(merged, /STOKEN=token123/);
+});
+
+test("夸克去重比对：名称 + 大小（纯函数，无网络）", () => {
+  const client = new QuarkClient({});
+  const mine = [
+    { fid: "a1", name: "电影A", size: 100, isDir: false },
+    { fid: "b2", name: "剧集B", size: 0, isDir: true },
+  ];
+  const result = client.matchExisting(
+    [
+      { name: "电影A", size: 100 },
+      { name: "剧集B", size: 0 },
+      { name: "缺失C", size: 50 },
+    ],
+    mine,
+  );
+  assert.equal(result.exists, true);
+  assert.equal(result.matched.length, 2);
+  assert.equal(result.missing.length, 1);
+  assert.equal(result.matched[0].mine.fid, "a1");
+  assert.equal(result.missing[0].name, "缺失C");
+});
+
+test("百度去重比对：优先 md5，退化到名称 + 大小", () => {
+  const client = new BaiduClient({});
+  const mine = [{ fsId: "1", name: "别的名字", size: 999, isDir: false, md5: "abc123" }];
+  // 名称与大小都不同，但 md5 命中 → 应判为已存在
+  const byMd5 = client.matchExisting([{ name: "原名", size: 111, md5: "abc123", isDir: false }], mine);
+  assert.equal(byMd5.exists, true);
+  assert.equal(byMd5.matched[0].mine.fsId, "1");
+
+  // 无 md5 时退化到 名称 + 大小
+  const byKey = client.matchExisting([{ name: "别的名字", size: 999, md5: "", isDir: false }], mine);
+  assert.equal(byKey.exists, true);
+
+  // 目录不参与匹配
+  const dir = client.matchExisting([{ name: "别的名字", size: 999, isDir: true }], mine);
+  assert.equal(dir.exists, false);
 });
 
 test("体积格式化", () => {

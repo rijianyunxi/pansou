@@ -73,7 +73,7 @@ export function timeoutMs() {
  * 若上游返回响应头后 body 迟迟不结束（黑洞/代理缓冲），后续 response.text()
  * 会无限挂起。因此这里用 Promise.race 把「读体」也纳入超时范围。
  *
- * @returns {Promise<{ok:boolean, status:number, headers:Headers, body:string}>}
+ * @returns {Promise<{ok:boolean, status:number, headers:Headers, body:string, ms:number}>}
  */
 export async function httpRequest(url, options = {}) {
   const ms = timeoutMs();
@@ -89,8 +89,9 @@ export async function httpRequest(url, options = {}) {
   });
   guard.catch(() => {}); // race 先结束后，guard 的拒绝不应变成未处理拒绝
 
+  const startedAt = Date.now();
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       (async () => {
         const response = await fetch(url, { ...options, signal: controller.signal });
         const body = await response.text();
@@ -98,6 +99,7 @@ export async function httpRequest(url, options = {}) {
       })(),
       guard,
     ]);
+    return { ...result, ms: Date.now() - startedAt };
   } finally {
     clearTimeout(abortTimer);
     clearTimeout(guardTimer);

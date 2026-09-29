@@ -68,6 +68,22 @@ function renderShare(share) {
   );
 }
 
+/** 渲染上游耗时分布，便于定位瓶颈。 */
+function renderTimings(timings) {
+  if (!Array.isArray(timings) || !timings.length) return "";
+  const byStep = new Map();
+  let total = 0;
+  for (const item of timings) {
+    byStep.set(item.step, (byStep.get(item.step) || 0) + item.ms);
+    total += item.ms;
+  }
+  const parts = [...byStep.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([step, ms]) => `${escapeHtml(step)} ${ms}ms`)
+    .join(" · ");
+  return `<p class="timings">上游请求共 ${timings.length} 次，合计 ${total} ms：${parts}</p>`;
+}
+
 /* ---------- Cookie 配置 ---------- */
 const COOKIE_HINT = {
   quark: "从 pan.quark.cn 复制完整 Cookie",
@@ -165,14 +181,15 @@ const actions = {
     const data = await api("/api/check", { url, password: $("checkPwd").value.trim(), provider: state.provider });
     if (!data.valid) {
       resultEl.className = "result";
-      resultEl.innerHTML = `<span class="pill err">✗ 链接无效</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(data.reason)}</p>`;
+      resultEl.innerHTML = `<span class="pill err">✗ 链接无效</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(data.reason)}</p>${renderTimings(data.timings)}`;
       return;
     }
     resultEl.className = "result";
     resultEl.innerHTML =
       `<span class="pill ok">✓ 链接有效</span>` +
       `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>文件数 <b>${data.fileCount}</b></span>${data.title ? `<span>标题 <b>${escapeHtml(data.title)}</b></span>` : ""}</div>` +
-      renderFiles(data.files);
+      renderFiles(data.files) +
+      renderTimings(data.timings);
   },
 
   async save() {
@@ -197,7 +214,8 @@ const actions = {
         `<span class="pill ok">✓ 你的网盘已有该资源</span>` +
         `<p style="margin:12px 0 0;color:var(--muted)">已跳过重复转存，直接为已有资源生成分享链接：</p>` +
         renderFiles(files, { showHit: true }) +
-        renderShare(data.share);
+        renderShare(data.share) +
+        renderTimings(data.timings);
       return;
     }
 
@@ -206,7 +224,8 @@ const actions = {
       `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>文件数 <b>${data.count ?? "-"}</b></span><span>目标 <b>${escapeHtml(data.target || "/")}</b></span></div>` +
       (dedup ? `<p style="margin:8px 0 0;color:var(--muted)">去重检查：网盘中未发现同名资源</p>` : "") +
       renderShare(data.share) +
-      (autoShare && !data.share ? `<p style="margin:8px 0 0;color:var(--warn)">转存成功，但未能在目标目录定位到刚保存的条目，因此没生成分享链接。</p>` : "");
+      (autoShare && !data.share ? `<p style="margin:8px 0 0;color:var(--warn)">转存成功，但未能在目标目录定位到刚保存的条目，因此没生成分享链接。</p>` : "") +
+      renderTimings(data.timings);
   },
 
   async del() {
@@ -233,7 +252,8 @@ const actions = {
     resultEl.innerHTML =
       `<span class="pill ok">✓ 已删除</span>` +
       `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>删除数量 <b>${data.deleted}</b></span></div>` +
-      renderFiles((data.names || []).map((name) => ({ name })));
+      renderFiles((data.names || []).map((name) => ({ name }))) +
+      renderTimings(data.timings);
   },
 
   async mine() {
