@@ -1,209 +1,169 @@
-# PanHub · 全网网盘搜索
+# 网盘接入探索 · wangpan 分支
 
-> 基于 Nuxt 4、Node.js 和 SQLite 的资源源聚合搜索。所有搜索来源都使用同一套 HTTP 请求参数和 `transform(payload, $, context)` 解析函数，不再区分 HTTP、Telegram 或插件搜索架构。
+> 本分支是一个**探索性分支**：已清空原有 PanHub 代码，只保留这份调研文档。
+> 原项目代码完整保留在 `main` 与 `rust` 分支，本分支不影响它们。
 
-## 核心行为
+调研时间：2026-09。各平台的开放策略与价格变动频繁，落地前请以官方文档为准。
 
-- **统一资源源**：系统来源保存在 SQLite 的 `resource_sources`，每个来源包含 URL、请求方式、响应格式、请求配置、优先级和 transform；搜索会按优先级从低到高进入执行队列（0 最先起跑），同优先级保持来源目录顺序。
-- **单次执行**：每个资源源每次搜索只发起一次请求、执行一次 transform；不自动分页、不使用 cursor、不做关键词变体、深度搜索、fallback 或来源级重试。
-- **聚合最新结果**：所有来源并发执行，结果统一去重、按时间倒序排列，并只保留当前请求返回的首屏/最新部分。
-- **流式搜索入口**：`/api/search` 仅支持 POST，返回 SSE。旧的 `/api/searchHttp*`、`/api/search/channels*` 入口已删除。
-- **用户频道模板**：用户添加公开 Telegram 频道时，首次通过 `/api/account/channels/validate` 校验公开性和可访问性；搜索时使用后台配置的 `source_template_settings` 动态生成资源源，并走同一执行器。
-- **精简搜索响应**：普通 `/api/search` 通过 SSE 返回 `start`、`result`、`complete`、`error` 四类事件；调试用 `/api/search/json` 返回顶层 `sources`，每个来源对象同时包含诊断信息和该来源的原始结果列表。
-- **安全执行**：请求经过 URL/DNS/重定向/请求体/响应体校验；transform 在受限 VM 中同步执行，不能访问网络、文件系统或进程环境。
+---
 
-## 快速开始
+## 1. 目标
 
-```bash
-pnpm install
-pnpm dev
-```
+PanHub 现在只对接了 **百度网盘** 和 **夸克网盘** 两个网盘的 Cookie（用于"删云端"）。
+本分支要回答一个问题：
 
-生产环境：
+> 如果要给 PanHub 扩展更多网盘能力（删除、转存、直链、列目录、上传），
+> **每个网盘分别能走哪条路？官方 API、逆向接口、开源 SDK、MCP/Skill，各自可行性和成本如何？**
 
-```bash
-pnpm build
-node .output/server/index.mjs
-```
+下面按"能力来源"分四层梳理：**官方开放平台 → 非官方/逆向接口 → 开源 SDK 与 CLI → MCP / Agent Skill**，
+最后给出聚合方案与推荐路线。
 
-默认 SQLite 文件为 `data/panhub.sqlite`，可通过 `PANHUB_SQLITE_DB` 覆盖。运行数据不应提交到 Git。
+---
 
-⚠️ **开发服务器默认打开的是同一个 `data/panhub.sqlite`**：`.env.development` 与 `.env.production` 指向同一路径，而 `nuxt dev` 会热重载，所以**保存 `server/core/storage/sqlite.ts` 里的 schema/迁移就会立刻作用到这份数据库**，不等构建也不等部署。想隔离开发数据，把 `.env.development` 的 `PANHUB_SQLITE_DB` 指向另一个文件（例如 `./data/panhub-dev.sqlite`）再启动。
+## 2. 总览对比
 
-`pnpm dev` 默认只监听 `127.0.0.1`（脚本里的 `--host 127.0.0.1`）。需要从局域网设备调试时，临时改成 `--host 0.0.0.0` 并在调试结束后改回来——否则等于把一个持有真实数据库的开发服务器暴露在局域网里。
+| 网盘 | 官方开放 API | 鉴权方式 | 成熟开源 SDK/CLI | MCP / Skill | PanHub 现有对接 |
+|------|:---:|------|------|:---:|:---:|
+| 百度网盘 | ✅ 完善 | OAuth 2.0 / Cookie | BaiduPCS-Go 等 | ✅ 官方开源 MCP | Cookie（删除） |
+| 阿里云盘 | ⚠️ 个人版策略多变 | OAuth / 扫码 | tickstep/aliyunpan（Go） | ⚠️ 社区自建 | ❌ |
+| 夸克网盘 | ❌ 无公开 API | Cookie + 动态 token | quark-api、quark-auto-save | ❌ | Cookie（删除） |
+| 115 / 115生活 | ✅ 官方开放平台 | OAuth + 开发者申请 | open-115-sdk-js | ❌ | ❌ |
+| 123 云盘 | ✅ 官方（已转付费） | 密钥鉴权 | 123pan-api-sdk（TS） | ❌ | ❌ |
+| 天翼云盘 | ⚠️ 有但不完全开放 | Cookie / 逆向 | 社区直链工具 | ❌ | ❌ |
+| 腾讯微云 | ⚠️ 有 SDK | OAuth | 官方 Weiyun SDK | ❌ | ❌ |
+| 迅雷云盘 | ❌ 无公开 API | 逆向 | 社区直链工具 | ❌ | ❌ |
+| 移动云盘（139） | ❌ 无公开 API | 逆向 | 社区直链工具 | ❌ | ❌ |
+| 蓝奏云 | ❌ 无公开 API | 逆向 | 社区直链工具 | ❌ | ❌ |
+| 坚果云 | ✅ 官方 WebDAV | Basic Auth | 通用 WebDAV 客户端 | ❌ | ❌ |
+| Google Drive / OneDrive / Dropbox / MEGA | ✅ 完善 | OAuth 2.0 | 各语言官方 SDK | 多个社区 MCP | ❌ |
 
-### 生产环境变量与部署
+**一句话结论**：国内网盘只有少数（百度、115、123）提供真正可用的官方 API；
+其余要么靠逆向，要么靠"聚合器"（OpenList）间接拿到统一接口。
 
-`.env.production` 不是必需文件，也不会因为这个文件名自动加载。可以通过进程管理器或服务器环境变量配置生产环境；需要文件管理时，可复制 `.env.example` 为服务器上的 `.env.production`，再修改数据库路径和站点地址。
+---
 
-使用支持 `--env-file` 的 Node.js（例如 Node 22），在项目根目录启动：
+## 3. 逐个网盘：能力与接入方式
 
-```bash
-node --env-file=.env.production .output/server/index.mjs
-```
+### 3.1 百度网盘 —— 官方能力最完整
 
-Nuxt 生产服务器不会自动读取 `.env`。构建使用默认的 production mode，会自动读取 `.env.production`；这不能代替启动时注入数据库路径等运行参数。代理功能目前只是 [proxy.md](./proxy.md) 中的方案，无需添加尚未实现的代理环境变量。
+- **官方开放平台**：`pan.baidu.com/union`，基于 **OAuth 2.0** 授权。
+  支持**目录级授权**（只授权部分目录、不需全盘权限），官方文档明确点名该模式适用于 **MCP、文件管理**类应用。
+- **官方 MCP Server**：百度网盘已**开源 MCP 服务器**（`github.com/baidu-netdisk/mcp`），
+  核心 API 全面兼容 MCP 协议。当前提供四类能力：
+  1. 文件查询与搜索
+  2. 文件管理（含删除/移动等）
+  3. 文件分享
+  4. 用户与容量
+- **现状**：PanHub 目前用 **Cookie**（校验 `BDUSS`/`BDUSS_BFESS` + `BAIDUID` + `STOKEN`）直接调 Web 接口删除。
+- **建议**：删除这类"写操作"若能迁到官方 MCP / OpenAPI，稳定性和合规性都更好；
+  Cookie 方案作为兜底保留。
 
-项目的 `ecosystem.config.cjs` 已提供 PM2 配置，并统一通过 `node_args: "--env-file=.env.production"` 读取生产配置，可用 `pm2 start ecosystem.config.cjs` 启动。修改 `.env.production` 后执行 `pm2 restart panhub --update-env` 重启即可。
+### 3.2 阿里云盘 —— 能力有，但个人版入口不稳定
 
-建议生产环境设置：
+- **开发者门户**：`aliyundrive.com/developer`；企业侧有 **PDS（网盘与相册服务）** 开放平台，
+  OpenAPI 采用 ROA 签名风格，提供多语言预置 SDK（`api.aliyun.com/product/pds`）。
+- **开源 SDK**：官方有 iOS SDK（`alibaba/aliyunpan-ios-sdk`）。
+- **CLI**：社区 **`tickstep/aliyunpan`**（Go 编写，仿 Linux shell 交互，支持 JavaScript 插件、同步备份），
+  是目前最活跃的个人版客户端工具。
+- **MCP**：阿里云有官方 OpenAPI MCP Server（`aliyun/alibabacloud-api-mcp-server`，面向云产品 OpenAPI）；
+  阿里云盘个人版的 MCP 多为社区"手搓"（扫码换 token + 若干工具）。
+- **风险**：个人版开放平台策略调整频繁，第三方接口随时可能失效；落地前需评估长期可用性。
 
-- `PANHUB_SQLITE_DB` 指向持久化数据库的绝对路径，发布时保留已有数据库。
-- `NITRO_HOST=127.0.0.1`、`NITRO_PORT` 适用于同机反向代理；需要外部直接访问时按部署网络调整监听地址。
-- `NUXT_TRUST_PROXY=true` 从转发头解析真实客户端 IP（`server/utils/clientIp.ts`）。**本仓库的
-  `.env.production` 已开启**，前提是应用只监听 `127.0.0.1`（见上一行）且反向代理会写入转发头。
+### 3.3 夸克网盘 —— 纯逆向，无官方 API
 
-  开启后 `getClientIp()` 依次读 `X-Forwarded-For` / `CF-Connecting-IP`，按 IP 的限流（后台接口、
-  账号密码登录、小程序登录、搜索）和审计日志里的 IP 才是真实客户端。若改回 `false`，在反向代理后面
-  所有请求都会被算作 `127.0.0.1`，上述限流退化成**全站共用一个配额**，日志 IP 也不可溯源
-  ——这是刻意的 fail-safe 默认值，不是 bug。
+- **无官方公开 API**。Web/App 接口鉴权严格（动态 token、设备指纹），
+  且目前无法通过官方途径拉取全量目录树。
+- **开源实现**：
+  - `wlor0623/quark-api`：纯 HTTP 协议，不依赖特定语言 SDK，curl / Python / Go 均可调用。
+  - `Cp0204/quark-auto-save`：签到、自动转存、命名整理、推送提醒、刷新媒体库一条龙（含 API Wiki）。
+- **现状**：PanHub 用 Cookie 做删除。
+- **建议**：作为"能力补充"可行，但要接受**接口不稳定、需持续维护**的现实。
 
-`NODE_ENV` 与 `NUXT_PUBLIC_*`（站点名、标题、描述、关键词、`SITE_URL`、`API_BASE`）**不必写进
-`.env.production`**：`nuxt.config.ts` 的 `runtimeConfig.public` 已给出取值一致的默认值，本仓库的
-`.env.production` 因此只保留了真正需要按环境覆盖的几项。`NODE_ENV` 连产物都不读
-（构建产物里 `process.env.NODE_ENV` 出现 0 次，Nitro 的 dev/prod 是构建期替换）。要改站点文案或
-对外地址，改 `nuxt.config.ts`，或在 `.env.production` 里显式写 `NUXT_PUBLIC_*` 覆盖。
+### 3.4 115 / 115生活 —— 官方开放平台，门槛在申请
 
-  开启前必须确认反向代理的行为：它要写入 `X-Forwarded-For`，并**剥掉客户端自带的
-  `CF-Connecting-IP`**（该头在 `clientIp.ts` 中优先于 `X-Forwarded-For` 被读取，前面不是 Cloudflare
-  时不剥离就等于留了一个可被客户端伪造的入口）。如果代理只是把客户端自带的头原样追加透传，
-  攻击者每次换一个伪造 IP 就能绕开按 IP 的限流——那比全局限流更差，此时应改回 `false`。
-  验证：连发 10 次错误口令触发 429 后，再带 `X-Forwarded-For: 1.2.3.4` 发一次；若返回 401 而不是
-  429，说明伪造头被信任，需要回去改代理配置。
+- **官方开放平台**：`open.115.com`，提供文件存储、同步、管理的 API 接口。
+  接入需**注册账号 + 实名认证 + 提交开发者申请**，通过后按身份授权。
+- **开源 SDK**：`lzj0223/open-115-sdk-js`（JS）。
+- **聚合支持**：OpenList 有 `115_open` 驱动，可通过授权页把 115 挂进统一文件系统。
+- **建议**：如果目标是"稳定长期"，115 是除百度外**第二值得走官方路线**的网盘。
 
-首次启动时如果数据库里还没有任何管理员，会创建一个 `admin` 账号：口令取
-`PANHUB_ADMIN_INITIAL_PASSWORD`，**未设置则随机生成并在启动日志里打印一次**
-（形如 `[PanHub][bootstrap] 已创建初始管理员账号 admin，口令：…`）。仓库不提供任何默认口令，
-而管理员没有口令找回通道（只有后台的「修改管理员账号」），所以请立即用该口令登录并改掉。
-已有管理员的数据库不会走这段逻辑，也不会被改写口令。
+### 3.5 123 云盘 —— 官方 API 已转付费
 
-当前 `better-sqlite3 13.0.3` 要求 Node.js 22 或更高版本，并自带多平台预编译模块。本次 `.output/server/node_modules/better-sqlite3/prebuilds` 包含 Linux、Linux musl、Windows 和 macOS 的 x64/arm64 文件，上传时应保留完整 `.output`（包括内部的 `node_modules`）。构建及运行冒烟测试在 Windows / Node 22.22.2 完成，尚未验证目标 Linux 系统的原生模块兼容性；部署后先检查 `/api/health`。若目标系统不兼容，应在匹配的服务器或 CI/容器中执行 `pnpm install --frozen-lockfile` 和 `pnpm build`。不要把根目录开发用 `node_modules` 或本地开发数据库覆盖到线上。
+- **官方开放平台**：密钥鉴权，支持文件浏览、上传、直链获取等。
+- **成本变化**：OpenAPI **已转为付费**（社区反馈约 ¥20/月），免费抓取途径不稳定。
+- **开源 SDK**：`Shijf/123pan-api-sdk`（Node.js / TypeScript，类型完整）。
+- **建议**：有预算再考虑；否则优先级靠后。
 
-参考：[Nuxt 环境变量说明](https://nuxt.com/docs/4.x/directory-structure/env)、[Node 环境变量文件](https://nodejs.org/api/cli.html#--env-fileconfig)。
+### 3.6 天翼云盘 / 迅雷云盘 / 移动云盘(139) / 蓝奏云 —— 逆向 + 直链
 
-## 搜索示例
+- 这四个普遍**无稳定公开 API**，社区方案集中在**分享链接转直链**：
+  - `netdisk-fast-download`：支持蓝奏云、奶牛快传、移动云空间等。
+  - `LinkSwift`：JS 工具，覆盖百度、阿里、中国移动云盘等八大平台直链解析。
+  - `JxPan`：基于 Cloudflare Workers 的网盘直链解析。
+- **特点**：直链解析**失效快**，需跟随平台改版更新；适合做"下载加速"，不适合做需要账号态的写操作。
 
-POST `/api/search`：
+### 3.7 国际网盘 —— 官方 API 最规范
 
-```json
-{
-  "kw": "三体"
-}
-```
+- **Google Drive / OneDrive / Dropbox / MEGA**：官方 OAuth 2.0 + 各语言官方 SDK，文档完善。
+- 生态中已有**多个社区 MCP Server**，接入门槛最低。
+- **注意**：国内网络可达性与合规需单独评估。
 
-只指定用户添加的频道：
+### 3.8 坚果云 —— 官方 WebDAV
 
-```json
-{
-  "kw": "三体",
-  "channels": ["example_channel"]
-}
-```
+- 提供**官方 WebDAV 接口**（Basic Auth），可直接用通用 WebDAV 客户端读写。
+- 适合作为"标准协议"对照组：凡是支持 WebDAV 的网盘，都能用同一套代码接入。
 
-每个 SSE `result` 事件包含一个已完成资源源的增量；`complete` 事件包含最终 `total`：
+---
 
-```json
-{
-  "total": 3
-}
-```
+## 4. 聚合方案：OpenList / AList
 
-调试接口 `GET /api/search/json?kw=三体` 的 `data` 示例：
+不想逐个对接官方 API / 逆向接口时，最省力的路子是**挂一个聚合器**：
 
-```json
-{
-  "total": 3,
-  "sources": [
-    {
-      "id": "pansearch",
-      "name": "PanSearch",
-      "priority": 0,
-      "status": "success",
-      "resultCount": 8,
-      "elapsedMs": 2248,
-      "transformMs": 16,
-      "proxyNode": "腾讯云Edge",
-      "results": []
-    }
-  ]
-}
-```
+- **OpenList**：AList 的社区维护分支（原 AList 已被出售，社区另起炉灶）。
+  支持**数十种存储驱动**——阿里云盘、百度网盘、夸克、115、OneDrive、WebDAV、S3 等。
+  对外统一暴露 **HTTP API + WebDAV**，PanHub 只需对接一个上游即可覆盖多个网盘。
+- **代价**：多一层服务要部署和维护；聚合器的驱动失效时同样需要等社区修复。
+- **适用判断**：
+  - 只需**读/列目录/直链** → 聚合器性价比最高。
+  - 需要**账号态的写操作（删除/转存）** → 仍建议直连官方 API（如百度 MCP）。
 
-## 后台配置
+---
 
-- `/admin/sources`：资源源配置、启停、导入导出、用户频道模板和来源诊断。
-- `/admin/monitor`：资源源和频道健康状态。
+## 5. MCP / Agent Skill 生态现状
 
-### 云端资源删除
+| 类型 | 代表 | 说明 |
+|------|------|------|
+| 官方 MCP | 百度网盘 MCP（开源） | 文件查询/搜索、管理、分享、用户与容量 |
+| 官方 MCP | 阿里云 OpenAPI MCP Server | 面向阿里云各产品 OpenAPI，非个人盘专用 |
+| 社区 MCP | 阿里云盘"手搓"MCP | 扫码换 token + 自定义工具集 |
+| 聚合器 API | OpenList | 统一 HTTP / WebDAV，可再包一层 MCP |
+| 无 | 夸克、迅雷、139、蓝奏云 | 只能自行封装逆向接口为工具 |
 
-资源管理列表的链接旁提供“删云端”操作，使用对应网盘 Cookie 根据分享链接定位并删除云端资源；删除前会二次确认，盘搜中的链接记录不会自动删除。
+**趋势判断**：百度已把"网盘能力"标准化为 MCP 工具，是最值得优先接入的样板；
+其余网盘短期内仍以"自建工具封装"为主。
 
-资源源的 transform 形式：
+---
 
-```js
-function transform(payload, $, context) {
-  return [{
-    id: "stable-resource-id",
-    name: "资源标题",
-    description: null,
-    datetime: null,
-    links: [{ url: "https://pan.baidu.com/s/xxx", password: null }],
-    images: ["https://example.com/poster.jpg"]
-  }];
-}
-```
+## 6. 推荐路线（按优先级）
 
-`payload` 是本次唯一请求的原始响应，`$` 是 HTML 查询工具，`context` 至少包含 `keyword`、`source`、`format` 和 `rawBody`，并提供 `context.makeLink(url, password)` 自动生成带网盘类型的标准链接对象。解析函数只负责转换结果，不负责发起网络请求。
+1. **百度网盘** → 从 Cookie 升级到 **官方 OpenAPI / 官方 MCP**（目录级授权 + 写操作合规）。
+2. **阿里云盘** → 用 `tickstep/aliyunpan` 或官方 PDS 打通"列目录 / 直链"，
+   注意个人版接口稳定性，做好降级。
+3. **聚合层** → 部署 **OpenList** 统一读能力，减少逐个对接的维护面。
+4. **115 / 123** → 有长期稳定需求时走官方开放平台（115 需开发者申请；123 需付费）。
+5. **夸克 / 天翼 / 迅雷 / 139 / 蓝奏云** → 保留 Cookie / 逆向方案作为补充，
+   明确标注"不稳定、需持续维护"，不承载关键路径。
 
-## 目录结构
+---
 
-```text
-pages/                 页面
-components/            Vue 组件
-server/api/            H3/Nitro API
-server/core/services/  搜索、资源源目录、模板、健康和系统设置
-server/core/source-runtime/
-                       资源源校验、请求执行和 transform 运行时
-server/core/storage/   SQLite 结构
-utils/                 前端/通用工具
-```
+## 7. 参考来源
 
-## 验证
-
-```bash
-pnpm build
-git diff --check
-```
-
-当前重构不提供旧 API 或旧 Plugin 兼容机制；数据库启动时会自动补齐资源源优先级字段。需要重置本地开发数据时，请停止服务后删除 `data/panhub.sqlite` 再启动。
-
-## 搜索压力测试
-
-脚本会为每次搜索先调用 `/api/account/session` 获取新的匿名 `panhub_session` Cookie，再调用搜索接口，避免复用同一会话触发会话级限流。默认使用 `/api/search/json`，因为该接口会返回每个资源源的耗时、代理节点和原始结果列表；每次测试会把明细追加到 JSONL，并生成汇总 JSON。
-
-```bash
-# 默认：300 次搜索，20 个客户端并发，180 秒内完成
-pnpm test:stress-search
-
-# 指定部署地址、并发度和报告目录
-pnpm test:stress-search -- \
-  --base-url http://111.119.233.153:3000 \
-  --requests 300 \
-  --concurrency 20 \
-  --duration-seconds 180 \
-  --output .tmp/my-search-stress
-```
-
-报告包含每轮的接口状态、失败资源源、源接口失败、transform 失败、transform 总耗时和上游耗时。若部署版本没有返回 `sources[].transformMs`，transform 总耗时会显示为 0，表示服务端未上报该字段，不代表 transform 实际耗时为 0。需要模拟浏览器 SSE 时可追加 `--mode sse`，但 SSE 接口不会暴露源级 transform 诊断。
-
-## 微信小程序登录
-
-已接入微信 code2Session 身份校验与现有用户会话。普通用户不注册，首次微信登录即自动建号，之后仅使用微信登录；后台的“创建管理员”只用于新增管理员。管理员继续从 `/admin` 使用账号密码登录。
-
-网站首页顶栏的登录按钮走**小程序码扫码登录**：点击后展示小程序码，微信扫码进入小程序确认，网页轮询到确认后兑换 cookie 会话（首次扫码同样自动建号）。该入口由后台「系统设置 → 是否展示登录按钮」控制，关闭后首页不再显示按钮，扫码接口同时返回 403。
-
-AppID / AppSecret / 扫码页面 / 打开版本都保存在数据库（`wechat_mini_settings`），在后台「系统设置 → 微信小程序」卡片里维护，保存后立即生效，**不需要环境变量、也不需要重启**。AppSecret 只写不读：接口只回报"是否已配置"和长度，永不回传值或其片段；提交时留空表示不修改。配置、准入开关及小程序示例见 [接入方案](docs/wechat-mini-login.md)。
-
-## 搜索压测
-
-执行 `node scripts/load-search.mjs`，默认对 `https://pan.letus.lol` 模拟 10 分钟、每分钟 100 个独立匿名用户，使用不重复关键词调用 POST `/api/search`，结束后生成中文报告。使用 `--dry-run` 可仅生成计划。参数、统计口径及本地验证方式见 [压测说明](scripts/LOAD-SEARCH.md)。
+- 百度网盘开放平台 · 授权介绍 / 快速授权 / MCP Server 文档：`pan.baidu.com/union/doc`
+- 百度网盘 MCP Server 开源仓库：`github.com/baidu-netdisk/mcp`
+- 阿里云盘开发者门户：`aliyundrive.com/developer`；PDS OpenAPI：`api.aliyun.com/product/pds`
+- 阿里云盘 CLI：`github.com/tickstep/aliyunpan`
+- 夸克网盘 API：`github.com/wlor0623/quark-api`、`github.com/Cp0204/quark-auto-save`
+- 115 开放平台：`open.115.com`；SDK：`github.com/lzj0223/open-115-sdk-js`
+- 123 云盘 SDK：`github.com/Shijf/123pan-api-sdk`
+- 聚合器：OpenList `doc.oplist.org`
+- 直链解析：`netdisk-fast-download`、`LinkSwift`、`github.com/ByLsPro/JxPan`

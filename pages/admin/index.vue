@@ -1,5 +1,0 @@
-<script setup lang="ts">
-// 管理后台根入口统一落到来源管理，具体模块使用语义化路径。
-await navigateTo("/admin/sources", { replace: true });
-</script>
-<template><div /></template>

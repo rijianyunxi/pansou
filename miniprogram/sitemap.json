@@ -1,4 +1,0 @@
-{
-  "desc": "盘搜 - 网盘资源聚合搜索",
-  "rules": [{ "action": "allow", "page": "*" }]
-}
