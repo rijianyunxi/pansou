@@ -15,6 +15,11 @@ const UA =
 const BASE = () => process.env.BAIDU_BASE || "https://pan.baidu.com";
 const APP_ID = "250528";
 
+/** 百度用到的所有上游域名（用于连接预热）。 */
+export function baiduBases() {
+  return [BASE()];
+}
+
 /** 百度常见错误码 → 中文说明。 */
 const ERROR_TEXT = {
   "-1": "链接错误、已失效或缺少提取码",

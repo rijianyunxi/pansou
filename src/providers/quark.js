@@ -15,6 +15,11 @@ const UA =
 const SHARE_BASE = () => process.env.QUARK_SHARE_BASE || "https://drive.quark.cn/1/clouddrive";
 const PC_BASE = () => process.env.QUARK_PC_BASE || "https://drive-pc.quark.cn/1/clouddrive";
 
+/** 夸克用到的所有上游域名（用于连接预热——两个域名各自都要一次握手）。 */
+export function quarkBases() {
+  return [SHARE_BASE(), PC_BASE()];
+}
+
 /**
  * 夸克常见错误码 → 更可操作的中文说明。
  *
@@ -133,15 +138,24 @@ export class QuarkClient {
   /**
    * 轮询夸克异步任务，直到完成（status=2）或失败（status=3）。
    *
-   * 间隔策略：任务大多在 1~3 秒内完成，所以前 3 秒用 300ms 快轮询尽快拿到结果，
-   * 之后降到 1 秒避免长任务把请求打爆；若上游返回 metadata.tq_gap（建议间隔）则优先采用。
-   * 原实现固定等 1 秒，短任务会被白白拖慢最多 1 秒。
+   * 间隔策略：
+   *  - 上游会在 metadata.tq_gap 里给建议间隔（实测 100ms），优先采用它——
+   *    这是夸克自家前端用的节奏，照着走能更早发现任务完成（300ms 轮询平均要多等 150ms）。
+   *  - 上游没给建议值时，前 3 秒用 200ms 快轮询，之后降到 1 秒，避免长任务把请求打爆。
+   *  - minIntervalMs 是下限，防止上游给 0/极小值时把请求打爆。
+   *
+   * 另外「间隔」按**轮询周期**算：从请求发出那一刻起计时。若写成「请求返回后再 sleep 一个间隔」，
+   * 实际周期会变成 请求耗时 + 间隔（暖连接下也多出 ~80ms/轮），比建议值大出一截。
    */
-  async waitTask(taskId, { maxWaitMs = 120_000, fastIntervalMs = 300, fastWindowMs = 3000, slowIntervalMs = 1000 } = {}) {
+  async waitTask(
+    taskId,
+    { maxWaitMs = 120_000, minIntervalMs = 150, fastIntervalMs = 200, fastWindowMs = 3000, slowIntervalMs = 1000 } = {},
+  ) {
     const startedAt = Date.now();
     const deadline = startedAt + maxWaitMs;
     let retryIndex = 0;
     while (Date.now() < deadline) {
+      const pollStartedAt = Date.now();
       const result = await this.#request(PC_BASE(), "task", {
         params: { task_id: taskId, retry_index: retryIndex++ },
         step: "等待任务",
@@ -154,9 +168,10 @@ export class QuarkClient {
       const elapsed = Date.now() - startedAt;
       let interval = elapsed < fastWindowMs ? fastIntervalMs : slowIntervalMs;
       if (Number.isFinite(suggested) && suggested > 0) {
-        interval = Math.min(Math.max(suggested, fastIntervalMs), slowIntervalMs);
+        interval = Math.min(Math.max(suggested, minIntervalMs), slowIntervalMs);
       }
-      await delay(interval);
+      const remaining = interval - (Date.now() - pollStartedAt);
+      if (remaining > 0) await delay(remaining);
     }
     throw new WangpanError("夸克任务超时", { provider: "quark" });
   }
@@ -272,7 +287,10 @@ export class QuarkClient {
       step: "转存",
     });
     const taskId = response?.data?.task_id ? String(response.data.task_id) : null;
-    if (taskId) await this.waitTask(taskId);
+    // 夸克对这类元数据任务常常**同步执行完**（响应里带 task_sync: true 与完整的 task_resp）。
+    // 已经完成就不用再轮询，能省掉 1~4 个来回（每轮 ~380ms）。没有 task_resp 时照旧轮询。
+    const inlineStatus = Number(response?.data?.task_resp?.data?.status);
+    if (inlineStatus !== 2 && taskId) await this.waitTask(taskId);
 
     // 转存会在我网盘里生成**新的 fid**，所以必须回到目标目录按名称找回，不能复用分享里的 fid
     const share = autoShare ? await this.#shareSavedByName(names, toPdirFid) : null;
@@ -375,7 +393,9 @@ export class QuarkClient {
       step: "删除",
     });
     const taskId = response?.data?.task_id;
-    if (taskId) await this.waitTask(String(taskId));
+    // 同转存：响应里任务已完成就不用再轮询
+    const inlineStatus = Number(response?.data?.task_resp?.data?.status);
+    if (inlineStatus !== 2 && taskId) await this.waitTask(String(taskId));
     return { deleted: fids.length };
   }
 

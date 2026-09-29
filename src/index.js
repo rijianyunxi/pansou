@@ -5,9 +5,9 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import { WangpanError } from "./lib/util.js";
-import { QuarkClient, isQuarkShareUrl } from "./providers/quark.js";
-import { BaiduClient, isBaiduShareUrl } from "./providers/baidu.js";
+import { WangpanError, warmConnections } from "./lib/util.js";
+import { QuarkClient, isQuarkShareUrl, quarkBases } from "./providers/quark.js";
+import { BaiduClient, isBaiduShareUrl, baiduBases } from "./providers/baidu.js";
 
 export { WangpanError };
 export { QuarkClient, isQuarkShareUrl } from "./providers/quark.js";
@@ -166,4 +166,18 @@ export async function deleteMyShare(url, { provider = null, password = null } = 
 export async function ping(provider, options = {}) {
   const client = createClient(provider, options);
   return client.ping();
+}
+
+/**
+ * 预热到上游的连接。
+ *
+ * 一次转存会跨多个域名（夸克：drive.quark.cn + drive-pc.quark.cn），
+ * 每个域名的首次请求都要付一次 TCP+TLS 握手。界面加载时先握好，用户点操作时就是热连接。
+ */
+export async function warm(provider = null) {
+  const bases = [];
+  if (!provider || provider === "quark") bases.push(...quarkBases());
+  if (!provider || provider === "baidu") bases.push(...baiduBases());
+  const origins = await warmConnections(bases);
+  return { origins };
 }

@@ -321,3 +321,17 @@ $("pingBtn").addEventListener("click", async () => {
 });
 
 refreshConfig();
+
+/**
+ * 预热上游连接。
+ *
+ * 一次转存会跨多个域名（夸克：drive.quark.cn + drive-pc.quark.cn），每个域名的
+ * 首次请求都要付一次 TCP+TLS 握手（约 300ms）。页面加载时先握好，用户真正点
+ * 操作时就是热连接。失败无所谓，静默忽略。
+ */
+function warmUp() {
+  api("/api/warm", {}).catch(() => {});
+}
+warmUp();
+// 连接池保活 60 秒；超过后重新预热，避免用户停留一会儿再操作又退化成冷连接
+setInterval(warmUp, 45_000);

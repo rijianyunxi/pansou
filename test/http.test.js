@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 
-import { httpRequest, closeAgents, mergeSetCookies, cookieValue } from "../src/lib/util.js";
+import { httpRequest, closeAgents, mergeSetCookies, cookieValue, warmConnections } from "../src/lib/util.js";
 
 /** 起一个本地 server，返回 { origin, connections(), close() }。 */
 async function startServer(handler) {
@@ -104,6 +104,37 @@ test("错误语义：HTTP 4xx 不抛异常，交给上层按业务码判断", as
 
 test("非法 URL 立即报错，不会挂起", async () => {
   await assert.rejects(() => httpRequest("not-a-url"), /URL 不合法/);
+});
+
+test("预热连接：预握手后首个真实请求不再付冷连接代价", async () => {
+  const server = await startServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  try {
+    // 预热前先测一次冷连接的基线
+    const cold = await httpRequest(`${server.origin}/first`);
+    assert.equal(cold.status, 200);
+    assert.equal(server.connections(), 1);
+
+    // 预热：只握手、不发业务请求
+    const origins = await warmConnections([`${server.origin}/1/clouddrive`, `${server.origin}/other-path`]);
+    assert.deepEqual(origins, [server.origin], "同一域名的多个地址应去重成一次预热");
+
+    // 预热不该新建连接（复用刚才那条）
+    assert.equal(server.connections(), 1, "预热应复用已有连接而不是新建");
+
+    // 预热后的请求同样复用同一条连接
+    await httpRequest(`${server.origin}/after`);
+    assert.equal(server.connections(), 1, "预热后的请求不应重新握手");
+  } finally {
+    await server.close();
+  }
+});
+
+test("预热：非法地址被忽略，不会抛错", async () => {
+  const origins = await warmConnections(["", "not-a-url", null]);
+  assert.deepEqual(origins, []);
 });
 
 test.after(() => closeAgents());

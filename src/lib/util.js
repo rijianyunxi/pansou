@@ -231,3 +231,36 @@ export async function httpRequest(url, options = {}) {
 export function closeAgents() {
   for (const agent of Object.values(AGENTS)) agent.destroy();
 }
+
+/**
+ * 预热连接：提前和上游建立 TCP+TLS 连接并放进连接池。
+ *
+ * 为什么要单独做这件事：一次夸克转存会跨 **两个域名**（分享接口在 drive.quark.cn、
+ * 网盘接口在 drive-pc.quark.cn），每个域名的首次请求都要付一次握手（实测 220~360ms）。
+ * 页面加载时先把连接握好，用户真正点操作时就是热连接（~80ms）。
+ *
+ * 这里故意只打一个无关紧要的请求（GET /）——只要握手完成、socket 进池就达到目的，
+ * 响应内容不重要，失败也完全不影响主流程。
+ *
+ * 注意必须用 **GET 而不是 HEAD**：实测 Node 的 http.Agent 不会把 HEAD 请求的 socket
+ * 放回 freeSockets（下一条请求仍会重新握手），GET 才会正常复用。
+ */
+export async function warmConnections(urls) {
+  const origins = [...new Set(urls.filter(Boolean).map((url) => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return null;
+    }
+  }).filter(Boolean))];
+  await Promise.all(
+    origins.map(async (origin) => {
+      try {
+        await pooledRequest(origin, { method: "GET", headers: { "user-agent": "PanHub-Warmup/1.0" } });
+      } catch {
+        /* 预热失败无所谓 */
+      }
+    }),
+  );
+  return origins;
+}

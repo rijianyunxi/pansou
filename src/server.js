@@ -14,7 +14,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkLink, saveLink, checkExistingAndShare, deleteMyShare, createClient, detectProvider, runScoped } from "./index.js";
+import { checkLink, saveLink, checkExistingAndShare, deleteMyShare, createClient, detectProvider, runScoped, warm } from "./index.js";
 import { WangpanError } from "./lib/util.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,6 +79,17 @@ function sendJson(response, status, payload) {
   const body = JSON.stringify(payload);
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) });
   response.end(body);
+}
+
+/**
+ * 每个接口打一行耗时日志，格式便于直接 grep：
+ *   [api] POST /api/save 1832ms · 转存=310ms 等待任务=380ms ...
+ * 上游慢在哪一步，看这一行就够了。`WANGPAN_LOG=0` 可关掉。
+ */
+function logRequest(key, totalMs, timings = []) {
+  if (process.env.WANGPAN_LOG === "0") return;
+  const detail = timings.length ? ` · ${timings.map((item) => `${item.step}=${item.ms}ms`).join(" ")}` : "";
+  console.log(`[api] ${key} ${totalMs}ms${detail}`);
 }
 
 async function serveStatic(response, urlPath) {
@@ -171,6 +182,9 @@ const routes = {
     return { provider, dir, files, timings: client.trace };
   },
 
+  // 预热到上游的连接（界面加载时调用，让用户点操作时已是热连接）
+  "POST /api/warm": async (body) => warm(body.provider || null),
+
   "POST /api/ping": async (body) => {
     const provider = resolveProvider(body.provider, null);
     const client = clientFor(provider, body.cookie);
@@ -190,8 +204,10 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const body = request.method === "POST" ? await readBody(request) : {};
+    const startedAt = Date.now();
     // 放进请求作用域，失败时也能把已经发生的上游耗时一起返回，方便定位卡在哪一步
     const outcome = await runScoped(() => routes[key](body));
+    logRequest(key, Date.now() - startedAt, outcome.timings);
     if (outcome.error) {
       const error = outcome.error;
       const message = error instanceof WangpanError ? error.message : error?.message || String(error);
