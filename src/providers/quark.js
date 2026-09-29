@@ -301,7 +301,16 @@ export class QuarkClient {
     // 已经完成就不用再轮询，能省掉 1~4 个来回。没有 task_resp 时照旧轮询。
     const inlineStatus = Number(response?.data?.task_resp?.data?.status);
     let taskResult = response?.data?.task_resp?.data || null;
+    const taskStartedAt = Date.now();
     if (inlineStatus !== 2 && taskId) taskResult = await this.waitTask(taskId);
+    const taskMs = Date.now() - taskStartedAt;
+    // 诊断：把「转存了多少项」和「任务等了多久」对上，用来判断任务耗时是否与内容量相关
+    if (process.env.WANGPAN_LOG !== "0") {
+      console.log(
+        `[quark] 转存 ${list.length} 个顶层条目，任务等待 ${taskMs}ms` +
+          `（${inlineStatus === 2 ? "响应内已同步完成" : `轮询 ${this.trace.filter((t) => t.step === "等待任务").length} 次`}）`,
+      );
+    }
     this.#reportSaveAs(taskResult);
 
     // 转存会在我网盘里生成**新的 fid**，所以必须回到目标目录按名称找回，不能复用分享里的 fid
