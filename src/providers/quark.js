@@ -15,6 +15,23 @@ const UA =
 const SHARE_BASE = () => process.env.QUARK_SHARE_BASE || "https://drive.quark.cn/1/clouddrive";
 const PC_BASE = () => process.env.QUARK_PC_BASE || "https://drive-pc.quark.cn/1/clouddrive";
 
+/**
+ * 夸克常见错误码 → 更可操作的中文说明。
+ *
+ * 上游返回的 message 有时过于简略（例如 41017 只给一句"用户禁止转存自己的分享"），
+ * 这里补充「该怎么处理」的提示。
+ */
+const ERROR_TEXT = {
+  "41017": "这是你自己的分享，夸克不允许转存自己的分享。可以直接用「检测已有」为它生成一条新分享链接。",
+  "41008": "分享已失效或被取消，请确认链接是否还有效。",
+  "31001": "登录态已失效，请重新获取 Cookie。",
+  "31024": "操作过于频繁，请稍后再试。",
+};
+
+function quarkErrorText(code, fallback) {
+  return ERROR_TEXT[String(code)] || fallback || `夸克接口错误（code ${code}）`;
+}
+
 /** 从夸克分享链接解析 pwd_id 与提取码。 */
 export function parseQuarkShareUrl(url, password = null) {
   const match = String(url || "").match(/pan\.quark\.cn\/s\/([A-Za-z0-9_-]+)/iu);
@@ -107,7 +124,7 @@ export class QuarkClient {
     const code = Number(payload?.code);
     const success = ok && payload?.status !== "error" && (payload?.code === undefined || code === 0);
     if (!success) {
-      const message = payload?.message || payload?.error || `夸克接口请求失败（HTTP ${status}）`;
+      const message = quarkErrorText(code, payload?.message || payload?.error);
       throw new WangpanError(message, { code: Number.isFinite(code) ? code : null, provider: "quark" });
     }
     return payload;
@@ -174,19 +191,38 @@ export class QuarkClient {
   }
 
   /**
+   * 解析分享，拿到后续所有操作都要用的最小上下文（pwdId / stoken / 根目录清单）。
+   *
+   * 抽成单独一步是为了**复用**：勾选去重时，先解析一遍分享判断是否已存在，
+   * 未命中再转存。若转存时重新解析，就会白跑「取分享令牌 + 读分享详情」两个来回。
+   */
+  async #resolveShare(url, password = null) {
+    const { pwdId, passcode } = parseQuarkShareUrl(url, password);
+    const stoken = await this.shareToken(pwdId, passcode);
+    const detail = await this.shareDetail(pwdId, stoken);
+    const list = Array.isArray(detail?.data?.list) ? detail.data.list : [];
+    return {
+      pwdId,
+      stoken,
+      list,
+      title: detail?.data?.share?.title || "",
+      fileNum: Number(detail?.data?.share?.file_num ?? list.length),
+    };
+  }
+
+  /**
    * 能力 1：校验分享链接是否有效，并返回根目录文件清单。
-   * @returns {Promise<{valid:boolean, reason?:string, title:string, fileCount:number, files:Array}>}
+   * @returns {Promise<{valid:boolean, reason?:string, title:string, fileCount:number, files:Array, context:object}>}
+   *          context 为可直接传给 saveShare 的复用上下文（不对外暴露，见 index.js）
    */
   async validateShare(url, password = null) {
-    const { pwdId, passcode } = parseQuarkShareUrl(url, password);
     try {
-      const stoken = await this.shareToken(pwdId, passcode);
-      const detail = await this.shareDetail(pwdId, stoken);
-      const list = Array.isArray(detail?.data?.list) ? detail.data.list : [];
+      const context = await this.#resolveShare(url, password);
+      const { pwdId, stoken, list } = context;
       return {
         valid: true,
-        title: detail?.data?.share?.title || "",
-        fileCount: Number(detail?.data?.share?.file_num ?? list.length),
+        title: context.title,
+        fileCount: context.fileNum,
         files: list.map((item) => ({
           fid: String(item.fid || ""),
           name: item.file_name || item.filename || "",
@@ -196,6 +232,7 @@ export class QuarkClient {
         })),
         stoken,
         pwdId,
+        context,
       };
     } catch (error) {
       return { valid: false, reason: error?.message || "夸克分享校验失败", title: "", fileCount: 0, files: [] };
@@ -207,14 +244,13 @@ export class QuarkClient {
    * @param {object} options
    * @param {string} [options.toPdirFid] 目标目录 fid，默认根目录 "0"
    * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接
+   * @param {object|null} [options.shareContext] 已解析好的分享上下文（来自 validateShare），
+   *        传入可省掉「取分享令牌 + 读分享详情」两个网络来回
    * @returns {Promise<{saved:boolean, taskId:string|null, toPdirFid:string, files:number, names:string[], share:object|null}>}
    */
-  async saveShare(url, password = null, { toPdirFid = "0", autoShare = false } = {}) {
+  async saveShare(url, password = null, { toPdirFid = "0", autoShare = false, shareContext = null } = {}) {
     this.requireLogin();
-    const { pwdId, passcode } = parseQuarkShareUrl(url, password);
-    const stoken = await this.shareToken(pwdId, passcode);
-    const detail = await this.shareDetail(pwdId, stoken);
-    const list = Array.isArray(detail?.data?.list) ? detail.data.list : [];
+    const { pwdId, stoken, list } = shareContext || (await this.#resolveShare(url, password));
     if (!list.length) throw new WangpanError("夸克分享中没有可转存的文件", { provider: "quark" });
 
     const fidList = list.map((item) => String(item.fid));

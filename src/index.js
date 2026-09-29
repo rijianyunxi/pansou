@@ -3,6 +3,8 @@
  *
  * 支持夸克（quark）与百度（baidu）两个网盘。
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { WangpanError } from "./lib/util.js";
 import { QuarkClient, isQuarkShareUrl } from "./providers/quark.js";
 import { BaiduClient, isBaiduShareUrl } from "./providers/baidu.js";
@@ -18,11 +20,34 @@ export function detectProvider(url) {
   throw new WangpanError("无法识别网盘类型，目前仅支持夸克（pan.quark.cn）与百度（pan.baidu.com）分享链接");
 }
 
+/**
+ * 请求作用域：收集本次请求创建过的客户端。
+ *
+ * 成功路径由各工作流自己把 `timings` 放进返回值；失败路径没有返回值，
+ * 就靠这里把已发生的上游耗时一并带出去——不然报错时完全看不出卡在哪一步。
+ * 用 AsyncLocalStorage 而不是模块级变量，是为了在并发请求下也不会串。
+ */
+const scope = new AsyncLocalStorage();
+
 /** 创建指定网盘的客户端。 */
 export function createClient(provider, options = {}) {
-  if (provider === "quark") return new QuarkClient(options);
-  if (provider === "baidu") return new BaiduClient(options);
-  throw new WangpanError(`不支持的网盘类型：${provider}`);
+  const client = provider === "quark" ? new QuarkClient(options) : provider === "baidu" ? new BaiduClient(options) : null;
+  if (!client) throw new WangpanError(`不支持的网盘类型：${provider}`);
+  scope.getStore()?.push(client);
+  return client;
+}
+
+/**
+ * 在请求作用域内执行一段工作流。
+ * @returns {Promise<{data?:any, error?:Error, timings:Array}>}
+ */
+export async function runScoped(run) {
+  const clients = [];
+  try {
+    return { data: await scope.run(clients, run), timings: clients.flatMap((client) => client.trace) };
+  } catch (error) {
+    return { error, timings: clients.flatMap((client) => client.trace) };
+  }
 }
 
 function resolve(provider, url) {
@@ -37,27 +62,58 @@ export async function checkLink(url, { provider = null, password = null } = {}) 
   const target = resolve(provider, url);
   const client = createClient(target);
   const result = await client.validateShare(url, password);
-  return { provider: target, ...result, timings: client.trace };
+  // context 是给 saveLink 复用的内部句柄（含原始上游 payload），不对外返回
+  const { context, ...visible } = result;
+  return { provider: target, ...visible, timings: client.trace };
 }
 
 /**
  * 能力 2：把链接资源转存到自己的网盘。
+ *
  * @param {object} options
  * @param {string} [options.toDir] 百度：目标目录路径（默认 "/"）；夸克：目标目录 fid（默认 "0"）
  * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接并一并返回
- * @returns {Promise<{provider:string, saved:boolean, count:number, target:string, names:string[], share:object|null}>}
+ * @param {boolean} [options.dedup] 转存前先查自己网盘是否已有该资源；有则直接复用已有资源建分享
+ * @returns {Promise<{provider:string, mode:"saved"|"reused", count:number, target:string, names:string[], share:object|null}>}
  */
-export async function saveLink(url, { provider = null, password = null, toDir = null, autoShare = false } = {}) {
+export async function saveLink(url, { provider = null, password = null, toDir = null, autoShare = false, dedup = false } = {}) {
   const target = resolve(provider, url);
   const client = createClient(target);
-  if (target === "quark") {
-    const toPdirFid = toDir || "0";
-    const result = await client.saveShare(url, password, { toPdirFid, autoShare });
-    return { provider: target, ...result, count: result.files, target: toPdirFid, timings: client.trace };
+  const dir = toDir ?? (target === "quark" ? "0" : "/");
+  const saveOptions = target === "quark" ? { toPdirFid: dir, autoShare } : { toDir: dir, autoShare };
+
+  if (!dedup) {
+    const result = await client.saveShare(url, password, saveOptions);
+    return { provider: target, mode: "saved", ...result, count: result.files ?? result.count, target: dir, timings: client.trace };
   }
-  const targetDir = toDir || "/";
-  const result = await client.saveShare(url, password, { toDir: targetDir, autoShare });
-  return { provider: target, ...result, target: targetDir, timings: client.trace };
+
+  // 去重模式：解析分享与列我的目录互不依赖，并行执行可省一个网络来回
+  const [meta, mine] = await Promise.all([client.validateShare(url, password), client.listDir(dir)]);
+  if (!meta.valid) throw new WangpanError(meta.reason || "分享链接无效", { provider: target });
+
+  const { exists, matched, missing } = client.matchExisting(meta.files, mine);
+  const ids = matched.map((pair) => (target === "quark" ? pair.mine.fid : pair.mine.fsId)).filter((id) => id);
+
+  if (exists && autoShare && ids.length) {
+    const share = await client.createShare(ids, {});
+    return { provider: target, mode: "reused", alreadyExists: true, matched, missing, share, count: 0, timings: client.trace };
+  }
+  if (exists) {
+    return { provider: target, mode: "reused", alreadyExists: true, matched, missing, share: null, count: 0, timings: client.trace };
+  }
+
+  // 未命中 → 复用刚才已经解析好的 context 转存，省掉重复解析分享的那几个网络来回
+  const result = await client.saveShare(url, password, { ...saveOptions, shareContext: meta.context });
+  return {
+    provider: target,
+    mode: "saved",
+    ...result,
+    count: result.files ?? result.count,
+    target: dir,
+    matched,
+    missing,
+    timings: client.trace,
+  };
 }
 
 /**

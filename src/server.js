@@ -14,7 +14,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkLink, saveLink, checkExistingAndShare, deleteMyShare, createClient, detectProvider } from "./index.js";
+import { checkLink, saveLink, checkExistingAndShare, deleteMyShare, createClient, detectProvider, runScoped } from "./index.js";
 import { WangpanError } from "./lib/util.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -133,25 +133,28 @@ const routes = {
 
   "POST /api/save": async (body) => {
     const provider = resolveProvider(body.provider, body.url);
-    const toDir = body.toDir || null;
     // 默认转存成功后生成"我自己的分享链接"并随响应返回；传 autoShare:false 可关闭
-    const autoShare = body.autoShare !== false;
-    const options = { provider, password: body.password ?? null, toDir, autoShare };
+    const result = await saveLink(body.url, {
+      provider,
+      password: body.password ?? null,
+      toDir: body.toDir || null,
+      autoShare: body.autoShare !== false,
+      // 勾选去重：解析分享一次即可同时完成「查我网盘是否已有」和「未命中则转存」
+      dedup: Boolean(body.dedup),
+    });
+    return { provider, ...result };
+  },
 
-    // 勾选去重：先查我网盘是否已有 → 有则复用已有资源建分享；没有则照常转存
-    if (body.dedup) {
-      const dup = await checkExistingAndShare(body.url, { provider, password: options.password, dir: toDir, autoShare });
-      if (dup.alreadyExists) return { provider, mode: "reused", ...dup };
-      const saved = await saveLink(body.url, options);
-      return {
-        provider,
-        mode: "saved",
-        ...saved,
-        timings: [...(dup.timings || []), ...(saved.timings || [])],
-      };
-    }
-    const saved = await saveLink(body.url, options);
-    return { provider, mode: "saved", ...saved };
+  // 只做「我网盘里是否已有该资源」检测：命中则直接为已有资源建分享，不产生转存
+  "POST /api/existing": async (body) => {
+    const provider = resolveProvider(body.provider, body.url);
+    const result = await checkExistingAndShare(body.url, {
+      provider,
+      password: body.password ?? null,
+      dir: body.toDir || null,
+      autoShare: body.autoShare !== false,
+    });
+    return { provider, ...result };
   },
 
   "POST /api/delete": async (body) => {
@@ -187,11 +190,18 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const body = request.method === "POST" ? await readBody(request) : {};
-    const data = await routes[key](body);
-    sendJson(response, 200, { ok: true, data });
+    // 放进请求作用域，失败时也能把已经发生的上游耗时一起返回，方便定位卡在哪一步
+    const outcome = await runScoped(() => routes[key](body));
+    if (outcome.error) {
+      const error = outcome.error;
+      const message = error instanceof WangpanError ? error.message : error?.message || String(error);
+      sendJson(response, 400, { ok: false, error: message, provider: error?.provider || null, timings: outcome.timings });
+      return;
+    }
+    sendJson(response, 200, { ok: true, data: outcome.data });
   } catch (error) {
     const message = error instanceof WangpanError ? error.message : error?.message || String(error);
-    sendJson(response, 400, { ok: false, error: message, provider: error?.provider || null });
+    sendJson(response, 400, { ok: false, error: message, provider: error?.provider || null, timings: [] });
   }
 });
 

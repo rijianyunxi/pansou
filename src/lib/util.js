@@ -1,6 +1,9 @@
 /**
- * 通用工具：Cookie 解析/合并、延时、格式化、错误类型。
+ * 通用工具：Cookie 解析/合并、延时、格式化、错误类型、HTTP 请求。
  */
+
+import http from "node:http";
+import https from "node:https";
 
 /** 业务错误：表示"输入/上游返回"层面的可预期失败（链接失效、提取码错误等）。 */
 export class WangpanError extends Error {
@@ -67,41 +70,164 @@ export function timeoutMs() {
 }
 
 /**
+ * 连接池：Node 原生 fetch 走的是 undici，其 keep-alive 只有 4 秒，
+ * 空闲超过 4 秒连接即被丢弃，下一次请求要重新 TCP+TLS 握手（实测 222~360ms，
+ * 而热连接只要 51~75ms）。这里自建 http/https Agent 把空闲连接保活到 60 秒，
+ * 让同一批请求（一次转存有 5~7 个上游请求）几乎全部命中已建好的连接。
+ *
+ * 注意 keepAliveMsecs 是 TCP 层 SO_KEEPALIVE 的探测间隔，不是空闲回收时间；
+ * 空闲 socket 的复用时长由 Agent 的 freeSockets 保留策略决定（默认不主动回收，
+ * 直到对端关闭），这正是我们要的效果。
+ */
+const AGENT_OPTIONS = {
+  keepAlive: true,
+  keepAliveMsecs: 60_000,
+  maxSockets: 16,
+  maxFreeSockets: 8,
+  scheduling: "lifo",
+};
+const AGENTS = {
+  "http:": new http.Agent(AGENT_OPTIONS),
+  "https:": new https.Agent(AGENT_OPTIONS),
+};
+
+/** 与 fetch 的 Headers 保持最小兼容：只需要 get / getSetCookie / has。 */
+class HeaderBag {
+  constructor(raw = {}) {
+    this.raw = raw;
+  }
+
+  get(name) {
+    const value = this.raw[String(name).toLowerCase()];
+    if (value === undefined) return null;
+    return Array.isArray(value) ? value.join(", ") : String(value);
+  }
+
+  getSetCookie() {
+    const value = this.raw["set-cookie"];
+    if (!value) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
+  has(name) {
+    return this.raw[String(name).toLowerCase()] !== undefined;
+  }
+}
+
+/** 用自建连接池发一次请求，读完整响应体后返回（不含计时，计时在 httpRequest 里做）。 */
+function pooledRequest(url, { method = "GET", headers = {}, body, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    let target;
+    try {
+      target = new URL(url);
+    } catch {
+      reject(new WangpanError(`URL 不合法：${url}`));
+      return;
+    }
+    const agent = AGENTS[target.protocol];
+    if (!agent) {
+      reject(new WangpanError(`不支持的协议：${target.protocol}`));
+      return;
+    }
+
+    const transport = target.protocol === "https:" ? https : http;
+    const chunks = [];
+    let settled = false;
+    let request;
+    let onAbort = null;
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+
+    const attempt = (isRetry) => {
+      request = transport.request(target, { method, headers, agent }, (response) => {
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("error", (error) => finish(reject, error));
+        response.on("end", () => {
+          const status = response.statusCode ?? 0;
+          finish(resolve, {
+            ok: status >= 200 && status < 300,
+            status,
+            headers: new HeaderBag(response.headers),
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      });
+
+      request.on("error", (error) => {
+        // 保活连接可能在对端已经关闭后才被复用，此时会拿到 ECONNRESET / EPIPE。
+        // 只有在「复用了旧连接」且「响应一个字节都没收到」时才重试一次——
+        // 这种情况下服务端是在我们发请求前就发了 FIN，重试不会造成重复执行。
+        const stale =
+          request.reusedSocket &&
+          chunks.length === 0 &&
+          (error.code === "ECONNRESET" || error.code === "EPIPE");
+        if (stale && !isRetry) {
+          attempt(true);
+          return;
+        }
+        finish(reject, error);
+      });
+
+      if (body !== undefined && body !== null) request.end(body);
+      else request.end();
+    };
+
+    onAbort = () => {
+      const error = new WangpanError(`请求已取消：${target.host}`);
+      request?.destroy(error);
+      finish(reject, error);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    attempt(false);
+  });
+}
+
+/**
  * 在**同一个超时窗口**内完成「发请求 + 读响应体」，并返回统一的响应描述。
  *
- * 为什么不能只给 fetch 挂 AbortSignal：AbortSignal 只覆盖到拿到响应头，
- * 若上游返回响应头后 body 迟迟不结束（黑洞/代理缓冲），后续 response.text()
- * 会无限挂起。因此这里用 Promise.race 把「读体」也纳入超时范围。
+ * 为什么不能只给请求挂一个信号：只覆盖到拿到响应头是不够的，若上游返回响应头后
+ * body 迟迟不结束（黑洞/代理缓冲），读体阶段会无限挂起。所以这里的超时定时器
+ * 一直挂到「响应体读完」，超时就直接 destroy 掉底层 socket。
  *
- * @returns {Promise<{ok:boolean, status:number, headers:Headers, body:string, ms:number}>}
+ * @returns {Promise<{ok:boolean, status:number, headers:HeaderBag, body:string, ms:number}>}
  */
 export async function httpRequest(url, options = {}) {
   const ms = timeoutMs();
   const controller = new AbortController();
-  const abortTimer = setTimeout(() => controller.abort(), ms);
-  let guardTimer;
-  const guard = new Promise((_, reject) => {
-    guardTimer = setTimeout(() => {
-      let host = url;
-      try { host = new URL(url).host; } catch { /* 保持原样 */ }
-      reject(new WangpanError(`请求超时（${ms}ms），上游无响应：${host}`));
-    }, ms + 500);
-  });
-  guard.catch(() => {}); // race 先结束后，guard 的拒绝不应变成未处理拒绝
-
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch {
+    /* 保持原样 */
+  }
+  const timer = setTimeout(() => controller.abort(), ms);
   const startedAt = Date.now();
   try {
-    const result = await Promise.race([
-      (async () => {
-        const response = await fetch(url, { ...options, signal: controller.signal });
-        const body = await response.text();
-        return { ok: response.ok, status: response.status, headers: response.headers, body };
-      })(),
-      guard,
-    ]);
+    const result = await pooledRequest(url, { ...options, signal: controller.signal });
     return { ...result, ms: Date.now() - startedAt };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new WangpanError(`请求超时（${ms}ms），上游无响应：${host}`, { cause: error });
+    }
+    throw error;
   } finally {
-    clearTimeout(abortTimer);
-    clearTimeout(guardTimer);
+    clearTimeout(timer);
   }
+}
+
+/** 主动释放连接池（测试/退出时使用）。 */
+export function closeAgents() {
+  for (const agent of Object.values(AGENTS)) agent.destroy();
 }

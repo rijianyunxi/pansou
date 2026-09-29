@@ -124,6 +124,7 @@ button { font-family: inherit; cursor: pointer; border-radius: 10px; font-size: 
 .pill.ok { background: var(--ok-soft); color: var(--ok); }
 .pill.err { background: var(--err-soft); color: var(--err); }
 .pill.info { background: var(--accent-soft); color: var(--accent); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
 
 .kv { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .kv span { background: #f4f6f9; border-radius: 8px; padding: 4px 10px; font-size: 13px; color: var(--muted); }

@@ -199,15 +199,29 @@ export class BaiduClient {
   }
 
   /**
+   * 解析分享，拿到后续所有操作都要用的最小上下文。
+   *
+   * 抽成单独一步是为了**复用**：勾选去重时，先解析一遍分享判断是否已存在，
+   * 未命中再转存。若转存时重新解析，就会白跑「解析分享页 + 校验提取码 + 读分享列表」
+   * 三个网络来回（百度这三步都是串行的，代价约 400~900ms）。
+   */
+  async #resolveShare(url, password = null) {
+    const { surl, password: sharePassword } = parseBaiduShareUrl(url, password);
+    const { shareId, uk } = await this.resolveShareMeta(surl, url);
+    const sekey = await this.verifyShare(surl, sharePassword);
+    const items = await this.listShareRoot(shareId, uk, surl, sekey);
+    return { surl, shareId, uk, sekey, items };
+  }
+
+  /**
    * 能力 1：校验分享链接是否有效，并返回根目录文件清单。
-   * @returns {Promise<{valid:boolean, reason?:string, fileCount:number, files:Array}>}
+   * @returns {Promise<{valid:boolean, reason?:string, fileCount:number, files:Array, context:object}>}
+   *          context 为可直接传给 saveShare 的复用上下文（不对外暴露，见 index.js）
    */
   async validateShare(url, password = null) {
-    const { surl, password: sharePassword } = parseBaiduShareUrl(url, password);
     try {
-      const { shareId, uk } = await this.resolveShareMeta(surl, url);
-      const sekey = await this.verifyShare(surl, sharePassword);
-      const items = await this.listShareRoot(shareId, uk, surl, sekey);
+      const context = await this.#resolveShare(url, password);
+      const { items } = context;
       return {
         valid: true,
         title: "",
@@ -219,10 +233,11 @@ export class BaiduClient {
           isDir: Boolean(item.isdir),
           md5: item.md5 || "",
         })),
-        shareId,
-        uk,
-        sekey,
-        surl,
+        shareId: context.shareId,
+        uk: context.uk,
+        sekey: context.sekey,
+        surl: context.surl,
+        context,
       };
     } catch (error) {
       return { valid: false, reason: error?.message || "百度分享校验失败", fileCount: 0, files: [] };
@@ -234,13 +249,12 @@ export class BaiduClient {
    * @param {object} options
    * @param {string} [options.toDir] 目标目录路径，默认 "/"
    * @param {boolean} [options.autoShare] 转存成功后，为自己网盘里刚保存的内容生成分享链接
+   * @param {object|null} [options.shareContext] 已解析好的分享上下文（来自 validateShare），
+   *        传入可省掉「解析分享页 + 校验提取码 + 读分享列表」三个网络来回
    * @returns {Promise<{saved:boolean, count:number, target:string, names:string[], share:object|null}>}
    */
-  async saveShare(url, password = null, { toDir = "/", autoShare = false } = {}) {
-    const { surl, password: sharePassword } = parseBaiduShareUrl(url, password);
-    const { shareId, uk } = await this.resolveShareMeta(surl, url);
-    const sekey = await this.verifyShare(surl, sharePassword);
-    const items = await this.listShareRoot(shareId, uk, surl, sekey);
+  async saveShare(url, password = null, { toDir = "/", autoShare = false, shareContext = null } = {}) {
+    const { surl, shareId, uk, sekey, items } = shareContext || (await this.#resolveShare(url, password));
     const fsIds = items.map((item) => Number(item.fs_id)).filter((id) => Number.isSafeInteger(id) && id > 0);
     if (!fsIds.length) throw new WangpanError("百度分享中没有可转存的文件", { provider: "baidu" });
     const names = items.map((item) => item.server_filename || "").filter(Boolean);
@@ -386,10 +400,7 @@ export class BaiduClient {
    * 解析分享内的 fs_id（自己的分享，fs_id 即网盘内文件 id），再执行删除。
    */
   async deleteByShareUrl(url, password = null) {
-    const { surl, password: sharePassword } = parseBaiduShareUrl(url, password);
-    const { shareId, uk } = await this.resolveShareMeta(surl, url);
-    const sekey = await this.verifyShare(surl, sharePassword);
-    const items = await this.listShareRoot(shareId, uk, surl, sekey);
+    const { items } = await this.#resolveShare(url, password);
     const fsIds = items.map((item) => String(item.fs_id || "")).filter((id) => /^\d+$/u.test(id));
     if (!fsIds.length) throw new WangpanError("该分享中没有可删除的资源", { provider: "baidu" });
     const { deleted } = await this.deleteFiles(fsIds);

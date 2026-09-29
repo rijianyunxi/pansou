@@ -30,14 +30,23 @@ function toast(message, isError = false) {
 }
 
 async function api(path, body) {
+  const startedAt = performance.now();
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({ ok: false, error: `响应解析失败（HTTP ${response.status}）` }));
-  if (!payload.ok) throw new Error(payload.error || "请求失败");
-  return payload.data;
+  // 记下真实往返耗时：上游各步耗时之和在并行步骤上会重复计算，不是用户体感的那个数
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  if (!payload.ok) {
+    // 失败时也把上游耗时带上，方便看出卡在哪一步
+    const error = new Error(payload.error || "请求失败");
+    error.timings = payload.timings || [];
+    error.elapsedMs = elapsedMs;
+    throw error;
+  }
+  return { ...payload.data, elapsedMs };
 }
 
 function loading(text = "处理中…") {
@@ -69,19 +78,20 @@ function renderShare(share) {
 }
 
 /** 渲染上游耗时分布，便于定位瓶颈。 */
-function renderTimings(timings) {
+function renderTimings(timings, elapsedMs = null) {
   if (!Array.isArray(timings) || !timings.length) return "";
   const byStep = new Map();
-  let total = 0;
+  let sum = 0;
   for (const item of timings) {
     byStep.set(item.step, (byStep.get(item.step) || 0) + item.ms);
-    total += item.ms;
+    sum += item.ms;
   }
   const parts = [...byStep.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([step, ms]) => `${escapeHtml(step)} ${ms}ms`)
     .join(" · ");
-  return `<p class="timings">上游请求共 ${timings.length} 次，合计 ${total} ms：${parts}</p>`;
+  const wall = elapsedMs === null ? "" : `接口往返 <b>${elapsedMs} ms</b>（含本地开销）｜`;
+  return `<p class="timings">${wall}上游请求 ${timings.length} 次，各步累计 ${sum} ms：${parts}</p>`;
 }
 
 /* ---------- Cookie 配置 ---------- */
@@ -181,7 +191,7 @@ const actions = {
     const data = await api("/api/check", { url, password: $("checkPwd").value.trim(), provider: state.provider });
     if (!data.valid) {
       resultEl.className = "result";
-      resultEl.innerHTML = `<span class="pill err">✗ 链接无效</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(data.reason)}</p>${renderTimings(data.timings)}`;
+      resultEl.innerHTML = `<span class="pill err">✗ 链接无效</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(data.reason)}</p>${renderTimings(data.timings, data.elapsedMs)}`;
       return;
     }
     resultEl.className = "result";
@@ -189,7 +199,7 @@ const actions = {
       `<span class="pill ok">✓ 链接有效</span>` +
       `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>文件数 <b>${data.fileCount}</b></span>${data.title ? `<span>标题 <b>${escapeHtml(data.title)}</b></span>` : ""}</div>` +
       renderFiles(data.files) +
-      renderTimings(data.timings);
+      renderTimings(data.timings, data.elapsedMs);
   },
 
   async save() {
@@ -210,12 +220,21 @@ const actions = {
 
     if (data.mode === "reused") {
       const files = data.matched.map((pair) => ({ ...pair.mine, hit: true }));
+      const missing = data.missing || [];
+      // 部分命中时不能说"已有该资源"——只有全部命中才是
+      const allHit = missing.length === 0;
+      const headline = allHit
+        ? `<span class="pill ok">✓ 你的网盘已有该资源</span>`
+        : `<span class="pill warn">部分命中：${data.matched.length} / ${data.matched.length + missing.length} 项已存在</span>`;
+      const note = allHit
+        ? "已跳过重复转存，直接为已有资源生成分享链接："
+        : `已为这 ${data.matched.length} 项生成分享链接；另有 ${missing.length} 项不在你的网盘中，取消勾选「去重」可转存它们。`;
       resultEl.innerHTML =
-        `<span class="pill ok">✓ 你的网盘已有该资源</span>` +
-        `<p style="margin:12px 0 0;color:var(--muted)">已跳过重复转存，直接为已有资源生成分享链接：</p>` +
+        headline +
+        `<p style="margin:12px 0 0;color:var(--muted)">${note}</p>` +
         renderFiles(files, { showHit: true }) +
         renderShare(data.share) +
-        renderTimings(data.timings);
+        renderTimings(data.timings, data.elapsedMs);
       return;
     }
 
@@ -225,7 +244,7 @@ const actions = {
       (dedup ? `<p style="margin:8px 0 0;color:var(--muted)">去重检查：网盘中未发现同名资源</p>` : "") +
       renderShare(data.share) +
       (autoShare && !data.share ? `<p style="margin:8px 0 0;color:var(--warn)">转存成功，但未能在目标目录定位到刚保存的条目，因此没生成分享链接。</p>` : "") +
-      renderTimings(data.timings);
+      renderTimings(data.timings, data.elapsedMs);
   },
 
   async del() {
@@ -253,7 +272,7 @@ const actions = {
       `<span class="pill ok">✓ 已删除</span>` +
       `<div class="kv"><span>网盘 <b>${providerName(data.provider)}</b></span><span>删除数量 <b>${data.deleted}</b></span></div>` +
       renderFiles((data.names || []).map((name) => ({ name }))) +
-      renderTimings(data.timings);
+      renderTimings(data.timings, data.elapsedMs);
   },
 
   async mine() {
@@ -276,7 +295,10 @@ document.querySelectorAll("[data-action]").forEach((button) => {
       await handler();
     } catch (error) {
       resultEl.className = "result";
-      resultEl.innerHTML = `<span class="pill err">✗ 失败</span><p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(error.message)}</p>`;
+      resultEl.innerHTML =
+        `<span class="pill err">✗ 失败</span>` +
+        `<p style="margin:12px 0 0;color:var(--muted)">${escapeHtml(error.message)}</p>` +
+        renderTimings(error.timings, error.elapsedMs);
       toast(error.message, true);
     } finally {
       button.disabled = false;

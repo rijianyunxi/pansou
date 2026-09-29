@@ -14,7 +14,7 @@
 | ① 链接校验 | 判断分享链接是否有效（失效 / 提取码错误 / 正常），并列出文件清单 | 「链接校验」标签页 |
 | ② 转存到自己网盘 | 把分享内容保存到自己的网盘，**成功后自动生成「我自己的分享链接」并返回** | 「转存 / 去重」标签页 |
 | ② 按自己的分享链接删除 | 用"我自己的分享链接"定位并删除我网盘中的资源（删除前先列出清单确认） | 「删除我的资源」标签页 |
-| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘，命中则直接为已有资源创建分享 | 「转存 / 去重」标签页的「先去重」 |
+| ③ 已有资源检测 + 复用分享 | 检测资源是否已在自己网盘，命中则直接为已有资源创建分享 | 「转存 / 去重」标签页的「先去重」；`/api/existing` |
 | 辅助 | 列出我网盘目录 / 校验 Cookie 可用性 | 「我的网盘」/「检测登录态」 |
 
 > 重点实现的是 ① 和 ②；③ 为尽力实现（启发式匹配，见下）。
@@ -23,13 +23,15 @@
 
 `checkExistingAndShare()` 的判定过程：
 
-1. 解析分享，拿到根目录条目（名称、大小，百度还可能有 md5）；
-2. 列出**你网盘目标目录**的内容；
-3. 逐条比对：
+1. **并行**做两件事：解析分享（拿到根目录条目：名称、大小，百度还可能有 md5）、列出**你网盘目标目录**的内容；
+2. 逐条比对：
    - **百度**：优先 `md5` 精确匹配；缺失时退化为 `名称 + 大小`
    - **夸克**：`名称 + 大小`（文件夹 size 恒为 0，实际等价于按名称匹配）
-4. 命中任意一条 → `alreadyExists = true`，并对**你网盘里已有的那份**直接建分享；
+3. 命中任意一条 → `alreadyExists = true`，并对**你网盘里已有的那份**直接建分享；
    全部未命中 → `alreadyExists = false`，走正常转存。
+
+**注意**：去重只在**目标目录这一层**比对，不递归子目录。所以文件在你网盘的子目录里时，
+把 `toDir` 指到那个子目录才能命中。
 
 **已知误判**：文件被改名、同名不同内容、同内容不同大小都会判错。百度有 md5 时最可靠；
 夸克没有 md5，只能靠名称+大小。
@@ -62,11 +64,16 @@
 
 若转存成功但在目标目录找不到对应条目，`share` 为 `null`，界面会给出提示。
 
+### 不能转存"自己的分享"
+
+夸克会直接拒绝（`code 41017`）。这种情况请用「检测已有」（`/api/existing`）——
+它会为**你网盘里已有的那份**生成一条新分享链接，正好是你想要的结果。
+
 ---
 
 ## 快速开始
 
-要求 **Node.js ≥ 22**（使用原生 `fetch` 与 `AbortSignal.timeout`，无第三方依赖）。
+要求 **Node.js ≥ 22**，**零第三方依赖**（HTTP 走 `node:http` / `node:https`，自建连接池）。
 
 ```bash
 # 1. 配置 Cookie
@@ -125,6 +132,7 @@ npm run web        # 打开 http://127.0.0.1:8787
 | POST | `/api/config/clear` | 清除界面填写的登录态，回落到 `.env` |
 | POST | `/api/check` | ① 校验链接 → `{ valid, reason, fileCount, files }` |
 | POST | `/api/save` | ② 转存（`dedup` 去重、`autoShare` 默认 true 返回分享链接） |
+| POST | `/api/existing` | ③ 只检测"我网盘是否已有"，命中则直接为已有资源建分享，**不产生转存** |
 | POST | `/api/delete` | ② 按自己的分享链接删除 |
 | POST | `/api/mine` | 列出我网盘目录 |
 | POST | `/api/ping` | 检测登录态是否可用 |
@@ -137,10 +145,15 @@ curl -X POST http://127.0.0.1:8787/api/check \
   -H 'content-type: application/json' \
   -d '{"url":"https://pan.quark.cn/s/abcdef123456"}'
 
-# ② 转存并拿到自己的分享链接（--to：百度传目录路径，夸克传目录 fid）
+# ② 转存并拿到自己的分享链接（toDir：百度传目录路径，夸克传目录 fid）
 curl -X POST http://127.0.0.1:8787/api/save \
   -H 'content-type: application/json' \
   -d '{"url":"https://pan.quark.cn/s/abcdef123456","toDir":"","dedup":true,"autoShare":true}'
+
+# ③ 只查已有（不做转存）
+curl -X POST http://127.0.0.1:8787/api/existing \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://pan.quark.cn/s/abcdef123456","toDir":"0"}'
 
 # ② 删除（删除前建议先调 /api/check 确认要删什么）
 curl -X POST http://127.0.0.1:8787/api/delete \
@@ -149,6 +162,7 @@ curl -X POST http://127.0.0.1:8787/api/delete \
 ```
 
 响应统一为 `{ ok: true, data }` 或 `{ ok: false, error, provider }`。
+所有响应都带 `timings`（每个上游请求的耗时），界面底部会展示并额外标注**接口真实往返耗时**。
 
 ---
 
@@ -161,12 +175,12 @@ import { checkLink, saveLink, checkExistingAndShare, deleteMyShare } from "./src
 const info = await checkLink("https://pan.quark.cn/s/abcdef123456");
 if (info.valid) console.log(info.fileCount, info.files);
 
-// ③ 去重复用：命中已有资源时直接返回该资源的分享链接
+// ③ 只查已有：命中已有资源时直接返回该资源的分享链接（不转存）
 const dup = await checkExistingAndShare("https://pan.quark.cn/s/abcdef123456", { autoShare: true });
 if (dup.alreadyExists) console.log("已存在，分享链接：", dup.share.url);
 
-// ② 转存
-await saveLink("https://pan.quark.cn/s/abcdef123456", { toDir: "0" });
+// ② 转存（dedup:true = 先查已有，命中就复用，未命中才转存；解析只做一次）
+await saveLink("https://pan.quark.cn/s/abcdef123456", { toDir: "0", dedup: true, autoShare: true });
 
 // ② 按自己的分享链接删除
 await deleteMyShare("https://pan.quark.cn/s/myshare");
@@ -206,19 +220,59 @@ await deleteMyShare("https://pan.quark.cn/s/myshare");
 
 ---
 
+## 性能
+
+夸克/百度这类接口的延迟几乎全部来自**串行的网络来回**，所以优化都围绕"少发请求 + 别重复握手"。
+
+### 已做的优化
+
+| 优化 | 效果 |
+|------|------|
+| **自建长保活连接池**（`https.Agent({ keepAlive, maxSockets })`） | 单次请求从 **222~360ms 降到 73~116ms**。原生 `fetch` 走 undici，保活只有 4 秒，空闲稍久就得重新 TCP+TLS 握手；且 Node 22 不提供调整该值的开关，`undici` 也无法 import，只能绕开 `fetch` |
+| **复用已解析的分享上下文** | 勾选去重时，原来会**解析两遍分享**（查已有一次、转存又一次）。现在解析一次即可，夸克省 2 个来回、百度省 3 个来回 |
+| **去重与列目录并行** | `Promise.all([解析分享, 列我网盘])`，省 1 个来回 |
+| **任务轮询前 3 秒快轮询**（300ms，之后 1s） | 原来固定 1s 一次，短任务白等最多 1 秒 |
+| **超时只覆盖一次** | 请求 + 读响应体共用一个超时窗口，超时直接 `destroy` socket，不会挂到天荒地老 |
+
+### 实测（夸克，本机 → 上游）
+
+| 场景 | 上游请求数 | 接口往返 |
+|------|-----------|---------|
+| `check` 有效链接 | 2（取令牌 → 读详情） | ~370ms |
+| `existing` 去重命中 | 5（解析分享 ∥ 列目录 → 建分享 → 取链接） | ~370~570ms |
+
+界面底部的耗时条会同时给出「接口往返」和「各步累计」——注意**各步累计在并行步骤上会重复计算**，
+看体感请以「接口往返」为准。
+
+### 还能再快吗
+
+- **夸克分享链接无法用 `share_id` 拼出来**：实测 `share_id` 是 32 位十六进制，而链接路径是另一串
+  12 位十六进制（如 `50f6bad9…` → `/s/4d717c13c836`），所以「取分享链接」这一步省不掉。
+- **转存后能否省掉"列目录"**：夸克的 task 响应里可能有 `save_as.save_as_top_fids`，
+  若稳定返回新 fid 就能省掉一次列目录。目前没做——没有可稳定复现的第三方分享可验证，
+  猜错会导致分享到错误的文件，风险大于收益。
+- 剩下的主要是**上游服务端执行时间**（转存任务本身），本地控制不了。
+
+---
+
 ## 已知限制
 
-- **未用真实账号验证**：代码按公开的 Web 接口协议实现，离线自测覆盖链接解析与工具逻辑，
-  但**接口连通性需要你用自己的 Cookie 实测**（`ping` → `check` → `save` 逐步验证）。
+- **未用真实账号验证**：代码按公开的 Web 接口协议实现。链接解析、去重比对、连接池/超时行为
+  有离线自测覆盖；**夸克侧的连通性已用真实账号实测通过**（check / existing / delete），
+  **百度侧仍需你用自己的 Cookie 实测**（`ping` → `check` → `save` 逐步验证）。
 - **非官方接口**：夸克无公开 API，百度走的是 Web 接口；官方改版会失效，需要跟着调整。
 - **风控**：百度单账号每日创建分享上限约 300 个，转存建议每次间隔 ≥ 1 秒；批量操作易触发风控。
 - **去重是启发式**：夸克按"文件名 + 大小"，百度优先 md5、退化到"文件名 + 大小"，
-  同名不同内容或内容相同但改名的情况会误判。
+  同名不同内容或内容相同但改名的情况会误判。且只比对目标目录这一层，不递归。
+- **不能转存自己的分享**：夸克返回 `41017`，用「检测已有」替代。
 - **删除逻辑**：按"自己的分享链接"删除时，依赖分享内条目 id 与你网盘内 id 一致
   （自己的分享成立，转存来的第三方分享不成立）。
 - 转存目标目录：夸克用目录 fid，百度用目录路径字符串。
 - **超时保护**：请求与读响应体共用同一个超时窗口（`WANGPAN_TIMEOUT_MS`，默认 30s）。
   上游返回响应头后 body 迟迟不结束时也能在超时后失败，不会无限挂起。
+- **保活连接池**：空闲连接默认保留 60 秒。若复用到了已被上游关闭的连接，
+  会针对 `ECONNRESET`/`EPIPE` 自动重试一次（仅在"复用了旧连接且一个字节响应都没收到"时，
+  不会造成重复执行）。
 
 ---
 
@@ -228,10 +282,11 @@ await deleteMyShare("https://pan.quark.cn/s/myshare");
 src/
   server.js            本地 Web 服务（界面后端 + HTTP 接口）
   index.js             统一工作流（check / save / dedup / delete）
-  lib/util.js          Cookie、超时请求、延时、格式化、错误类型
+  lib/util.js          Cookie、连接池 HTTP 请求、延时、格式化、错误类型
   providers/quark.js   夸克实现
   providers/baidu.js   百度实现
 public/                图形界面（index.html / style.css / app.js）
-test/parse.test.js     离线自测（node:test，无需网络）
+test/parse.test.js     离线自测：链接解析、去重比对、Cookie（无网络）
+test/http.test.js      离线自测：连接池复用、超时、HeaderBag（本机临时 server）
 docs/cloud-drive-research.md   各网盘接入能力调研
 ```
