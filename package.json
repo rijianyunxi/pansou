@@ -10,6 +10,7 @@
   "scripts": {
     "web": "node src/server.js",
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "regress": "node scripts/regress-save.mjs"
   }
 }

@@ -108,6 +108,20 @@ npm run web        # 打开 http://127.0.0.1:8787
 
 > **改完 `.env` 需要重启服务**才会生效。
 
+### 批量回归（统计 save 耗时）
+
+想一次跑一批链接、拿到耗时统计，用 `scripts/regress-save.mjs`：
+
+```bash
+cp links.example.txt links.txt   # 每行一个链接，需要提取码就空格跟在后面
+npm run regress links.txt                    # 依次转存，逐条打耗时 + 最后汇总
+npm run regress links.txt -- --delete        # 存完顺手删掉，方便反复跑
+npm run regress links.txt -- --json out.json # 明细落盘
+```
+
+输出包含每条链接的「接口往返 / 等任务占比 / 各步拆解」，以及最快、中位、平均、最慢和
+「等任务合计占比」。统计口径与界面一致——**以「接口往返」为准**。
+
 ### 获取 Cookie
 
 - **夸克**：浏览器登录 `pan.quark.cn` → F12 → Network → 任意请求 → 复制请求头里的完整 `Cookie`。
@@ -369,6 +383,7 @@ src/
   providers/quark.js   夸克实现
   providers/baidu.js   百度实现
 public/                图形界面（index.html / style.css / app.js）
+scripts/regress-save.mjs  批量回归：依次转存一批链接并统计 save 耗时
 test/parse.test.js     离线自测：链接解析、去重比对、Cookie（无网络）
 test/http.test.js      离线自测：连接池复用、超时、HeaderBag（本机临时 server）
 docs/cloud-drive-research.md   各网盘接入能力调研
