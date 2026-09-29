@@ -7,6 +7,7 @@
  *   node scripts/regress-save.mjs https://pan.quark.cn/s/aaa https://pan.quark.cn/s/bbb
  *   node scripts/regress-save.mjs links.txt --delete       # 存完再删掉，方便反复跑
  *   node scripts/regress-save.mjs links.txt --no-dedup     # 关掉去重（对齐界面不勾选的情况）
+ *   node scripts/regress-save.mjs links.txt --no-top-fids  # A/B 对照：强制走「列目录找回 fid」
  *   node scripts/regress-save.mjs links.txt --json out.json
  *   node scripts/regress-save.mjs links.txt --quiet        # 只留结果表，关掉上游诊断日志
  *
@@ -19,16 +20,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { saveLink, deleteMyShare, warm } from "../src/index.js";
+import { saveLink, deleteMyShare, warm, runScoped } from "../src/index.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function parseArgs(argv) {
-  const options = { inputs: [], dedup: true, cleanup: false, json: null, quiet: false };
+  const options = { inputs: [], dedup: true, cleanup: false, json: null, quiet: false, noTopFids: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--delete") options.cleanup = true;
     else if (arg === "--no-dedup") options.dedup = false;
+    else if (arg === "--no-top-fids") options.noTopFids = true;
     else if (arg === "--quiet") options.quiet = true;
     else if (arg === "--json") options.json = argv[(i += 1)];
     else if (arg === "--help" || arg === "-h") options.help = true;
@@ -71,8 +73,17 @@ function percentile(values, ratio) {
 
 function printBreakdown(label, timings) {
   const grouped = new Map();
-  for (const item of timings) grouped.set(item.step, (grouped.get(item.step) || 0) + item.ms);
-  const parts = [...grouped.entries()].map(([step, value]) => `${step}=${ms(value)}`);
+  for (const item of timings) {
+    const entry = grouped.get(item.step) || { ms: 0, count: 0 };
+    entry.ms += item.ms;
+    entry.count += 1;
+    grouped.set(item.step, entry);
+  }
+  // 同名步骤（如「列目录」在去重和转存后各出现一次）会被合并，这里标出次数，
+  // 否则看不出 A/B 到底少跑了几次请求。
+  const parts = [...grouped.entries()].map(
+    ([step, { ms: value, count }]) => `${step}=${ms(value)}${count > 1 ? `×${count}` : ""}`,
+  );
   console.log(`      ${label}：${parts.join(" ")}`);
 }
 
@@ -81,7 +92,7 @@ async function main() {
   if (options.help || !options.inputs.length) {
     console.log(
       [
-        "用法：node scripts/regress-save.mjs <links.txt | 链接...> [--delete] [--no-dedup] [--json out.json] [--quiet]",
+        "用法：node scripts/regress-save.mjs <links.txt | 链接...> [--delete] [--no-dedup] [--no-top-fids] [--json out.json] [--quiet]",
         "",
         "links.txt 每行一个链接，可选在链接后用空格跟一个提取码。",
       ].join("\n"),
@@ -95,6 +106,8 @@ async function main() {
     /* 无 .env 时靠已有环境变量 */
   }
   if (options.quiet) process.env.WANGPAN_LOG = "0";
+  // A/B 对照：强制走「列目录找回 fid」的回退路径，用于量化 save_as 优化省了多少
+  if (options.noTopFids) process.env.WANGPAN_NO_TOP_FIDS = "1";
 
   const links = await loadLinks(options.inputs);
   if (!links.length) {
@@ -103,7 +116,10 @@ async function main() {
     return;
   }
 
-  console.log(`共 ${links.length} 个链接｜去重=${options.dedup ? "开" : "关"}｜存完清理=${options.cleanup ? "是" : "否"}`);
+  console.log(
+    `共 ${links.length} 个链接｜去重=${options.dedup ? "开" : "关"}` +
+      `｜省列目录=${options.noTopFids ? "关（A/B 对照组）" : "开"}｜存完清理=${options.cleanup ? "是" : "否"}`,
+  );
   const warmed = await warm(null);
   console.log(`连接已预热：${warmed.origins.join("、")}\n`);
 
@@ -111,15 +127,14 @@ async function main() {
   for (const [index, { url, password }] of links.entries()) {
     const ordinal = String(index + 1).padStart(2, " ");
     const startedAt = Date.now();
-    let result = null;
-    let error = null;
-    try {
-      result = await saveLink(url, { password: password || null, dedup: options.dedup, autoShare: true });
-    } catch (caught) {
-      error = caught;
-    }
+    // 走 runScoped：失败时也能把已经发生的上游耗时带出来（否则报错行只有「各步：」空着）
+    const outcome = await runScoped(() =>
+      saveLink(url, { password: password || null, dedup: options.dedup, autoShare: true }),
+    );
     const elapsed = Date.now() - startedAt;
-    const timings = result?.timings ?? error?.timings ?? [];
+    const timings = outcome.timings ?? [];
+    const result = outcome.data ?? null;
+    const error = outcome.error ?? null;
 
     if (error) {
       rows.push({ url, elapsed, ok: false, error: error.message, timings });
@@ -129,6 +144,7 @@ async function main() {
     }
 
     const taskMs = sumSteps(timings, ["等待任务", "轮询等待"]);
+    const listDirCount = timings.filter((item) => item.step === "列目录").length;
     const names = result.names || [];
     const shareUrl = result.share?.url || "";
     rows.push({
@@ -138,12 +154,13 @@ async function main() {
       mode: result.mode,
       files: result.files ?? result.count ?? 0,
       taskMs,
+      listDirCount,
       shareUrl,
       timings,
     });
     console.log(
       `[${ordinal}] ✓ ${ms(elapsed)}｜等任务 ${ms(taskMs)}（${Math.round((taskMs / elapsed) * 100)}%）` +
-        `｜顶层 ${names.length} 项｜${names.slice(0, 2).join("、")}${names.length > 2 ? "…" : ""}`,
+        `｜列目录 ${listDirCount} 次｜顶层 ${names.length} 项｜${names.slice(0, 2).join("、")}${names.length > 2 ? "…" : ""}`,
     );
     printBreakdown("各步", timings);
     if (shareUrl) console.log(`      分享：${shareUrl}`);

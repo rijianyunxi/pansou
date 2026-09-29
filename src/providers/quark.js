@@ -316,7 +316,9 @@ export class QuarkClient {
     // 转存会在我网盘里生成**新的 fid**，不能复用分享里的 fid。
     // 优先用任务响应里已经给出的新 fid，省掉一次「列目录」（实测 100~200ms）；
     // 数量对不上（多条目转存、字段缺失）就回退到按名称列目录找回。
-    const knownFids = this.topFidsFromTask(taskResult, list.length);
+    // WANGPAN_NO_TOP_FIDS=1 可强制走回退路径，用于 A/B 回归对比。
+    const knownFids =
+      process.env.WANGPAN_NO_TOP_FIDS === "1" ? null : this.topFidsFromTask(taskResult, list.length);
     const share = autoShare ? await this.#shareSavedByName(names, toPdirFid, knownFids) : null;
     return { saved: true, taskId, toPdirFid, files: list.length, names, share };
   }
@@ -348,11 +350,17 @@ export class QuarkClient {
     if (process.env.WANGPAN_LOG === "0" || !taskResult) return;
     const saveAs = taskResult.save_as ?? taskResult.task_resp?.data?.save_as ?? null;
     const fids = this.topFidsFromTask(taskResult, expectedCount);
+    const enabled = process.env.WANGPAN_NO_TOP_FIDS !== "1";
+    const verdict = !fids
+      ? "不采用（数量对不上，回退列目录）"
+      : enabled
+        ? "采用（跳过列目录）"
+        : "可用，但被 WANGPAN_NO_TOP_FIDS 关掉（A/B 对照组）";
     console.log(
       `[quark] 转存任务字段：${Object.keys(taskResult).join(", ") || "(空)"}` +
         ` ｜ 保存文件总数=${saveAs?.save_as_sum_num ?? "?"}` +
         ` ｜ 任务给的新 fid=${Array.isArray(saveAs?.save_as_top_fids) ? saveAs.save_as_top_fids.join(",") : "无"}` +
-        ` ｜ ${fids ? "采用（跳过列目录）" : "不采用（数量对不上，回退列目录）"}`,
+        ` ｜ ${verdict}`,
     );
   }
 
@@ -361,7 +369,19 @@ export class QuarkClient {
    * @param {string[]|null} knownFids 任务响应里已给出的新 fid；给了就跳过列目录
    */
   async #shareSavedByName(names, pdirFid, knownFids = null) {
-    if (knownFids?.length) return this.createShare(knownFids, {});
+    if (knownFids?.length) {
+      try {
+        return await this.createShare(knownFids, {});
+      } catch (error) {
+        // 兜底：夸克**偶尔会返回已失效的** save_as_top_fids。实测复现：同一个分享
+        // 「转存 → 删除 → 再转存」时，它会拿回上一次那个已被删除的 fid（任务里还写着
+        // save_as_sum_num=2，但目录里其实什么都没有），用它建分享会报「文件不存在」。
+        // 这时退回按名称列目录找回，行为与优化前完全一致——保证这条捷径**永远不会比原来更差**。
+        if (process.env.WANGPAN_LOG !== "0") {
+          console.log(`[quark] 用任务给的 fid 建分享失败（${error.message}），回退列目录找回`);
+        }
+      }
+    }
     if (!names.length) return null;
     const mine = await this.listDir(pdirFid);
     const wanted = new Set(names);
