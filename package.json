@@ -1,0 +1,18 @@
+{
+  "name": "panhub-wangpan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "夸克 / 百度网盘链接校验、转存、去重与删除的 Node.js 工具（wangpan 分支探索）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "wangpan": "./src/cli.js"
+  },
+  "scripts": {
+    "check": "node src/cli.js check",
+    "test": "node --test test/*.test.js",
+    "start": "node src/cli.js"
+  }
+}

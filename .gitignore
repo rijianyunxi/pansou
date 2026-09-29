@@ -1,0 +1,20 @@
+# 依赖
+node_modules/
+
+# 环境变量（含 Cookie，切勿提交）
+.env
+.env.*
+!.env.example
+
+# 本地 Agent 工作数据
+.workbuddy-ai/
+
+# 日志与临时文件
+logs/
+*.log
+.tmp/
+
+# IDE / OS
+.DS_Store
+.idea/
+.fleet/
