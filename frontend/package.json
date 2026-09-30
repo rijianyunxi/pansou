@@ -1,0 +1,32 @@
+{
+  "name": "pansou-web",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.49.0",
+    "@vueuse/core": "^15.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "reka-ui": "^2.10.5",
+    "tailwind-merge": "^3.7.0",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.2",
+    "vite": "^7.3.1",
+    "vue-tsc": "^3.0.6"
+  }
+}

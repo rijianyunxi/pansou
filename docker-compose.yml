@@ -1,0 +1,77 @@
+name: pansou
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    init: true
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${PANSOU_POSTGRES_DB:-pansou}
+      POSTGRES_USER: ${PANSOU_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${PANSOU_POSTGRES_PASSWORD:?set PANSOU_POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pansou-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    init: true
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "60"
+      - "1000"
+      - --maxmemory
+      - ${PANSOU_REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - volatile-ttl
+      - --tcp-keepalive
+      - "60"
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - pansou-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pansou-postgres:
+    name: pansou-postgres
+  pansou-redis:
+    name: pansou-redis
+
+
+

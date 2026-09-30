@@ -1,0 +1,1289 @@
+<template>
+  <AdminDialog
+    drawer
+    :busy="saving"
+    :description="
+      readonly
+        ? '只读预览来源连接、请求参数与解析规则。'
+        : '配置连接与 Rust transform DSL，保存后同步到来源目录。'
+    "
+    wide
+    :title="readonly ? '来源详情' : source ? '编辑来源' : '新增来源'"
+    @close="emit('close')"
+  >
+    <form class="editor-form" @submit.prevent="handleSubmit">
+      <div class="editor-content">
+        <section class="editor-section editor-overview-section">
+          <div class="editor-section-heading">
+            <div>
+              <strong>基础信息</strong>
+              <p>定义来源身份、接入方式和主要请求地址。</p>
+            </div>
+            <span class="editor-section-index">01</span>
+          </div>
+
+          <div class="editor-grid editor-primary-grid">
+            <label>
+              <span class="editor-field-label"
+                >来源名称 <span class="required-marker">*</span></span
+              >
+              <Input
+                v-model="form.name"
+                required
+                maxlength="40"
+                placeholder="例如：我的资源来源"
+                :autofocus="!readonly"
+                :readonly="readonly"
+              />
+            </label>
+
+            <label>
+              描述
+              <Input
+                v-model="form.description"
+                maxlength="100"
+                :readonly="readonly"
+                placeholder="描述来源用途或补充说明"
+              />
+            </label>
+          </div>
+
+          <div class="editor-grid editor-connection-grid">
+            <label>
+              请求方式
+              <AdminSelect v-model="form.method" :disabled="readonly">
+                <option>GET</option>
+                <option>POST</option>
+              </AdminSelect>
+            </label>
+            <label>
+              响应格式
+              <AdminSelect v-model="form.format" :disabled="readonly">
+                <option value="json">JSON</option>
+                <option value="html">HTML</option>
+              </AdminSelect>
+            </label>
+            <label>
+              优先级
+              <Input
+                v-model.number="form.priority"
+                type="number"
+                min="0"
+                max="999"
+                step="1"
+                :readonly="readonly"
+                aria-describedby="priority-help"
+              />
+              <small id="priority-help" class="editor-field-hint"
+                >数值越小越优先进入搜索队列，0 最先起跑</small
+              >
+            </label>
+          </div>
+
+          <label class="editor-url-field">
+            <span class="editor-field-label"
+              >请求地址 <span class="required-marker">*</span></span
+            >
+            <Input
+              v-model="form.url"
+              required
+              type="url"
+              placeholder="https://api.example.com/search"
+              maxlength="500"
+              :readonly="readonly"
+            />
+          </label>
+        </section>
+
+        <details class="editor-advanced" open>
+          <summary>请求参数</summary>
+          <div class="request-config-grid">
+            <Tabs v-model="requestTab" class="admin-tabs"
+              ><TabsList class="request-tabs" aria-label="请求参数类型">
+                <TabsTrigger
+                  :value="'query'"
+                  :class="{ active: requestTab === 'query' }"
+                  >Query</TabsTrigger
+                >
+                <TabsTrigger
+                  :value="'body'"
+                  :class="{ active: requestTab === 'body' }"
+                  >Body</TabsTrigger
+                >
+                <TabsTrigger
+                  :value="'headers'"
+                  :class="{ active: requestTab === 'headers' }"
+                  >Headers</TabsTrigger
+                >
+              </TabsList></Tabs
+            >
+
+            <section
+              v-if="requestTab === 'query'"
+              class="request-tab-panel"
+              role="tabpanel"
+            >
+              <div class="request-fields" aria-label="Query 参数字段">
+                <div class="request-fields-toolbar">
+                  <span>Query 参数</span>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="button secondary small"
+                    :disabled="readonly"
+                    @click="addRequestField(queryFields)"
+                    >添加字段</Button
+                  >
+                </div>
+                <div v-if="!queryFields.length" class="request-fields-empty">
+                  暂无 Query 字段
+                </div>
+                <div
+                  v-for="field in queryFields"
+                  :key="field.id"
+                  class="request-field-row"
+                >
+                  <Input
+                    v-model="field.key"
+                    :readonly="readonly"
+                    placeholder="key"
+                    aria-label="Query 字段名"
+                  />
+                  <Input
+                    v-model="field.value"
+                    :readonly="readonly"
+                    placeholder="value，可使用 {{keyword}}"
+                    aria-label="Query 字段值"
+                  />
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="request-field-remove"
+                    :disabled="readonly"
+                    aria-label="删除 Query 字段"
+                    @click="removeRequestField(queryFields, field.id)"
+                    >删除</Button
+                  >
+                </div>
+              </div>
+            </section>
+
+            <section
+              v-else-if="requestTab === 'body'"
+              class="request-tab-panel"
+              role="tabpanel"
+            >
+              <div class="request-fields" aria-label="Body 参数字段">
+                <div class="request-fields-toolbar">
+                  <span>Body 参数（POST 请求使用）</span>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="button secondary small"
+                    :disabled="readonly || form.method !== 'POST'"
+                    @click="addRequestField(bodyFields)"
+                    >添加字段</Button
+                  >
+                </div>
+                <div v-if="!bodyFields.length" class="request-fields-empty">
+                  暂无 Body 字段
+                </div>
+                <div
+                  v-for="field in bodyFields"
+                  :key="field.id"
+                  class="request-field-row request-field-row-body"
+                >
+                  <Input
+                    v-model="field.key"
+                    :readonly="readonly || form.method !== 'POST'"
+                    placeholder="key"
+                    aria-label="Body 字段名"
+                  />
+                  <Textarea
+                    v-model="field.value"
+                    :readonly="readonly || form.method !== 'POST'"
+                    rows="2"
+                    placeholder="value，可使用 {{keyword}} 或 JSON"
+                    aria-label="Body 字段值"
+                  ></Textarea>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="request-field-remove"
+                    :disabled="readonly || form.method !== 'POST'"
+                    aria-label="删除 Body 字段"
+                    @click="removeRequestField(bodyFields, field.id)"
+                    >删除</Button
+                  >
+                </div>
+              </div>
+            </section>
+
+            <section v-else class="request-tab-panel" role="tabpanel">
+              <div class="request-fields" aria-label="Headers 参数字段">
+                <div class="request-fields-toolbar">
+                  <span>Headers 参数</span>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="button secondary small"
+                    :disabled="readonly"
+                    @click="addRequestField(headerFields)"
+                    >添加字段</Button
+                  >
+                </div>
+                <div v-if="!headerFields.length" class="request-fields-empty">
+                  暂无 Headers 字段
+                </div>
+                <div
+                  v-for="field in headerFields"
+                  :key="field.id"
+                  class="request-field-row"
+                >
+                  <Input
+                    v-model="field.key"
+                    :readonly="readonly"
+                    placeholder="key"
+                    aria-label="Header 字段名"
+                  />
+                  <Input
+                    v-model="field.value"
+                    :readonly="readonly"
+                    placeholder="value"
+                    aria-label="Header 字段值"
+                  />
+                  <Button
+                    variant="outline"
+                    type="button"
+                    class="request-field-remove"
+                    :disabled="readonly"
+                    aria-label="删除 Header 字段"
+                    @click="removeRequestField(headerFields, field.id)"
+                    >删除</Button
+                  >
+                </div>
+              </div>
+            </section>
+          </div>
+          <p id="request-config-help" class="editor-help request-config-help">
+            支持在 URL、Query、Body、Headers 中使用
+            <code>&#123;&#123;keyword&#125;&#125;</code
+            >，请求前会替换为当前搜索词；value 填写有效 JSON
+            时会自动识别为对象、数组、数字或布尔值。
+          </p>
+        </details>
+
+        <details class="editor-function" open>
+          <summary>结果解析</summary>
+          <div class="function-field">
+            <p id="transform-help" class="editor-help transform-help">
+              <code>payload</code> 是接口响应内容；<code>$</code> 是 HTML
+              查询工具；<code>context</code> 提供
+              <code>keyword</code>、来源标识和响应格式等上下文。 请输入 Rust
+              原生 JSON DSL 对象，例如
+              <code
+                >{ kind: "json", items: "$.data[*]", fields: { name: "title",
+                links: "links" } }</code
+              >。不要粘贴 JavaScript。
+            </p>
+            <div class="function-toolbar">
+              <span class="function-label">Rust transform DSL</span>
+              <div class="function-file-actions" aria-label="结果解析文件操作">
+                <Button
+                  variant="outline"
+                  type="button"
+                  class="function-action-button"
+                  :disabled="readonly"
+                  @click="copyTransformPrompt"
+                >
+                  <ConsoleIcon name="copy" :size="14" />
+                  {{
+                    promptCopyState === "copied"
+                      ? "已复制提示词"
+                      : "复制 AI 提示词"
+                  }}
+                </Button>
+                <Button
+                  variant="outline"
+                  type="button"
+                  class="function-action-button"
+                  :disabled="readonly"
+                  @click="openTransformImport"
+                >
+                  <ConsoleIcon name="upload" :size="14" />
+                  导入 JSON
+                </Button>
+                <Button
+                  variant="outline"
+                  type="button"
+                  class="function-action-button"
+                  :disabled="!form.transform?.trim()"
+                  @click="exportTransform"
+                >
+                  <ConsoleIcon name="download" :size="14" />
+                  导出 JSON
+                </Button>
+              </div>
+            </div>
+            <Textarea
+              id="source-transform"
+              v-model="form.transform"
+              class="code-input"
+              :readonly="readonly"
+              rows="14"
+              spellcheck="false"
+              aria-describedby="transform-help"
+              placeholder='{
+  "kind": "json",
+  "items": "$.data[*]",
+  "fields": { "name": "title", "links": "links" }
+}'
+            ></Textarea>
+            <input
+              ref="transformImportInput"
+              class="transform-file"
+              type="file"
+              accept=".json,application/json,text/plain"
+              :disabled="readonly"
+              @change="importTransform"
+            />
+          </div>
+        </details>
+
+        <details class="editor-debugger" open>
+          <summary>出站策略</summary>
+          <OutboundPolicyEditor
+            v-if="form.outbound"
+            v-model="form.outbound"
+            :disabled="readonly || saving"
+            :post="form.method === 'POST'"
+          />
+        </details>
+
+        <details v-if="!readonly" class="editor-debugger" open>
+          <summary>在线调试</summary>
+          <p class="editor-help debugger-help">
+            保存来源后输入关键词发送测试。出站策略使用已保存版本；修改策略后请先保存再调试。
+          </p>
+          <SourceDebugPanel
+            :source="debugDraft.source"
+            :report="debugReport"
+            :keyword="debugKeyword"
+            :running="debugRunning"
+            :error="debugError"
+            :disabled-reason="debugDraft.error"
+            :show-request-details="false"
+            embedded
+            @send="testDraftSource"
+            @update:keyword="debugKeyword = $event"
+          />
+        </details>
+
+        <slot name="readonly-extra" />
+      </div>
+
+      <footer class="editor-footer">
+        <p
+          v-if="error || saveError"
+          class="form-error editor-save-error"
+          role="alert"
+        >
+          {{ error || saveError }}
+        </p>
+        <template v-if="readonly">
+          <Button
+            variant="outline"
+            type="button"
+            class="button secondary"
+            :disabled="saving"
+            @click="emit('close')"
+          >
+            关闭
+          </Button>
+          <Button
+            variant="outline"
+            type="button"
+            class="button secondary"
+            @click="$emit('edit')"
+          >
+            <ConsoleIcon name="edit" :size="15" />编辑来源
+          </Button>
+          <Button
+            variant="outline"
+            type="button"
+            class="button secondary"
+            :disabled="running"
+            @click="$emit('debug')"
+          >
+            <ConsoleIcon name="play" :size="15" />测试来源
+          </Button>
+          <Button
+            variant="destructive"
+            type="button"
+            class="button danger-button"
+            @click="$emit('delete')"
+          >
+            <ConsoleIcon name="trash" :size="15" />删除来源
+          </Button>
+        </template>
+        <template v-else>
+          <Button
+            variant="outline"
+            type="button"
+            class="button secondary"
+            @click="emit('close')"
+          >
+            取消
+          </Button>
+          <Button
+            variant="default"
+            type="submit"
+            class="button primary"
+            :disabled="saving"
+          >
+            <ConsoleIcon name="check" />
+            {{ saving ? "保存中…" : source ? "保存来源" : "创建来源" }}
+          </Button>
+        </template>
+      </footer>
+    </form>
+  </AdminDialog>
+</template>
+
+<script setup lang="ts">
+import { Tabs, TabsList, TabsTrigger } from "@/components/admin/ui/tabs";
+import AdminDialog from "@/components/admin/AdminDialog.vue";
+import { Button } from "@/components/admin/ui/button";
+import { Input } from "@/components/admin/ui/input";
+import { Textarea } from "@/components/admin/ui/textarea";
+import AdminSelect from "@/components/admin/AdminSelect.vue";
+import OutboundPolicyEditor from "@/components/admin/OutboundPolicyEditor.vue";
+import { directPolicy } from "@/types/outbound";
+import { computed, reactive, ref, watch } from "vue";
+import { apiFetch } from "../../src/appRuntime";
+
+import ConsoleIcon from "./ConsoleIcon.vue";
+import SourceDebugPanel from "./SourceDebugPanel.vue";
+import type { SourceDefinition, SourceProbe } from "../../types/source";
+
+const props = defineProps<{
+  source?: SourceDefinition | null;
+  readonly?: boolean;
+  running?: boolean;
+  saving?: boolean;
+  saveError?: string;
+}>();
+
+type EditableSourceDefinition = SourceDefinition;
+
+const emit = defineEmits<{
+  close: [];
+  save: [source: EditableSourceDefinition];
+  edit: [];
+  debug: [];
+  delete: [];
+}>();
+
+const transformImportInput = ref<HTMLInputElement | null>(null);
+const error = ref("");
+const debugKeyword = ref("三体");
+const debugReport = ref<SourceProbe>();
+const debugRunning = ref(false);
+const debugError = ref("");
+const promptCopyState = ref<"idle" | "copied" | "failed">("idle");
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createBlankSource(): EditableSourceDefinition {
+  return {
+    id: "",
+    name: "",
+    url: "",
+    description: "",
+    method: "GET",
+    format: "json",
+    priority: 0,
+    transform: "",
+    outbound: directPolicy(),
+  };
+}
+
+function cloneSource(source: SourceDefinition): EditableSourceDefinition {
+  const cloned = cloneJson(source) as EditableSourceDefinition;
+  // 编辑时只展示数据库中已保存的配置，不从任何内置来源回填请求或解析脚本。
+  cloned.outbound ??= directPolicy();
+  return cloned;
+}
+
+const form = reactive<EditableSourceDefinition>(
+  props.source ? cloneSource(props.source) : createBlankSource(),
+);
+
+interface RequestField {
+  id: number;
+  key: string;
+  value: string;
+}
+
+type RequestTab = "query" | "body" | "headers";
+
+const nextRequestFieldId = ref(1);
+const requestTab = ref<RequestTab>("query");
+const queryFields = ref<RequestField[]>([]);
+const bodyFields = ref<RequestField[]>([]);
+const headerFields = ref<RequestField[]>([]);
+
+function requestFieldValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? String(value ?? "");
+}
+
+function requestFieldsFrom(value: unknown): RequestField[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).map(
+    ([key, fieldValue]) => ({
+      id: nextRequestFieldId.value++,
+      key,
+      value: requestFieldValue(fieldValue),
+    }),
+  );
+}
+
+function resetRequestFields(source: SourceDefinition | null | undefined): void {
+  queryFields.value = requestFieldsFrom(source?.request?.query);
+  bodyFields.value = requestFieldsFrom(source?.request?.body);
+  headerFields.value = requestFieldsFrom(source?.request?.headers);
+}
+
+resetRequestFields(form);
+
+function addRequestField(fields: RequestField[]): void {
+  fields.push({ id: nextRequestFieldId.value++, key: "", value: "" });
+}
+
+function removeRequestField(fields: RequestField[], id: number): void {
+  const index = fields.findIndex((field) => field.id === id);
+  if (index >= 0) fields.splice(index, 1);
+}
+
+function requestFieldValueParsed(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function requestFieldsToObject(
+  fields: RequestField[],
+  label: string,
+  parseValues: boolean,
+): Record<string, unknown> | undefined {
+  const output: Record<string, unknown> = {};
+  for (const field of fields) {
+    const key = field.key.trim();
+    if (!key) throw new Error(`${label} 字段名不能为空。`);
+    if (Object.prototype.hasOwnProperty.call(output, key))
+      throw new Error(`${label} 字段名不能重复：${key}`);
+    output[key] = parseValues
+      ? requestFieldValueParsed(field.value)
+      : field.value;
+  }
+  return fields.length ? output : undefined;
+}
+
+const debugDraft = computed<{
+  source: EditableSourceDefinition;
+  error: string;
+}>(() => {
+  const draft = cloneJson(form);
+  try {
+    if (!draft.url.trim()) throw new Error("请先填写请求地址。");
+    const query = requestFieldsToObject(queryFields.value, "Query", true);
+    const body = requestFieldsToObject(bodyFields.value, "Body", true);
+    const headers = requestFieldsToObject(
+      headerFields.value,
+      "Headers",
+      false,
+    ) as Record<string, string> | undefined;
+    if (!props.source?.id) throw new Error("请先保存来源后再测试。");
+    draft.id = props.source.id;
+    draft.name ||= "已保存来源";
+    draft.request = {
+      ...(draft.request || {}),
+      query: query as Record<string, unknown> | undefined,
+      body,
+      headers: headers as Record<string, string> | undefined,
+    };
+    if (draft.method === "GET" && draft.request) delete draft.request.body;
+    return { source: draft, error: "" };
+  } catch (reason) {
+    return {
+      source: draft,
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+});
+
+async function testDraftSource() {
+  if (debugRunning.value || debugDraft.value.error) return;
+  debugRunning.value = true;
+  debugError.value = "";
+  debugReport.value = undefined;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 16_000);
+  try {
+    debugReport.value = await apiFetch<SourceProbe>("/api/sources/probe", {
+      method: "POST",
+      body: {
+        sourceId: props.source!.id,
+        kw: debugKeyword.value.trim(),
+        source: debugDraft.value.source,
+      },
+      signal: controller.signal,
+    });
+  } catch (reason: any) {
+    debugError.value =
+      reason?.data?.statusMessage || reason?.message || "来源测试失败";
+  } finally {
+    clearTimeout(timer);
+    debugRunning.value = false;
+  }
+}
+
+function syncEditor(source?: SourceDefinition | null) {
+  const next = source ? cloneSource(source) : createBlankSource();
+  for (const key of Object.keys(form) as Array<
+    keyof EditableSourceDefinition
+  >) {
+    if (!(key in next)) delete form[key];
+  }
+  Object.assign(form, next);
+  resetRequestFields(form);
+  error.value = "";
+  debugError.value = "";
+  debugReport.value = undefined;
+}
+
+watch(() => props.source, syncEditor);
+
+function openTransformImport() {
+  transformImportInput.value?.click();
+}
+
+function promptJson(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function requestFieldsPreview(
+  fields: RequestField[],
+  parseValues: boolean,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    fields
+      .filter((field) => field.key.trim())
+      .map((field) => [
+        field.key.trim(),
+        parseValues ? requestFieldValueParsed(field.value) : field.value,
+      ]),
+  );
+}
+
+function buildTransformPrompt(): string {
+  const request = {
+    query: requestFieldsPreview(queryFields.value, true),
+    body: requestFieldsPreview(bodyFields.value, true),
+    headers: requestFieldsPreview(headerFields.value, false),
+    ...(form.request?.bodyType ? { bodyType: form.request.bodyType } : {}),
+    ...(form.request?.redirect ? { redirect: form.request.redirect } : {}),
+    ...(form.request?.allowedDomains
+      ? { allowedDomains: form.request.allowedDomains }
+      : {}),
+  };
+  return `请为这个资源来源生成 Rust 原生 transform JSON DSL，不要生成 JavaScript 函数。
+
+## 来源请求配置
+- 请求地址：${form.url.trim() || "（未填写）"}
+- 请求方式：${form.method}
+- 返回格式：${form.format.toUpperCase()}
+- 请求参数：
+${promptJson(request)}
+
+## DSL 规则
+JSON 来源使用 {"kind":"json","items":"$.data[*]","fields":{"id":"id","name":"title","description":"description","datetime":"datetime","links":"links","images":"images"}}。
+HTML 来源使用 {"kind":"html","item_selector":"article","fields":{"name":".title","description":".description","datetime":"time::datetime","links":"a.share::href","images":"img.cover::src"}}。
+只返回一个 JSON 对象；不得包含 function、JavaScript、Cheerio、网络请求或解释文字。`;
+}
+async function copyTransformPrompt() {
+  const prompt = buildTransformPrompt();
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(prompt);
+      copied = true;
+    }
+  } catch {
+    copied = false;
+  }
+
+  if (!copied) {
+    const textarea = document.createElement("textarea");
+    textarea.value = prompt;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    textarea.remove();
+  }
+
+  promptCopyState.value = copied ? "copied" : "failed";
+  if (!copied) {
+    error.value = "自动复制失败，请检查浏览器剪贴板权限后重试。";
+    return;
+  }
+  error.value = "";
+  window.setTimeout(() => {
+    if (promptCopyState.value === "copied") promptCopyState.value = "idle";
+  }, 1800);
+}
+
+function exportTransform() {
+  const blob = new Blob([form.transform || ""], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${form.id || "source-transform"}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function importTransform(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  const code = await file.text();
+  if (code.trim()) {
+    form.transform = code;
+    error.value = "";
+  }
+}
+
+function handleSubmit() {
+  if (props.readonly || props.saving) return;
+  save();
+}
+
+function save() {
+  try {
+    const url = new URL(form.url);
+    if (url.protocol !== "https:" || url.username || url.password) {
+      throw new Error();
+    }
+  } catch {
+    error.value = "请输入不含账号凭据的 HTTPS 地址。";
+    return;
+  }
+
+  if (!form.name.trim()) {
+    error.value = "请填写来源名称。";
+    return;
+  }
+
+  const priority = Number(form.priority ?? 0);
+  if (!Number.isInteger(priority) || priority < 0 || priority > 999) {
+    error.value = "优先级请输入 0-999 的整数。";
+    return;
+  }
+  form.priority = priority;
+
+  try {
+    const query = requestFieldsToObject(queryFields.value, "Query", true);
+    const body = requestFieldsToObject(bodyFields.value, "Body", true);
+    const headers = requestFieldsToObject(
+      headerFields.value,
+      "Headers",
+      false,
+    ) as Record<string, string> | undefined;
+    if (
+      headers !== undefined &&
+      (!headers ||
+        typeof headers !== "object" ||
+        Array.isArray(headers) ||
+        Object.values(headers as Record<string, unknown>).some(
+          (value) => typeof value !== "string",
+        ))
+    ) {
+      throw new Error("Headers 必须是字符串键值 JSON。");
+    }
+    form.request = {
+      ...(form.request || {}),
+      query: query as Record<string, unknown> | undefined,
+      body,
+      headers: headers as Record<string, string> | undefined,
+    };
+    if (form.method === "GET") delete form.request.body;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+    return;
+  }
+
+  if (!form.id) form.id = `custom-${crypto.randomUUID()}`;
+  form.name = form.name.trim();
+  emit("save", JSON.parse(JSON.stringify(form)));
+}
+</script>
+
+<style scoped>
+@layer components {
+  .editor-form {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    max-height: min(92dvh, 980px);
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .editor-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 24px 30px 30px;
+    scrollbar-gutter: stable;
+  }
+
+  .editor-section {
+    padding: 20px;
+    border: 1px solid #e1e8f1;
+    border-radius: 13px;
+    background: #fff;
+  }
+
+  .editor-section-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+
+  .editor-section-heading strong {
+    display: block;
+    color: #1e293b;
+    font-size: 13px;
+    font-weight: 750;
+  }
+
+  .editor-section-heading p {
+    margin: 4px 0 0;
+    color: #7b899b;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .editor-section-index {
+    color: #bfdbfe;
+    font:
+      700 18px/1 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+  }
+
+  .editor-form label {
+    position: relative;
+  }
+
+  .editor-field-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .editor-field-hint {
+    display: block;
+    margin-top: 5px;
+    color: #7b899b;
+    font-size: 10px;
+    font-weight: 400;
+    line-height: 1.4;
+  }
+
+  .editor-primary-grid {
+    grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  }
+
+  .editor-connection-grid {
+    /* Keep method/format wide; priority is a compact numeric control. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(150px, 0.42fr);
+    align-items: start;
+  }
+
+  .editor-url-field {
+    margin-bottom: 0 !important;
+  }
+
+  .editor-advanced,
+  .editor-function,
+  .editor-debugger {
+    margin-top: 16px;
+    padding: 17px 18px 18px;
+    border: 1px solid #e1e8f1;
+    border-radius: 13px;
+    background: #f8fafc;
+  }
+
+  .editor-advanced summary,
+  .editor-function summary,
+  .editor-debugger summary {
+    color: #334155;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    list-style-position: inside;
+  }
+
+  .editor-advanced[open] summary,
+  .editor-function[open] summary,
+  .editor-debugger[open] summary {
+    margin-bottom: 13px;
+  }
+
+  .request-config-grid {
+    display: block;
+  }
+
+  .request-config-grid label {
+    margin-bottom: 0;
+  }
+
+  .request-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid #e1e8f1;
+    border-radius: 9px;
+    background: #eef3f9;
+  }
+
+  .request-tabs button {
+    flex: 1;
+    min-height: 32px;
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 6px;
+    color: #64748b;
+    background: transparent;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .request-tabs button:hover {
+    color: #334155;
+  }
+
+  .request-tabs button.active {
+    color: #1d4ed8;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(30, 64, 110, 0.12);
+    font-weight: 700;
+  }
+
+  .request-tab-panel {
+    min-width: 0;
+  }
+
+  .request-fields {
+    display: grid;
+    gap: 8px;
+    width: 100%;
+    margin-top: 6px;
+  }
+
+  .request-fields-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #64748b;
+    font-size: 11px;
+  }
+
+  .request-fields-empty {
+    padding: 13px 10px;
+    border: 1px dashed #cbd5e1;
+    border-radius: 8px;
+    color: #94a3b8;
+    background: #f8fafc;
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .request-field-row {
+    display: grid;
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+    align-items: start;
+    gap: 6px;
+  }
+
+  .request-field-row input,
+  .request-field-row textarea {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    min-height: 34px;
+    padding: 8px 9px;
+    border: 1px solid #d8e0eb;
+    border-radius: 7px;
+    background: #fff;
+    color: #263247;
+    font:
+      12px/1.45 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    resize: vertical;
+  }
+
+  .request-field-row input:focus,
+  .request-field-row textarea:focus {
+    border-color: #7899d4;
+    outline: 2px solid rgba(79, 124, 205, 0.16);
+  }
+
+  .request-field-remove {
+    min-height: 34px;
+    padding: 0 7px;
+    border: 1px solid #e2c5c5;
+    border-radius: 7px;
+    color: #b4534b;
+    background: #fff8f7;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .request-field-remove:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .request-config-grid textarea::placeholder,
+  .function-field textarea::placeholder {
+    color: #7c8aa5;
+    opacity: 1;
+  }
+
+  .debugger-help {
+    margin-bottom: 14px !important;
+  }
+
+  .editor-debugger {
+    background: #f5f8ff;
+  }
+
+  .editor-help {
+    margin: 0;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+
+  .editor-help code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: #e2e8f0;
+    color: #334155;
+    font:
+      11px/1.4 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+  }
+
+  .request-config-help {
+    margin-top: 10px;
+  }
+
+  .transform-help {
+    margin-bottom: 2px;
+  }
+
+  .editor-function {
+    display: grid;
+    gap: 0;
+    margin-top: 14px;
+    padding: 13px 14px 14px;
+  }
+
+  .function-field {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .function-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .function-label {
+    position: static;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .function-file-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .function-action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-height: 28px;
+    padding: 4px 9px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: #2563eb;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .function-action-button:hover:not(:disabled) {
+    border-color: #93c5fd;
+    background: #eff6ff;
+  }
+
+  .function-action-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .function-field textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 250px;
+    padding: 12px;
+    border: 1px solid #27354f;
+    border-radius: 8px;
+    color: #dbeafe;
+    background: #0f172a;
+    caret-color: #93c5fd;
+    font:
+      12px/1.6 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    tab-size: 2;
+    resize: vertical;
+  }
+
+  .function-field textarea:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+
+  .transform-file {
+    display: none;
+  }
+
+  .editor-form .editor-footer {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    gap: 9px;
+    margin: 0;
+    padding: 16px 30px;
+    border-top: 1px solid #e7edf5;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 -10px 28px rgba(30, 64, 110, 0.045);
+    backdrop-filter: blur(10px);
+  }
+
+  @media (max-width: 980px) {
+    .editor-primary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .request-config-grid {
+      display: block;
+    }
+
+    .editor-connection-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 600px) {
+    .editor-form {
+      max-height: 100dvh;
+    }
+
+    .editor-content {
+      padding: 18px;
+    }
+
+    .editor-section {
+      padding: 16px;
+    }
+
+    .editor-primary-grid,
+    .editor-connection-grid,
+    .request-config-grid,
+    .request-config-grid label:last-child {
+      grid-column: auto;
+    }
+
+    .editor-form .editor-footer {
+      flex-wrap: wrap;
+      padding: 13px 18px;
+    }
+
+    .function-toolbar {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .function-file-actions {
+      width: 100%;
+    }
+
+    .function-action-button {
+      flex: 1;
+    }
+  }
+}
+</style>

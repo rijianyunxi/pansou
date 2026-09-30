@@ -1,0 +1,362 @@
+/* Shared Dialog / Sheet geometry. All portals remain inside .admin-root. */
+.admin-root .admin-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  width: min(600px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  border-radius: 10px;
+}
+.admin-root .admin-dialog-wide {
+  width: min(960px, calc(100vw - 48px));
+}
+.admin-root .admin-drawer-content {
+  width: min(720px, 100vw);
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+}
+.admin-root .admin-drawer-content.admin-dialog-wide {
+  width: min(880px, 100vw);
+}
+.admin-root .admin-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex: 0 0 auto;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+.admin-root .admin-dialog-heading {
+  min-width: 0;
+  padding-top: 3px;
+}
+.admin-root .admin-dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.admin-root .admin-dialog-description {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.admin-root .admin-dialog-header > button {
+  margin: -4px -8px -4px 0;
+}
+.admin-root .admin-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.admin-root .admin-dialog-body > :where(section, form, div) {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* Forms have one scroll region, with actions outside it and always visible. */
+.admin-root
+  .admin-dialog-body:has(
+    .admin-dialog-form,
+    .editor-form,
+    .debug-dialog-shell
+  ) {
+  display: flex;
+  overflow: hidden;
+}
+.admin-root .admin-dialog-body > :has(> .admin-dialog-form) {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.admin-root .admin-dialog-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.admin-root .admin-form-fields {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.admin-root .admin-dialog-form > :is(.modal-actions, .admin-modal-actions),
+.admin-root .editor-form > .editor-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.admin-root .admin-form-fields > label:not(.checkbox-field):not(.proxy-toggle) {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+}
+.admin-root .admin-form-fields small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 400;
+}
+.admin-root .admin-form-fields :is(.admin-select-trigger, [data-slot="input"]) {
+  min-width: 0;
+  width: 100%;
+}
+.admin-root .admin-form-fields .node-weight-input {
+  width: 80px;
+}
+.admin-root .admin-dialog-body :is(.modal-loading, .modal-error) {
+  padding: 20px 24px;
+}
+.admin-root .admin-dialog-body .admin-form-fields .modal-error {
+  padding: 12px;
+}
+.admin-root .admin-dialog-body .confirm-dialog {
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+}
+.admin-root .confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.admin-root .confirm-dialog p {
+  color: var(--muted-foreground);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.admin-root .confirm-dialog code {
+  overflow-wrap: anywhere;
+}
+.admin-root .source-settings-panel {
+  overflow: visible;
+}
+.admin-root .monitor-settings-content {
+  padding: 24px;
+}
+.admin-root .failure-log-list {
+  padding: 20px 24px;
+}
+.admin-root .failure-log-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+}
+/* Source configuration and debug are full-height sheets, not nested dialogs. */
+.admin-root .editor-form,
+.admin-root .debug-dialog-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+}
+.admin-root .editor-content,
+.admin-root .debug-dialog-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 24px;
+  overscroll-behavior: contain;
+}
+.admin-root .editor-grid {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.admin-root .editor-primary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.admin-root .editor-connection-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.admin-root .editor-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.admin-root .editor-form .admin-select-trigger {
+  width: 100%;
+  min-width: 0;
+}
+.admin-root .editor-form .editor-field-label {
+  display: flex;
+}
+.admin-root
+  .editor-form
+  :is(.editor-section, .editor-advanced, .editor-function, .editor-debugger) {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  padding: 18px;
+}
+.admin-root .editor-section-index {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.admin-root .editor-form :is(summary, .editor-section-heading strong) {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.admin-root .editor-form .function-field textarea {
+  min-height: 220px;
+  max-height: 440px;
+  border: 1px solid var(--border);
+  background: #fafafa;
+  color: var(--foreground);
+  padding: 12px;
+  font:
+    12px/1.7 Consolas,
+    monospace;
+}
+.admin-root .request-field-row textarea {
+  min-height: 36px;
+  max-height: 200px;
+}
+.admin-root .editor-help {
+  overflow-wrap: anywhere;
+}
+.admin-root .link-editor {
+  grid-template-columns: 120px minmax(0, 1fr) 100px 32px;
+  align-items: start;
+}
+.admin-root .admin-dialog-wide .proxy-form .admin-form-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.admin-root .admin-dialog-wide .proxy-form .admin-form-fields > :not(fieldset) {
+  grid-column: 1 / -1;
+}
+.admin-root :is(.source-picker, .node-picker) {
+  align-content: start;
+  border-color: var(--border);
+  background: #fafafa;
+}
+.admin-root :is(.source-picker-row, .node-picker-row):hover {
+  background: var(--accent);
+}
+.admin-root .source-picker-row:has([data-disabled]) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.admin-root
+  :is([data-slot="select-content"], [data-slot="dropdown-menu-content"]) {
+  max-width: calc(100vw - 24px);
+  z-index: 70;
+}
+.admin-root [data-slot="alert-dialog-content"] {
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  z-index: 80;
+}
+.admin-root [data-slot="alert-dialog-overlay"] {
+  z-index: 79;
+}
+.admin-root
+  :is(
+    [data-slot="dialog-overlay"],
+    [data-slot="sheet-overlay"],
+    [data-slot="alert-dialog-overlay"]
+  ) {
+  background: rgb(0 0 0 / 0.45);
+}
+@media (max-width: 640px) {
+  .admin-root .admin-dialog-content {
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+  .admin-root .admin-drawer-content,
+  .admin-root .admin-drawer-content.admin-dialog-wide {
+    width: 100vw;
+    max-height: 100dvh;
+  }
+  .admin-root .admin-dialog-header {
+    padding: 16px;
+  }
+  .admin-root .admin-dialog-title {
+    font-size: 16px;
+  }
+  .admin-root
+    :is(
+      .admin-form-fields,
+      .editor-content,
+      .debug-dialog-content,
+      .monitor-settings-content
+    ) {
+    padding: 16px;
+  }
+  .admin-root .admin-dialog-form > :is(.modal-actions, .admin-modal-actions),
+  .admin-root .editor-form > .editor-footer {
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+  }
+  .admin-root :is(.editor-primary-grid, .editor-connection-grid),
+  .admin-root .admin-dialog-wide .proxy-form .admin-form-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-root
+    .editor-form
+    :is(.editor-section, .editor-advanced, .editor-function, .editor-debugger) {
+    padding: 14px;
+  }
+  .admin-root .link-editor {
+    grid-template-columns: minmax(0, 1fr) 32px;
+    padding: 12px;
+    background: #fafafa;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .admin-root .link-editor > :is(.admin-select-trigger, input) {
+    grid-column: 1;
+  }
+  .admin-root .link-editor > button:last-child {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .admin-root .request-field-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .admin-root .request-field-row > textarea {
+    grid-column: 1;
+  }
+  .admin-root .request-field-row > button {
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+}

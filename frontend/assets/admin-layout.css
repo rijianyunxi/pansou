@@ -1,0 +1,875 @@
+/* Management-only layout and interaction rules. No public-page selectors. */
+.admin-root {
+  --ink: var(--foreground);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --line: var(--border);
+}
+.admin-root
+  :is(
+    .admin-main,
+    .admin-page,
+    .feature-content,
+    [data-slot="card"],
+    .query-toolbar,
+    .query-actions
+  ) {
+  min-width: 0;
+}
+.admin-root .admin-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--background);
+}
+.admin-root .admin-breadcrumb {
+  min-width: 0;
+}
+.admin-root .admin-breadcrumb strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-root .admin-main {
+  container-type: inline-size;
+}
+.admin-root
+  :is(.query-toolbar, .query-actions, .source-toolbar, .directory-toolbar) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.admin-root :is(.query-input, .source-search) {
+  flex: 1 1 220px;
+  max-width: 380px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+}
+.admin-root :is(.query-input, .source-search) [data-slot="input"] {
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.admin-root :is(.query-input, .source-search):focus-within {
+  outline: 2px solid color-mix(in srgb, var(--ring) 40%, transparent);
+  outline-offset: 1px;
+}
+.admin-root
+  :is(.query-toolbar, .query-actions)
+  > :is(input, .admin-select-trigger) {
+  width: auto;
+  max-width: 100%;
+}
+.admin-root .query-toolbar > input[type="date"] {
+  flex: 0 1 150px;
+  min-width: 0;
+}
+.admin-root :is(.query-toolbar, .query-actions) [data-slot="button"] {
+  min-height: 36px;
+}
+.admin-root [data-slot="card"] {
+  border-radius: 10px;
+  box-shadow: none;
+}
+.admin-root [data-slot="card"]:is(.table-panel, .directory-panel) {
+  padding: 0;
+  gap: 0;
+}
+.admin-root [data-slot="table-container"] {
+  max-width: 100%;
+  overscroll-behavior-x: contain;
+}
+.admin-root [data-slot="table-head"] {
+  white-space: nowrap;
+}
+.admin-root [data-slot="table-cell"] {
+  vertical-align: middle;
+  line-height: 1.6;
+}
+.admin-root
+  :is(
+    .source-identity,
+    .source-identity > div,
+    .resource-title,
+    .monitor-card-identity,
+    .monitor-card-name
+  ) {
+  min-width: 0;
+}
+.admin-root :is(.source-name, .resource-name, .log-source-name, .channel-chip) {
+  overflow-wrap: anywhere;
+}
+.admin-root .source-description {
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+.admin-root .table-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.admin-root .admin-pagination {
+  flex-wrap: wrap;
+}
+.admin-root .admin-pagination-controls {
+  flex-wrap: wrap;
+}
+.admin-root [data-slot="button"] {
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+.admin-root [data-slot="button"][data-variant="default"]:hover:not(:disabled) {
+  background: #303036;
+}
+.admin-root
+  [data-slot="button"]:is(
+    [data-variant="outline"],
+    [data-variant="ghost"]
+  ):hover:not(:disabled) {
+  background: var(--accent);
+}
+.admin-root
+  [data-slot="button"][data-variant="destructive"]:hover:not(:disabled) {
+  background: #b91c1c;
+}
+.admin-root :is(button, a, input, textarea):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.admin-root [data-slot="checkbox"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--background);
+}
+.admin-root [data-slot="checkbox"][data-state="checked"],
+.admin-root [data-slot="checkbox"][data-state="indeterminate"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+}
+.admin-root [data-slot="switch"] {
+  padding: 0;
+}
+.admin-root [data-slot="textarea"] {
+  field-sizing: fixed;
+  resize: vertical;
+}
+.admin-root [data-slot="select-trigger"] {
+  min-width: 0;
+}
+.admin-root [data-slot="select-value"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-root
+  :is(
+    .form-error,
+    .modal-error,
+    .crawl-error,
+    .error-notice,
+    .feature-notice.error
+  ) {
+  overflow-wrap: anywhere;
+}
+.admin-root :is(.form-error, .modal-error) {
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fef2f2;
+  font-size: 13px;
+}
+.admin-root .feature-notice {
+  position: sticky;
+  top: 76px;
+  z-index: 21;
+  box-shadow: 0 2px 8px #00000008;
+}
+.admin-root .log-source-count-row {
+  gap: 16px;
+  align-items: start;
+}
+.admin-root .log-source-count-row strong {
+  flex-shrink: 0;
+}
+/* Settings use the same card, field, switch and button rhythm as the rest. */
+.admin-root .admin-settings-tabs {
+  margin-bottom: 20px;
+}
+.admin-root :is(.policy-card, .admin-account-card) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 24px;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.admin-root .policy-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-root .policy-card-copy h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.admin-root .policy-card-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-root .policy-count {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+  border-radius: 6px;
+}
+.admin-root .policy-group {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+}
+.admin-root .policy-group legend {
+  padding: 0 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--foreground);
+}
+.admin-root .policy-field {
+  min-width: 0;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--foreground);
+  font-weight: 500;
+}
+.admin-root .policy-field > span {
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.admin-root .policy-field code {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.admin-root .policy-field small {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.admin-root .policy-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafafa;
+}
+.admin-root .policy-toggle > [data-slot="switch"] {
+  margin-top: 3px;
+}
+.admin-root .policy-toggle strong {
+  font-weight: 500;
+  color: var(--foreground);
+}
+.admin-root .policy-toggle > span {
+  min-width: 0;
+}
+.admin-root .policy-field [data-slot="input"] {
+  height: 36px;
+  padding: 6px 12px;
+  border-color: var(--border);
+  border-radius: 6px;
+  box-shadow: none;
+}
+.admin-root .policy-field [data-slot="textarea"] {
+  min-height: 112px;
+  padding: 12px;
+  border-color: var(--border);
+}
+.admin-root .admin-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-root .admin-account-actions .secondary-button {
+  margin-left: 0;
+}
+/* Monitor controls wrap by available content width, not full window width. */
+.admin-root .monitor-panel .sources-panel {
+  padding: 0;
+}
+.admin-root .monitor-title-row h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+.admin-root .monitor-heading-actions {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-root .monitor-panel .source-toolbar {
+  padding: 16px 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.admin-root .monitor-card-grid {
+  padding: 20px;
+  gap: 16px;
+}
+.admin-root .monitor-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: none;
+  background: var(--background);
+}
+.admin-root .monitor-card:hover {
+  border-color: #a1a1aa;
+  box-shadow: none;
+}
+.admin-root .monitor-card-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-root .monitor-card-name {
+  flex-wrap: wrap;
+}
+.admin-root .monitor-card-name strong {
+  overflow-wrap: anywhere;
+}
+.admin-root .monitor-card-meta,
+.admin-root .monitor-card-actions {
+  flex-wrap: wrap;
+}
+.admin-root .refresh-control {
+  border-color: var(--border);
+  box-shadow: none;
+  background: #fafafa;
+}
+.admin-root .refresh-control-icon {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.admin-root .settings-source-item {
+  border-radius: 6px;
+  border-color: var(--border);
+  background: var(--background);
+}
+.admin-root .settings-source-item:has([data-state="checked"]) {
+  background: var(--muted);
+  border-color: #a1a1aa;
+}
+.admin-root .settings-source-heading {
+  flex-wrap: wrap;
+}
+.admin-root :is(.strategy-overview, .strategy-card) {
+  border-color: var(--border);
+  box-shadow: none;
+  background: var(--background);
+  border-radius: 10px;
+}
+.admin-root .strategy-overview {
+  padding: 20px;
+}
+.admin-root :is(.strategy-overview-header, .subsection-heading) {
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.admin-root
+  :is(.strategy-overview-header, .strategy-card-top)
+  [data-slot="button"] {
+  border-radius: 6px;
+}
+.admin-root .strategy-source-chip {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.admin-root .crawl-intro {
+  gap: 16px;
+}
+.admin-root .crawl-intro .source-table {
+  min-width: 960px;
+}
+.admin-root .crawl-intro [data-slot="table-cell"] {
+  white-space: normal;
+}
+.admin-root .crawl-intro [data-slot="table-cell"] input {
+  display: inline-block;
+  width: 88px;
+  margin: 0 6px 8px 0;
+}
+.admin-root .crawl-intro pre {
+  margin: 0;
+  border-radius: 6px;
+}
+@container (max-width: 800px) {
+  .admin-root .monitor-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-root .monitor-heading-actions {
+    justify-content: flex-start;
+  }
+  .admin-root .strategy-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 768px) {
+  .admin-root .admin-main {
+    padding: 16px;
+  }
+  .admin-root :is(.query-input, .source-search) {
+    max-width: none;
+  }
+  .admin-root .query-toolbar > :is(.query-input, .source-search) {
+    flex-basis: 100%;
+  }
+  .admin-root .admin-breadcrumb {
+    gap: 8px;
+  }
+  .admin-root :is(.policy-card, .admin-account-card) {
+    padding: 16px;
+  }
+  .admin-root .policy-group {
+    padding: 14px;
+  }
+  .admin-root
+    :is(
+      .policy-form-grid,
+      .admin-account-form,
+      .cloud-account-grid,
+      .settings-source-grid
+    ) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-root .admin-account-form > * {
+    grid-column: auto;
+  }
+  .admin-root .monitor-card-grid {
+    padding: 16px;
+  }
+  .admin-root .monitor-panel .source-toolbar {
+    padding: 16px;
+  }
+  .admin-root .filter-tabs {
+    max-width: 100%;
+    overflow: auto;
+  }
+  .admin-root .filter-tabs button {
+    flex: 1;
+  }
+  .admin-root .monitor-heading-actions {
+    width: 100%;
+  }
+  .admin-root .feature-notice {
+    top: 64px;
+  }
+  .admin-root .routing-overview {
+    padding: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-root *,
+  .admin-root *::before,
+  .admin-root *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.admin-root .monitor-panel .source-search {
+  flex: 1 1 220px;
+  min-width: min(220px, 100%);
+}
+.admin-root .monitor-card {
+  gap: 16px;
+}
+.admin-root .monitor-health-block,
+.admin-root .monitor-card-meta,
+.admin-root .monitor-card-actions {
+  margin-top: 0;
+}
+.admin-root .monitor-card-actions [data-slot="button"] {
+  height: 32px;
+  min-height: 32px;
+}
+.admin-root .monitor-card-actions .icon-button {
+  width: 32px;
+  padding: 0;
+}
+.admin-root .monitor-card .card-checkbox {
+  width: 16px;
+  height: 16px;
+  flex-basis: 16px;
+  border-width: 1px;
+  border-radius: 4px;
+}
+.admin-root .monitor-type-badge {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  letter-spacing: 0;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.admin-root .settings-source-item {
+  box-shadow: none;
+}
+.admin-root .settings-source-item.is-selected {
+  box-shadow: none;
+}
+.admin-root .source-id-tag {
+  background: var(--muted);
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+.admin-root .mapping-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+.admin-root .field-hint {
+  margin-top: 10px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.admin-root .debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.admin-root .debug-controls > input {
+  flex: 1;
+  min-width: 0;
+}
+.admin-root .code-window {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fafafa;
+  margin-top: 12px;
+}
+.admin-root .code-window-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.admin-root .code-window-header > span:first-child:has(i) {
+  display: none;
+}
+.admin-root .code-window-header small {
+  margin-left: auto;
+}
+.admin-root .code-window pre {
+  margin: 0;
+  padding: 14px;
+  font:
+    12px/1.7 Consolas,
+    monospace;
+  tab-size: 2;
+}
+.admin-root .code-window :is(.debug-empty, .code-empty, .response-empty) {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 48px 16px;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+.admin-root .source-debug-panel :is(.eyebrow, .debug-limit) {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.admin-root .source-debug-panel .debug-section-heading {
+  flex-wrap: wrap;
+}
+.admin-root .request-line {
+  margin-top: 12px;
+}
+.admin-root .debug-tabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.admin-root .spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: admin-spin 0.75s linear infinite;
+}
+@keyframes admin-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 540px) {
+  .admin-root .monitor-heading-actions > .refresh-control {
+    flex-basis: 100%;
+  }
+  .admin-root .refresh-control > [data-slot="switch"] {
+    margin-left: auto;
+  }
+  .admin-root .monitor-health-heading {
+    flex-wrap: wrap;
+  }
+  .admin-root .debug-controls {
+    flex-wrap: wrap;
+  }
+  .admin-root .debug-controls > input {
+    flex-basis: 100%;
+  }
+}
+
+/* Public form reset must not square off admin passwords, numeric fields or textareas. */
+.admin-root [data-slot="input"],
+.admin-root [data-slot="textarea"] {
+  border-radius: 6px;
+  font-weight: 400;
+}
+.admin-root .admin-row-action-item[data-highlighted] {
+  background: var(--accent) !important;
+}
+
+/* Public mobile hit-target rules must not turn switches and checkboxes into 44px circles. */
+.admin-root [data-slot="switch"] {
+  min-width: 32px;
+  min-height: 18px;
+  width: 32px;
+  height: 18px;
+}
+.admin-root [data-slot="checkbox"] {
+  min-width: 16px;
+  min-height: 16px;
+  width: 16px;
+  height: 16px;
+}
+.admin-root [data-slot="input"],
+.admin-root [data-slot="textarea"] {
+  min-width: 0;
+}
+.admin-root .policy-toggle {
+  min-height: 64px;
+}
+.admin-root .policy-toggle [data-slot="switch"] {
+  flex: 0 0 32px;
+}
+.admin-root .admin-settings-tabs:has([data-slot="tabs-list"]) {
+  margin-bottom: 20px;
+}
+.admin-root #settings-panel-admin .admin-account-form {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 640px;
+}
+.admin-root ::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+}
+
+.admin-root .admin-loading {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.admin-root .strategy-overview-header {
+  margin-bottom: 20px;
+}
+.admin-root .strategy-overview .eyebrow,
+.admin-root .subsection-heading .eyebrow {
+  display: none;
+}
+.admin-root .strategy-overview-header h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.admin-root .strategy-card {
+  padding: 16px;
+}
+.admin-root .strategy-card-top {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-root .strategy-card-actions {
+  margin-left: auto;
+}
+.admin-root .strategy-source-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.admin-root .strategy-card-dot {
+  background: var(--foreground);
+}
+.admin-root .crawl-page [data-slot="table"] {
+  min-width: 1000px;
+}
+.admin-root .crawl-page [data-slot="table-cell"] {
+  max-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.admin-root .crawl-page .crawl-intro label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.admin-root .crawl-page .crawl-intro label input {
+  width: 112px;
+}
+.admin-root .analytics-strip {
+  margin-bottom: 16px;
+}
+.admin-root .analytics-strip > div {
+  border-color: var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  box-shadow: none;
+}
+
+.admin-root .policy-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.admin-root .editor-save-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+.admin-root .console-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  box-shadow: 0 4px 20px #00000014;
+  color: var(--foreground);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.admin-root .console-toast svg {
+  margin-top: 2px;
+}
+@media (max-width: 640px) {
+  .admin-root .console-toast {
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+.admin-root .admin-table-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+.admin-root .admin-table-scroll-hint {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  background: #fafafa;
+  font-size: 11px;
+}
+.admin-root [data-slot="table-container"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Bound resource columns: long names/URLs must not determine the table width. */
+.admin-root .source-table.resource-table {
+  table-layout: fixed;
+  min-width: 1160px;
+  width: 100%;
+}
+.admin-root .source-table.resource-table th:nth-child(1) {
+  width: 48px;
+}
+.admin-root .source-table.resource-table th:nth-child(2) {
+  width: 56px;
+}
+.admin-root .source-table.resource-table th:nth-child(3) {
+  width: 220px;
+}
+.admin-root .source-table.resource-table th:nth-child(4) {
+  width: 88px;
+}
+.admin-root .source-table.resource-table th:nth-child(5) {
+  width: 100px;
+}
+.admin-root .source-table.resource-table th:nth-child(6) {
+  width: 250px;
+}
+.admin-root .source-table.resource-table th:nth-child(7) {
+  width: 154px;
+}
+.admin-root .source-table.resource-table th:nth-child(8) {
+  width: 80px;
+}
+.admin-root .source-table.resource-table th:nth-child(9) {
+  width: 100px;
+}
+.admin-root .source-table.resource-table th:nth-child(10) {
+  width: 64px;
+}
+.admin-root .source-table.resource-table td {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.admin-root .source-table.resource-table .resource-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.admin-root .source-table.resource-table .action-column {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--background);
+  box-shadow: -1px 0 var(--border);
+}

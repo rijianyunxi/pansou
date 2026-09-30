@@ -1,0 +1,142 @@
+import { useSharedState, apiFetch } from "../src/appRuntime";
+import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
+
+const API_BASE = "/api";
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  nickname: string | null;
+  role: "admin" | "user";
+  status: "active" | "disabled";
+  channels: string[];
+  lastLoginIp?: string | null;
+  lastLoginAt: number | null;
+  createdAt: number;
+}
+
+type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: string; anonymousCustomChannels?: boolean; showHotSearch?: boolean; showAuthButtons?: boolean; homeSearchPlaceholder?: string };
+type ApiError = { statusCode?: number; statusMessage?: string; message?: string; data?: { statusMessage?: string; message?: string } };
+
+function errorStatus(error: ApiError | undefined): number | undefined {
+  return error?.statusCode || (error as any)?.status || (error as any)?.response?.status;
+}
+
+function errorMessage(error: ApiError | undefined, fallback: string): string {
+  const status = errorStatus(error);
+  const message = error?.data?.statusMessage || error?.data?.message || error?.statusMessage || error?.message;
+  if (status === 400) return message || "提交内容不符合要求。";
+  if (status === 401) return message || "登录状态已失效，请重新登录。";
+  if (status === 403) return message || "当前操作不被允许。";
+  if (status === 409) return message || "用户名已存在，请换一个。";
+  if (status === 429) return "操作过于频繁，请稍后再试。";
+  return message || fallback;
+}
+
+export function useAuth() {
+  const error = useSharedState("auth-error", () => "");
+  const user = useSharedState<AuthUser | null>("auth-user", () => null);
+  const sessionReady = useSharedState("auth-session-ready", () => false);
+  const sessionId = useSharedState<string | null>("auth-session-id", () => null);
+  const anonymousCustomChannels = useSharedState<boolean>("auth-anonymous-custom-channels", () => false);
+  const showHotSearch = useSharedState<boolean>("auth-show-hot-search", () => true);
+  const showAuthButtons = useSharedState<boolean>("auth-show-auth-buttons", () => true);
+  const homeSearchPlaceholder = useSharedState<string>("auth-home-search-placeholder", () => DEFAULT_HOME_SEARCH_PLACEHOLDER);
+  const sessionError = useSharedState("auth-session-error", () => "");
+  const initialized = useSharedState("auth-session-initialized", () => false);
+  let initializePromise: Promise<boolean> | undefined;
+
+  async function initializeSession(force = false): Promise<boolean> {
+    if (initializePromise && !force) return initializePromise;
+    if (sessionReady.value && !force) return true;
+    initializePromise = (async () => {
+      sessionError.value = "";
+      try {
+        const data = await apiFetch<SessionResponse>(`${API_BASE}/account/session`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        user.value = data.authenticated ? data.user : null;
+        sessionId.value = data.sessionId || null;
+        anonymousCustomChannels.value = !!data.anonymousCustomChannels;
+        showHotSearch.value = data.showHotSearch !== false;
+        showAuthButtons.value = data.showAuthButtons !== false;
+        homeSearchPlaceholder.value = typeof data.homeSearchPlaceholder === "string" && data.homeSearchPlaceholder.trim()
+          ? data.homeSearchPlaceholder.trim()
+          : DEFAULT_HOME_SEARCH_PLACEHOLDER;
+        sessionReady.value = true;
+        initialized.value = true;
+        return true;
+      } catch (e: any) {
+        sessionError.value = errorMessage(e, "匿名会话初始化失败，请刷新页面重试。");
+        sessionReady.value = false;
+        return false;
+      } finally {
+        initializePromise = undefined;
+      }
+    })();
+    return initializePromise;
+  }
+
+  function setAuthenticatedUser(next: AuthUser | null) {
+    user.value = next;
+    sessionReady.value = true;
+    initialized.value = true;
+  }
+
+  async function login(username: string, password: string): Promise<AuthUser | null> {
+    error.value = "";
+    try {
+      const data = await apiFetch<{ ok: boolean; user: AuthUser }>(`${API_BASE}/account/login`, {
+        method: "POST", body: { username, password }, credentials: "include",
+      });
+      setAuthenticatedUser(data.user);
+      return data.user;
+    } catch (e: any) {
+      error.value = errorMessage(e, "登录失败，请检查用户名和密码。");
+      return null;
+    }
+  }
+
+  async function logout(): Promise<boolean> {
+    error.value = "";
+    try {
+      await apiFetch(`${API_BASE}/account/logout`, { method: "POST", credentials: "include" });
+    } catch (e: any) {
+      error.value = errorMessage(e, "退出登录失败");
+      // 本地仍清理账号，避免失效凭证继续被 UI 使用。
+    } finally {
+      user.value = null;
+      sessionId.value = null;
+      sessionReady.value = false;
+      await initializeSession(true);
+    }
+    return !error.value;
+  }
+
+  async function updateProfile(nickname: string): Promise<AuthUser | null> {
+    try {
+      const data = await apiFetch<{ ok: boolean; user: AuthUser }>(`${API_BASE}/account/profile`, {
+        method: "PUT", body: { nickname }, credentials: "include",
+      });
+      setAuthenticatedUser(data.user);
+      return data.user;
+    } catch (e: any) {
+      error.value = errorMessage(e, "昵称保存失败");
+      return null;
+    }
+  }
+
+  function handleSessionExpired(message = "登录已过期，请重新登录。") {
+    user.value = null;
+    error.value = message;
+    sessionReady.value = true;
+  }
+
+  return {
+    error, user, sessionReady, sessionId, anonymousCustomChannels, showHotSearch, showAuthButtons, homeSearchPlaceholder, sessionError, initialized,
+    initializeSession, login, logout, updateProfile,
+    handleSessionExpired,
+  };
+}
+
