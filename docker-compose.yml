@@ -72,6 +72,3 @@ volumes:
     name: pansou-postgres
   pansou-redis:
     name: pansou-redis
-
-
-

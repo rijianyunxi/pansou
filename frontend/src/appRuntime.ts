@@ -135,4 +135,3 @@ export function setDocumentHead(input: any) {
   for (const meta of value?.meta || []) setMeta(meta.name || meta.property, meta.content, !!meta.property);
   for (const link of value?.link || []) { let el = document.head.querySelector(`link[rel="${link.rel}"]`) as HTMLLinkElement | null; if (!el) { el = document.createElement("link"); document.head.appendChild(el); } Object.assign(el, link); }
 }
-

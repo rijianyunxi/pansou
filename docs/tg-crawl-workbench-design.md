@@ -401,5 +401,3 @@ P1 可以作为 UX 独立阶段验收，但完整交付必须包含 P2/P3；不�
 ---
 
 关联文档：`docs/admin-ui.md` 为后台基础组件规范；`docs/telegram-local-index-requirements.md` 为早期采集需求。本文件以代码核查结果为现状基线，不把早期“尚未实施”的描述当作当前事实。
-
-
