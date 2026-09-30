@@ -629,64 +629,18 @@ pub async fn admin_resources_batch_delete(
 }
 
 pub async fn admin_resources_check(
-    State(state): State<Arc<AppState>>,
+    state: State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<Value>,
+    payload: Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    admin_only(&headers, &state).await?;
-    let ids = string_list(&payload, "ids");
-    let existing: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM managed_resources WHERE id = ANY($1)")
-            .bind(&ids)
-            .fetch_all(&state.pool)
-            .await?;
-    let existing: std::collections::HashSet<_> = existing.into_iter().collect();
-    let results = ids
-        .into_iter()
-        .map(|id| {
-            let status = if existing.contains(&id) {
-                "unknown"
-            } else {
-                "invalid"
-            };
-            json!({"id":id,"status":status})
-        })
-        .collect::<Vec<_>>();
-    let valid = results
-        .iter()
-        .filter(|value| value["status"] == "valid")
-        .count();
-    let invalid = results
-        .iter()
-        .filter(|value| value["status"] == "invalid")
-        .count();
-    let unknown = results.len().saturating_sub(valid + invalid);
-    Ok(Json(
-        json!({"code":0,"message":"checked","data":{"results":results,"count":valid+invalid+unknown,"valid":valid,"invalid":invalid,"unknown":unknown}}),
-    ))
+    super::cloud_drive::resources_check(state, headers, payload).await
 }
-
 pub async fn admin_resources_cloud_delete(
-    State(state): State<Arc<AppState>>,
+    state: State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&headers, &state).await?;
-    let resource_id = payload
-        .get("resourceId")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_resources WHERE id=$1)")
-            .bind(resource_id)
-            .fetch_one(&state.pool)
-            .await?;
-    if !exists {
-        return Err(ApiError::NotFound("资源不存在".into()));
-    }
-    Ok(Json(
-        json!({"code":0,"message":"deleted","data":{"provider":"unknown","deletedCount":0}}),
-    ))
+    payload: Json<Value>,
+) -> Result<axum::response::Response, ApiError> {
+    super::cloud_drive::cloud_delete(state, headers, payload).await
 }
 
 pub async fn admin_resource_get(

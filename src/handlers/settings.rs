@@ -365,8 +365,53 @@ pub async fn cloud_put(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let provider = uri.0.path().split('/').next_back().unwrap_or("");
-    let cookie = body.get("cookie").and_then(Value::as_str).unwrap_or("");
-    sqlx::query("INSERT INTO cloud_account_settings(provider,credential,updated_at) VALUES($1,$2,now()) ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,updated_at=now()").bind(provider).bind(cookie).execute(&state.pool).await?;
+    if !matches!(provider, "baidu" | "quark") {
+        return Err(ApiError::BadRequest("不支持的网盘类型".into()));
+    }
+    let cookie = match body.get("cookie") {
+        Some(Value::Null) => Some(String::new()),
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => Some(s.trim().to_owned()),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "cookie 必须为字符串；null 表示清除，留空不修改".into(),
+            ));
+        }
+    };
+    if let Some(cookie) = cookie {
+        if cookie.len() > 16384
+            || cookie.chars().any(char::is_control)
+            || (!cookie.is_empty() && !cookie.contains('='))
+        {
+            return Err(ApiError::BadRequest(
+                "Cookie 格式不正确或超过长度限制".into(),
+            ));
+        }
+        if provider == "baidu" && !cookie.is_empty() {
+            use crate::cloud_drive::transport::cookie_value;
+            if (cookie_value(&cookie, "BDUSS").is_empty()
+                && cookie_value(&cookie, "BDUSS_BFESS").is_empty())
+                || cookie_value(&cookie, "BAIDUID").is_empty()
+            {
+                return Err(ApiError::BadRequest(
+                    "百度 Cookie 需要 BDUSS/BDUSS_BFESS 和 BAIDUID".into(),
+                ));
+            }
+        }
+        let mut tx = state.pool.begin().await?;
+        let locked: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("pansou:cloud-write:{provider}"))
+                .fetch_one(&mut *tx)
+                .await?;
+        if !locked {
+            return Err(ApiError::Conflict(
+                "网盘写操作进行中，暂不能修改登录态".into(),
+            ));
+        }
+        sqlx::query("INSERT INTO cloud_account_settings(provider,credential,updated_at) VALUES($1,$2,now()) ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,updated_at=now()").bind(provider).bind(cookie).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
     cloud_get(State(state), uri, headers).await
 }
 pub async fn wechat_get(

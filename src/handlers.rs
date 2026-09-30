@@ -1,5 +1,6 @@
 mod account;
 mod admin;
+mod cloud_drive;
 mod common;
 mod crawling;
 mod public;
@@ -8,6 +9,7 @@ mod settings;
 
 pub use account::*;
 pub use admin::*;
+pub use cloud_drive::*;
 pub use crawling::*;
 pub use public::*;
 pub use search::*;

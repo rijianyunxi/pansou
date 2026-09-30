@@ -86,6 +86,7 @@
             </Button>
           </div>
         </form>
+        <Button variant="outline" type="button" :disabled="busy || !!cloudDeleteBusyKey" @click="openCloudTool()">网盘工具（检测 / 转存 / 云端删除）</Button>
         <div class="query-meta">
           已选 {{ selected.length }} 项 · 共 {{ total }} 条
         </div>
@@ -176,7 +177,7 @@
                     <div class="resource-link-meta">
                       <span v-if="link.password" class="resource-link-password"
                         >提取码 {{ link.password }}</span
-                      ><Button
+                      ><Button variant="outline" v-if="link.type === 'baidu' || link.type === 'quark'" :disabled="busy || !!cloudDeleteBusyKey" @click="openCloudTool(link)">检测 / 转存</Button><Button
                         variant="outline"
                         v-if="link.type === 'baidu' || link.type === 'quark'"
                         class="resource-link-delete"
@@ -389,9 +390,12 @@
         </form>
       </section>
     </AdminDialog>
+    <CloudDriveWorkbench v-if="cloudToolOpen" :initial="cloudToolInitial" @close="cloudToolOpen = false" @changed="loadResources" />
   </div>
 </template>
 <script setup lang="ts">
+import CloudDriveWorkbench from "./CloudDriveWorkbench.vue";
+import { mutateCloud, readCloud } from "@/composables/admin/useCloudDrive";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Card } from "@/components/admin/ui/card";
 import { Button } from "@/components/admin/ui/button";
@@ -428,7 +432,7 @@ type AdminResource = SearchResult & {
   enabled?: boolean;
   checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown";
   checkMessage?: string | null;
-  checkedAt?: number | null;
+  checkedAt?: string | null;
 };
 const cloudTypes = ref<CloudType[]>([]);
 const resources = ref<AdminResource[]>([]);
@@ -448,6 +452,10 @@ const formError = ref("");
 const tagText = ref("");
 const imageText = ref("");
 const cloudDeleteBusyKey = ref("");
+const cloudToolOpen = ref(false);
+const cloudToolInitial = ref<{url:string;password?:string|null}>();
+const deleteRequests = new Map<string, {resourceId:string;linkIndex:number;confirmationToken:string;requestKey:string}>();
+function openCloudTool(link?:Link) { cloudToolInitial.value = link ? {url:link.url,password:link.password} : undefined; cloudToolOpen.value = true; }
 const form = ref<{
   id?: string;
   name: string;
@@ -684,35 +692,24 @@ async function remove(item: AdminResource) {
   }
 }
 async function deleteCloudLink(item: AdminResource, linkIndex: number) {
-  const link = item.links[linkIndex];
-  if (
-    !link ||
-    (link.type !== "baidu" && link.type !== "quark") ||
-    busy.value ||
-    cloudDeleteBusyKey.value
-  )
-    return;
-  if (
-    !(await confirmAction(
-      `将删除${cloudLabel(link.type)}网盘中的「${item.name}」资源，删除后分享链接会失效。确认继续吗？`,
-    ))
-  )
-    return;
-  cloudDeleteBusyKey.value = `${item.id}:${linkIndex}`;
-  try {
-    const result = await apiFetch<any>("/api/admin/resources/cloud-delete", {
-      method: "POST",
-      body: { resourceId: item.id, linkIndex },
-    });
-    const count = Number(result?.data?.deletedCount || 0);
-    show(
-      `${cloudLabel(link.type)}云端资源已删除${count ? `（${count} 项）` : ""}。盘搜中的链接记录仍保留，可用检测功能确认失效。`,
-    );
-  } catch (e: any) {
-    show(apiError(e), true);
-  } finally {
-    cloudDeleteBusyKey.value = "";
+ const link = item.links[linkIndex];
+ if (!link || !['baidu','quark'].includes(link.type) || busy.value || cloudDeleteBusyKey.value) return;
+ const identity = item.id + ':' + linkIndex;
+ cloudDeleteBusyKey.value = identity;
+ try {
+  let body = deleteRequests.get(identity);
+  if (!body) {
+   const preview = await readCloud('delete-preview', { resourceId: item.id, linkIndex });
+   const files = Array.isArray(preview.files) ? preview.files : [];
+   if (!await confirmAction('已核实分享属于当前账号。将删除 ' + preview.count + ' 个顶层条目：' + files.slice(0,8).map(f=>f.name+(f.isDir?'（整个目录）':'')).join('、') + '。目录内所有内容也会删除；盘搜链接记录保留。确认继续？')) return;
+   body = { resourceId: item.id, linkIndex, confirmationToken: preview.confirmationToken!, requestKey: crypto.randomUUID() };
+   deleteRequests.set(identity,body);
   }
+  const result = await mutateCloud('/api/admin/resources/cloud-delete',body,undefined,key=>show('删除操作已受理，正在查询状态：'+key));
+  deleteRequests.delete(identity);
+  show(cloudLabel(link.type) + '云端资源已删除（' + Number(result.deletedCount || 0) + ' 项）。盘搜记录保留，可再次检测确认链接状态。');
+ } catch(e:any) { if(e?.data?.data?.status === 'failed') deleteRequests.delete(identity); show(apiError(e) + (deleteRequests.get(identity) ? '；操作编号：' + deleteRequests.get(identity)!.requestKey + '。可在网盘工具查询，不要重复新建操作。' : ''), true); }
+ finally { cloudDeleteBusyKey.value = ''; }
 }
 async function deleteSelected() {
   if (

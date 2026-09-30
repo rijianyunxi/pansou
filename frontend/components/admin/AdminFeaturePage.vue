@@ -1995,7 +1995,7 @@ async function saveQuarkSettings() {
     });
     quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
     quarkForm.value = { cookie: "" };
-    show("夸克 Cookie 已保存，删云端操作会立即使用新的登录态。");
+    show("夸克 Cookie 已保存，检测、转存和云端删除会立即使用新的登录态。");
   } catch (error: any) {
     show(apiError(error), true);
   } finally {
@@ -2008,7 +2008,7 @@ async function clearQuarkSettings() {
     busy.value ||
     typeof window === "undefined" ||
     !(await confirmAction(
-      "确定清除已保存的夸克 Cookie 吗？清除后删云端操作将不可用。",
+      "确定清除已保存的夸克 Cookie 吗？清除后云端写操作将不可用。",
     ))
   )
     return;
@@ -2038,7 +2038,7 @@ async function saveBaiduSettings() {
     });
     baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
     baiduForm.value = { cookie: "" };
-    show("百度 Cookie 已保存，删云端操作会立即使用新的登录态。");
+    show("百度 Cookie 已保存，检测、转存和云端删除会立即使用新的登录态。");
   } catch (error: any) {
     show(apiError(error), true);
   } finally {
@@ -2051,7 +2051,7 @@ async function clearBaiduSettings() {
     busy.value ||
     typeof window === "undefined" ||
     !(await confirmAction(
-      "确定清除已保存的百度 Cookie 吗？清除后删云端操作将不可用。",
+      "确定清除已保存的百度 Cookie 吗？清除后云端写操作将不可用。",
     ))
   )
     return;

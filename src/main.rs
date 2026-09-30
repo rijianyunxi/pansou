@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod cloud_drive;
 mod crawl;
 mod db;
 mod error;

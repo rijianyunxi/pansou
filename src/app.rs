@@ -19,6 +19,10 @@ pub struct AppState {
     pub redis: RedisStore,
     pub http: reqwest::Client,
     pub crawl_http: reqwest::Client,
+    pub cloud_http: reqwest::Client,
+    #[cfg(test)]
+    pub cloud_test_bases: Option<crate::cloud_drive::TestBases>,
+    pub cloud_slots: Arc<tokio::sync::Semaphore>,
     pub search_cache: Arc<tokio::sync::Mutex<SearchCache>>,
     pub security: SecurityConfig,
 }
@@ -37,6 +41,10 @@ impl AppState {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("crawl http client"),
+            cloud_http: crate::cloud_drive::transport::http_client(),
+            #[cfg(test)]
+            cloud_test_bases: None,
+            cloud_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             search_cache: Arc::new(tokio::sync::Mutex::new(SearchCache::default())),
             security: SecurityConfig::from_env(),
         }
@@ -52,6 +60,23 @@ impl AppState {
 
 fn api_router() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/admin/cloud-drive/check", post(handlers::cloud_check))
+        .route("/admin/cloud-drive/save", post(handlers::cloud_save))
+        .route(
+            "/admin/cloud-drive/existing",
+            post(handlers::cloud_existing),
+        )
+        .route("/admin/cloud-drive/list", post(handlers::cloud_list))
+        .route("/admin/cloud-drive/ping", post(handlers::cloud_ping))
+        .route(
+            "/admin/cloud-drive/delete-preview",
+            post(handlers::cloud_delete_preview),
+        )
+        .route("/admin/cloud-drive/delete", post(handlers::cloud_delete))
+        .route(
+            "/admin/cloud-drive/operations/{key}",
+            get(handlers::cloud_operation_get),
+        )
         .route("/admin/crawl/overview", get(handlers::crawl_overview))
         .route(
             "/admin/crawl/default-outbound",
