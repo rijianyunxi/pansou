@@ -820,7 +820,7 @@ docker compose ps
 
 ### 11.3 启动 Rust
 
-Compose 默认使用 256 MB PostgreSQL 缓冲区、1 GB WAL 上限、15 分钟检查点间隔和 WAL 页图像压缩，以同机运行 API、PostgreSQL 和 Redis 的 2 核 2 GB 试用服务器为保守起点。2 核 4 GB 线上服务器也可先沿用这组配置，再根据实际负载调整。可在 `.env` 设置 `PANSOU_PG_SHARED_BUFFERS`、`PANSOU_PG_MAX_WAL_SIZE` 和 `PANSOU_PG_CHECKPOINT_TIMEOUT`；`work_mem` 保留 PostgreSQL 默认值。
+PostgreSQL 与 Redis 的容器参数已直接写死在 `docker-compose.yml`（`shared_buffers 512MB`、`max_wal_size 4GB`、`checkpoint_timeout 15min`、WAL 页图像压缩、Redis `maxmemory 256mb` 及初始化账号），以同机运行 API、PostgreSQL 和 Redis 的 2 核 2 GB 服务器为保守起点，不再读取 `.env`。需要调整时直接修改 `docker-compose.yml` 后执行 `docker compose up -d postgres redis`；`work_mem` 保留 PostgreSQL 默认值。
 
 `shared_buffers` 不是 PostgreSQL 的全部内存占用，连接、排序、维护操作还会使用额外内存；`max_wal_size` 是磁盘 WAL 的软上限，不是内存预留。达到 WAL 阈值仍会提前触发检查点。2 GB 服务器可先将采集并发设为 2、页面等待设为 2 秒，再观察整机内存、CPU 和查询延迟；不要直接沿用高并发历史回填设置。
 
@@ -878,19 +878,14 @@ http://127.0.0.1:5173
 | `PANSOU_DB_MAX_LIFETIME_SECONDS` | `1800` | 单连接最大生命周期 |
 | `PANSOU_REDIS_CONNECTION_TIMEOUT_SECONDS` | `3` | Redis 建连超时 |
 | `PANSOU_REDIS_RESPONSE_TIMEOUT_SECONDS` | `5` | Redis 命令响应超时 |
-| `PANSOU_POSTGRES_DB` | `pansou` | Docker Compose 初始化数据库名 |
-| `PANSOU_POSTGRES_USER` | `postgres` | Docker Compose PostgreSQL 用户 |
-| `PANSOU_POSTGRES_PASSWORD` | `postgres` | Docker Compose PostgreSQL 密码 |
-| `PANSOU_REDIS_MAXMEMORY` | `256mb` | Docker Compose Redis 内存上限 |
 | `PANSOU_TRUST_PROXY_HEADERS` | `false` | 是否信任 `X-Forwarded-For`/`X-Real-IP`；仅当 Rust 只能由可信反向代理访问时开启 |
 | `PANSOU_SESSION_CREATE_WINDOW_SECONDS` | `60` | 匿名 Session 创建限流窗口 |
 | `PANSOU_SESSION_CREATE_PER_IP` | `5` | 单 IP 每窗口最多创建的匿名 Session 数 |
 | `PANSOU_SESSION_CREATE_PER_SUBNET` | `30` | 单 IPv4 `/24` 或 IPv6 `/64` 网段每窗口最多创建的匿名 Session 数 |
 | `PANSOU_SESSION_CREATE_GLOBAL` | `300` | 全站每窗口最多创建的匿名 Session 数 |
 | `PANSOU_SEARCH_SUBNET_LIMIT_MULTIPLIER` | `4` | 搜索网段额度相对 IP 额度的倍数 |
-| `PANSOU_ANONYMOUS_SEARCH_CONCURRENCY` | `2` | 单匿名 Session 最大并发搜索数 |
-| `PANSOU_LOGGED_SEARCH_CONCURRENCY` | `4` | 单登录 Session 最大并发搜索数 |
-| `PANSOU_GLOBAL_SEARCH_CONCURRENCY` | `64` | 全站最大并发搜索数 |
+
+搜索并发（匿名单会话 / 登录单会话 / 全站）不走环境变量，在 管理后台 → 搜索限流与并发 中配置。
 
 生产环境必须修改默认数据库密码，并根据部署方式决定是否为 Redis 启用密码或 ACL。`PANSOU_TRUST_PROXY_HEADERS=true` 不能单独作为公网配置使用：必须确保客户端无法绕过可信反向代理直连 Rust，否则攻击者可以伪造转发头绕过按 IP/网段统计。
 
@@ -914,6 +909,27 @@ target/release/pansou-api
 ```
 
 Rust 进程的当前工作目录应为项目根目录，因为静态文件路径是 `frontend/dist/*`。
+
+### 13.1 服务器部署（GitHub Actions 产物 + systemd）
+
+每次 push 到 `rust` / `main` 分支时，GitHub Actions 自动构建前端与 x86_64 musl **静态**二进制（不依赖宿主机 glibc，Debian 11 及以上均可直接运行），并把 `pansou-api`、`frontend/dist` 与 `deploy/pansou.service` 打成单个 tar 包，挂在 Actions 构建页面的 Artifacts 中（保留 14 天，附 sha256）。
+
+首次安装（PostgreSQL/Redis 用本仓库 docker-compose 启动，端口仅绑定 `127.0.0.1`）：
+
+```bash
+sudo useradd -r -s /usr/sbin/nologin pansou
+sudo mkdir -p /opt/pansou
+tar xzf pansou-linux-amd64.tar.gz -C /opt/pansou
+# 编写 /opt/pansou/.env（参照仓库 .env.example：
+# PANSOU_DATABASE_URL=postgres://…@127.0.0.1:5432/pansou
+# PANSOU_REDIS_URL=redis://127.0.0.1:6379/）
+sudo cp /opt/pansou/deploy/pansou.service /etc/systemd/system/
+sudo chown -R pansou:pansou /opt/pansou
+sudo systemctl daemon-reload
+sudo systemctl enable --now pansou
+```
+
+日常更新：下载新的 `pansou-linux-amd64.tar.gz`，`tar xzf pansou-linux-amd64.tar.gz -C /opt/pansou` 覆盖二进制与静态文件，然后 `sudo systemctl restart pansou`。数据库迁移在启动时自动执行（`sqlx::migrate!` 嵌于二进制内）；回滚时解压上一版 tar 包再重启即可。
 
 ## 14. 测试与质量检查
 

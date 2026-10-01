@@ -9,19 +9,19 @@ services:
     command:
       - postgres
       - -c
-      - shared_buffers=${PANSOU_PG_SHARED_BUFFERS:-256MB}
+      - shared_buffers=512MB
       - -c
-      - max_wal_size=${PANSOU_PG_MAX_WAL_SIZE:-1GB}
+      - max_wal_size=4GB
       - -c
-      - checkpoint_timeout=${PANSOU_PG_CHECKPOINT_TIMEOUT:-15min}
+      - checkpoint_timeout=15min
       - -c
       - wal_compression=on
       - -c
       - temp_file_limit=4GB
     environment:
-      POSTGRES_DB: ${PANSOU_POSTGRES_DB:-pansou}
-      POSTGRES_USER: ${PANSOU_POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${PANSOU_POSTGRES_PASSWORD:?set PANSOU_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: pansou
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -53,7 +53,7 @@ services:
       - "60"
       - "1000"
       - --maxmemory
-      - ${PANSOU_REDIS_MAXMEMORY:-256mb}
+      - 256mb
       - --maxmemory-policy
       - volatile-ttl
       - --tcp-keepalive
