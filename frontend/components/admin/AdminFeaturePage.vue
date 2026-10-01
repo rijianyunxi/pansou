@@ -931,8 +931,7 @@
             <div class="policy-card-copy">
               <h2 id="cloud-operations-title">云端操作</h2>
               <p>
-                配置网盘网页登录 Cookie，用于资源管理中的云端删除。Cookie
-                只保存在服务端数据库中，页面不会回显完整内容。
+                先配置账号，再选择需要启用的功能。登录凭据只保存在服务端，页面不会回显完整 Cookie。
               </p>
             </div>
             <div class="policy-card-actions">
@@ -952,12 +951,14 @@
               <div class="cloud-provider-heading">
                 <div>
                   <h3 id="quark-account-title">夸克网盘</h3>
-                  <p>用于删除夸克云端资源</p>
+                  <p>{{ quarkSettings.configured ? '登录凭据已保存，不代表登录仍有效' : '配置登录凭据后可使用云端功能' }}</p>
                 </div>
                 <span class="policy-count">{{
                   quarkSettings.configured ? "已配置" : "未配置"
                 }}</span>
               </div>
+              <details class="cloud-credentials" :open="!quarkSettings.configured">
+                <summary>{{ quarkSettings.configured ? '更新登录凭据' : '配置登录凭据' }}</summary>
               <form
                 class="admin-account-form"
                 @submit.prevent="saveQuarkSettings"
@@ -984,7 +985,7 @@
                     type="submit"
                     :disabled="busy || !quarkForm.cookie.trim()"
                     ><ConsoleIcon name="check" :size="14" />{{
-                      busy ? "保存中…" : "保存夸克配置"
+                      busy ? "保存中…" : "保存登录凭据"
                     }}</Button
                   ><Button
                     variant="outline"
@@ -997,6 +998,7 @@
                   >
                 </div>
               </form>
+              </details>
             </section>
             <section
               class="cloud-provider-card"
@@ -1005,12 +1007,14 @@
               <div class="cloud-provider-heading">
                 <div>
                   <h3 id="baidu-account-title">百度网盘</h3>
-                  <p>用于删除百度云端资源</p>
+                  <p>{{ baiduSettings.configured ? '登录凭据已保存，不代表登录仍有效' : '配置登录凭据后可使用云端功能' }}</p>
                 </div>
                 <span class="policy-count">{{
                   baiduSettings.configured ? "已配置" : "未配置"
                 }}</span>
               </div>
+              <details class="cloud-credentials" :open="!baiduSettings.configured">
+                <summary>{{ baiduSettings.configured ? '更新登录凭据' : '配置登录凭据' }}</summary>
               <form
                 class="admin-account-form"
                 @submit.prevent="saveBaiduSettings"
@@ -1037,7 +1041,7 @@
                     type="submit"
                     :disabled="busy || !baiduForm.cookie.trim()"
                     ><ConsoleIcon name="check" :size="14" />{{
-                      busy ? "保存中…" : "保存百度配置"
+                      busy ? "保存中…" : "保存登录凭据"
                     }}</Button
                   ><Button
                     variant="outline"
@@ -1050,8 +1054,10 @@
                   >
                 </div>
               </form>
+              </details>
             </section>
           </div>
+          <LinkDeliverySettings :quark-configured="quarkSettings.configured" :baidu-configured="baiduSettings.configured" />
         </Card>
         <Card
           v-else-if="activeSettingsTab === 'admin'"
@@ -1147,6 +1153,7 @@ import { useAdminSession } from "@/composables/admin/useAdminSession";
 const { locked, authenticated } = useAdminSession();
 
 import { apiFetch } from "../../src/appRuntime";
+import LinkDeliverySettings from './LinkDeliverySettings.vue';
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 
@@ -2366,9 +2373,9 @@ onMounted(() => {
   .cloud-provider-card {
     min-width: 0;
     padding: 20px;
-    border: 1px solid #e2eaf4;
+    border: 1px solid var(--border);
     border-radius: 13px;
-    background: #fbfcfe;
+    background: var(--card);
   }
   .cloud-provider-heading {
     display: flex;
@@ -2378,13 +2385,14 @@ onMounted(() => {
   }
   .cloud-provider-heading h3 {
     margin: 0;
-    color: #1f2937;
+    color: var(--foreground);
     font-size: 16px;
   }
   .cloud-provider-heading p {
     margin: 5px 0 0;
-    color: #8290a3;
-    font-size: 11px;
+    color: var(--muted-foreground);
+    font-size: 13px;
+    line-height: 1.6;
   }
   .cloud-provider-card .admin-account-form {
     grid-template-columns: 1fr;
@@ -2393,6 +2401,13 @@ onMounted(() => {
   .cloud-provider-card .admin-account-form .policy-field:last-of-type {
     grid-column: auto;
   }
+  .cloud-credentials { margin-top: 12px; }
+  .cloud-credentials summary { min-height: 44px; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--foreground); font-size: 14px; }
+  .cloud-credentials summary::before { content: '›'; }
+  .cloud-credentials[open] summary::before { content: '⌄'; }
+  .cloud-credentials summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+  .cloud-provider-card .admin-account-actions { flex-wrap: wrap; }
+  .cloud-provider-card .admin-account-actions button { min-height: 44px; }
   @media (max-width: 700px) {
     .cloud-account-grid {
       grid-template-columns: 1fr;

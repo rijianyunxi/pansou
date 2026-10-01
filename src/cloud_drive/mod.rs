@@ -326,6 +326,54 @@ impl Drive {
             Provider::Quark => self.quark.share(files).await,
         }
     }
+    pub async fn begin_temporary_share(
+        &self,
+        files: &[File],
+        days: u32,
+    ) -> Result<Value, DriveError> {
+        match self.wire.provider {
+            Provider::Baidu => self.baidu.share_days(files, days).await,
+            Provider::Quark => self.quark.begin_share(files, days).await,
+        }
+    }
+    pub async fn finish_temporary_share(&self, share: &Value) -> Result<Value, DriveError> {
+        match self.wire.provider {
+            Provider::Baidu => Ok(share.clone()),
+            Provider::Quark => {
+                self.quark
+                    .finish_share(share["shareId"].as_str().unwrap_or(""))
+                    .await
+            }
+        }
+    }
+    pub async fn create_directory(&self, parent: &str, name: &str) -> Result<File, DriveError> {
+        if !name.starts_with("pansou-")
+            || name
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || c == '-'))
+        {
+            return Err(self.wire.error(ErrorKind::Input, "非法工作目录名称"));
+        }
+        match self.wire.provider {
+            Provider::Baidu => self.baidu.create_directory(parent, name).await,
+            Provider::Quark => self.quark.create_directory(parent, name).await,
+        }
+    }
+    pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
+        if !valid_id(id, false) {
+            return Err(self.wire.error(ErrorKind::Input, "分享ID无效"));
+        }
+        match self.wire.provider {
+            Provider::Baidu => self.baidu.revoke_share(id).await,
+            Provider::Quark => self.quark.revoke_share(id).await,
+        }
+    }
+    pub async fn transfer(&self, context: &Context, dir: &str) -> Result<Vec<String>, DriveError> {
+        match self.wire.provider {
+            Provider::Baidu => self.baidu.save(context, &context.files, dir).await,
+            Provider::Quark => self.quark.save(context, &context.files, dir).await,
+        }
+    }
     pub async fn owned(&self, context: &Context) -> Result<(), DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.owned(context).await,
@@ -340,6 +388,9 @@ impl Drive {
     }
     pub async fn check(&self, reference: &Reference) -> Value {
         match tokio::time::timeout(Duration::from_secs(45), self.resolve(reference)).await {
+            Ok(Ok(ctx)) if ctx.files.is_empty() => {
+                json!({"provider":reference.provider,"valid":false,"status":"invalid","reason":"分享中已无可用资源","reasonCode":"resource_missing","fileCount":0,"files":[]})
+            }
             Ok(Ok(ctx)) => {
                 json!({"provider":reference.provider,"valid":true,"status":"valid","title":ctx.title,"fileCount":ctx.files.len(),"files":ctx.files,"timings":self.wire.trace.lock().await.clone()})
             }

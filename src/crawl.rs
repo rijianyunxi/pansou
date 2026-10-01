@@ -16,66 +16,38 @@ fn hash(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
 
-pub async fn register_custom(pool: &PgPool, channels: &[String]) -> Result<(), ApiError> {
-    for channel in channels {
-        let mut tx = pool.begin().await?;
-        sqlx::query("INSERT INTO crawl_channels(id,requested_until) VALUES($1,now()+interval '30 days') ON CONFLICT(id) DO UPDATE SET requested_until=EXCLUDED.requested_until WHERE NOT crawl_channels.archived").bind(channel).execute(&mut *tx).await?;
-        let archived =
-            sqlx::query_scalar::<_, bool>("SELECT archived FROM crawl_channels WHERE id=$1")
-                .bind(channel)
-                .fetch_one(&mut *tx)
-                .await?;
-        if archived {
-            return Err(ApiError::Conflict("频道已归档，不能添加到用户频道".into()));
-        }
-        sqlx::query("INSERT INTO outbound_policies(channel_id,inherit) VALUES($1,true) ON CONFLICT(channel_id) DO NOTHING").bind(channel).execute(&mut *tx).await?;
-        tx.commit().await?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-pub async fn enqueue(
-    pool: &PgPool,
-    channel: &str,
-    kind: &str,
-    max_pages: i32,
-) -> Result<i64, ApiError> {
-    enqueue_request(pool, channel, kind, max_pages, None).await
+pub async fn enqueue(pool: &PgPool, channel: &str, kind: &str) -> Result<i64, ApiError> {
+    enqueue_request(pool, channel, kind, None).await
 }
 pub async fn enqueue_request(
     pool: &PgPool,
     channel: &str,
     kind: &str,
-    max_pages: i32,
     request_key: Option<&str>,
 ) -> Result<i64, ApiError> {
     if request_key.is_some_and(|k| k.is_empty() || k.len() > 100) {
         return Err(ApiError::BadRequest("requestKey 长度须为1～100".into()));
     }
-    if !matches!(kind, "sync" | "backfill" | "review" | "reparse")
-        || !(1..=10000).contains(&max_pages)
-    {
-        return Err(ApiError::BadRequest("任务类型或 maxPages 无效".into()));
+    if !matches!(kind, "sync" | "backfill") {
+        return Err(ApiError::BadRequest("仅支持日常增量和历史全量".into()));
     }
     let mut tx = pool.begin().await?;
-    let enabled = sqlx::query_scalar::<_, bool>(
-        "SELECT enabled FROM crawl_channels WHERE id=$1 AND NOT archived FOR UPDATE",
-    )
-    .bind(channel)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
+    let enabled =
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM crawl_channels WHERE id=$1 FOR UPDATE")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     if let Some(key) = request_key {
-        if let Some(row) = sqlx::query(
-            "SELECT id,kind,max_pages FROM crawl_jobs WHERE channel_id=$1 AND request_key=$2",
-        )
-        .bind(channel)
-        .bind(key)
-        .fetch_optional(&mut *tx)
-        .await?
+        if let Some(row) =
+            sqlx::query("SELECT id,kind FROM crawl_jobs WHERE channel_id=$1 AND request_key=$2")
+                .bind(channel)
+                .bind(key)
+                .fetch_optional(&mut *tx)
+                .await?
         {
-            if row.get::<String, _>("kind") != kind || row.get::<i32, _>("max_pages") != max_pages {
+            if row.get::<String, _>("kind") != kind {
                 return Err(ApiError::Conflict(
                     "同一 requestKey 不能用于不同任务参数".into(),
                 ));
@@ -92,13 +64,21 @@ pub async fn enqueue_request(
             "该频道已有同类型任务，请等待完成或取消".into(),
         ));
     }
-    let id=sqlx::query_scalar("INSERT INTO crawl_jobs(channel_id,kind,max_pages,stop_at,cursor_before,request_key) SELECT id,$2,$3,CASE WHEN $2='sync' THEN newest_message ELSE 0 END,CASE WHEN $2='backfill' THEN (SELECT cursor_before FROM crawl_jobs WHERE channel_id=$1 AND kind='backfill' ORDER BY id DESC LIMIT 1) ELSE NULL END,$4 FROM crawl_channels WHERE id=$1 RETURNING id").bind(channel).bind(kind).bind(max_pages).bind(request_key).fetch_one(&mut *tx).await?;
+    if kind == "backfill"
+        && sqlx::query_scalar::<_, bool>("SELECT history_complete FROM crawl_channels WHERE id=$1")
+            .bind(channel)
+            .fetch_one(&mut *tx)
+            .await?
+    {
+        return Err(ApiError::Conflict("历史已补齐，无需重新全量采集".into()));
+    }
+    let id=sqlx::query_scalar("INSERT INTO crawl_jobs(channel_id,kind,stop_at,cursor_before,request_key) SELECT id,$2,CASE WHEN $2='sync' THEN newest_message ELSE 0 END,CASE WHEN $2='backfill' THEN history_cursor ELSE NULL END,$3 FROM crawl_channels WHERE id=$1 RETURNING id").bind(channel).bind(kind).bind(request_key).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
 }
 
 pub(crate) async fn source_for(pool: &PgPool, channel: &str) -> Result<Source, ApiError> {
-    let r=sqlx::query("SELECT c.id,c.name,c.description,COALESCE(c.transform,t.transform) AS transform FROM crawl_channels c LEFT JOIN source_template_settings t ON t.id=1 WHERE c.id=$1 AND NOT c.archived").bind(channel).fetch_optional(pool).await?.ok_or_else(||ApiError::NotFound("频道不存在或已归档".into()))?;
+    let r=sqlx::query("SELECT c.id,c.name,c.description,COALESCE(c.transform,t.transform) AS transform FROM crawl_channels c LEFT JOIN source_template_settings t ON t.id=1 WHERE c.id=$1").bind(channel).fetch_optional(pool).await?.ok_or_else(||ApiError::NotFound("频道不存在".into()))?;
     Ok(Source {
         id: format!("channel:{channel}"),
         name: r.get("name"),
@@ -135,8 +115,8 @@ pub fn parse_message(source: &Source, channel: &str, message: &telegram::Message
             error: Some(e.to_string()),
         },
         Ok(items) => {
-            let review = items.len() == 1 && items[0].links.len() > 12;
-            let results = if review {
+            let ambiguous = items.len() == 1 && items[0].links.len() > 12;
+            let results = if ambiguous {
                 vec![]
             } else {
                 items
@@ -153,15 +133,15 @@ pub fn parse_message(source: &Source, channel: &str, message: &telegram::Message
                     .collect::<Vec<_>>()
             };
             ParsedMessage {
-                status: if review {
-                    "review"
+                status: if ambiguous {
+                    "failed"
                 } else if results.is_empty() {
                     "empty"
                 } else {
                     "parsed"
                 }
                 .into(),
-                error: review.then(|| "聚合消息缺少明确资源边界，需要调整规则".into()),
+                error: ambiguous.then(|| "聚合消息缺少明确资源边界，需要调整规则".into()),
                 results,
             }
         }
@@ -356,6 +336,12 @@ async fn fetch_page_once(
     Err(ApiError::Upstream("采集失败".into()))
 }
 
+pub(crate) async fn lock_index(tx: &mut Transaction<'_, Postgres>) -> Result<(), ApiError> {
+    sqlx::query("SELECT revision FROM config_revisions WHERE scope='local-index' FOR UPDATE")
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(())
+}
 pub(crate) async fn bump(tx: &mut Transaction<'_, Postgres>) -> Result<(), ApiError> {
     sqlx::query("UPDATE config_revisions SET revision=revision+1 WHERE scope='local-index'")
         .execute(&mut **tx)
@@ -369,13 +355,17 @@ pub async fn persist_message(
     message: &telegram::Message,
     source: &Source,
 ) -> Result<(usize, bool), ApiError> {
+    lock_index(tx).await?;
     let version = format!("{}:{}", telegram::PARSER_VERSION, hash(&source.transform));
     let raw_hash = hash(&message.html);
     let previous=sqlx::query("SELECT raw_hash,parse_version,parse_status FROM source_messages WHERE channel_id=$1 AND message_id=$2").bind(channel).bind(message.id).fetch_optional(&mut **tx).await?;
     if previous.as_ref().is_some_and(|r| {
         r.get::<String, _>("raw_hash") == raw_hash
             && r.get::<String, _>("parse_version") == version
-            && r.get::<String, _>("parse_status") != "failed"
+            && matches!(
+                r.get::<String, _>("parse_status").as_str(),
+                "parsed" | "empty"
+            )
     }) {
         sqlx::query(
             "UPDATE source_messages SET last_seen_at=now() WHERE channel_id=$1 AND message_id=$2",
@@ -392,7 +382,7 @@ pub async fn persist_message(
     let error = parsed.error;
     sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,published_at,parse_version,parse_status,parse_error) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(channel_id,message_id) DO UPDATE SET raw_html=EXCLUDED.raw_html,raw_hash=EXCLUDED.raw_hash,published_at=EXCLUDED.published_at,parse_version=EXCLUDED.parse_version,parse_status=EXCLUDED.parse_status,parse_error=EXCLUDED.parse_error,last_seen_at=now(),updated_at=now()")
         .bind(channel).bind(message.id).bind(&message.html).bind(raw_hash).bind(message.published).bind(version).bind(status).bind(error).execute(&mut **tx).await?;
-    if matches!(status, "failed" | "review") {
+    if status == "failed" {
         bump(tx).await?;
         return Ok((0, true));
     }
@@ -538,67 +528,113 @@ async fn refresh_resource(tx: &mut Transaction<'_, Postgres>, id: &str) -> Resul
     Ok(())
 }
 
-pub async fn worker(state: Arc<AppState>) -> Result<(), ApiError> {
-    tracing::info!("TG crawl worker started");
-    use redis::AsyncCommands;
-    let worker_id = Uuid::new_v4().to_string();
-    let heartbeat_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Ok(mut conn) = heartbeat_state.redis.connection() {
-                let now = Utc::now().timestamp();
-                let _: Result<(), _> = conn.zadd("pansou:crawl:workers", &worker_id, now).await;
-                let _: Result<(), _> = conn
-                    .zrembyscore("pansou:crawl:workers", "-inf", now - 45)
-                    .await;
-                let _: Result<(), _> = conn.expire("pansou:crawl:workers", 60).await;
-            }
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
-    });
-    loop {
-        if let Err(e) = tick(&state).await {
-            tracing::error!(%e,"crawl worker tick failed");
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+#[derive(serde::Serialize, serde::Deserialize, Clone, sqlx::FromRow)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Settings {
+    pub concurrent_channels: i32,
+    pub page_delay_seconds: i32,
+    pub daily_interval_seconds: i32,
+    pub version: i64,
 }
-
+pub async fn settings(pool: &PgPool) -> Result<Settings, ApiError> {
+    Ok(sqlx::query_as("SELECT concurrent_channels,page_delay_seconds,daily_interval_seconds,version FROM crawl_settings WHERE id=1").fetch_one(pool).await?)
+}
+pub async fn worker(state: Arc<AppState>) -> Result<(), ApiError> {
+    let _heartbeat =
+        crate::runtime::Heartbeat::start(state.clone(), crate::runtime::WorkerKind::Crawl);
+    let mut tasks = tokio::task::JoinSet::new();
+    while !state.shutdown.is_cancelled() {
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(e) = result {
+                tracing::error!(%e,"crawl page panicked");
+            }
+        }
+        if crate::runtime::enabled(&state, crate::runtime::WorkerKind::Crawl)
+            .await
+            .unwrap_or(false)
+        {
+            match settings(&state.pool).await {
+                Ok(config) => {
+                    while tasks.len() < config.concurrent_channels as usize {
+                        let s = state.clone();
+                        tasks.spawn(async move {
+                            if let Err(e) = tick(&s).await {
+                                tracing::warn!(%e,"crawl tick failed");
+                            }
+                        });
+                    }
+                }
+                Err(e) => tracing::warn!(%e,"crawl settings unavailable"),
+            }
+        }
+        tokio::select! {_=state.shutdown.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+    }
+    while tasks.join_next().await.is_some() {}
+    Ok(())
+}
 pub async fn tick(state: &AppState) -> Result<(), ApiError> {
-    sqlx::query("UPDATE crawl_jobs SET status='queued',lease_id=NULL,lease_until=NULL WHERE status='running' AND lease_until<now()").execute(&state.pool).await?;
-    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,stop_at,max_pages) SELECT c.id,'sync',c.newest_message,1000 FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND (c.managed OR c.requested_until>now()) AND NOT c.archived AND EXISTS(SELECT 1 FROM outbound_policies p WHERE p.channel_id=c.id AND (NOT p.inherit OR EXISTS(SELECT 1 FROM outbound_policies d WHERE d.default_key='telegram')))  AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='sync' AND j.status IN ('queued','running','paused')) ON CONFLICT DO NOTHING").execute(&state.pool).await?;
-    // Auto-start a bounded first history import once latest-page data is searchable.
-    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,max_pages) SELECT c.id,'backfill',500 FROM crawl_channels c WHERE c.enabled AND c.newest_message>0 AND (c.managed OR c.requested_until>now()) AND NOT c.archived AND EXISTS(SELECT 1 FROM outbound_policies p WHERE p.channel_id=c.id AND (NOT p.inherit OR EXISTS(SELECT 1 FROM outbound_policies d WHERE d.default_key='telegram')))  AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='backfill') ON CONFLICT DO NOTHING").execute(&state.pool).await?;
-    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,max_pages) SELECT c.id,'review',1000 FROM crawl_channels c WHERE c.enabled AND c.newest_message>0 AND c.next_review_at<=now() AND (c.managed OR c.requested_until>now()) AND NOT c.archived AND EXISTS(SELECT 1 FROM outbound_policies p WHERE p.channel_id=c.id AND (NOT p.inherit OR EXISTS(SELECT 1 FROM outbound_policies d WHERE d.default_key='telegram')))  AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='review' AND j.status IN ('queued','running','paused')) ON CONFLICT DO NOTHING").execute(&state.pool).await?;
+    // Serialize claim + global slot count across every worker process.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(773012)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE crawl_jobs SET status='queued',lease_id=NULL,lease_until=NULL WHERE status='running' AND lease_until<now()").execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,stop_at) SELECT c.id,'sync',c.newest_message FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='sync' AND j.status IN ('queued','running','paused','failed')) ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,cursor_before) SELECT c.id,'backfill',c.history_cursor FROM crawl_channels c WHERE c.enabled AND c.newest_message>0 AND NOT c.history_complete AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='backfill' AND j.status IN ('queued','running','paused','failed')) ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_jobs WHERE status='running'")
+            .fetch_one(&mut *tx)
+            .await?;
+    let limit =
+        sqlx::query_scalar::<_, i32>("SELECT concurrent_channels FROM crawl_settings WHERE id=1")
+            .fetch_one(&mut *tx)
+            .await?;
+    if count >= limit as i64 {
+        return Ok(());
+    }
     let lease = Uuid::new_v4();
-    let job=sqlx::query("UPDATE crawl_jobs SET status='running',lease_id=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1,updated_at=now() WHERE id=(SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.status='queued' AND j.next_run_at<=now() AND c.enabled AND NOT c.archived AND (j.kind IN ('reparse','reparse_message') OR EXISTS(SELECT 1 FROM outbound_policies p WHERE p.channel_id=c.id AND (NOT p.inherit OR EXISTS(SELECT 1 FROM outbound_policies d WHERE d.default_key='telegram')))) AND NOT EXISTS(SELECT 1 FROM crawl_jobs running WHERE running.channel_id=j.channel_id AND running.status='running') ORDER BY (j.kind='sync') DESC,(j.kind='reparse') DESC,j.next_run_at,j.id FOR UPDATE OF j,c SKIP LOCKED LIMIT 1) RETURNING *").bind(lease).fetch_optional(&state.pool).await?;
+    let job=sqlx::query("UPDATE crawl_jobs SET status='running',lease_id=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1,updated_at=now() WHERE id=(SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.status='queued' AND j.next_run_at<=now() AND c.next_page_at<=now() AND c.enabled AND NOT EXISTS(SELECT 1 FROM crawl_jobs running WHERE running.channel_id=j.channel_id AND running.status='running') ORDER BY (j.kind='retry') DESC,(j.kind='sync') DESC,j.next_run_at,j.id FOR UPDATE OF j,c SKIP LOCKED LIMIT 1) RETURNING *").bind(lease).fetch_optional(&mut *tx).await?;
+    tx.commit().await?;
     let Some(job) = job else {
         return Ok(());
     };
     let id = job.get::<i64, _>("id");
     let channel = job.get::<String, _>("channel_id");
-    let result = process_job(state, &job, lease).await;
-    if let Err(error) = result {
+    if let Err(error) = process_job(state, &job, lease).await {
         let error = error.to_string();
-        let permanent =
-            error.contains("HTTP 403") || error.contains("HTTP 404") || error.contains("不公开");
         let attempts = job.get::<i32, _>("attempts");
-        let pause = permanent || attempts >= 6;
-        let delay = (60i64 * 2i64.pow(attempts.clamp(0, 8) as u32)).min(3600);
-        let retry = error
+        let terminal = attempts >= 6
+            || error.contains("HTTP 403")
+            || error.contains("HTTP 404")
+            || error.contains("不公开");
+        let retry_after = error
             .split("Retry-After=")
             .nth(1)
             .and_then(|s| s.split('；').next())
             .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        let delay = delay.max(retry);
-        let updated=sqlx::query("UPDATE crawl_jobs SET status=$3,last_error=$4,failures=failures+1,lease_id=NULL,lease_until=NULL,next_run_at=now()+make_interval(secs=>$5::double precision),updated_at=now() WHERE id=$1 AND lease_id=$2")
-            .bind(id).bind(lease).bind(if pause{"failed"}else{"queued"}).bind(&error).bind(delay as f64).execute(&state.pool).await?.rows_affected();
-        if updated == 0 {
-            return Ok(());
+            .unwrap_or(0)
+            .clamp(0, 86400);
+        let delay = (60i64 * 2i64.pow(attempts.clamp(0, 6) as u32))
+            .min(3600)
+            .max(retry_after);
+        let mut tx = state.pool.begin().await?;
+        sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
+            .bind(&channel)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated=sqlx::query("UPDATE crawl_jobs SET status=$3,last_error=$4,failures=failures+1,lease_id=NULL,lease_until=NULL,next_run_at=now()+make_interval(secs=>$5::double precision),updated_at=now() WHERE id=$1 AND lease_id=$2").bind(id).bind(lease).bind(if terminal {"failed"}else{"queued"}).bind(&error).bind(delay as f64).execute(&mut *tx).await?.rows_affected();
+        if updated > 0 {
+            sqlx::query("UPDATE crawl_channels SET last_error=$2,next_page_at=now()+make_interval(secs=>$3::double precision) WHERE id=$1").bind(&channel).bind(&error).bind(if terminal {0.0}else{delay as f64}).execute(&mut *tx).await?;
+            if terminal {
+                if job.get::<String, _>("kind") == "retry" {
+                    sqlx::query("UPDATE crawl_page_failures SET last_error=$2,retry_job_id=NULL,updated_at=now() WHERE id=$1").bind(job.get::<Option<i64>,_>("failure_id")).bind(&error).execute(&mut *tx).await?;
+                } else {
+                    sqlx::query("INSERT INTO crawl_page_failures(channel_id,job_id,kind,cursor_before,page_number,last_error) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(channel_id,kind,COALESCE(cursor_before,0)) DO UPDATE SET job_id=EXCLUDED.job_id,last_error=EXCLUDED.last_error,updated_at=now()").bind(&channel).bind(id).bind(job.get::<String,_>("kind")).bind(job.get::<Option<i64>,_>("cursor_before")).bind(job.get::<i32,_>("pages")+1).bind(&error).execute(&mut *tx).await?;
+                }
+            }
         }
-        sqlx::query("UPDATE crawl_channels SET last_error=$2,next_sync_at=now()+interval '1 hour',updated_at=now() WHERE id=$1").bind(channel).bind(&error).execute(&state.pool).await?;
-        tracing::warn!(job=id,%error,"crawl task failed/retained for retry");
+        tx.commit().await?;
+        tracing::warn!(job=id,%error,"crawl page failed");
     }
     Ok(())
 }
@@ -613,62 +649,38 @@ async fn process_job(
     let kind = job.get::<String, _>("kind");
     let cursor = job.get::<Option<i64>, _>("cursor_before");
     let source = source_for(&state.pool, &channel).await?;
-    let (messages, previous, diagnostics) = if kind == "reparse" || kind == "reparse_message" {
-        let rows=sqlx::query("SELECT message_id,raw_html,published_at FROM source_messages WHERE channel_id=$1 AND ($2::bigint IS NULL OR message_id<$2) AND ($3::bigint IS NULL OR message_id=$3) ORDER BY message_id DESC LIMIT 20").bind(&channel).bind(cursor).bind(job.get::<Option<i64>,_>("target_message_id")).fetch_all(&state.pool).await?;
-        let msgs = rows
-            .into_iter()
-            .map(|r| telegram::Message {
-                id: r.get("message_id"),
-                html: r.get("raw_html"),
-                published: r.get("published_at"),
-            })
-            .collect::<Vec<_>>();
-        let previous = msgs.iter().map(|m| m.id).min();
-        (msgs, previous, json!({"mode":"stored-raw"}))
-    } else {
-        let page = fetch_page(state, &source, &channel, cursor).await?;
-        let messages = telegram::messages(&page.raw, &channel)?;
-        let previous = telegram::previous_cursor(&page.raw, &channel, cursor);
-        (messages, previous, page.diagnostics)
-    };
+    let page = fetch_page(state, &source, &channel, cursor).await?;
+    let messages = telegram::messages(&page.raw, &channel)?;
+    let previous = telegram::previous_cursor(&page.raw, &channel, cursor);
+    let diagnostics = page.diagnostics;
     let stop = job.get::<i64, _>("stop_at");
     let pages = job.get::<i32, _>("pages") + 1;
     let oldest = messages.iter().map(|m| m.id).min();
     let newest = messages.iter().map(|m| m.id).max();
     let head = job.get::<Option<i64>, _>("head_message").or(newest);
-    let recent_cutoff = Utc::now() - chrono::Duration::days(7);
-    let reached = (kind == "sync" && (stop == 0 || previous.is_some_and(|cursor| cursor <= stop)))
-        || (kind == "review"
-            && telegram::reached_review_cutoff(&messages, previous, recent_cutoff));
-    let done = kind == "reparse_message"
-        || messages.is_empty()
-        || previous.is_none()
-        || reached
-        || pages >= job.get::<i32, _>("max_pages");
-    let reason = if kind == "reparse_message" {
-        "stored_messages_complete"
+    let reached = kind == "sync" && (stop == 0 || previous.is_some_and(|c| c <= stop));
+    let done = kind == "retry" || previous.is_none() || reached;
+    let reason = if kind == "retry" {
+        "failed_page_retried"
     } else if reached {
-        if kind == "review" {
-            "recent_window_complete"
-        } else {
-            "checkpoint_reached"
-        }
-    } else if messages.is_empty() {
-        "stored_messages_complete"
-    } else if previous.is_none() {
-        "accessible_history_end"
+        "checkpoint_reached"
     } else {
-        "page_budget_reached"
+        "accessible_history_end"
     };
     let mut tx = state.pool.begin().await?;
-    let owned=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM (SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.id=$1 AND j.lease_id=$2 AND j.status='running' AND j.lease_until>now() AND c.enabled FOR UPDATE OF j,c) owned)").bind(id).bind(lease).fetch_one(&mut *tx).await?;
+    lock_index(&mut tx).await?;
+    sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
+        .bind(&channel)
+        .fetch_one(&mut *tx)
+        .await?;
+    let owned=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM (SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.id=$1 AND j.lease_id=$2 AND j.status='running' AND j.lease_until>now() AND c.enabled FOR UPDATE OF j) owned)").bind(id).bind(lease).fetch_one(&mut *tx).await?;
     if !owned {
         return Err(ApiError::Conflict("任务租约已失效，拒绝提交页面".into()));
     }
     let mut resources = 0;
     let mut failures = 0;
     for message in &messages {
-        if kind == "reparse" || kind == "reparse_message" {
+        if kind == "retry" {
             sqlx::query(
                 "UPDATE source_messages SET parse_version='' WHERE channel_id=$1 AND message_id=$2",
             )
@@ -681,22 +693,44 @@ async fn process_job(
         resources += n;
         failures += usize::from(failed);
     }
-    sqlx::query("UPDATE crawl_jobs SET status=$3,cursor_before=$4,head_message=$5,pages=$6,messages=messages+$7,resources=resources+$8,failures=failures+$9,lease_id=NULL,lease_until=NULL,next_run_at=now()+interval '3 seconds',attempts=0,stop_reason=$10,diagnostics_json=$11,last_error=NULL,updated_at=now(),completed_at=CASE WHEN $3='completed' THEN now() ELSE NULL END WHERE id=$1 AND lease_id=$2")
+    sqlx::query("UPDATE crawl_jobs SET status=$3,cursor_before=$4,head_message=$5,pages=$6,messages=messages+$7,resources=resources+$8,failures=failures+$9,lease_id=NULL,lease_until=NULL,next_run_at=now()+make_interval(secs=>(SELECT page_delay_seconds::double precision FROM crawl_settings WHERE id=1)),attempts=0,stop_reason=$10,diagnostics_json=$11,last_error=NULL,updated_at=now(),completed_at=CASE WHEN $3='completed' THEN now() ELSE NULL END WHERE id=$1 AND lease_id=$2")
         .bind(id).bind(lease).bind(if done{"completed"}else{"queued"}).bind(previous).bind(head).bind(pages).bind(messages.len() as i32).bind(resources as i32).bind(failures as i32).bind(if done{Some(reason)}else{None}).bind(diagnostics).execute(&mut *tx).await?;
-    let checkpoint = if kind == "sync" && done && reason != "page_budget_reached" {
-        head
-    } else {
-        None
-    };
-    sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),oldest_message=LEAST(oldest_message,$3),last_synced_at=CASE WHEN $4 THEN now() ELSE last_synced_at END,next_sync_at=CASE WHEN $4 THEN now()+make_interval(secs=>interval_seconds::double precision) ELSE next_sync_at END,coverage=CASE WHEN $5 THEN $6 ELSE coverage END,last_error=NULL,updated_at=now() WHERE id=$1")
+    let checkpoint = if kind == "sync" && done { head } else { None };
+    sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),oldest_message=LEAST(oldest_message,$3),last_synced_at=CASE WHEN $4 THEN now() ELSE last_synced_at END,next_sync_at=CASE WHEN $4 THEN now()+make_interval(secs=>(SELECT daily_interval_seconds::double precision FROM crawl_settings WHERE id=1)) ELSE next_sync_at END,coverage=CASE WHEN $5 THEN $6 ELSE coverage END,last_error=NULL,updated_at=now() WHERE id=$1")
         .bind(&channel).bind(checkpoint).bind(oldest).bind(kind=="sync" && done).bind(kind=="backfill").bind(if done {reason} else {"backfilling"}).execute(&mut *tx).await?;
-    if kind == "review" && done {
-        sqlx::query(
-            "UPDATE crawl_channels SET next_review_at=now()+interval '6 hours' WHERE id=$1",
-        )
-        .bind(&channel)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now()+make_interval(secs=>(SELECT page_delay_seconds::double precision FROM crawl_settings WHERE id=1)),history_complete=CASE WHEN $2='backfill' THEN $3 ELSE history_complete END,history_cursor=CASE WHEN $2='backfill' THEN $4 ELSE history_cursor END,history_pages=history_pages+CASE WHEN $2='backfill' THEN 1 ELSE 0 END WHERE id=$1").bind(&channel).bind(&kind).bind(done).bind(previous).execute(&mut *tx).await?;
+    if failures > 0 {
+        let failure_kind = if kind == "retry" {
+            sqlx::query_scalar::<_, String>("SELECT kind FROM crawl_page_failures WHERE id=$1")
+                .bind(job.get::<Option<i64>, _>("failure_id"))
+                .fetch_optional(&mut *tx)
+                .await?
+                .unwrap_or("backfill".into())
+        } else {
+            kind.clone()
+        };
+        sqlx::query("INSERT INTO crawl_page_failures(channel_id,job_id,kind,cursor_before,next_cursor,page_number,last_error) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(channel_id,kind,COALESCE(cursor_before,0)) DO UPDATE SET last_error=EXCLUDED.last_error,updated_at=now(),retry_job_id=NULL").bind(&channel).bind(id).bind(failure_kind).bind(cursor).bind(previous).bind(pages).bind(format!("{failures} 条消息解析未成功")).execute(&mut *tx).await?;
+    } else if kind == "retry" {
+        let failure_id = job.get::<Option<i64>, _>("failure_id");
+        let parent=sqlx::query("SELECT j.* FROM crawl_page_failures f JOIN crawl_jobs j ON j.id=f.job_id WHERE f.id=$1 AND j.status='failed' AND j.cursor_before IS NOT DISTINCT FROM f.cursor_before FOR UPDATE OF j").bind(failure_id).fetch_optional(&mut *tx).await?;
+        if let Some(parent) = parent {
+            let parent_kind = parent.get::<String, _>("kind");
+            let parent_head = parent.get::<Option<i64>, _>("head_message").or(newest);
+            let parent_stop = parent.get::<i64, _>("stop_at");
+            let reached = parent_kind == "sync"
+                && (parent_stop == 0 || previous.is_some_and(|c| c <= parent_stop));
+            let complete = previous.is_none() || reached;
+            sqlx::query("UPDATE crawl_jobs SET status=$2,cursor_before=$3,head_message=$4,pages=pages+1,messages=messages+$5,resources=resources+$6,attempts=0,last_error=NULL,next_run_at=now(),completed_at=CASE WHEN $2='completed' THEN now() ELSE NULL END,stop_reason=CASE WHEN $2='completed' THEN $7 ELSE NULL END WHERE id=$1").bind(parent.get::<i64,_>("id")).bind(if complete {"completed"}else{"queued"}).bind(previous).bind(parent_head).bind(messages.len() as i32).bind(resources as i32).bind(if reached {"checkpoint_reached"}else{"accessible_history_end"}).execute(&mut *tx).await?;
+            if parent_kind == "backfill" {
+                sqlx::query("UPDATE crawl_channels SET history_cursor=$2,history_complete=$3,history_pages=history_pages+1,coverage=$4 WHERE id=$1").bind(&channel).bind(previous).bind(complete).bind(if complete {"accessible_history_end"}else{"backfilling"}).execute(&mut *tx).await?;
+            } else if complete {
+                sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),last_synced_at=now(),next_sync_at=now()+make_interval(secs=>(SELECT daily_interval_seconds::double precision FROM crawl_settings WHERE id=1)) WHERE id=$1").bind(&channel).bind(parent_head).execute(&mut *tx).await?;
+            }
+        }
+        sqlx::query("DELETE FROM crawl_page_failures WHERE id=$1")
+            .bind(failure_id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(())

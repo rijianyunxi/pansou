@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>运行监控组件验收 · 示例数据</title></head>
+<body style="margin:0;background:#f4f6fa">
+  <div class="admin-root" style="padding:24px;background:transparent">
+    <p style="margin:0 0 16px;color:#737c8f;font-size:12px">开发验收 · 示例数据 · 不连接真实服务，操作仅修改本页模拟状态</p>
+    <div id="monitor-test-root"></div>
+  </div>
+  <div id="admin-portals" class="admin-root admin-portals"></div>
+  <script type="module">
+    import { createApp, h } from 'vue';
+    import { createMemoryHistory, createRouter } from 'vue-router';
+    import MonitorPanel from '/components/monitor/MonitorPanel.vue';
+    import '/assets/admin.css';
+    const fixture = {
+      generatedAt: '2026-10-01T01:27:10Z',
+      services: { api: { state: 'online', startedAt: '2026-10-01T01:26:42Z' }, postgres: { state: 'online', connections: 8, idle: 6 }, redis: { state: 'online' } },
+      workers: { crawl: { state: 'online', count: 1, enabled: true }, links: { state: 'online', count: 1, enabled: true } },
+      crawl: { queued: 842, ready: 42, running: 24, failed: 9, paused: 0, expired: 0, channels: 52, activeChannels: 48, overdueChannels: 0, review: 6, resources: 42680, lastActivityAt: '2026-10-01T01:26:52Z', lastSyncAt: '2026-10-01T01:26:10Z', recentFailures: [] },
+      links: {
+        syncPending: 0, oldestSyncAt: null, catalog: 12180, valid: 9208, invalid: 432, errors: 18,
+        queues: { checks: { queued: 214, running: 18, failed: 3, completed: 18426 }, cleanup: { queued: 86, running: 6, failed: 0, completed: 136, blocked: 2 }, resolve: { queued: 142, running: 9, failed: 3, completed: 1286 } },
+        cleanupDue: 86, checksEnabled: true, deliveryEnabled: { baidu: true, quark: true },
+        deliveryStats: { processing: 19, transferred: 932, reused: 248, fallback: 78, direct: 0, unavailable: 28 },
+      },
+      sources: [
+        { id: 'fixture-a', name: '来源 A', enabled: true, health: { requestCount: 1280, successCount: 1256, totalFailureCount: 24, zeroResultCount: 36, healthy: true, avgResponseTime: 486, lastSuccessAt: '2026-10-01T01:27:08Z' } },
+        { id: 'fixture-b', name: '来源 B', enabled: true, health: { requestCount: 245, successCount: 211, totalFailureCount: 34, zeroResultCount: 8, healthy: false, avgResponseTime: 1850, lastFailureAt: '2026-10-01T01:26:54Z', lastErrorMessage: '请求超时' } },
+        { id: 'fixture-c', name: '来源 C', enabled: true, health: { requestCount: 168, successCount: 126, totalFailureCount: 42, zeroResultCount: 4, healthy: false, circuitState: 'open', avgResponseTime: 2460, lastFailureAt: '2026-10-01T01:25:31Z', lastErrorMessage: 'HTTP 429，限流' } },
+        { id: 'fixture-d', name: '来源 D', enabled: true, health: null },
+      ],
+    };
+    const scenario = new URLSearchParams(location.search).get('scenario');
+    if (scenario === 'empty') {
+      for (const key of Object.keys(fixture.crawl)) if (typeof fixture.crawl[key] === 'number') fixture.crawl[key] = 0;
+      for (const key of ['syncPending', 'catalog', 'valid', 'invalid', 'errors', 'cleanupDue']) fixture.links[key] = 0;
+      for (const queue of Object.values(fixture.links.queues)) for (const key of Object.keys(queue)) queue[key] = 0;
+      for (const key of Object.keys(fixture.links.deliveryStats)) fixture.links.deliveryStats[key] = 0;
+      fixture.sources = [];
+      fixture.crawl.lastActivityAt = fixture.crawl.lastSyncAt = null;
+    } else if (scenario === 'unavailable') {
+      fixture.services.redis.state = 'unavailable';
+      fixture.workers.crawl = { state: 'unknown', count: null, enabled: true };
+      fixture.workers.links = { state: 'offline', count: 0, enabled: false };
+      delete fixture.links.deliveryStats;
+    }
+    // Fail closed: this harness must never forward a request or mutate real services.
+    window.fetch = async (url, options = {}) => {
+      const path = new URL(String(url), location.origin).pathname;
+      if (path === '/api/monitor') {
+        if (scenario === 'error') return Response.json({ message: '模拟状态读取失败' }, { status: 503 });
+        return Response.json({ data: fixture });
+      }
+      if (path === '/api/admin/runtime/workers/crawl' || path === '/api/admin/runtime/workers/cleanup') {
+        const kind = path.endsWith('/crawl') ? 'crawl' : 'links';
+        fixture.workers[kind].enabled = JSON.parse(options.body).enabled;
+        return Response.json({ data: {} });
+      }
+      if (path === '/api/admin/monitor/reset') {
+        fixture.sources.forEach(source => source.health = null);
+        return Response.json({ data: {} });
+      }
+      throw new Error('验收页禁止真实网络请求：' + path);
+    };
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
+    createApp({ render: () => h(MonitorPanel) }).use(router).mount('#monitor-test-root');
+  </script>
+</body>
+</html>

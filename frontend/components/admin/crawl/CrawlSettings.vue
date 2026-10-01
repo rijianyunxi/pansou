@@ -2,6 +2,8 @@
 import { onMounted, ref } from "vue";
 import { apiFetch, apiErrorMessage } from "@/src/appRuntime";
 import { directPolicy } from "@/types/outbound";
+import { Input } from "../ui/input";
+import type { CrawlSettingsValue } from "@/types/crawl";
 import type { OutboundPolicy } from "@/types/outbound";
 import AdminDialog from "../AdminDialog.vue";
 import OutboundPolicyEditor from "../OutboundPolicyEditor.vue";
@@ -11,7 +13,9 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 const emit = defineEmits<{ close: []; saved: [] }>();
 const { confirm } = useAdminConfirm();
-const tab = ref("outbound"),
+const schedule = ref<CrawlSettingsValue>({ concurrentChannels: 3, pageDelaySeconds: 3, dailyIntervalSeconds: 300, version: 1 });
+let baselineSchedule = "";
+const tab = ref("schedule"),
   policy = ref<OutboundPolicy>(directPolicy()),
   inheritors = ref(0),
   transform = ref(""),
@@ -26,7 +30,7 @@ async function close() {
   if (busy.value) return;
   if (
     baselinePolicy &&
-    (baselinePolicy !== JSON.stringify(policy.value) ||
+    (baselineSchedule !== JSON.stringify(schedule.value) || baselinePolicy !== JSON.stringify(policy.value) ||
       baselineTransform !== transform.value) &&
     !(await confirm("放弃尚未保存的采集默认设置？"))
   )
@@ -35,14 +39,17 @@ async function close() {
 }
 onMounted(async () => {
   try {
-    const [p, t] = await Promise.all([
+    const [p, t, config] = await Promise.all([
       apiFetch<{
         data: { outbound: OutboundPolicy | null; inheritors: number };
       }>("/api/admin/crawl/default-outbound"),
       apiFetch<{ data: { transform: string; version: number } }>(
         "/api/settings/source-template",
       ),
+      apiFetch<{data:CrawlSettingsValue}>("/api/admin/crawl/settings"),
     ]);
+    schedule.value = config.data;
+    baselineSchedule = JSON.stringify(schedule.value);
     policy.value = p.data.outbound || directPolicy();
     inheritors.value = p.data.inheritors;
     transform.value = t.data.transform;
@@ -70,7 +77,10 @@ async function save() {
   busy.value = true;
   error.value = "";
   try {
-    if (tab.value === "outbound") {
+    if (tab.value === "schedule") {
+      schedule.value = (await apiFetch<{data:CrawlSettingsValue}>("/api/admin/crawl/settings", {method:"PUT",body:schedule.value})).data;
+      baselineSchedule=JSON.stringify(schedule.value);
+    } else if (tab.value === "outbound") {
       const r = await apiFetch<{ data: { outbound: OutboundPolicy } }>(
         "/api/admin/crawl/default-outbound",
         { method: "PUT", body: policy.value },
@@ -105,7 +115,7 @@ async function save() {
 <template>
   <AdminDialog
     title="TG 采集设置"
-    description="仅影响继承默认配置的频道，不覆盖独立频道策略。"
+    description="调度配置全局生效；历史按页连续补齐，到期的日常增量穿插执行。"
     drawer
     :busy="busy"
     @close="close"
@@ -115,10 +125,17 @@ async function save() {
         <template v-else
           ><Tabs v-model="tab"
             ><TabsList
-              ><TabsTrigger value="outbound">默认出站策略</TabsTrigger
+              ><TabsTrigger value="schedule">调度配置</TabsTrigger><TabsTrigger value="outbound">默认出站策略</TabsTrigger
               ><TabsTrigger value="parser">默认解析模板</TabsTrigger></TabsList
             ></Tabs
-          ><template v-if="tab === 'outbound'"
+          ><section v-if="tab === 'schedule'" class="schedule-fields">
+              <label>同时采集频道数<Input v-model.number="schedule.concurrentChannels" type="number" min="1" max="32" required /></label>
+              <small>所有 Worker 共用上限，同一频道始终只处理一页。</small>
+              <label>每页等待时间（秒）<Input v-model.number="schedule.pageDelaySeconds" type="number" min="0" max="3600" required /></label>
+              <small>同频道下一页最早启动时间，不影响其他频道；限频时遵守服务端退避。</small>
+              <label>日常采集间隔（秒）<Input v-model.number="schedule.dailyIntervalSeconds" type="number" min="60" max="86400" required /></label>
+              <small>默认 300 秒。历史不等待日常间隔，无总页数限制，完成后不周期重抓。</small>
+            </section><template v-else-if="tab === 'outbound'"
             ><p class="tw:text-sm tw:text-muted-foreground">
               当前 {{ inheritors }} 个频道继承此策略。
             </p>
@@ -131,7 +148,7 @@ async function save() {
                 spellcheck="false"
             /></label>
             <p class="tw:text-sm tw:text-muted-foreground">
-              模板修改不会自动重写历史资源，需要明确重解析。
+              通用模板用于继承频道及独立的用户自定义频道搜索。修改后仅影响后续采集和失败页重试。
             </p></template
           ></template
         >
@@ -143,7 +160,7 @@ async function save() {
         ><Button :disabled="busy || loading || !loaded">{{
           busy
             ? "保存中…"
-            : tab === "outbound"
+            : tab === "schedule" ? "保存调度配置" : tab === "outbound"
               ? "保存默认策略"
               : "保存解析模板"
         }}</Button>
@@ -151,3 +168,7 @@ async function save() {
     </form></AdminDialog
   >
 </template>
+
+<style scoped>
+@layer components {.schedule-fields{display:grid;gap:12px}.schedule-fields label{display:grid;gap:8px}.schedule-fields small{color:var(--muted-foreground);line-height:1.6}}
+</style>

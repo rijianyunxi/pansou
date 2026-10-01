@@ -19,6 +19,6 @@ WHERE strpos(lower(COALESCE(presentation->>'name','')),$1)>0),
 picked AS (SELECT DISTINCT ON(id) id,presentation,occurrence_date
 FROM matches
 ORDER BY id,occurrence_date DESC NULLS LAST,channel_id)
-SELECT p.presentation AS item
+SELECT p.presentation || jsonb_build_object('id',p.id) AS item
 FROM picked p
 ORDER BY (lower(p.presentation->>'name')=$1) DESC,(strpos(lower(p.presentation->>'name'),$1)>0) DESC,p.occurrence_date DESC NULLS LAST,p.id LIMIT 200

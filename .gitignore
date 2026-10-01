@@ -34,3 +34,13 @@ load-reports/
 
 # Local databases, backups, screenshots and verification artifacts
 /data/
+
+# Local verification inputs and reports
+/links.txt
+/regress-A-control.json
+/regress-B-optimized.json
+/regress-final.json
+/regress-run1.json
+
+# WeChat developer tools local overrides
+/miniprogram/project.private.config.json

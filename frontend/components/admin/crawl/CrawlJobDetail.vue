@@ -74,16 +74,11 @@ async function action(kind: "cancel" | "retry") {
           <dt>处理计数</dt>
           <dd>
             {{ data.pages }}
-            {{ data.kind.startsWith("reparse") ? "批" : "页" }} ·
+            页 ·
             {{ data.messages }} 消息 · {{ data.resources }} 次资源写入
           </dd>
           <dt>解析异常</dt>
           <dd>{{ data.failures }}</dd>
-          <dt>本次预算</dt>
-          <dd>
-            {{ data.maxPages }}
-            {{ data.kind.startsWith("reparse") ? "批" : "页" }}
-          </dd>
           <dt>检查点</dt>
           <dd>{{ data.cursorBefore || "—" }}</dd>
           <dt>终止原因</dt>

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useCrawlQuery } from "@/composables/admin/useCrawlQuery";
-import { useAdminConfirm } from "@/composables/admin/useAdminConfirm";
 import { apiFetch, apiErrorMessage } from "@/src/appRuntime";
 import {
   crawlTime,
@@ -16,15 +15,11 @@ import { Textarea } from "../ui/textarea";
 import CrawlResultCards from "./CrawlResultCards.vue";
 const props = defineProps<{ channel: string; id: number }>();
 const emit = defineEmits<{ back: []; task: [id: number] }>();
-const { confirm } = useAdminConfirm();
 const tab = ref("stored"),
   dsl = ref(""),
   preview = ref<ParsePreview | null>(null),
   previewError = ref(""),
-  previewBusy = ref(false),
-  reparseBusy = ref(false),
-  reparseError = ref(""),
-  queued = ref<number | null>(null);
+  previewBusy = ref(false);
 const url = computed(
   () =>
     "/api/admin/crawl/channels/" +
@@ -75,28 +70,6 @@ async function runPreview() {
     previewError.value = apiErrorMessage(e);
   } finally {
     previewBusy.value = false;
-  }
-}
-async function reparse() {
-  if (
-    reparseBusy.value ||
-    !(await confirm(
-      "用当前已保存的频道规则重解析此消息？未保存的预览 DSL 不会用于入库。",
-    ))
-  )
-    return;
-  reparseBusy.value = true;
-  reparseError.value = "";
-  try {
-    queued.value = (
-      await apiFetch<{ data: { id: number } }>(url.value + "/reparse", {
-        method: "POST",
-      })
-    ).data.id;
-  } catch (e) {
-    reparseError.value = apiErrorMessage(e);
-  } finally {
-    reparseBusy.value = false;
   }
 }
 </script>
@@ -174,17 +147,7 @@ async function reparse() {
           <pre class="message-raw">{{ data.rawHtml }}</pre>
         </details>
       </section>
-      <p v-if="reparseError" role="alert" class="form-error">
-        {{ reparseError }}
-      </p>
-      <div class="message-actions">
-        <Button variant="outline" :disabled="reparseBusy" @click="reparse">{{
-          reparseBusy ? "排队中…" : "重解析此消息"
-        }}</Button
-        ><Button v-if="queued" variant="outline" @click="emit('task', queued)"
-          >任务 #{{ queued }} 已排队 · 查看</Button
-        >
-      </div></template
+      </template
     >
   </section>
 </template>

@@ -24,14 +24,11 @@ const form = ref({
   id: props.id || "",
   name: "",
   description: "",
-  enabled: false,
-  intervalSeconds: 300,
+  enabled: true,
   transform: "",
   inheritTemplate: true,
   outbound: directPolicy(),
   expectedVersion: 0,
-  bindings: [] as { id: string; name: string; published: boolean }[],
-  publish: false,
 });
 let baseline = "";
 const dirty = computed(
@@ -66,13 +63,10 @@ async function load() {
         name: c.name || c.id,
         description: c.description,
         enabled: c.enabled,
-        intervalSeconds: c.intervalSeconds,
         transform: c.transform || "",
         inheritTemplate: c.transform == null,
         outbound: c.outbound || inheritedPolicy(),
         expectedVersion: c.version,
-        bindings: c.bindings || [],
-        publish: false,
       };
     }
     baseline = JSON.stringify(form.value);
@@ -105,12 +99,9 @@ async function save() {
           name: f.name,
           description: f.description,
           enabled: f.enabled,
-          intervalSeconds: f.intervalSeconds,
           transform: f.inheritTemplate ? null : f.transform,
           outbound: f.outbound,
           expectedVersion: f.expectedVersion,
-          bindings: f.bindings,
-          publish: f.publish,
         },
       },
     );
@@ -126,7 +117,7 @@ onMounted(load);
 <template>
   <AdminDialog
     :title="id ? '编辑 TG 频道' : '新增 TG 频道'"
-    description="采集开关与公共搜索发布独立。暂停不会删除已有资源。"
+    description="维护用于采集入库的系统频道，搜索直接读取本地资源。暂停不会删除数据。"
     drawer
     :busy="busy"
     @close="close"
@@ -160,33 +151,10 @@ onMounted(load);
                 rows="3"
                 maxlength="4000"
             /></label>
-            <div v-if="form.bindings.length" class="channel-bindings">
-              <strong>公共搜索身份</strong
-              ><label
-                v-for="b in form.bindings"
-                :key="b.id"
-                class="channel-check"
-                ><AdminCheckbox v-model="b.published" /><span
-                  >{{ b.name }}<small>{{ b.id }}</small></span
-                ></label
-              >
-            </div>
-            <label v-else class="channel-check"
-              ><AdminCheckbox v-model="form.publish" />发布到公共搜索目录</label
-            >
-            <p class="channel-help">
-              用户请求频道不会因为已被采集就自动进入公共搜索。发布是显式操作。
-            </p>
           </section>
           <section v-else-if="tab === 'crawl'" class="channel-editor-fields">
             <label class="channel-check"
               ><AdminCheckbox v-model="form.enabled" />允许采集</label
-            ><label
-              >同步间隔（秒，60～86400）<Input
-                v-model.number="form.intervalSeconds"
-                type="number"
-                min="60"
-                max="86400" /></label
             ><OutboundPolicyEditor
               v-model="form.outbound"
               allow-inherit
@@ -211,7 +179,7 @@ onMounted(load);
                 class="channel-code"
             /></label>
             <p class="channel-help">
-              修改解析规则不自动重写历史。保存后可在消息抽屉中只读预览，再明确重解析单条消息或原文任务。
+              修改规则仅影响后续采集；失败页重试会重新抓取并使用当前规则解析。
             </p>
           </section></template
         >
@@ -255,13 +223,7 @@ onMounted(load);
     line-height: 1.7;
     color: var(--muted-foreground);
   }
-  .channel-bindings {
-    display: grid;
-    gap: 12px;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
+
   .channel-code {
     font-family: ui-monospace, monospace;
     font-size: 12px;

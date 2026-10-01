@@ -125,21 +125,6 @@ pub fn messages(raw: &str, expected: &str) -> Result<Vec<Message>, ApiError> {
     Ok(out)
 }
 
-// Pinned posts can be older than this page's actual pagination boundary.
-// They must not end the recent-edit review before normal messages are covered.
-pub fn reached_review_cutoff(
-    messages: &[Message],
-    previous: Option<i64>,
-    cutoff: DateTime<Utc>,
-) -> bool {
-    messages
-        .iter()
-        .filter(|m| previous.is_none_or(|boundary| m.id >= boundary))
-        .filter_map(|m| m.published)
-        .min()
-        .is_some_and(|published| published < cutoff)
-}
-
 pub fn previous_cursor(raw: &str, expected: &str, current: Option<i64>) -> Option<i64> {
     let doc = Html::parse_document(raw);
     let sel =
@@ -166,41 +151,6 @@ pub fn previous_cursor(raw: &str, expected: &str, current: Option<i64>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn review_ignores_old_pinned_post_outside_page_boundary() {
-        let now = Utc::now();
-        let posts = vec![
-            Message {
-                id: 1,
-                html: String::new(),
-                published: Some(now - chrono::Duration::days(30)),
-            },
-            Message {
-                id: 120,
-                html: String::new(),
-                published: Some(now - chrono::Duration::hours(1)),
-            },
-        ];
-        assert!(!reached_review_cutoff(
-            &posts,
-            Some(100),
-            now - chrono::Duration::days(7)
-        ));
-    }
-    #[test]
-    fn review_stops_at_old_regular_message() {
-        let now = Utc::now();
-        let posts = vec![Message {
-            id: 120,
-            html: String::new(),
-            published: Some(now - chrono::Duration::days(8)),
-        }];
-        assert!(reached_review_cutoff(
-            &posts,
-            Some(100),
-            now - chrono::Duration::days(7)
-        ));
-    }
     #[test]
     fn channel_validation() {
         assert_eq!(

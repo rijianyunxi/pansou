@@ -186,7 +186,6 @@ pub async fn channels_put(
         .collect::<Result<Vec<_>, _>>()?;
     normalized.sort();
     normalized.dedup();
-    crate::crawl::register_custom(&state.pool, &normalized).await?;
     let channels = serde_json::to_value(normalized)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     if let Some(user_id) = session.user_id {

@@ -43,15 +43,6 @@
               @click="resetQuery"
               >重置</Button
             ><Button
-              variant="outline"
-              class="button secondary"
-              type="button"
-              :disabled="!selected.length || busy"
-              @click="checkSelected"
-              >批量检测<span v-if="selected.length" class="action-count">{{
-                selected.length
-              }}</span></Button
-            ><Button
               variant="destructive"
               class="button danger-button"
               type="button"
@@ -86,7 +77,7 @@
             </Button>
           </div>
         </form>
-        <Button variant="outline" type="button" :disabled="busy || !!cloudDeleteBusyKey" @click="openCloudTool()">网盘工具（检测 / 转存 / 云端删除）</Button>
+
         <div class="query-meta">
           已选 {{ selected.length }} 项 · 共 {{ total }} 条
         </div>
@@ -177,15 +168,6 @@
                     <div class="resource-link-meta">
                       <span v-if="link.password" class="resource-link-password"
                         >提取码 {{ link.password }}</span
-                      ><Button variant="outline" v-if="link.type === 'baidu' || link.type === 'quark'" :disabled="busy || !!cloudDeleteBusyKey" @click="openCloudTool(link)">检测 / 转存</Button><Button
-                        variant="outline"
-                        v-if="link.type === 'baidu' || link.type === 'quark'"
-                        class="resource-link-delete"
-                        type="button"
-                        :disabled="busy || !!cloudDeleteBusyKey"
-                        title="删除网盘中的资源"
-                        @click="deleteCloudLink(item, linkIndex)"
-                        >删云端</Button
                       >
                     </div>
                   </div>
@@ -201,12 +183,10 @@
                 <TableCell
                   ><span
                     class="resource-check-status"
-                    :class="`check-${item.checkStatus || 'unchecked'}`"
-                    :title="item.checkMessage || ''"
-                    >{{ checkStatusLabel(item.checkStatus) }}</span
-                  ><small v-if="item.checkMessage" class="check-message">{{
-                    item.checkMessage
-                  }}</small></TableCell
+                    :class="`check-${item.linkValidity === 1 ? 'valid' : item.linkValidity === 0 ? 'invalid' : 'unchecked'}`"
+                    title="至少一条有效则资源有效；全部明确失效才标记失效"
+                    >{{ item.linkValidity === 1 ? '有效' : item.linkValidity === 0 ? '失效' : '未检测 / 待确认' }}</span
+                  ><small v-if="item.linkValidityUpdatedAt">{{ new Date(item.linkValidityUpdatedAt).toLocaleString() }}</small></TableCell
                 >
                 <TableCell class="action-column">
                   <AdminRowActions
@@ -220,17 +200,6 @@
                       @click="openEdit(item)"
                     >
                       编辑</Button
-                    ><Button
-                      variant="ghost"
-                      size="sm"
-                      class="row-action-button"
-                      type="button"
-                      :disabled="busy"
-                      :aria-label="`检测 ${item.name}`"
-                      title="检测此资源的链接状态"
-                      @click="checkOne(item)"
-                    >
-                      检测 </Button
                     ><Button
                       variant="ghost"
                       size="sm"
@@ -390,12 +359,9 @@
         </form>
       </section>
     </AdminDialog>
-    <CloudDriveWorkbench v-if="cloudToolOpen" :initial="cloudToolInitial" @close="cloudToolOpen = false" @changed="loadResources" />
   </div>
 </template>
 <script setup lang="ts">
-import CloudDriveWorkbench from "./CloudDriveWorkbench.vue";
-import { mutateCloud, readCloud } from "@/composables/admin/useCloudDrive";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Card } from "@/components/admin/ui/card";
 import { Button } from "@/components/admin/ui/button";
@@ -424,15 +390,17 @@ import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 import ResourceDescription from "../ResourceDescription.vue";
 import AdminPagination from "./AdminPagination.vue";
 import ConsoleIcon from "../sources/ConsoleIcon.vue";
-import type { CloudType, Link, SearchResult } from "../../shared/apiModels";
+import type { CloudType, Link, ManagedResource } from "../../shared/apiModels";
 
-type AdminResource = SearchResult & {
+type AdminResource = ManagedResource & {
   createdAt?: number;
   updatedAt?: number;
   enabled?: boolean;
   checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown";
   checkMessage?: string | null;
   checkedAt?: string | null;
+  linkValidity?: -1 | 0 | 1;
+  linkValidityUpdatedAt?: string | null;
 };
 const cloudTypes = ref<CloudType[]>([]);
 const resources = ref<AdminResource[]>([]);
@@ -452,10 +420,7 @@ const formError = ref("");
 const tagText = ref("");
 const imageText = ref("");
 const cloudDeleteBusyKey = ref("");
-const cloudToolOpen = ref(false);
-const cloudToolInitial = ref<{url:string;password?:string|null}>();
 const deleteRequests = new Map<string, {resourceId:string;linkIndex:number;confirmationToken:string;requestKey:string}>();
-function openCloudTool(link?:Link) { cloudToolInitial.value = link ? {url:link.url,password:link.password} : undefined; cloudToolOpen.value = true; }
 const form = ref<{
   id?: string;
   name: string;
@@ -691,26 +656,6 @@ async function remove(item: AdminResource) {
     busy.value = false;
   }
 }
-async function deleteCloudLink(item: AdminResource, linkIndex: number) {
- const link = item.links[linkIndex];
- if (!link || !['baidu','quark'].includes(link.type) || busy.value || cloudDeleteBusyKey.value) return;
- const identity = item.id + ':' + linkIndex;
- cloudDeleteBusyKey.value = identity;
- try {
-  let body = deleteRequests.get(identity);
-  if (!body) {
-   const preview = await readCloud('delete-preview', { resourceId: item.id, linkIndex });
-   const files = Array.isArray(preview.files) ? preview.files : [];
-   if (!await confirmAction('已核实分享属于当前账号。将删除 ' + preview.count + ' 个顶层条目：' + files.slice(0,8).map(f=>f.name+(f.isDir?'（整个目录）':'')).join('、') + '。目录内所有内容也会删除；盘搜链接记录保留。确认继续？')) return;
-   body = { resourceId: item.id, linkIndex, confirmationToken: preview.confirmationToken!, requestKey: crypto.randomUUID() };
-   deleteRequests.set(identity,body);
-  }
-  const result = await mutateCloud('/api/admin/resources/cloud-delete',body,undefined,key=>show('删除操作已受理，正在查询状态：'+key));
-  deleteRequests.delete(identity);
-  show(cloudLabel(link.type) + '云端资源已删除（' + Number(result.deletedCount || 0) + ' 项）。盘搜记录保留，可再次检测确认链接状态。');
- } catch(e:any) { if(e?.data?.data?.status === 'failed') deleteRequests.delete(identity); show(apiError(e) + (deleteRequests.get(identity) ? '；操作编号：' + deleteRequests.get(identity)!.requestKey + '。可在网盘工具查询，不要重复新建操作。' : ''), true); }
- finally { cloudDeleteBusyKey.value = ''; }
-}
 async function deleteSelected() {
   if (
     !selected.value.length ||
@@ -765,33 +710,6 @@ async function setEnabled(ids: string[], enabled: boolean) {
   } finally {
     busy.value = false;
   }
-}
-async function checkResources(ids: string[], label: string) {
-  const targets = [...new Set(ids)].filter(Boolean);
-  if (!targets.length || busy.value) return;
-  busy.value = true;
-  show(`正在检测 ${label}，请稍候…`);
-  try {
-    const result = await apiFetch<any>("/api/admin/resources/check", {
-      method: "POST",
-      body: { ids: targets },
-    });
-    const data = result?.data ?? {};
-    show(
-      `检测完成：${Number(data.valid || 0)} 条正常，${Number(data.invalid || 0)} 条失效，${Number(data.unknown || 0)} 条待确认。`,
-    );
-    await loadResources();
-  } catch (e: any) {
-    show(apiError(e), true);
-  } finally {
-    busy.value = false;
-  }
-}
-function checkSelected() {
-  void checkResources(selected.value, `${selected.value.length} 条资源`);
-}
-function checkOne(item: AdminResource) {
-  void checkResources([item.id], `「${item.name}」`);
 }
 onMounted(loadResources);
 </script>

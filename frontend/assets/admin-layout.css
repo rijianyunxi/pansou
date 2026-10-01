@@ -79,6 +79,44 @@
   border-radius: 10px;
   box-shadow: none;
 }
+/* Approved monitor skin: override legacy admin chrome only inside this page. */
+.admin-root .runtime-monitor [data-slot="card"] {
+  border-radius: 16px;
+  border-color: #e9edf4bf;
+  box-shadow: 0 3px 14px #1b2b4b07;
+}
+.admin-root .runtime-monitor .service-card {
+  box-shadow: 0 4px 16px #1b2b4b0a, 0 1px 3px #1b2b4b07;
+}
+.admin-root .runtime-monitor .service-card:hover {
+  border-color: #dce2f5;
+  box-shadow: 0 6px 20px #1b2b4b0d;
+}
+.admin-root .runtime-monitor .monitor-source-toolbar {
+  padding: 0 16px 16px;
+  margin: 0;
+  border: 0;
+}
+.admin-root .runtime-monitor .monitor-source-search {
+  height: 30px;
+  max-width: 290px;
+  min-width: 0;
+  border-radius: 9px;
+  font-size: 11px;
+}
+.admin-root .runtime-monitor .queue-panel [data-slot="table-head"],
+.admin-root .runtime-monitor .queue-panel [data-slot="table-cell"] {
+  padding: 10px 12px;
+  font-size: 11px;
+}
+.admin-root .runtime-monitor .queue-panel [data-slot="table-head"]:first-child,
+.admin-root .runtime-monitor .queue-panel [data-slot="table-cell"]:first-child {
+  padding-left: 16px;
+}
+.admin-root .runtime-monitor .queue-panel [data-slot="table-head"]:last-child,
+.admin-root .runtime-monitor .queue-panel [data-slot="table-cell"]:last-child {
+  padding-right: 16px;
+}
 .admin-root [data-slot="card"]:is(.table-panel, .directory-panel) {
   padding: 0;
   gap: 0;

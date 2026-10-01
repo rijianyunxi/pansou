@@ -315,6 +315,14 @@ impl Baidu {
         Ok(())
     }
     pub async fn share(&self, files: &[File]) -> Result<Value, DriveError> {
+        self.share_days(files, 0).await
+    }
+    pub async fn share_days(&self, files: &[File], days: u32) -> Result<Value, DriveError> {
+        if ![0, 1, 7, 30].contains(&days) {
+            return Err(self
+                .wire
+                .error(ErrorKind::Input, "百度分享期限必须为1、7或30天"));
+        }
         let (token, _) = self.token().await?;
         let ids = self.ids(files)?;
         let chars = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -329,7 +337,7 @@ impl Baidu {
                 "/share/set",
                 &params,
                 &[
-                    ("period".into(), "0".into()),
+                    ("period".into(), days.to_string()),
                     ("pwd".into(), pwd.clone()),
                     ("eflag_disable".into(), "true".into()),
                     ("channel_list".into(), "[]".into()),
@@ -361,6 +369,43 @@ impl Baidu {
                 "该分享不属于当前百度账号，拒绝删除他人分享资源",
             ));
         }
+        Ok(())
+    }
+    pub async fn create_directory(&self, parent: &str, name: &str) -> Result<File, DriveError> {
+        let (token, _) = self.token().await?;
+        let path = format!("{}/{}", parent.trim_end_matches('/'), name);
+        let mut params = self.params();
+        params.push(("bdstoken", token));
+        let value = self
+            .post(
+                "/api/create",
+                &params,
+                &[
+                    ("path".into(), path),
+                    ("isdir".into(), "1".into()),
+                    ("block_list".into(), "[]".into()),
+                ],
+                "创建交付目录",
+                true,
+            )
+            .await?;
+        self.file(&value)
+    }
+    pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
+        let (token, _) = self.token().await?;
+        let mut params = self.params();
+        params.push(("bdstoken", token));
+        let id = id
+            .parse::<u64>()
+            .map_err(|_| self.wire.error(ErrorKind::Input, "百度分享ID无效"))?;
+        self.post(
+            "/share/cancel",
+            &params,
+            &[("shareid_list".into(), json!([id]).to_string())],
+            "撤销交付分享",
+            true,
+        )
+        .await?;
         Ok(())
     }
     pub async fn delete(&self, files: &[File]) -> Result<(), DriveError> {

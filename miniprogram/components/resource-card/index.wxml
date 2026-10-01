@@ -1,0 +1,26 @@
+<view class="resource-item theme-{{theme}}">
+  <view class="resource-heading">
+    <view class="heading-main">
+      <text class="resource-title" user-select>{{item.name}}</text>
+      <view wx:if="{{item.description}}" class="resource-desc {{descExpanded ? 'is-expanded' : ''}}">
+        <text class="desc-content">{{item.description}}</text>
+        <text wx:if="{{item.hasLongDesc || descExpanded}}" class="desc-toggle" catchtap="toggleDesc">{{descExpanded ? '收起' : '展开'}}</text>
+      </view>
+    </view>
+    <text wx:if="{{item.dateText}}" class="resource-date">{{item.dateText}}</text>
+  </view>
+
+  <view class="resource-links">
+    <view wx:for="{{item.links}}" wx:for-item="link" wx:key="key" class="link-row">
+      <view class="link-icon">{{link.icon}}</view>
+      <view class="link-main">
+        <text class="link-provider">{{link.label}}</text>
+        <text wx:if="{{resolved[link.key].password}}" class="password-badge">提取码 {{resolved[link.key].password}}</text>
+      </view>
+      <view class="link-actions">
+        <button class="link-btn" hover-class="btn-hover" disabled="{{!!loading[link.key]}}" loading="{{loading[link.key] === 'open'}}" data-key="{{link.key}}" bindtap="onOpen">{{loading[link.key] === 'open' ? '正在打开' : '打开链接'}}</button>
+        <button class="link-btn" hover-class="btn-hover" disabled="{{!!loading[link.key]}}" loading="{{loading[link.key] === 'copy'}}" data-key="{{link.key}}" bindtap="onCopy">{{loading[link.key] === 'copy' ? '正在复制' : copiedKey === link.key ? '已复制' : '复制链接'}}</button>
+      </view>
+    </view>
+  </view>
+</view>

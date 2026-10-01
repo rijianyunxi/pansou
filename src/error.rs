@@ -25,6 +25,10 @@ pub enum ApiError {
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
+    Gone(String),
+    #[error("{0}")]
+    TooManyRequests(String),
+    #[error("{0}")]
     Internal(String),
     #[error("{0}")]
     Upstream(String),
@@ -42,6 +46,8 @@ impl ApiError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Gone(_) => StatusCode::GONE,
+            Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -72,6 +78,8 @@ impl IntoResponse for ApiError {
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Conflict(_) => "CONFLICT",
+            Self::Gone(_) => "REF_EXPIRED",
+            Self::TooManyRequests(_) => "RATE_LIMITED",
             Self::Upstream(_) => "UPSTREAM_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
         };

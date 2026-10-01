@@ -28,7 +28,7 @@ pub async fn query(
     let mut channel_scope = channels.to_vec();
     channel_scope.sort();
     channel_scope.dedup();
-    let identity = json!({"match":"name-only-v1","kw":keyword,"channels":channel_scope,"revision":revision,"limit":200});
+    let identity = json!({"match":"name-only-v2","kw":keyword,"channels":channel_scope,"revision":revision,"limit":200});
     let key = format!(
         "pansou:local-search:{:x}",
         Sha256::digest(identity.to_string().as_bytes())

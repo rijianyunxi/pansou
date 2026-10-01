@@ -18,6 +18,8 @@ test('operation polling can abort without replaying its write',async()=>{
 test('cloud tools reuse shadcn overlay, fixed footer and inline errors',async()=>{
  const page=await read('components/admin/CloudDriveWorkbench.vue');for(const token of ['AdminDialog','admin-dialog-form','admin-form-fields','modal-actions','role="alert"','confirmationToken','keyFor','onBeforeUnmount'])assert.ok(page.includes(token),token);assert.ok(!page.includes('v-html'));
 });
-test('resource cloud delete requires server preview, confirmation and durable key',async()=>{
- const page=await read('components/admin/AdminResourcesPage.vue');assert.match(page,/readCloud\('delete-preview'/);assert.match(page,/confirmationToken/);assert.match(page,/deleteRequests/);assert.match(page,/mutateCloud/);assert.match(page,/CloudDriveWorkbench/);
+test('resource page hides cloud write tools but retains local resource deletion',async()=>{
+ const page=await read('components/admin/AdminResourcesPage.vue');
+ for(const token of ['CloudDriveWorkbench','deleteCloudLink','openCloudTool','checkSelected']) assert.ok(!page.includes(token),token);
+ assert.match(page,/deleteSelected/); assert.match(page,/openEdit/);
 });

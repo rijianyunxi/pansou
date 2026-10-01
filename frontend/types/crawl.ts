@@ -1,5 +1,5 @@
 import type { OutboundPolicy } from "./outbound";
-import type { SearchResult } from "@/shared/apiModels";
+import type { ManagedResource as SearchResult } from "@/shared/apiModels";
 export interface CrawlJob {
   id: number;
   channelId: string;
@@ -9,9 +9,9 @@ export interface CrawlJob {
   messages: number;
   resources: number;
   failures: number;
-  maxPages: number;
+  attempts: number;
+  nextRunAt: string;
   cursorBefore: number | null;
-  targetMessageId: number | null;
   lastError: string | null;
   stopReason: string | null;
   diagnostics: Record<string, unknown>;
@@ -24,11 +24,11 @@ export interface CrawlChannel {
   name: string;
   description: string;
   enabled: boolean;
-  managed: boolean;
-  archived: boolean;
-  published: boolean;
   version: number;
-  intervalSeconds: number;
+  historyComplete: boolean;
+  historyCursor: number | null;
+  historyPages: number;
+  nextPageAt: string;
   newestMessage: number;
   oldestMessage: number | null;
   lastSyncedAt: string | null;
@@ -42,7 +42,6 @@ export interface CrawlChannel {
   outbound: OutboundPolicy | null;
   effectiveOutbound: OutboundPolicy | null;
   transform?: string | null;
-  bindings?: { id: string; name: string; published: boolean }[];
 }
 export interface CrawlMessage {
   channelId: string;
@@ -75,6 +74,7 @@ export interface ChannelPage {
 export interface CrawlOverview {
   workerState: "online" | "offline" | "unknown";
   workerCount: number | null;
+  workerEnabled: boolean;
   queued: number;
   running: number;
   failed: number;
@@ -93,6 +93,24 @@ export function crawlTime(value?: string | null) {
     ? value
     : d.toLocaleString("zh-CN", { hour12: false });
 }
+
+/** Compact Shanghai wall-clock time; the full timestamp remains in the tooltip. */
+export function crawlCompactTime(value?: string | null, now = Date.now()) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  const formatter = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const parts = (d: Date) => Object.fromEntries(formatter.formatToParts(d).map(p => [p.type, p.value]));
+  const time = parts(date), today = parts(new Date(now));
+  const clock = `${time.hour}:${time.minute}`;
+  if (time.year === today.year && time.month === today.month && time.day === today.day) return clock;
+  return `${time.year === today.year ? "" : time.year + "-"}${time.month}-${time.day} ${clock}`;
+}
+
+export function compactChannelTaskLabel(channel: CrawlChannel) {
+  const full = channelTaskState(channel).text;
+  return ({ "历史回填中": "回填中", "增量同步中": "同步中", "失败页重试中": "重试中", "等待日常采集": "待同步", "等待历史补齐": "待回填", "等待下一页": "待续采", "等待执行": "排队中", "退避等待": "退避中", "采集中断": "已中断" } as Record<string, string>)[full] || full;
+}
 export function crawlStatus(value: string) {
   return (
     (
@@ -105,7 +123,6 @@ export function crawlStatus(value: string) {
         cancelled: "已取消",
         parsed: "已解析",
         empty: "无资源",
-        review: "待复核",
       } as Record<string, string>
     )[value] || value
   );
@@ -116,12 +133,20 @@ export function crawlKind(value: string) {
       {
         sync: "增量同步",
         backfill: "历史回填",
-        review: "近期编辑复查",
-        reparse: "重解析原文",
-        reparse_message: "单条重解析",
+        retry: "失败页重试",
       } as Record<string, string>
     )[value] || value
   );
+}
+
+export type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "failed";
+export function channelTaskState(channel: CrawlChannel, now = Date.now()): { state: ChannelTaskState; text: string } {
+  if (!channel.enabled || channel.latestJob?.status === "paused") return { state: "paused", text: "已暂停" };
+  const job = channel.latestJob;
+  if (job?.status === "running") return { state: "running", text: crawlKind(job.kind) + "中" };
+  if (job?.status === "failed") return { state: "failed", text: "采集中断" };
+  if (job?.status === "queued") return { state: "waiting", text: job.attempts > 0 ? "退避等待" : Date.parse(job.nextRunAt) > now ? "等待下一页" : "等待执行" };
+  return channel.historyComplete ? { state: "idle", text: "等待日常采集" } : { state: "waiting", text: "等待历史补齐" };
 }
 export function crawlReason(value?: string | null) {
   return (
@@ -129,13 +154,9 @@ export function crawlReason(value?: string | null) {
       {
         pending: "尚未回填",
         backfilling: "历史回填中",
-        recent_window_complete: "近期编辑窗口已复查",
         checkpoint_reached: "已覆盖增量检查点",
-        stored_messages_complete: "原文处理完成",
         accessible_history_end: "已到公开页面可访问边界",
-        page_budget_reached: "达到本次预算",
         admin_cancelled: "管理员取消",
-        channel_archived: "频道归档",
       } as Record<string, string>
     )[value || ""] ||
     value ||
@@ -149,3 +170,6 @@ export function crawlFilterDate(value: string): string | undefined {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
+
+export interface CrawlSettingsValue { concurrentChannels: number; pageDelaySeconds: number; dailyIntervalSeconds: number; version: number }
+export interface CrawlPageFailure { id: number; kind: string; cursorBefore: number | null; pageNumber: number | null; lastError: string; retryStatus: string | null; createdAt: string }

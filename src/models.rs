@@ -33,7 +33,7 @@ pub struct Source {
     pub request: Option<Value>,
     pub transform: String,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub kw: String,
     pub channels: Option<Vec<String>>,

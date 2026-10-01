@@ -250,11 +250,27 @@ impl Quark {
             .unwrap_or_default())
     }
     pub async fn share(&self, files: &[File]) -> Result<Value, DriveError> {
+        self.share_days(files, 0).await
+    }
+    pub async fn share_days(&self, files: &[File], days: u32) -> Result<Value, DriveError> {
+        let pending = self.begin_share(files, days).await?;
+        let mut share = self
+            .finish_share(pending["shareId"].as_str().unwrap_or(""))
+            .await?;
+        share["shareExpiresAt"] = pending["shareExpiresAt"].clone();
+        Ok(share)
+    }
+    pub async fn begin_share(&self, files: &[File], days: u32) -> Result<Value, DriveError> {
         self.wire.require_login().await?;
         if files.is_empty() {
             return Err(self.wire.error(ErrorKind::Input, "没有可分享文件"));
         }
-        let value=self.post(true,"share",json!({"fid_list":files.iter().map(|f|&f.id).collect::<Vec<_>>(),"title":"pansou 分享","url_type":1,"expired_type":1,"expire_time":0}),"创建分享",true).await?;
+        let mut body = json!({"fid_list":files.iter().map(|f|&f.id).collect::<Vec<_>>(),"title":"pansou 分享","url_type":1,"expired_type":if days==0{1}else{2},"expire_time":0});
+        let expires = (days > 0).then(|| chrono::Utc::now() + chrono::Duration::days(days as i64));
+        if let Some(expires) = expires {
+            body["expired_at"] = json!(expires.timestamp_millis());
+        }
+        let value = self.post(true, "share", body, "创建分享", true).await?;
         let mut id = scalar(&value["data"]["share_id"]);
         if id.is_empty() {
             id = scalar(&value["data"]["task_resp"]["data"]["share_id"]);
@@ -265,6 +281,9 @@ impl Quark {
         if id.is_empty() {
             return Err(self.wire.error(ErrorKind::Upstream, "夸克未返回分享 ID"));
         }
+        Ok(json!({"shareId":id,"shareExpiresAt":expires}))
+    }
+    pub async fn finish_share(&self, id: &str) -> Result<Value, DriveError> {
         let password = self
             .post(
                 true,
@@ -330,6 +349,34 @@ impl Quark {
             ErrorKind::Ownership,
             "未在当前夸克账号的分享列表找到该链接，拒绝删除他人分享资源",
         ))
+    }
+    pub async fn create_directory(&self, parent: &str, name: &str) -> Result<File, DriveError> {
+        self.wire.require_login().await?;
+        let value = self
+            .post(
+                true,
+                "file",
+                json!({"pdir_fid":parent,"file_name":name,"dir_path":"","dir_init_lock":false}),
+                "创建交付目录",
+                true,
+            )
+            .await?;
+        let mut file = self.file(&value["data"])?;
+        file.name = name.into();
+        file.is_dir = true;
+        Ok(file)
+    }
+    pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
+        self.wire.require_login().await?;
+        self.post(
+            true,
+            "share/delete",
+            json!({"share_id":id}),
+            "撤销交付分享",
+            true,
+        )
+        .await?;
+        Ok(())
     }
     pub async fn delete(&self, files: &[File]) -> Result<(), DriveError> {
         self.wire.require_login().await?;

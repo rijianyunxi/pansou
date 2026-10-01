@@ -21,7 +21,7 @@ const router = createRouter({
         },
         {
           path: "monitor",
-          component: () => import("../pages/admin/[...view].vue"),
+          component: () => import("../pages/admin/monitor.vue"),
         },
         { path: "crawl", component: () => import("../pages/admin/crawl.vue") },
         {

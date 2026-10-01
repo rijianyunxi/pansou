@@ -16,6 +16,7 @@ use axum::{
 use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::{Row, postgres::PgPoolOptions};
+use std::future::IntoFuture;
 use std::{
     net::SocketAddr,
     sync::{
@@ -145,6 +146,8 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .await
         .unwrap();
     db::init_db(&pool).await.unwrap();
+    // The suffix guard above authorizes disposable fixtures only, never the app database.
+    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,resource_occurrences,source_messages,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
     // The explicit isolated test database is disposable; disable previous test schedules only.
     sqlx::query("UPDATE resource_sources SET enabled=false")
         .execute(&pool)
@@ -176,14 +179,12 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         transform: DSL.into(),
     };
     sqlx::query("INSERT INTO resource_sources(id,name,url,method,format,transform) VALUES($1,$2,$3,'GET','html',$4)").bind(&source.id).bind(&source.name).bind(&source.url).bind(DSL).execute(&pool).await.unwrap();
-    sqlx::query(
-        "INSERT INTO crawl_channels(id,name,managed,transform) VALUES($1,'测试 TG',true,$2)",
-    )
-    .bind(&channel)
-    .bind(DSL)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO crawl_channels(id,name,transform) VALUES($1,'测试 TG',$2)")
+        .bind(&channel)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE resource_sources SET channel_id=$2,kind='telegram' WHERE id=$1")
         .bind(&source_id)
         .bind(&channel)
@@ -219,11 +220,13 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let sync = crawl::enqueue(&pool, &channel, "sync", 20).await.unwrap();
-    assert!(crawl::enqueue(&pool, &channel, "sync", 20).await.is_err());
-    let backfill = crawl::enqueue(&pool, &channel, "backfill", 20)
+    sqlx::query("UPDATE crawl_settings SET page_delay_seconds=0")
+        .execute(&pool)
         .await
         .unwrap();
+    let sync = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
+    assert!(crawl::enqueue(&pool, &channel, "sync").await.is_err());
+    let backfill = crawl::enqueue(&pool, &channel, "backfill").await.unwrap();
     crawl::tick(&state).await.unwrap();
     let row = sqlx::query("SELECT status,diagnostics_json FROM crawl_jobs WHERE id=$1")
         .bind(sync)
@@ -294,7 +297,12 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .execute(&pool)
         .await
         .unwrap();
-    let limited = crawl::enqueue(&pool, &channel, "review", 5).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let limited = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
     crawl::tick(&state).await.unwrap();
     let limited_row=sqlx::query("SELECT status,pages,last_error,extract(epoch FROM next_run_at-now())::bigint AS delay FROM crawl_jobs WHERE id=$1").bind(limited).fetch_one(&pool).await.unwrap();
     assert_eq!(limited_row.get::<String, _>("status"), "queued");
@@ -463,7 +471,25 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     let payload: Value = serde_json::from_str(&json_response).unwrap();
     assert_eq!(payload["data"]["total"], 1);
     assert_eq!(payload["data"]["results"].as_array().unwrap().len(), 1);
-    assert_eq!(payload["data"]["results"][0]["id"], resource.id);
+    assert_eq!(payload["data"]["contractVersion"], 2);
+    assert!(payload["data"]["results"][0]["resultRef"].is_string());
+    assert!(payload["data"]["results"][0].get("tags").is_none());
+    assert!(
+        payload["data"]["results"][0]["links"][0]
+            .get("url")
+            .is_none()
+    );
+    assert!(!json_response.contains("yun.139.com"));
+    assert!(!json_response.contains("AB12"));
+    let visible = &payload["data"]["results"][0];
+    let (status,delivered)=call(&router,"POST","/api/links/resolve",Some(&session.token),json!({"resultRef":visible["resultRef"],"linkRef":visible["links"][0]["linkRef"],"requestKey":uuid::Uuid::new_v4()})).await;
+    assert_eq!(status, StatusCode::OK, "{delivered}");
+    assert!(
+        serde_json::from_str::<Value>(&delivered).unwrap()["data"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("yun.139.com")
+    );
     assert!(payload["data"]["results"][0].get("priority").is_none());
     assert!(payload["data"]["results"][0].get("sourceId").is_none());
     assert!(payload["data"]["sources"].as_array().unwrap().is_empty());
@@ -479,6 +505,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     assert_eq!(status, StatusCode::OK, "{sse}");
     assert!(sse.contains("event: result"), "{sse}");
     assert!(sse.contains("event: complete"), "{sse}");
+    assert!(!sse.contains("\"tags\""), "{sse}");
     assert!(sse.contains("兰香如故更换分享"));
     assert!(!sse.contains("plugin:"));
     assert_eq!(
@@ -486,51 +513,37 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         requests.load(Ordering::SeqCst),
         "search must not fetch TG"
     );
-    // Custom mode uses the server-saved channels, never a request-injected channel.
+    // Saving user preferences never registers an ingestion channel.
     sqlx::query("INSERT INTO source_template_settings(id,url_template,method,format,transform) VALUES(1,'https://t.me/s/{{channel}}','GET','html',$1) ON CONFLICT(id) DO UPDATE SET transform=EXCLUDED.transform").bind(DSL).execute(&pool).await.unwrap();
-    let (status, saved) = call(
+    let (_, saved) = call(
         &router,
         "POST",
         "/api/account/channels",
         Some(&session.token),
-        json!({"channels":[format!("@{channel}")]}),
+        json!({"channels":["only_live_channel"]}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{saved}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&saved).unwrap()["channels"][0],
-        channel
-    );
-    let (status, custom) = call(
-        &router,
-        "POST",
-        "/api/search",
-        Some(&session.token),
-        json!({"kw":"兰香","channels":[private]}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{custom}");
-    assert!(custom.contains("兰香如故更换分享"));
-    assert!(!custom.contains("私有标题"));
-    assert_eq!(network_before, requests.load(Ordering::SeqCst));
-    // Disabling a system source makes it immediately invisible.
-    sqlx::query("UPDATE resource_sources SET enabled=false WHERE id=$1")
-        .bind(&source_id)
-        .execute(&pool)
+    assert!(saved.contains("only_live_channel"));
+    assert!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM crawl_channels WHERE id='only_live_channel')"
+        )
+        .fetch_one(&pool)
         .await
-        .unwrap();
-    let (status, disabled) = call(
-        &router,
-        "POST",
-        "/api/search",
-        Some(&session.token),
-        json!({"kw":"兰香","source_ids":[source_id]}),
+        .unwrap()
+    );
+    let live_sources = crate::handlers::search::load_sources(
+        &state,
+        None,
+        Some(&vec!["only_live_channel".into()]),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{disabled}");
-    assert!(!disabled.contains("兰香如故更换分享"));
-    sqlx::query("UPDATE resource_sources SET enabled=true WHERE id=$1")
-        .bind(&source_id)
+    .await
+    .unwrap();
+    assert!(live_sources.local_channels.is_empty());
+    assert_eq!(live_sources.live_sources[0].id, "custom:only_live_channel");
+    assert_eq!(live_sources.live_sources[0].transform, DSL);
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
+        .bind(&channel)
         .execute(&pool)
         .await
         .unwrap();
@@ -613,7 +626,10 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         4,
         "search must preserve duplicate live records"
     );
-    assert_eq!(records[0]["id"], resource.id);
+    assert_eq!(records[0]["name"], "兰香如故更换分享");
+    assert!(records[0]["resultRef"].is_string());
+    assert!(!text.contains("yun.139.com"));
+    assert!(!text.contains("pan.quark.cn"));
     assert_eq!(batches.last().unwrap()["total"], 4);
     let (status, mixed_json) = call(
         &router,
@@ -627,7 +643,9 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     let mixed: Value = serde_json::from_str(&mixed_json).unwrap();
     assert_eq!(mixed["data"]["total"], 4);
     assert_eq!(mixed["data"]["results"].as_array().unwrap().len(), 4);
-    assert_eq!(mixed["data"]["results"][0]["id"], resource.id);
+    assert_eq!(mixed["data"]["results"][0]["name"], "兰香如故更换分享");
+    assert!(!mixed_json.contains("yun.139.com"));
+    assert!(!mixed_json.contains("pan.quark.cn"));
     let external = mixed["data"]["sources"].as_array().unwrap();
     assert_eq!(external.len(), 2);
     assert_eq!(external[0]["id"], fast_id);
@@ -642,7 +660,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         cache_body.clone(),
     )
     .await;
-    assert!(first.contains("\"total\":2"));
+    assert!(first.contains("\"total\":3"));
     let before_cached = requests.load(Ordering::SeqCst);
     let (status, cached) = call(
         &router,
@@ -654,12 +672,12 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     .await;
     assert_eq!(status, StatusCode::OK, "{cached}");
     assert_eq!(
-        before_cached,
+        before_cached + 1,
         requests.load(Ordering::SeqCst),
-        "live-only search should use cache"
+        "system mode still combines local records with requested live sources"
     );
     assert_eq!(cached.matches("快来源重复资源").count(), 2);
-    assert!(cached.contains("\"total\":2"));
+    assert!(cached.contains("\"total\":3"));
     let (status, list) = call(
         &router,
         "GET",
@@ -726,13 +744,13 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .await
         .unwrap()
     );
-    let job = crawl::enqueue(&pool, &channel, "reparse", 1).await.unwrap();
+    let job = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
     let (status, pause) = call(
         &router,
         "PUT",
         &format!("/api/admin/crawl/channels/{channel}"),
         Some(&session.token),
-        json!({"id":channel,"name":"测试 TG","description":"","enabled":false,"intervalSeconds":600,"expectedVersion":1,"transform":DSL,"outbound":crate::outbound::read(&pool,crate::outbound::Owner::Channel(&channel)).await.unwrap().unwrap(),"bindings":[]}),
+        json!({"id":channel,"name":"测试 TG","description":"","enabled":false,"expectedVersion":1,"transform":DSL,"outbound":crate::outbound::read(&pool,crate::outbound::Owner::Channel(&channel)).await.unwrap().unwrap()}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{pause}");
@@ -753,6 +771,11 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{cancel}");
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
     // Recover a worker crash/expired lease without losing durable task progress.
     sqlx::query(
         "UPDATE crawl_channels SET enabled=true,next_sync_at=now()+interval '1 day' WHERE id=$1",
@@ -761,7 +784,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     .execute(&pool)
     .await
     .unwrap();
-    let recovery = crawl::enqueue(&pool, &channel, "reparse", 1).await.unwrap();
+    let recovery = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
     sqlx::query("UPDATE crawl_jobs SET status='running',lease_id=$2,lease_until=now()-interval '1 second' WHERE id=$1").bind(recovery).bind(uuid::Uuid::new_v4()).execute(&pool).await.unwrap();
     let network_before = requests.load(Ordering::SeqCst);
     crawl::tick(&state).await.unwrap();
@@ -774,9 +797,9 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         "completed"
     );
     assert_eq!(
-        network_before,
+        network_before + 1,
         requests.load(Ordering::SeqCst),
-        "reparse uses stored raw only"
+        "resumed sync fetches its page again"
     );
     state.auth().revoke_session(&session).await.unwrap();
     state.auth().revoke_session(&anon).await.unwrap();
@@ -786,267 +809,212 @@ async fn telegram_ingestion_search_and_admin_contracts() {
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
-async fn workbench_owned_policy_and_message_contracts() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+async fn channel_scheduling_and_page_failures() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
     let pool = PgPoolOptions::new()
-        .max_connections(8)
+        .max_connections(16)
         .connect(&url)
         .await
         .unwrap();
     db::init_db(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE status IN ('queued','running','paused')").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_settings SET concurrent_channels=1,page_delay_seconds=0")
+        .execute(&pool)
+        .await
+        .unwrap();
     let redis = RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
         .await
         .unwrap();
-    let state = Arc::new(AppState::new(pool.clone(), redis));
-    let router = build_router(state.clone());
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    let username = format!("qa_{id}");
-    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&username).bind(auth::hash_password(&id).unwrap()).execute(&pool).await.unwrap();
-    let token = state.auth().login(&username, &id).await.unwrap().0.token;
-    let channel = format!("qa_{}", &id[..10]);
-    let node_id = format!("node_{id}");
-    let (code, b) = call(
-        &router,
-        "POST",
-        "/api/admin/proxies",
-        Some(&token),
-        json!({"id":node_id,"name":"QA节点","baseUrl":"http://127.0.0.1:9"}),
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK, "{b}");
-    let mut policy = crate::outbound::Policy {
-        nodes: vec![crate::outbound::NodeWeight {
-            node_id: node_id.clone(),
-            weight: 10,
-        }],
-        ..crate::outbound::Policy::direct()
-    };
-    let body = json!({"id":channel,"name":"QA频道","description":"","enabled":true,"intervalSeconds":600,"transform":DSL,"outbound":policy,"expectedVersion":0,"bindings":[],"publish":true});
-    let path = format!("/api/admin/crawl/channels/{channel}");
-    let (code, b) = call(
-        &router,
-        "POST",
-        "/api/admin/crawl/channels",
-        Some(&token),
-        body.clone(),
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK, "{b}");
-    let (code, _) = call(
-        &router,
-        "POST",
-        "/api/admin/crawl/channels",
-        Some(&token),
-        body.clone(),
-    )
-    .await;
-    assert_eq!(code, StatusCode::CONFLICT);
-    let (_, data) = call(&router, "GET", &path, Some(&token), Value::Null).await;
-    let data: Value = serde_json::from_str(&data).unwrap();
-    assert!(data["data"]["published"].as_bool().unwrap());
-    policy.version = 1;
-    let (code, refs) = call(
-        &router,
-        "GET",
-        &format!("/api/admin/proxies/{node_id}/references"),
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK);
-    assert!(refs.contains(&channel));
-    assert_eq!(
-        call(
-            &router,
-            "DELETE",
-            &format!("/api/admin/proxies/{node_id}"),
-            Some(&token),
-            Value::Null
+    let mut state = AppState::new(pool.clone(), redis);
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let channel = format!("sched_{}", &unique[..10]);
+    let requests = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(mock_page).with_state(Mock {
+                channel: channel.clone(),
+                requests: requests.clone(),
+            }),
         )
+        .into_future(),
+    );
+    state.custom_test_base = Some(format!("http://{addr}"));
+    let state = Arc::new(state);
+    sqlx::query("INSERT INTO crawl_channels(id,name,transform,newest_message,next_sync_at) VALUES($1,$1,$2,101,now()+interval '1 day')").bind(&channel).bind(DSL).execute(&pool).await.unwrap();
+    let node = format!("sched_node_{unique}");
+    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)")
+        .bind(&node)
+        .bind(format!("http://{addr}"))
+        .execute(&pool)
         .await
-        .0,
-        StatusCode::CONFLICT
-    );
-    let src = crawl::source_for(&pool, &channel).await.unwrap();
-    ingest(
-        &state,
-        &channel,
-        &src,
-        message(&channel, 101, "QA资源", "share"),
-    )
-    .await;
-    // Forced reparse of identical resource data keeps resource, link and gram tuples intact.
-    let resource_id=sqlx::query_scalar::<_,String>("SELECT resource_id FROM resource_occurrences WHERE channel_id=$1 AND message_id=101 LIMIT 1").bind(&channel).fetch_one(&pool).await.unwrap();
-    let tuple_snapshot = |id: String, pool: sqlx::PgPool| async move {
-        sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('resource',(SELECT ctid::text FROM managed_resources WHERE id=$1),'links',(SELECT jsonb_agg(jsonb_build_array(identity,ctid::text) ORDER BY identity) FROM resource_links WHERE resource_id=$1),'grams',(SELECT jsonb_agg(jsonb_build_array(gram,ctid::text) ORDER BY gram) FROM resource_grams WHERE resource_id=$1))").bind(id).fetch_one(&pool).await.unwrap()
-    };
-    let (_, description_only) = call(
-        &router,
-        "GET",
-        "/api/admin/resources?q=%E7%8B%AC%E7%AB%8B%E7%9A%84%E8%B5%84%E6%BA%90%E7%AE%80%E4%BB%8B",
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    let description_only: Value = serde_json::from_str(&description_only).unwrap();
-    assert!(
-        !description_only["data"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["id"] == resource_id),
-        "admin filtering must match names only"
-    );
-    let tuples_before = tuple_snapshot(resource_id.clone(), pool.clone()).await;
-    sqlx::query("UPDATE source_messages SET parse_version='force-regression' WHERE channel_id=$1 AND message_id=101").bind(&channel).execute(&pool).await.unwrap();
-    let mut identical_message = message(&channel, 101, "QA资源", "share");
-    identical_message.published = sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
-        "SELECT published_at FROM source_messages WHERE channel_id=$1 AND message_id=101",
-    )
-    .bind(&channel)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    ingest(&state, &channel, &src, identical_message).await;
-    assert_eq!(
-        tuples_before,
-        tuple_snapshot(resource_id, pool.clone()).await,
-        "unchanged data must not rewrite resource/link/gram tuples"
-    );
-    let (_, batch) = call(
-        &router,
-        "GET",
-        "/api/admin/crawl/channels?pageSize=100",
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    let batch: Value = serde_json::from_str(&batch).unwrap();
-    let summary = batch["data"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["id"] == channel)
         .unwrap();
-    assert_eq!(summary["messageCount"], 1);
-    assert_eq!(summary["resourceCount"], 1);
-    for (method, url, body) in [
-        (
-            "PUT",
-            "/api/admin/proxies/direct",
-            json!({"name":"illegal","baseUrl":"http://localhost:9"}),
-        ),
-        ("DELETE", "/api/admin/proxies/direct", Value::Null),
-        ("POST", "/api/admin/proxies/direct/reset", Value::Null),
-    ] {
-        assert_eq!(
-            call(&router, method, url, Some(&token), body).await.0,
-            StatusCode::BAD_REQUEST,
-            "built-in direct is immutable"
-        );
-    }
-    let before = sqlx::query_scalar::<_, i64>(
-        "SELECT revision FROM config_revisions WHERE scope='local-index'",
+    let mut tx = pool.begin().await.unwrap();
+    crate::outbound::save(
+        &mut tx,
+        crate::outbound::Owner::Channel(&channel),
+        &crate::outbound::Policy {
+            nodes: vec![crate::outbound::NodeWeight {
+                node_id: node.clone(),
+                weight: 10,
+            }],
+            ..crate::outbound::Policy::direct()
+        },
     )
-    .fetch_one(&pool)
     .await
     .unwrap();
-    let (code, detail) = call(
-        &router,
-        "GET",
-        &format!("{path}/messages/101"),
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK, "{detail}");
-    assert!(serde_json::from_str::<Value>(&detail).unwrap()["data"]["stored"].is_array());
-    let (code, preview) = call(
-        &router,
-        "POST",
-        &format!("{path}/messages/101/preview"),
-        Some(&token),
-        json!({}),
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK, "{preview}");
-    let preview: Value = serde_json::from_str(&preview).unwrap();
-    assert_eq!(preview["data"]["status"], "parsed");
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT revision FROM config_revisions WHERE scope='local-index'"
-        )
+    tx.commit().await.unwrap();
+    // Opposite resource order across concurrent channel commits must not deadlock.
+    let peer = format!("peer_{}", &unique[..10]);
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,false,$2)")
+        .bind(&peer)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let source = crawl::source_for(&pool, &channel).await.unwrap();
+    let commit = |channel: String,
+                  shares: Vec<&'static str>,
+                  state: Arc<AppState>,
+                  source: Source| async move {
+        let mut tx = state.pool.begin().await.unwrap();
+        for (i, share) in shares.iter().enumerate() {
+            crawl::persist_message(
+                &mut tx,
+                &channel,
+                &message(&channel, 600 + i as i64, "并行共用资源", share),
+                &source,
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            commit(
+                channel.clone(),
+                vec!["shared-a", "shared-b"],
+                state.clone(),
+                source.clone()
+            ),
+            commit(peer, vec!["shared-b", "shared-a"], state.clone(), source)
+        );
+    })
+    .await
+    .expect("concurrent page commit deadlocked");
+    // Previously reaching 500 pages does not end the historical job.
+    let history = crawl::enqueue(&pool, &channel, "backfill").await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET pages=501 WHERE id=$1")
+        .bind(history)
+        .execute(&pool)
+        .await
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    let row = sqlx::query("SELECT pages,status,cursor_before FROM crawl_jobs WHERE id=$1")
+        .bind(history)
         .fetch_one(&pool)
         .await
-        .unwrap(),
-        before
-    );
-    let list = call(
-        &router,
-        "GET",
-        &format!("{path}/messages"),
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert!(
-        list.1.contains("QA资源"),
-        "summary must contain message body, not channel header"
-    );
-    let request_key = format!("request-{id}");
-    let job_body = json!({"kind":"sync","maxPages":2,"requestKey":request_key});
-    let first = call(
-        &router,
-        "POST",
-        &format!("{path}/jobs"),
-        Some(&token),
-        job_body.clone(),
-    )
-    .await;
-    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
-    let repeated = call(
-        &router,
-        "POST",
-        &format!("{path}/jobs"),
-        Some(&token),
-        job_body.clone(),
-    )
-    .await;
-    assert_eq!(
-        serde_json::from_str::<Value>(&first.1).unwrap()["data"]["id"],
-        serde_json::from_str::<Value>(&repeated.1).unwrap()["data"]["id"]
-    );
-    assert_eq!(
-        call(
-            &router,
-            "POST",
-            &format!("{path}/jobs"),
-            Some(&token),
-            json!({"kind":"sync","maxPages":3,"requestKey":request_key})
-        )
+        .unwrap();
+    assert_eq!(row.get::<i32, _>("pages"), 502);
+    assert_eq!(row.get::<String, _>("status"), "queued");
+    assert_eq!(row.get::<Option<i64>, _>("cursor_before"), Some(100));
+    // Due daily sync is interleaved before the next history page.
+    sqlx::query("UPDATE crawl_channels SET next_sync_at=now() WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
         .await
-        .0,
-        StatusCode::CONFLICT
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT pages FROM crawl_jobs WHERE id=$1")
+            .bind(history)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        502
     );
-    let template = call(
+    crawl::tick(&state).await.unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT history_complete FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM crawl_jobs WHERE id=$1")
+            .bind(history)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "completed"
+    );
+    // A global occupied slot prevents another channel from being claimed.
+    let blocker = format!("block_{}", &unique[..10]);
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled,history_complete,next_sync_at) VALUES($1,$1,false,true,now()+interval '1 day')").bind(&blocker).execute(&pool).await.unwrap();
+    let blocked_job=sqlx::query_scalar::<_,i64>("INSERT INTO crawl_jobs(channel_id,kind,status,lease_id,lease_until) VALUES($1,'sync','running',$2,now()+interval '60 seconds') RETURNING id").bind(&blocker).bind(uuid::Uuid::new_v4()).fetch_one(&pool).await.unwrap();
+    let sync = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
+    let before = requests.load(Ordering::SeqCst);
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before);
+    sqlx::query(
+        "UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE id=$1",
+    )
+    .bind(blocked_job)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Shared per-channel wait applies even when switching from backfill to daily.
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now()+interval '1 hour' WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before);
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM crawl_jobs WHERE id=$1")
+            .bind(sync)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "completed"
+    );
+    let username = format!("sched_admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&username).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&username, &unique).await.unwrap().0;
+    let router = build_router(state.clone());
+    let (_, cfg) = call(
         &router,
         "GET",
-        "/api/settings/source-template",
-        Some(&token),
+        "/api/admin/crawl/settings",
+        Some(&session.token),
         Value::Null,
     )
     .await;
-    let template: Value = serde_json::from_str(&template.1).unwrap();
-    let template_body = json!({"transform":DSL,"version":template["data"]["version"]});
+    let mut cfg = serde_json::from_str::<Value>(&cfg).unwrap()["data"].clone();
+    cfg["pageDelaySeconds"] = json!(2);
     assert_eq!(
         call(
             &router,
             "PUT",
-            "/api/settings/source-template",
-            Some(&token),
-            template_body.clone()
+            "/api/admin/crawl/settings",
+            Some(&session.token),
+            cfg.clone()
         )
         .await
         .0,
@@ -1056,280 +1024,129 @@ async fn workbench_owned_policy_and_message_contracts() {
         call(
             &router,
             "PUT",
-            "/api/settings/source-template",
-            Some(&token),
-            template_body
+            "/api/admin/crawl/settings",
+            Some(&session.token),
+            cfg
         )
         .await
         .0,
         StatusCode::CONFLICT
     );
-    assert_eq!(
-        call(
-            &router,
-            "GET",
-            "/api/admin/crawl/jobs?cursor=invalid",
-            Some(&token),
-            Value::Null
-        )
+    sqlx::query("UPDATE crawl_settings SET page_delay_seconds=0")
+        .execute(&pool)
         .await
-        .0,
-        StatusCode::BAD_REQUEST
-    );
-    for mid in [201, 202] {
-        ingest(
-            &state,
-            &channel,
-            &src,
-            message(&channel, mid, "复核消息", "review_share"),
-        )
-        .await;
-    }
-    sqlx::query("UPDATE source_messages SET parse_status='review',published_at='2026-09-30T01:00:00Z' WHERE channel_id=$1 AND message_id IN (201,202)").bind(&channel).execute(&pool).await.unwrap();
-    let rev = call(
-        &router,
-        "GET",
-        &format!("/api/admin/crawl/review?channel={channel}&limit=1"),
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(rev.0, StatusCode::OK, "{}", rev.1);
-    let rev: Value = serde_json::from_str(&rev.1).unwrap();
-    let cur = rev["data"]["nextCursor"].as_str().unwrap();
-    assert!(cur.parse::<i64>().is_err(), "cursor must be opaque");
-    assert_eq!(rev["data"]["items"][0]["messageId"], 202);
-    let next = call(
-        &router,
-        "GET",
-        &format!("/api/admin/crawl/review?channel={channel}&limit=1&cursor={cur}"),
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(next.0, StatusCode::OK, "{}", next.1);
-    assert_eq!(
-        serde_json::from_str::<Value>(&next.1).unwrap()["data"]["items"][0]["messageId"],
-        201
-    );
-    let (code, _) = call(
-        &router,
-        "GET",
-        "/api/admin/crawl/jobs?limit=0",
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(code, StatusCode::BAD_REQUEST);
-    let (code, b) = call(
+        .unwrap();
+    let failure=sqlx::query_scalar::<_,i64>("INSERT INTO crawl_page_failures(channel_id,kind,cursor_before,page_number,last_error) VALUES($1,'backfill',100,503,'test parse failure') RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
+    let path = format!("/api/admin/crawl/channels/{channel}/failures");
+    let (code, reply) = call(
         &router,
         "POST",
-        &format!("{path}/messages/101/reparse"),
-        Some(&token),
-        Value::Null,
+        &path,
+        Some(&session.token),
+        json!({"action":"retry","ids":[failure]}),
     )
     .await;
-    assert_eq!(code, StatusCode::OK, "{b}");
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    crawl::tick(&state).await.unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM crawl_page_failures WHERE id=$1)"
+        )
+        .bind(failure)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    );
+    let fail=sqlx::query_scalar::<_,i64>("INSERT INTO crawl_page_failures(channel_id,kind,cursor_before,page_number,last_error) VALUES($1,'backfill',90,504,'ignore test') RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
+    let count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM managed_resources")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         call(
             &router,
             "POST",
-            &format!("{path}/messages/101/reparse"),
-            Some(&token),
-            Value::Null
+            &path,
+            Some(&session.token),
+            json!({"action":"ignore","ids":[fail]})
         )
         .await
         .0,
-        StatusCode::CONFLICT
-    );
-    let mut changed = body;
-    changed["expectedVersion"] = json!(1);
-    changed["outbound"] = json!(policy);
-    changed["enabled"] = json!(false);
-    let (code, b) = call(&router, "PUT", &path, Some(&token), changed.clone()).await;
-    assert_eq!(code, StatusCode::OK, "{b}");
-    assert_eq!(
-        call(&router, "PUT", &path, Some(&token), changed).await.0,
-        StatusCode::CONFLICT
+        StatusCode::OK
     );
     assert!(
-        sqlx::query_scalar::<_, bool>("SELECT enabled FROM resource_sources WHERE channel_id=$1")
-            .bind(&channel)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        "pause must not unpublish"
-    );
-    let (code, sources) = call(
-        &router,
-        "GET",
-        "/api/settings/sources",
-        Some(&token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK);
-    assert!(!sources.contains(&format!("tg-{channel}")));
-    let (code, b) = call(
-        &router,
-        "PUT",
-        "/api/settings/search",
-        Some(&token),
-        json!({"sources":[]}),
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK, "{b}");
-    assert!(
-        sqlx::query_scalar::<_, bool>("SELECT enabled FROM resource_sources WHERE channel_id=$1")
-            .bind(&channel)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        "live configuration save must preserve TG publish"
-    );
-    // Single-message reparse must not touch another stored message or perform HTTP.
-    ingest(
-        &state,
-        &channel,
-        &src,
-        message(&channel, 102, "另一条资源", "other_share"),
-    )
-    .await;
-    let untouched = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-        "SELECT updated_at FROM source_messages WHERE channel_id=$1 AND message_id=102",
-    )
-    .bind(&channel)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE crawl_channels SET enabled=true,next_sync_at=now()+interval '1 day' WHERE id=$1",
-    )
-    .bind(&channel)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE crawl_jobs SET status=CASE WHEN kind='reparse_message' THEN 'queued' ELSE 'cancelled' END WHERE channel_id=$1 AND status='paused'").bind(&channel).execute(&pool).await.unwrap();
-    crawl::tick(&state).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT status FROM crawl_jobs WHERE channel_id=$1 AND kind='reparse_message'"
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM crawl_page_failures WHERE id=$1)"
         )
-        .bind(&channel)
+        .bind(fail)
         .fetch_one(&pool)
         .await
-        .unwrap(),
-        "completed"
+        .unwrap()
     );
     assert_eq!(
-        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-            "SELECT updated_at FROM source_messages WHERE channel_id=$1 AND message_id=102"
-        )
-        .bind(&channel)
-        .fetch_one(&pool)
-        .await
-        .unwrap(),
-        untouched,
-        "single reparse must leave other message intact"
+        count,
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM managed_resources")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
     );
-    sqlx::query(
-        "UPDATE proxy_nodes SET daily_limit=1,quota_day=CURRENT_DATE,quota_used=0 WHERE id=$1",
+    for obsolete in [
+        format!("/api/admin/crawl/channels/{channel}/archive"),
+        format!("/api/admin/crawl/channels/{channel}/messages/101/reparse"),
+    ] {
+        assert_eq!(
+            call(&router, "POST", &obsolete, Some(&session.token), json!({}))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // A custom search performs HTTP against submitted channels, does not ingest and uses RAM-only capabilities.
+    sqlx::query("INSERT INTO source_template_settings(id,url_template,method,format,transform) VALUES(1,'https://t.me/s/{{channel}}','GET','html',$1) ON CONFLICT(id) DO UPDATE SET transform=EXCLUDED.transform").bind(DSL).execute(&pool).await.unwrap();
+    let before = requests.load(Ordering::SeqCst);
+    let (code, live) = call(
+        &router,
+        "POST",
+        "/api/search",
+        Some(&session.token),
+        json!({"kw":"兰香","channels":[channel],"source_ids":["not_a_system_source"]}),
     )
-    .bind(&node_id)
-    .execute(&pool)
+    .await;
+    assert_eq!(code, StatusCode::OK, "{live}");
+    assert_eq!(requests.load(Ordering::SeqCst), before + 1);
+    assert!(live.contains("custom:"));
+    assert!(!live.contains("yun.139.com"));
+    assert!(!live.contains("历史资源"));
+    // Search projection works with Redis disconnected; DB catalog facts are not required.
+    let isolated = AppState::new(pool.clone(), RedisStore::disconnected());
+    let request: crate::models::SearchRequest =
+        serde_json::from_value(json!({"kw":"x","channels":[channel]})).unwrap();
+    let source = crawl::source_for(&pool, &channel).await.unwrap();
+    let resources =
+        crawl::parse_message(&source, &channel, &message(&channel, 101, "仅实时", "live")).results;
+    assert!(!resources.is_empty());
+    let projected = crate::link_resolution::project(
+        &isolated,
+        &session,
+        &request,
+        Some(&format!("custom:{channel}")),
+        &resources,
+    )
     .await
     .unwrap();
-    let owner = crate::outbound::Owner::Channel(&channel);
-    let mut plans = Vec::new();
-    for _ in 0..8 {
-        let mut plan = crate::outbound::Plan::load(&pool, owner, "GET")
-            .await
-            .unwrap();
-        let p = pool.clone();
-        plans.push(tokio::spawn(async move {
-            plan.next(&p).await.unwrap().is_some()
-        }));
-    }
-    let mut reserved = 0;
-    for p in plans {
-        reserved += usize::from(p.await.unwrap());
-    }
-    assert_eq!(reserved, 1, "global quota reservation is atomic");
-    // Direct participates only when selected, in the same weighted priority order.
-    let mut p = crate::outbound::read(&pool, owner).await.unwrap().unwrap();
-    p.nodes.push(crate::outbound::NodeWeight {
-        node_id: crate::outbound::DIRECT.into(),
-        weight: 0,
-    });
-    let mut tx = pool.begin().await.unwrap();
-    crate::outbound::save(&mut tx, owner, &p).await.unwrap();
-    tx.commit().await.unwrap();
-    let mut unavailable = crate::outbound::Plan::load(&pool, owner, "GET")
-        .await
-        .unwrap();
-    assert!(matches!(unavailable.next(&pool).await.unwrap(), Some(None)));
-    assert!(unavailable.next(&pool).await.unwrap().is_none());
-    sqlx::query("UPDATE proxy_nodes SET daily_limit=0 WHERE id=$1")
-        .bind(&node_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let mut ordered = crate::outbound::Plan::load(&pool, owner, "GET")
-        .await
-        .unwrap();
-    assert!(matches!(ordered.next(&pool).await.unwrap(), Some(Some(_))));
-    assert!(matches!(ordered.next(&pool).await.unwrap(), Some(None)));
-    assert!(ordered.next(&pool).await.unwrap().is_none());
-    let mut post = crate::outbound::Plan::load(&pool, owner, "POST")
-        .await
-        .unwrap();
-    assert!(matches!(post.next(&pool).await.unwrap(), Some(Some(_))));
     assert!(
-        post.next(&pool).await.unwrap().is_none(),
-        "POST must not be replayed even when direct is selected"
+        projected[0]["resultRef"]
+            .as_str()
+            .unwrap()
+            .starts_with("custom:")
     );
-    p = crate::outbound::read(&pool, owner).await.unwrap().unwrap();
-    p.nodes
-        .iter_mut()
-        .find(|n| n.node_id == crate::outbound::DIRECT)
-        .unwrap()
-        .weight = 20;
-    let mut tx = pool.begin().await.unwrap();
-    crate::outbound::save(&mut tx, owner, &p).await.unwrap();
-    tx.commit().await.unwrap();
-    let mut direct_first = crate::outbound::Plan::load(&pool, owner, "GET")
-        .await
-        .unwrap();
-    assert!(matches!(
-        direct_first.next(&pool).await.unwrap(),
-        Some(None)
-    ));
-    assert!(matches!(
-        direct_first.next(&pool).await.unwrap(),
-        Some(Some(_))
-    ));
-    let mut inherited = crate::outbound::Policy {
-        nodes: vec![],
-        version: 0,
-        inherit: true,
-    };
-    inherited.version = crate::outbound::read(&pool, owner)
-        .await
-        .unwrap()
-        .unwrap()
-        .version;
-    let mut tx = pool.begin().await.unwrap();
-    crate::outbound::save(&mut tx, owner, &inherited)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query("DELETE FROM outbound_policies WHERE default_key='telegram'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert!(
-        crate::outbound::Plan::load(&pool, owner, "GET")
+    assert_eq!(
+        count,
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM managed_resources")
+            .fetch_one(&pool)
             .await
-            .is_err()
+            .unwrap()
     );
+    state.auth().revoke_session(&session).await.unwrap();
+    server.abort();
 }

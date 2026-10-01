@@ -80,7 +80,7 @@ pub async fn admin_resources_get(
     let offset = (page - 1) * limit;
     let needle = q.get("q").cloned().unwrap_or_default();
     let cloud_type = q.get("cloudType").cloned().unwrap_or_default();
-    let rows = sqlx::query("SELECT id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,enabled,check_status,check_message,checked_at FROM managed_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%') AND ($2='' OR cloud_types_json ? $2) ORDER BY updated_at DESC LIMIT $3 OFFSET $4")
+    let rows = sqlx::query("SELECT id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,enabled,check_status,check_message,checked_at,link_validity,link_validity_updated_at FROM managed_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%') AND ($2='' OR cloud_types_json ? $2) ORDER BY updated_at DESC LIMIT $3 OFFSET $4")
         .bind(&needle).bind(&cloud_type).bind(limit).bind(offset).fetch_all(&state.pool).await?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%') AND ($2='' OR cloud_types_json ? $2)")
         .bind(&needle).bind(&cloud_type).fetch_one(&state.pool).await?;
@@ -90,6 +90,7 @@ pub async fn admin_resources_get(
         "cloud_types": r.get::<Value,_>("cloud_types_json"), "links": r.get::<Value,_>("links_json"),
         "tags": r.get::<Value,_>("tags_json"), "images": r.get::<Value,_>("images_json"),
         "enabled": r.get::<bool,_>("enabled"), "checkStatus": r.get::<String,_>("check_status"),
+        "linkValidity":r.get::<i16,_>("link_validity"), "linkValidityUpdatedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("link_validity_updated_at"),
         "checkMessage": r.get::<Option<String>,_>("check_message"), "checkedAt": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("checked_at")
     })).collect::<Vec<_>>();
     let cloud_types: Vec<String> = sqlx::query_scalar("SELECT DISTINCT jsonb_array_elements_text(cloud_types_json) FROM managed_resources WHERE deleted_at IS NULL ORDER BY 1")
@@ -572,7 +573,7 @@ pub async fn admin_monitor_reset(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    sqlx::query("DELETE FROM source_health")
+    sqlx::query("DELETE FROM source_health h USING resource_sources s WHERE h.source_id=s.id AND s.kind='live'")
         .execute(&state.pool)
         .await?;
     Ok(ok(json!({})))

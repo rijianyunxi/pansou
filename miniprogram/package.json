@@ -1,0 +1,7 @@
+{
+  "name": "panhub-miniprogram",
+  "private": true,
+  "type": "commonjs",
+  "description": "盘搜微信小程序（CommonJS，独立于 Vue 网站）",
+  "scripts": { "test": "node scripts/test-utils.js && node --test scripts/test-link-resolution.js" }
+}

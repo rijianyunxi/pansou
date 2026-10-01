@@ -13,7 +13,6 @@ use axum::{
     response::Response,
 };
 use futures::stream::StreamExt;
-use redis::AsyncCommands;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -26,30 +25,47 @@ use std::{
 use tokio::sync::mpsc;
 
 /// Local channels define visibility only; they have no search priority or per-source output.
-struct SearchSources {
-    local_channels: Vec<String>,
-    live_sources: Vec<Source>,
+pub(crate) struct SearchSources {
+    pub(crate) local_channels: Vec<String>,
+    pub(crate) live_sources: Vec<Source>,
 }
 
-async fn load_sources(
+pub(crate) async fn load_sources(
     state: &AppState,
     ids: Option<&Vec<String>>,
     channels: Option<&Vec<String>>,
 ) -> Result<SearchSources, ApiError> {
     if let Some(channels) = channels {
-        let local_channels = channels
+        let template = sqlx::query_scalar::<_, String>(
+            "SELECT transform FROM source_template_settings WHERE id=1",
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        let live_sources = channels
             .iter()
-            .map(|channel| {
-                crate::telegram::normalize_channel(channel)
-                    .ok_or_else(|| ApiError::BadRequest("已保存的频道格式无效".into()))
+            .map(|value| {
+                let channel = crate::telegram::normalize_channel(value)
+                    .ok_or_else(|| ApiError::BadRequest("无效公开频道".into()))?;
+                Ok(Source {
+                    id: format!("custom:{channel}"),
+                    name: format!("@{channel}"),
+                    description: String::new(),
+                    url: format!("https://t.me/s/{channel}"),
+                    method: "GET".into(),
+                    format: "html".into(),
+                    priority: 0,
+                    enabled: true,
+                    request: None,
+                    transform: template.clone(),
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ApiError>>()?;
         return Ok(SearchSources {
-            local_channels,
-            live_sources: vec![],
+            local_channels: vec![],
+            live_sources,
         });
     }
-    let mut sql="SELECT id,name,description,url,method,format,priority,enabled,request_json,transform FROM resource_sources WHERE enabled=true".to_string();
+    let mut sql="SELECT id,name,description,url,method,format,priority,enabled,request_json,transform FROM resource_sources WHERE enabled=true AND kind=\'live\'".to_string();
     if ids.is_some() {
         sql.push_str(" AND id = ANY($1)");
     }
@@ -59,12 +75,15 @@ async fn load_sources(
     } else {
         sqlx::query(&sql).fetch_all(&state.pool).await?
     };
-    let mut local_channels = Vec::new();
+    let local_channels =
+        sqlx::query_scalar::<_, String>("SELECT id FROM crawl_channels ORDER BY id")
+            .fetch_all(&state.pool)
+            .await?;
     let mut live_sources = Vec::new();
     for row in rows {
         let url: String = row.get("url");
         if let Some(channel) = crate::telegram::channel(&url) {
-            local_channels.push(channel);
+            let _ = channel;
             continue;
         }
         live_sources.push(Source {
@@ -337,6 +356,74 @@ async fn source_circuit_open(state: &AppState, source_id: &str, max_failures: i6
             < 60_000
 }
 
+async fn execute_custom(
+    state: &AppState,
+    source: &Source,
+    kw: &str,
+    policy: &crate::policy::UserPolicy,
+) -> (SourceMeta, Vec<SearchResult>) {
+    let started = Instant::now();
+    let result = async {
+        let mut url = reqwest::Url::parse(&source.url)
+            .map_err(|_| ApiError::BadRequest("频道地址无效".into()))?;
+        #[cfg(test)]
+        if let Some(base) = &state.custom_test_base {
+            url = reqwest::Url::parse(&format!(
+                "{base}/s/{}",
+                source.id.strip_prefix("custom:").unwrap()
+            ))
+            .unwrap();
+        }
+        url.query_pairs_mut().append_pair("q", kw);
+        let response = state
+            .crawl_http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| ApiError::Upstream(e.without_url().to_string()))?;
+        if !response.status().is_success() {
+            return Err(ApiError::Upstream(format!(
+                "TG HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ApiError::Upstream(e.without_url().to_string()))?;
+            if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
+                return Err(ApiError::Upstream("TG 搜索响应过大".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let html =
+            String::from_utf8(bytes).map_err(|_| ApiError::Upstream("TG 页面编码无效".into()))?;
+        transform::apply(&source.transform, &html, "html", kw, &source.id).map(|items| {
+            items
+                .into_iter()
+                .map(crate::resource_clean::normalize)
+                .collect::<Vec<_>>()
+        })
+    };
+    let output =
+        tokio::time::timeout(Duration::from_millis(policy.request_timeout_ms), result).await;
+    let (status, results) = match output {
+        Ok(Ok(items)) => ("success", items),
+        _ => ("failed", vec![]),
+    };
+    let meta = SourceMeta {
+        id: source.id.clone(),
+        name: source.name.clone(),
+        priority: 0,
+        status: status.into(),
+        result_count: results.len(),
+        elapsed_ms: started.elapsed().as_millis(),
+        transform_ms: None,
+        proxy_nodes: vec![],
+        results: vec![],
+    };
+    (meta, results)
+}
 async fn execute_source(
     state: &AppState,
     source: &Source,
@@ -613,7 +700,14 @@ fn source_execution_stream(
 ) -> impl futures::Stream<Item = Result<(Option<SourceMeta>, Vec<SearchResult>), ApiError>> {
     let local_state = state.clone();
     let local_kw = kw.clone();
+    let custom = sources
+        .live_sources
+        .iter()
+        .any(|s| s.id.starts_with("custom:"));
     let local = futures::stream::once(async move {
+        if sources.local_channels.is_empty() && custom {
+            return Ok((None, vec![]));
+        }
         crate::local_index::query(&local_state, &sources.local_channels, &local_kw)
             .await
             .map(|results| (None, results))
@@ -623,7 +717,11 @@ fn source_execution_stream(
         let kw = kw.clone();
         let policy = policy.clone();
         async move {
-            let (meta, results) = execute_source(&state, &source, &kw, &policy).await;
+            let (meta, results) = if source.id.starts_with("custom:") {
+                execute_custom(&state, &source, &kw, &policy).await
+            } else {
+                execute_source(&state, &source, &kw, &policy).await
+            };
             Ok((Some(meta), results))
         }
     }))
@@ -704,7 +802,7 @@ fn valid_search_keyword(keyword: &str) -> bool {
     (1..=100).contains(&length)
 }
 
-async fn resolve_custom_channels(
+pub(crate) async fn resolve_custom_channels(
     state: &AppState,
     session: &crate::auth::Session,
     req: &mut SearchRequest,
@@ -713,38 +811,29 @@ async fn resolve_custom_channels(
     if req.channels.is_none() {
         return Ok(());
     }
-    let channels = if let Some(user_id) = session.user_id {
-        sqlx::query_scalar::<_, Value>("SELECT custom_channels_json FROM users WHERE id=$1")
-            .bind(user_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .unwrap_or_else(|| json!([]))
-    } else {
-        if !policy.anonymous_custom_channels {
-            return Err(ApiError::Forbidden(
-                "自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。".into(),
-            ));
-        }
-        let mut redis = state.redis.connection()?;
-        let stored: Option<String> = redis
-            .get(format!("pansou:anon_channels:{}", session.token))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
-        stored
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_else(|| json!([]))
-    };
-    let channels = serde_json::from_value::<Vec<String>>(channels)
-        .map_err(|error| ApiError::Internal(format!("读取自定义频道失败：{error}")))?;
-    if channels.len() > policy.custom_channel_limit {
+    if session.user_id.is_none() && !policy.anonymous_custom_channels {
         return Err(ApiError::Forbidden(
-            "已保存的自定义频道超过当前配额，请先删除部分频道".into(),
+            "管理员尚未允许匿名自定义频道搜索".into(),
         ));
     }
-    if channels.is_empty() {
-        return Err(ApiError::Forbidden("请先添加至少一个公开频道".into()));
+    let mut channels = req
+        .channels
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| {
+            crate::telegram::normalize_channel(&c)
+                .ok_or_else(|| ApiError::BadRequest("无效公开频道".into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    channels.sort();
+    channels.dedup();
+    if channels.is_empty() || channels.len() > policy.custom_channel_limit {
+        return Err(ApiError::BadRequest("自定义频道数量超出配额或为空".into()));
     }
     req.channels = Some(channels);
+    req.source_ids = None;
+    let _ = state;
     Ok(())
 }
 
@@ -923,7 +1012,7 @@ pub async fn search_json(
     )
     .await?;
     let search_log_id = create_search_log(&state, &session, &req, ip).await;
-    let result = run_search(&state, req, true, &policy).await;
+    let result = run_search(&state, req.clone(), true, &policy).await;
     permit.release().await;
     let out = match result {
         Ok(output) => output,
@@ -937,9 +1026,35 @@ pub async fn search_json(
     if let Some(log_id) = search_log_id {
         complete_search_log(&state, log_id, &out).await;
     }
-    Ok(Json(search_json_payload(out, search_log_id)))
+    let (results, sources) = project_output(&state, &session, &req, &out).await?;
+    Ok(Json(
+        json!({"code":0,"message":"success","data":{"contractVersion":2,"total":out.total,"results":results,"sources":sources,"searchLogId":search_log_id}}),
+    ))
 }
 
+async fn project_output(
+    state: &AppState,
+    session: &crate::auth::Session,
+    req: &SearchRequest,
+    out: &SearchResponse,
+) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
+    let metas = out.sources.as_deref().unwrap_or_default();
+    let live_count: usize = metas.iter().map(|m| m.results.len()).sum();
+    let local_count = out.results.len().saturating_sub(live_count);
+    let mut results =
+        crate::link_resolution::project(state, session, req, None, &out.results[..local_count])
+            .await?;
+    let mut sources = vec![];
+    for source in metas {
+        let items =
+            crate::link_resolution::project(state, session, req, Some(&source.id), &source.results)
+                .await?;
+        results.extend(items.iter().cloned());
+        sources.push(json!({"id":source.id,"name":crate::resource_clean::clean_field(&source.name),"priority":source.priority,"status":source.status,"resultCount":items.len(),"elapsedMs":source.elapsed_ms,"transformMs":source.transform_ms,"proxyNodes":[],"results":items}));
+    }
+    Ok((results, sources))
+}
+#[cfg(test)]
 fn search_json_payload(out: SearchResponse, search_log_id: Option<i64>) -> Value {
     json!({"code":0,"message":"success","data":{"total":out.total,"results":out.results,"sources":out.sources.unwrap_or_default(),"searchLogId":search_log_id}})
 }
@@ -948,10 +1063,12 @@ const SEARCH_SSE_INTERVAL_MS: u64 = 16;
 fn sse_start_payload(search_log_id: Option<i64>) -> Value {
     json!({
         "intervalMs": SEARCH_SSE_INTERVAL_MS,
+        "contractVersion": 2,
         "searchLogId": search_log_id,
     })
 }
 
+#[cfg(test)]
 fn sse_result_payload(results: Vec<SearchResult>) -> Value {
     json!({"results": results})
 }
@@ -1052,7 +1169,7 @@ pub async fn search_sse(
             encoded.push_str(&encode_sse_event(
                 event_id,
                 "result",
-                sse_result_payload(output.results.clone()),
+                json!({"contractVersion":2,"results":project_output(&state,&session,&req,&output).await?.0}),
             ));
         }
         event_id += 1;
@@ -1122,7 +1239,7 @@ pub async fn search_sse(
             };
             let (meta, items) = match value {
                 Ok(v) => v,
-                Err(e) => {
+                Err(_e) => {
                     if let Some(id) = search_log_id {
                         fail_search_log(&worker_state, id).await;
                     }
@@ -1130,13 +1247,14 @@ pub async fn search_sse(
                         &sender,
                         &mut event_id,
                         "error",
-                        json!({"message":e.to_string()}),
+                        json!({"message":"搜索执行失败，请稍后重试"}),
                     )
                     .await;
                     return;
                 }
             };
             let succeeded = meta.as_ref().is_none_or(|meta| meta.status == "success");
+            let source_id = meta.as_ref().map(|m| m.id.clone());
             let local_empty = meta.is_none() && items.is_empty();
             all.extend(items.iter().cloned());
             if let Some(meta) = meta {
@@ -1152,9 +1270,35 @@ pub async fn search_sse(
                     tokio::time::sleep(remaining).await;
                 }
             }
-            if push_sse_event(&sender, &mut event_id, "result", sse_result_payload(items))
-                .await
-                .is_err()
+            let projected = match crate::link_resolution::project(
+                &worker_state,
+                &session,
+                &req,
+                source_id.as_deref(),
+                &items,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = push_sse_event(
+                        &sender,
+                        &mut event_id,
+                        "error",
+                        json!({"message":"链接引用暂不可用，请重试搜索"}),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if push_sse_event(
+                &sender,
+                &mut event_id,
+                "result",
+                json!({"contractVersion":2,"results":projected}),
+            )
+            .await
+            .is_err()
             {
                 if let Some(log_id) = search_log_id {
                     fail_search_log(&worker_state, log_id).await;
@@ -1279,17 +1423,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_scope_needs_no_source_template_or_priority() {
+    async fn custom_scope_validates_only_submitted_channels_without_resource_io() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
             .unwrap();
         let state = AppState::new(pool, crate::redis_store::RedisStore::disconnected());
-        let channels = vec!["@Example_Channel".into(), "https://t.me/s/another".into()];
-        let sources = load_sources(&state, None, Some(&channels)).await.unwrap();
-        assert_eq!(sources.local_channels, vec!["example_channel", "another"]);
-        assert!(sources.live_sources.is_empty());
-        let invalid = vec!["https://example.com/not-a-channel".into()];
-        assert!(load_sources(&state, None, Some(&invalid)).await.is_err());
+        let session = crate::auth::Session {
+            token: "unit-test".into(),
+            user_id: Some(1),
+        };
+        let mut req:SearchRequest=serde_json::from_value(json!({"kw":"x","channels":["@Example_Channel","https://t.me/s/another"],"source_ids":["ignore-system"]})).unwrap();
+        resolve_custom_channels(
+            &state,
+            &session,
+            &mut req,
+            &crate::policy::UserPolicy::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(req.channels.unwrap(), vec!["another", "example_channel"]);
+        assert!(req.source_ids.is_none());
+        let mut invalid: SearchRequest = serde_json::from_value(
+            json!({"kw":"x","channels":["https://example.com/not-a-channel"]}),
+        )
+        .unwrap();
+        assert!(
+            resolve_custom_channels(
+                &state,
+                &session,
+                &mut invalid,
+                &crate::policy::UserPolicy::default()
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1342,7 +1509,8 @@ mod tests {
         let start = sse_start_payload(Some(42));
         assert_eq!(start["intervalMs"], SEARCH_SSE_INTERVAL_MS);
         assert_eq!(start["searchLogId"], 42);
-        assert_eq!(start.as_object().map(serde_json::Map::len), Some(2));
+        assert_eq!(start.as_object().map(serde_json::Map::len), Some(3));
+        assert_eq!(start["contractVersion"], 2);
 
         let result = sse_result_payload(Vec::new());
         assert!(result["results"].is_array());

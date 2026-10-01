@@ -1,0 +1,45 @@
+/* Shared surfaces and tokens for every public page. */
+.themed-page { min-height: 100vh; box-sizing: border-box; --text-tertiary: #697586; }
+.themed-page.theme-classic { background: radial-gradient(ellipse at 0 0, #e5effb, transparent 1120rpx), #f6f7f9; }
+.themed-page.theme-geometric {
+  --primary: #3155e7; --primary-soft: #e1e4fc; --ink: #20201e;
+  --text-primary: #20201e; --text-secondary: #56564f; --text-tertiary: #69695f;
+  --bg-primary: #fffefa; --bg-secondary: #fffbed;
+  --border-light: #20201e; --border-medium: #20201e;
+  --radius-md: 10rpx; --radius-lg: 14rpx; --radius-xl: 18rpx;
+  --shadow-sm: 4rpx 4rpx 0 #20201e;
+  background: #fffbed;
+}
+.themed-page.tab-page { padding-bottom: calc(160rpx + 96rpx + env(safe-area-inset-bottom)); }
+.themed-page .appearance-switch { display: flex; align-items: center; justify-content: center; margin: 0 0 24rpx auto; padding: 0 24rpx; min-height: 88rpx; width: fit-content; font-size: 26rpx; font-weight: 600; color: var(--text-secondary); background: var(--bg-primary); border: 2rpx solid var(--border-light); border-radius: 24rpx; }
+.appearance-pressed { opacity: .7; }
+.themed-page.theme-classic .card,
+.themed-page.theme-classic .copyright-card { background: rgba(255,255,255,.88); border: 2rpx solid #fff; box-shadow: 0 12rpx 36rpx rgba(31,50,75,.06), inset 0 2rpx 0 #fff; }
+.themed-page.theme-geometric .card,
+.themed-page.theme-geometric .copyright-card { border: 4rpx solid var(--ink); border-radius: 16rpx; background: var(--bg-primary); box-shadow: 6rpx 6rpx 0 var(--ink); }
+.themed-page.theme-geometric .appearance-switch,
+.themed-page.theme-geometric .plain-btn { border: 4rpx solid var(--ink); border-radius: 10rpx; box-shadow: 4rpx 4rpx 0 var(--ink); background: var(--bg-primary); }
+.themed-page.theme-geometric .primary-btn,
+.themed-page.theme-geometric .add-btn { background: #ffe48a; color: var(--ink); border: 4rpx solid var(--ink); border-radius: 10rpx; box-shadow: 4rpx 4rpx 0 var(--ink); }
+.themed-page.theme-geometric .avatar,
+.themed-page.theme-geometric .logo { border: 4rpx solid var(--ink); border-radius: 18rpx; background: #ffe48a; color: var(--ink); box-shadow: 5rpx 5rpx 0 var(--ink); }
+.themed-page.theme-geometric .user-card { background: #e1e4fc; }
+.themed-page.theme-geometric .menu-hover { background: #ffe48a; }
+.themed-page.theme-geometric .add-input { border: 4rpx solid var(--ink); border-radius: 10rpx; background: #fffefa; }
+.themed-page .add-input { min-width: 0; }
+.themed-page .remove-btn { min-height: 88rpx; }
+.themed-page .user-info { min-width: 0; }
+.themed-page .user-name { overflow-wrap: anywhere; }
+.themed-page .avatar { flex-shrink: 0; }
+.themed-page .copyright-note,
+.themed-page .footnote { font-size: 24rpx; line-height: 1.7; }
+.themed-page .back-top { bottom: calc(160rpx + 96rpx + env(safe-area-inset-bottom)); }
+.themed-page .search-btn,
+.themed-page .ghost-btn,
+.themed-page .scope-btn { min-height: 88rpx; }
+/* Limit live blur to the navigation and main search surface. */
+.themed-page .hot-item,
+.themed-page .card { -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  .themed-page .spinner { animation: none; }
+}

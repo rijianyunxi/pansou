@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "盘搜",
+  "navigationStyle": "custom",
+  "usingComponents": {
+    "resource-card": "/components/resource-card/index"
+  }
+}

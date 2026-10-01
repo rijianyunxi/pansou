@@ -86,7 +86,7 @@ async function back() {
               <option value="parsed">已解析</option>
               <option value="empty">无资源</option>
               <option value="failed">解析失败</option>
-              <option value="review">待复核</option></AdminSelect
+</AdminSelect
             ><Button variant="outline" @click="refresh">刷新消息</Button>
           </div>
           <div class="query-toolbar">

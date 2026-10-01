@@ -126,7 +126,18 @@ pub async fn cloud_check(
     let r = reference(&state, &target).await?;
     let _slot = slot(&state).await?;
     let drive = Drive::load(&state, r.provider).await?;
-    Ok(ok(drive.check(&r).await))
+    let value = drive.check(&r).await;
+    crate::link_resolution::record_check(
+        &state,
+        &crate::models::Link {
+            r#type: r.provider.name().into(),
+            url: r.url.clone(),
+            password: Some(r.password.clone()).filter(|s| !s.is_empty()),
+        },
+        &value,
+    )
+    .await?;
+    Ok(ok(value))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -277,6 +288,7 @@ async fn execute(
                 return Err(ApiError::Conflict("删除确认已使用，请勿重复执行".into()));
             }
             drive.delete_files(&ctx.files).await.map_err(|e| e.api())?;
+            sqlx::query("UPDATE link_share_cache SET state='invalid',share_validity=0,last_error_code='admin_cloud_delete',updated_at=now() WHERE target_account_key=$1 AND state='ready'").bind(&drive.account).execute(&state.pool).await?;
             Ok(
                 json!({"provider":r.provider,"deleted":ctx.files.len(),"deletedCount":ctx.files.len(),"names":ctx.files.iter().map(|f|&f.name).collect::<Vec<_>>(),"timings":drive.wire.trace.lock().await.clone()}),
             )
@@ -534,6 +546,12 @@ async fn check_resource(
                 }
                 Err(_) => json!({"status":"unknown","reason":"分享链接格式异常"}),
             };
+            let original = crate::models::Link {
+                r#type: provider.name().into(),
+                url: input.url.clone(),
+                password: input.password.clone(),
+            };
+            crate::link_resolution::record_check(&state, &original, &result).await?;
             statuses.push(result);
         }
         if links.as_array().is_some_and(|a| a.len() > 20) {
@@ -567,7 +585,7 @@ async fn check_resource(
             vec![],
         ),
     };
-    let changed = sqlx::query("UPDATE managed_resources SET check_status=$2,check_message=$3,checked_at=now() WHERE id=$1 AND deleted_at IS NULL AND links_json=$4")
+    let changed = sqlx::query("UPDATE managed_resources SET check_status=$2,check_message=$3,checked_at=now(),link_validity=CASE $2 WHEN 'valid' THEN 1 WHEN 'invalid' THEN 0 ELSE -1 END,link_validity_updated_at=now() WHERE id=$1 AND deleted_at IS NULL AND links_json=$4")
         .bind(&id).bind(&status).bind(&message).bind(&links).execute(&state.pool).await?;
     Ok(
         json!({"id":id,"status":if changed.rows_affected()==1{status.as_str()}else{"unknown"},"message":if changed.rows_affected()==1{message.as_str()}else{"资源链接已改变，请重新检测"},"links":links_result}),

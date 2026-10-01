@@ -1,0 +1,21 @@
+<view class="feedback theme-{{theme}}">
+  <view wx:if="{{(toast || loading) && !modal}}" class="notice-position" style="top: calc({{top}}px + 24rpx);">
+    <view class="notice {{toast ? toast.kind : 'loading'}}" role="status" aria-live="polite">
+      <view class="status-badge" aria-hidden="true">
+        <view wx:if="{{!toast}}" class="spinner"></view>
+        <view wx:else class="status-icon {{toast.kind === 'success' ? 'check-icon' : 'info-icon'}}"></view>
+      </view>
+      <text class="message">{{toast ? toast.text : loadingText}}</text>
+    </view>
+  </view>
+  <view wx:if="{{modal}}" class="scrim" catchtouchmove="swallow">
+    <view class="dialog" role="dialog" aria-modal="true" aria-label="{{modal.title}}">
+      <text class="title">{{modal.title}}</text>
+      <text class="content">{{modal.content}}</text>
+      <view class="actions">
+        <button wx:if="{{modal.showCancel}}" bindtap="cancel" hover-class="pressed">{{modal.cancelText}}</button>
+        <button class="confirm" bindtap="confirm" hover-class="pressed">{{modal.confirmText}}</button>
+      </view>
+    </view>
+  </view>
+</view>

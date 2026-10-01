@@ -317,6 +317,14 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
         ("/share/set", _) => {
             json!({"errno":0,"link":"https://pan.baidu.com/s/1mine","shareid":101})
         }
+        ("/api/create", _) => {
+            json!({"errno":0,"fs_id":102,"server_filename":"pansou-fixture","isdir":1,"path":"/project/pansou-fixture","size":0})
+        }
+        ("/share/cancel", _) => json!({"errno":0}),
+        ("/qpc/file", _) => {
+            json!({"code":0,"data":{"fid":"own-dir","file_name":"pansou-fixture","dir":true,"size":0}})
+        }
+        ("/qpc/share/delete", _) => json!({"code":0}),
         ("/api/filemanager", _) => json!({"errno":0,"info":[]}),
         _ => {
             return (
@@ -329,6 +337,47 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
     axum::Json(payload).into_response()
 }
 use futures::StreamExt;
+#[tokio::test]
+async fn temporary_shares_directory_creation_and_revocation_for_both_providers() {
+    let mock = Mock::start().await;
+    for provider in [Provider::Baidu, Provider::Quark] {
+        let drive = mock.drive(provider);
+        let dir = drive
+            .create_directory(
+                if provider == Provider::Baidu {
+                    "/project"
+                } else {
+                    "project"
+                },
+                "pansou-fixture",
+            )
+            .await
+            .unwrap();
+        assert!(dir.is_dir);
+        let files = if provider == Provider::Baidu {
+            vec![file("102", "fixture", 0, true)]
+        } else {
+            vec![dir]
+        };
+        let pending = drive.begin_temporary_share(&files, 7).await.unwrap();
+        assert!(pending["shareId"].as_str().is_some());
+        let share = drive.finish_temporary_share(&pending).await.unwrap();
+        assert!(share["url"].as_str().is_some());
+        drive
+            .revoke_share(share["shareId"].as_str().unwrap())
+            .await
+            .unwrap();
+    }
+    let data = mock.data.lock().await;
+    let b = data.calls.iter().find(|c| c.1 == "/share/set").unwrap();
+    let form: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(b.2.as_bytes()).collect();
+    assert_eq!(form.get("period").map(|s| s.as_ref()), Some("7"));
+    let q = data.calls.iter().find(|c| c.1 == "/qpc/share").unwrap();
+    let body: Value = serde_json::from_str(&q.2).unwrap();
+    assert_eq!(body["expired_type"], 2);
+    assert!(body["expired_at"].as_i64().unwrap() > chrono::Utc::now().timestamp_millis());
+}
 #[tokio::test]
 async fn quark_sync_transfer_reuses_context_and_shares_only_new_owned_ids() {
     let mock = Mock::start().await;

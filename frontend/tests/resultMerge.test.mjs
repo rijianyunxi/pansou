@@ -1,37 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { linkIdentity, mergeResultsByLink } from '../utils/resultMerge.ts';
-const result=(id,urls)=>({id,name:id,description:null,datetime:null,cloud_types:['quark'],links:urls.map(url=>({url,type:'quark',password:null}))});
-test('mobile share fragments are separate identities',()=>{
- assert.notEqual(linkIdentity({url:'https://yun.139.com/shareweb/#/w/i/a'}),linkIdentity({url:'https://yun.139.com/shareweb/#/w/i/b'}));
-});
-test('password and tracking do not change share identity',()=>{
- assert.equal(linkIdentity({url:'https://pan.quark.cn/s/a?pwd=AB12&utm_source=tg'}),linkIdentity({url:'https://pan.quark.cn/s/a'}));
-});
-test('identical unordered share sets merge and preserve passwords',()=>{
- const a=result('a',['https://pan.quark.cn/s/a','https://pan.baidu.com/s/b']);
- const b=result('b',['https://pan.baidu.com/s/b','https://pan.quark.cn/s/a']);
- b.links[1].password='AB12';
+import { canOpenLink, usable, resolveLink } from '../utils/linkResolution.ts';
+const result=(id,keys)=>({id,resultRef:'ref-'+id,dedupKey:[...keys].sort().join(':'),name:id,description:null,datetime:null,cloud_types:['quark'],links:keys.map(linkKey=>({linkKey,linkRef:id+'-'+linkKey,type:'quark',validity:-1}))});
+test('opaque link identity is used without URL',()=>assert.equal(linkIdentity({linkKey:'abc'}),'abc'));
+test('identical sets merge and keep a complete capability snapshot',()=>{
+ const a=result('a',['x','y']), b=result('b',['y','x']);
  const merged=mergeResultsByLink([a,b]);
- assert.equal(merged.length,1);assert.equal(merged[0].id,'a');assert.equal(merged[0].links[0].password,'AB12');
+ assert.equal(merged.length,1); assert.equal(merged[0].id,'a'); assert.equal(merged[0].resultRef,'ref-b');
+ assert.ok(merged[0].links.every(l=>l.linkRef.startsWith('b-')));
 });
-test('partially overlapping resource sets never absorb each other',()=>{
- const a=result('a',['https://pan.quark.cn/s/a']);
- const b=result('b',['https://pan.quark.cn/s/a','https://pan.quark.cn/s/b']);
- const c=result('c',['https://pan.quark.cn/s/b']);
- assert.equal(mergeResultsByLink([a,b,c]).length,3);
+test('partially overlapping collections do not absorb resources',()=>assert.equal(mergeResultsByLink([result('a',['x']),result('b',['x','y']),result('c',['y'])]).length,3));
+test('unsafe protocols and expired links cannot open',()=>{
+ assert.equal(canOpenLink('javascript:alert(1)'),false);assert.equal(canOpenLink('https://example.test/a'),true);
+ assert.equal(usable({status:'unavailable',url:'https://example.test'}),false);
+ assert.equal(usable({status:'completed',url:'https://example.test',deliveryExpiresAt:'2000-01-01'}),false);
+ assert.equal(usable({status:'completed',url:'https://example.test',shareExpiresAt:'2000-01-01'}),false);
 });
-
-test('local-first batches keep the collected title and merge later live duplicates',()=>{
- const local=result('local',['https://pan.quark.cn/s/shared']);
- local.name='采集标题';
- const other=result('other',['https://pan.quark.cn/s/other']);
- const live=result('live',['https://pan.quark.cn/s/shared?pwd=AB12']);
- live.name='外部标题';live.links[0].password='AB12';
- const first=mergeResultsByLink([local]);
- const merged=mergeResultsByLink([...first,other,live,live]);
- assert.equal(merged.length,2);
- assert.deepEqual(merged.map(item=>item.id),['local','other']);
- assert.equal(merged[0].name,'采集标题');
- assert.equal(merged[0].links[0].password,'AB12');
+test('unavailable is a successful terminal response',async()=>{
+ const old=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;return {ok:true,status:200,json:async()=>({data:{status:'unavailable',validity:0}})}};
+ try {const out=await resolveLink('r','l','key',new AbortController().signal);assert.equal(out.status,'unavailable');assert.equal(calls,1);}finally{globalThis.fetch=old;}
 });

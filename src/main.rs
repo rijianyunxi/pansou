@@ -5,6 +5,7 @@ mod crawl;
 mod db;
 mod error;
 mod handlers;
+mod link_resolution;
 mod local_index;
 mod migration_preflight;
 mod models;
@@ -12,6 +13,7 @@ mod outbound;
 mod policy;
 mod redis_store;
 mod resource_clean;
+mod runtime;
 mod search_cache;
 mod security;
 mod telegram;
@@ -23,14 +25,21 @@ use anyhow::{Context, Result};
 use app::{AppState, build_router};
 use db::{ensure_admin, init_db};
 use redis_store::RedisStore;
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, future::IntoFuture, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Backend-only configuration lives in the Rust application root.
-    let _ = dotenvy::dotenv();
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // Parse errors may contain a complete Cookie; do not include the raw line in logs.
+        Err(_) => {
+            anyhow::bail!("读取 .env 失败：请检查配置语法，包含空格或分号的 Cookie 必须整体加引号")
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             env::var("RUST_LOG").unwrap_or_else(|_| "pansou_api=info,tower_http=info".into()),
@@ -54,13 +63,33 @@ async fn main() -> Result<()> {
     let redis = RedisStore::connect(&redis_url).await?;
     let state = Arc::new(AppState::new(pool, redis));
 
-    if mode == "worker" {
-        return crawl::worker(state).await.map_err(anyhow::Error::from);
+    if !matches!(mode.as_str(), "serve" | "worker" | "link-worker") {
+        anyhow::bail!("运行模式必须是 serve、worker、link-worker 或 migration-preflight");
     }
+    let mut workers = tokio::task::JoinSet::new();
     if mode != "serve" {
-        anyhow::bail!("运行模式必须是 serve、worker 或 migration-preflight");
+        let worker_state = state.clone();
+        workers.spawn(async move {
+            if mode == "worker" {
+                crawl::worker(worker_state).await
+            } else {
+                link_resolution::worker(worker_state).await
+            }
+        });
+        let result = tokio::select! {
+            _ = runtime::shutdown_signal() => Ok(()),
+            result = workers.join_next() => Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")),
+        };
+        state.shutdown.cancel();
+        drain_workers(&mut workers).await?;
+        return result;
     }
-    let app = build_router(state);
+    let embedded = match env::var("PANSOU_EMBEDDED_WORKERS").as_deref() {
+        Ok("false" | "0") => false,
+        Ok("true" | "1") | Err(_) => true,
+        Ok(_) => anyhow::bail!("PANSOU_EMBEDDED_WORKERS 必须是 true/false 或 1/0"),
+    };
+    let app = build_router(state.clone());
     let host = env::var("PANSOU_API_HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port: u16 = env::var("PANSOU_API_PORT")
         .ok()
@@ -68,11 +97,51 @@ async fn main() -> Result<()> {
         .unwrap_or(3666);
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = TcpListener::bind(addr).await?;
+    if embedded {
+        let crawl_state = state.clone();
+        workers.spawn(async move { crawl::worker(crawl_state).await });
+        let link_state = state.clone();
+        workers.spawn(async move { link_resolution::worker(link_state).await });
+    }
     info!(%addr, "pansou Rust API listening");
-    axum::serve(
+    info!(embedded_workers = embedded, "background runtime configured");
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
-    Ok(())
+    .with_graceful_shutdown(state.shutdown.clone().cancelled_owned())
+    .into_future();
+    tokio::pin!(server);
+    let (result, server_finished) = tokio::select! {
+        result = &mut server => (result.map_err(anyhow::Error::from), true),
+        _ = runtime::shutdown_signal() => (Ok(()), false),
+        result = workers.join_next(), if embedded => {
+            (Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")), false)
+        }
+    };
+    state.shutdown.cancel();
+    if !server_finished {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), &mut server).await;
+    }
+    drain_workers(&mut workers).await?;
+    result
+}
+
+async fn drain_workers(
+    workers: &mut tokio::task::JoinSet<Result<(), error::ApiError>>,
+) -> Result<()> {
+    let drain = async {
+        while let Some(result) = workers.join_next().await {
+            result??;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(45), drain).await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!("shutdown deadline exceeded; durable job leases will recover");
+            workers.shutdown().await;
+            Ok(())
+        }
+    }
 }

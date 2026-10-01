@@ -195,11 +195,6 @@
         </footer>
       </Card>
     </template>
-    <MonitorPanel
-      v-else-if="view === 'monitor'"
-      @unauthorized="adminLocked = true"
-      @test-source="testSourceById"
-    />
 
     <SourceDetailDrawer
       v-if="detailDrawerOpen && selected"
@@ -259,7 +254,6 @@ import { navigate, apiFetch, setDocumentHead } from "../../src/appRuntime";
 import { buildSourceCatalogUrl } from "../../utils/sourceDebugUrl";
 
 import ConsoleIcon from "../../components/sources/ConsoleIcon.vue";
-import MonitorPanel from "../../components/monitor/MonitorPanel.vue";
 import SourceEditor from "../../components/sources/SourceEditor.vue";
 import SourceDetailDrawer from "../../components/sources/SourceDetailDrawer.vue";
 import SourceDebugDialog from "../../components/sources/SourceDebugDialog.vue";
@@ -303,25 +297,8 @@ const selectedReport = computed(() =>
   selected.value ? reports.value[selected.value.id] : undefined,
 );
 const route = useRoute();
-type ConsoleView = "sources" | "monitor";
-const view = computed<ConsoleView>(() => {
-  // Read the reactive route inside the computed. A plain const would make
-  // in-app navigation update the URL while leaving the old page mounted.
-  const routeView =
-    (Array.isArray(route.params.view)
-      ? route.params.view[0]
-      : route.params.view) || route.path.split("/").filter(Boolean)[1];
-  return routeView === "monitor" ? "monitor" : "sources";
-});
-const viewTitle = computed(
-  () =>
-    (
-      ({
-        sources: "来源管理",
-        monitor: "运行监控",
-      }) as Record<ConsoleView, string>
-    )[view.value],
-);
+const view = computed(() => "sources");
+const viewTitle = computed(() => "来源管理");
 const search = ref("");
 const runningId = ref("");
 const keyword = ref("三体");
@@ -455,13 +432,6 @@ function notify(message: string) {
   noticeTimer = setTimeout(() => (notice.value = ""), 4000);
 }
 onMounted(async () => {
-  if (!["sources", "monitor"].includes(view.value)) {
-    await navigate(
-      { path: "/admin/sources", query: route.query },
-      { replace: true },
-    );
-    return;
-  }
   clientReady.value = true;
   await loadSourceCatalog();
   if (adminLocked.value) {
@@ -481,11 +451,6 @@ function openDebug(source: SourceDefinition) {
   selectedId.value = source.id;
   detailDrawerOpen.value = false;
   debugDialogOpen.value = true;
-}
-function testSourceById(id: string) {
-  const source = sources.value.find((item) => item.id === id);
-  if (source) openDebug(source);
-  else notify(`未找到资源源 ${id}。`);
 }
 function closeSourceEditor() {
   if (!sourceSaving.value) editorOpen.value = false;

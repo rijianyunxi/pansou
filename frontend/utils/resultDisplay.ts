@@ -15,7 +15,7 @@ export function flattenResultsForDisplay(results: SearchResult[]): DisplaySearch
     id: `${resource.id}::${index}`,
     cloud_types: [link.type],
     links: [link],
-    displayKey: `${resource.id}|${link.type}|${link.url}|${index}`,
+    displayKey: `${resource.resultRef}|${link.linkKey}|${index}`,
     sourceResource: resource,
   })));
 }

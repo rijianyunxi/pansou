@@ -2,7 +2,7 @@ use crate::{app::AppState, error::ApiError};
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{StatusCode, header},
     response::IntoResponse,
 };
 use serde_json::{Value, json};
@@ -51,71 +51,7 @@ pub async fn hot_searches(
         json!({"code":0,"message":"success","data":{"hotSearches":data}}),
     ))
 }
-pub async fn monitor(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    let _ = state.auth().session(&headers).await?;
-    let rows = sqlx::query(
-        "SELECT s.id,s.name,s.priority,s.enabled,s.updated_at,h.snapshot_json
-         FROM resource_sources s
-         LEFT JOIN source_health h ON h.source_id=s.id
-         ORDER BY s.priority,s.id",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    let sources = rows
-        .into_iter()
-        .map(|row| {
-            let snapshot = row.get::<Option<Value>, _>("snapshot_json");
-            let health = snapshot.map(normalize_monitor_health);
-            json!({
-                "id": row.get::<String, _>("id"),
-                "name": row.get::<String, _>("name"),
-                "priority": row.get::<i32, _>("priority"),
-                "kind": "source",
-                "enabled": row.get::<bool, _>("enabled"),
-                "version": row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").to_rfc3339(),
-                "health": health,
-            })
-        })
-        .collect::<Vec<_>>();
-    let total = sources.len();
-    let healthy = sources
-        .iter()
-        .filter(|source| {
-            source
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && source
-                    .get("health")
-                    .and_then(|v| v.get("healthy"))
-                    .and_then(Value::as_bool)
-                    == Some(true)
-        })
-        .count();
-    let failed = sources
-        .iter()
-        .filter(|source| {
-            source
-                .get("health")
-                .and_then(|v| v.get("healthy"))
-                .and_then(Value::as_bool)
-                == Some(false)
-        })
-        .count();
-    Ok(Json(json!({
-        "code": 0,
-        "data": {
-            "generatedAt": chrono::Utc::now().to_rfc3339(),
-            "sources": sources,
-            "summary": {"total": total, "healthy": healthy, "failed": failed},
-        }
-    })))
-}
-
-fn normalize_monitor_health(mut health: Value) -> Value {
+pub(super) fn normalize_monitor_health(mut health: Value) -> Value {
     let Some(object) = health.as_object_mut() else {
         return health;
     };

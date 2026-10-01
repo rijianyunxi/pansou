@@ -72,8 +72,7 @@ fn read_cursor(q: &HashMap<String, String>, kind: &str) -> Result<Option<Cursor>
         .decode(raw)
         .map_err(|_| bad())?;
     let c: Cursor = serde_json::from_slice(&bytes).map_err(|_| bad())?;
-    if c.kind != kind || c.id < 1 || c.channel.len() > 64 || (kind == "review" && c.date.is_none())
-    {
+    if c.kind != kind || c.id < 1 || c.channel.len() > 64 {
         return Err(bad());
     }
     Ok(Some(c))
@@ -96,9 +95,9 @@ fn cursor_value(
     )
 }
 fn job(r: &PgRow) -> Value {
-    json!({"id":r.get::<i64,_>("id"),"channelId":r.get::<String,_>("channel_id"),"kind":r.get::<String,_>("kind"),"status":r.get::<String,_>("status"),"pages":r.get::<i32,_>("pages"),"messages":r.get::<i32,_>("messages"),"resources":r.get::<i32,_>("resources"),"failures":r.get::<i32,_>("failures"),"maxPages":r.get::<i32,_>("max_pages"),"cursorBefore":r.get::<Option<i64>,_>("cursor_before"),"targetMessageId":r.get::<Option<i64>,_>("target_message_id"),"lastError":r.get::<Option<String>,_>("last_error"),"stopReason":r.get::<Option<String>,_>("stop_reason"),"diagnostics":r.get::<Value,_>("diagnostics_json"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"updatedAt":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at"),"completedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("completed_at")})
+    json!({"id":r.get::<i64,_>("id"),"channelId":r.get::<String,_>("channel_id"),"kind":r.get::<String,_>("kind"),"status":r.get::<String,_>("status"),"pages":r.get::<i32,_>("pages"),"messages":r.get::<i32,_>("messages"),"resources":r.get::<i32,_>("resources"),"failures":r.get::<i32,_>("failures"),"nextRunAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_run_at"),"attempts":r.get::<i32,_>("attempts"),"cursorBefore":r.get::<Option<i64>,_>("cursor_before"),"lastError":r.get::<Option<String>,_>("last_error"),"stopReason":r.get::<Option<String>,_>("stop_reason"),"diagnostics":r.get::<Value,_>("diagnostics_json"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"updatedAt":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at"),"completedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("completed_at")})
 }
-const CHANNEL_SELECT: &str = "SELECT c.*,EXISTS(SELECT 1 FROM resource_sources s WHERE s.channel_id=c.id AND s.enabled) published FROM crawl_channels c";
+const CHANNEL_SELECT: &str = "SELECT c.* FROM crawl_channels c";
 async fn channels_data(
     pool: &PgPool,
     rows: Vec<PgRow>,
@@ -139,11 +138,9 @@ async fn channels_data(
         } else {
             p
         };
-        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"managed":r.get::<bool,_>("managed"),"archived":r.get::<bool,_>("archived"),"published":r.get::<bool,_>("published"),"version":r.get::<i64,_>("version"),"intervalSeconds":r.get::<i32,_>("interval_seconds"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"messageCount":st.get::<i64,_>("message_count"),"resourceCount":st.get::<i64,_>("resource_count"),"failureCount":st.get::<i64,_>("failure_count"),"latestJob":st.get::<Option<Value>,_>("latest_job"),"outbound":p,"effectiveOutbound":effective});
+        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"messageCount":st.get::<i64,_>("message_count"),"resourceCount":st.get::<i64,_>("resource_count"),"failureCount":st.get::<i64,_>("failure_count"),"latestJob":st.get::<Option<Value>,_>("latest_job"),"outbound":p,"effectiveOutbound":effective});
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
-            let bindings=sqlx::query("SELECT id,name,enabled FROM resource_sources WHERE channel_id=$1 ORDER BY priority,id").bind(&id).fetch_all(pool).await?;
-            v["bindings"]=json!(bindings.iter().map(|s|json!({"id":s.get::<String,_>("id"),"name":s.get::<String,_>("name"),"published":s.get::<bool,_>("enabled")})).collect::<Vec<_>>());
         }
         items.push(v);
     }
@@ -158,25 +155,19 @@ pub async fn crawl_channels(
     let page = number(&q, "page", 1, 1, 100000)?;
     let size = number(&q, "pageSize", 20, 1, 100)?;
     let enabled = flag(&q, "enabled")?;
-    let published = flag(&q, "published")?;
-    let managed = flag(&q, "managed")?;
-    let filter = " WHERE NOT c.archived AND ($1='' OR c.id ILIKE '%'||$1||'%' OR c.name ILIKE '%'||$1||'%') AND ($2::bool IS NULL OR c.enabled=$2) AND ($3::bool IS NULL OR EXISTS(SELECT 1 FROM resource_sources s WHERE s.channel_id=c.id AND s.enabled)=$3) AND ($4::bool IS NULL OR c.managed=$4)";
+    let filter = " WHERE ($1='' OR c.id ILIKE '%'||$1||'%' OR c.name ILIKE '%'||$1||'%') AND ($2::bool IS NULL OR c.enabled=$2)";
     let kw = q.get("q").cloned().unwrap_or_default();
     let total =
         sqlx::query_scalar::<_, i64>(&format!("SELECT count(*) FROM crawl_channels c{filter}"))
             .bind(&kw)
             .bind(enabled)
-            .bind(published)
-            .bind(managed)
             .fetch_one(&s.pool)
             .await?;
     let rows = sqlx::query(&format!(
-        "{CHANNEL_SELECT}{filter} ORDER BY c.managed DESC,c.id LIMIT $5 OFFSET $6"
+        "{CHANNEL_SELECT}{filter} ORDER BY c.id LIMIT $3 OFFSET $4"
     ))
     .bind(kw)
     .bind(enabled)
-    .bind(published)
-    .bind(managed)
     .bind(size)
     .bind((page - 1) * size)
     .fetch_all(&s.pool)
@@ -192,13 +183,11 @@ pub async fn crawl_channel_get(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
-    let r = sqlx::query(&format!(
-        "{CHANNEL_SELECT} WHERE c.id=$1 AND NOT c.archived"
-    ))
-    .bind(id)
-    .fetch_optional(&s.pool)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
+    let r = sqlx::query(&format!("{CHANNEL_SELECT} WHERE c.id=$1"))
+        .bind(id)
+        .fetch_optional(&s.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     Ok(ok(channels_data(&s.pool, vec![r], true).await?.remove(0)))
 }
 #[derive(Deserialize)]
@@ -209,23 +198,11 @@ pub struct ChannelForm {
     #[serde(default)]
     pub description: String,
     pub enabled: bool,
-    pub interval_seconds: i32,
     #[serde(default)]
     pub transform: Option<String>,
     pub outbound: Policy,
     #[serde(default)]
     pub expected_version: i64,
-    #[serde(default)]
-    pub bindings: Vec<Binding>,
-    #[serde(default)]
-    pub publish: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Binding {
-    pub id: String,
-    pub name: String,
-    pub published: bool,
 }
 async fn save_channel(
     s: &AppState,
@@ -236,26 +213,21 @@ async fn save_channel(
     if crate::telegram::normalize_channel(&f.id).as_deref() != Some(id) {
         return Err(ApiError::BadRequest("无效频道或不允许修改频道身份".into()));
     }
-    if f.name.trim().is_empty()
-        || f.name.len() > 240
-        || f.description.len() > 4000
-        || !(60..=86400).contains(&f.interval_seconds)
-    {
-        return Err(ApiError::BadRequest(
-            "名称必填，同步间隔须为60～86400秒".into(),
-        ));
+    if f.name.trim().is_empty() || f.name.len() > 240 || f.description.len() > 4000 {
+        return Err(ApiError::BadRequest("名称必填且不能超过240字符".into()));
     }
     if let Some(ref dsl) = f.transform {
         crate::transform::validate(dsl)?;
     }
     let mut tx = s.pool.begin().await?;
+    crawl::lock_index(&mut tx).await?;
     if create {
-        let inserted=sqlx::query("INSERT INTO crawl_channels(id,name,description,managed,enabled,interval_seconds,transform) VALUES($1,$2,$3,true,$4,$5,$6) ON CONFLICT DO NOTHING").bind(id).bind(f.name.trim()).bind(&f.description).bind(f.enabled).bind(f.interval_seconds).bind(&f.transform).execute(&mut *tx).await?.rows_affected();
+        let inserted=sqlx::query("INSERT INTO crawl_channels(id,name,description,enabled,transform) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING").bind(id).bind(f.name.trim()).bind(&f.description).bind(f.enabled).bind(&f.transform).execute(&mut *tx).await?.rows_affected();
         if inserted == 0 {
             return Err(ApiError::Conflict("频道已存在，请在现有频道中编辑".into()));
         }
     } else {
-        let n=sqlx::query("UPDATE crawl_channels SET name=$2,description=$3,enabled=$4,interval_seconds=$5,transform=$6,version=version+1,updated_at=now() WHERE id=$1 AND version=$7 AND NOT archived").bind(id).bind(f.name.trim()).bind(&f.description).bind(f.enabled).bind(f.interval_seconds).bind(&f.transform).bind(f.expected_version).execute(&mut *tx).await?.rows_affected();
+        let n=sqlx::query("UPDATE crawl_channels SET name=$2,description=$3,enabled=$4,transform=$5,version=version+1,updated_at=now() WHERE id=$1 AND version=$6").bind(id).bind(f.name.trim()).bind(&f.description).bind(f.enabled).bind(&f.transform).bind(f.expected_version).execute(&mut *tx).await?.rows_affected();
         if n == 0 {
             return Err(ApiError::Conflict(
                 "频道不存在或配置已被其他操作更新，请重新加载".into(),
@@ -263,38 +235,6 @@ async fn save_channel(
         }
     }
     outbound::save(&mut tx, Owner::Channel(id), &f.outbound).await?;
-    for b in f.bindings {
-        let n=sqlx::query("UPDATE resource_sources SET name=$3,enabled=$4,updated_at=now() WHERE id=$1 AND channel_id=$2").bind(&b.id).bind(id).bind(b.name).bind(b.published).execute(&mut *tx).await?.rows_affected();
-        if n == 0 {
-            return Err(ApiError::BadRequest("公共来源绑定不属于该频道".into()));
-        }
-        if b.published {
-            sqlx::query(
-                "INSERT INTO search_setting_sources(source_id) VALUES($1) ON CONFLICT DO NOTHING",
-            )
-            .bind(b.id)
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
-    if f.publish {
-        let has = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM resource_sources WHERE channel_id=$1)",
-        )
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !has {
-            let source_id = format!("tg-{id}");
-            sqlx::query("INSERT INTO resource_sources(id,name,description,url,method,format,priority,enabled,transform,channel_id,kind) VALUES($1,$2,$3,$4,'GET','html',0,true,'',$5,'telegram')").bind(&source_id).bind(&f.name).bind(&f.description).bind(format!("https://t.me/s/{id}")).bind(id).execute(&mut *tx).await?;
-            sqlx::query(
-                "INSERT INTO search_setting_sources(source_id) VALUES($1) ON CONFLICT DO NOTHING",
-            )
-            .bind(source_id)
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
     sqlx::query("UPDATE crawl_jobs SET status=$2,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE channel_id=$1 AND status=ANY($3)").bind(id).bind(if f.enabled{"queued"}else{"paused"}).bind(if f.enabled{vec!["paused"]}else{vec!["queued","running"]}).execute(&mut *tx).await?;
     crawl::bump(&mut tx).await?;
     tx.commit().await?;
@@ -322,60 +262,13 @@ pub async fn crawl_channel_update(
     save_channel(&s, &id, f, false).await?;
     Ok(ok(json!({"id":id})))
 }
-pub async fn crawl_channel_archive(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    let mut tx = s.pool.begin().await?;
-    let requested = sqlx::query_scalar::<_, bool>(
-        "SELECT COALESCE(requested_until>now(),false) FROM crawl_channels WHERE id=$1 FOR UPDATE",
-    )
-    .bind(&id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
-    if requested {
-        return Err(ApiError::Conflict(
-            "仍有有效用户请求该频道，请先解除请求或等待到期".into(),
-        ));
-    }
-    let users = sqlx::query_scalar::<_, Value>(
-        "SELECT custom_channels_json FROM users WHERE deleted_at IS NULL",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
-    if users
-        .iter()
-        .filter_map(Value::as_array)
-        .flatten()
-        .filter_map(Value::as_str)
-        .any(|v| crate::telegram::normalize_channel(v).as_deref() == Some(id.as_str()))
-    {
-        return Err(ApiError::Conflict("仍有用户绑定该频道，不能归档".into()));
-    }
-    let n=sqlx::query("UPDATE crawl_channels SET archived=true,enabled=false,version=version+1 WHERE id=$1 AND NOT archived").bind(&id).execute(&mut *tx).await?.rows_affected();
-    if n == 0 {
-        return Err(ApiError::NotFound("频道不存在".into()));
-    }
-    sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL,stop_reason='channel_archived',completed_at=now() WHERE channel_id=$1 AND status IN ('queued','running','paused')").bind(&id).execute(&mut *tx).await?;
-    sqlx::query("UPDATE resource_sources SET enabled=false WHERE channel_id=$1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    crawl::bump(&mut tx).await?;
-    tx.commit().await?;
-    *s.search_cache.lock().await = Default::default();
-    Ok(ok(json!({"ok":true})))
-}
 pub async fn crawl_default_get(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
     Ok(ok(
-        json!({"outbound":outbound::read(&s.pool,Owner::Default).await?,"inheritors":sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbound_policies p JOIN crawl_channels c ON c.id=p.channel_id WHERE p.inherit AND NOT c.archived").fetch_one(&s.pool).await?}),
+        json!({"outbound":outbound::read(&s.pool,Owner::Default).await?,"inheritors":sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbound_policies p JOIN crawl_channels c ON c.id=p.channel_id WHERE p.inherit").fetch_one(&s.pool).await?}),
     ))
 }
 pub async fn crawl_default_put(
@@ -412,9 +305,12 @@ pub async fn crawl_overview(
             .ok(),
     };
     let jobs=sqlx::query("SELECT count(*) FILTER(WHERE status='queued') queued,count(*) FILTER(WHERE status='running') running,count(*) FILTER(WHERE status='failed') failed FROM crawl_jobs").fetch_one(&s.pool).await?;
-    let review=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM source_messages m JOIN crawl_channels c ON c.id=m.channel_id WHERE NOT c.archived AND m.parse_status IN ('failed','review')").fetch_one(&s.pool).await?;
+    let review = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_page_failures")
+        .fetch_one(&s.pool)
+        .await?;
+    let worker_enabled = crate::runtime::settings(&s).await?.crawl_enabled;
     Ok(ok(
-        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"failed":jobs.get::<i64,_>("failed"),"review":review,"serverTime":chrono::Utc::now()}),
+        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"failed":jobs.get::<i64,_>("failed"),"review":review,"serverTime":chrono::Utc::now()}),
     ))
 }
 pub async fn crawl_job_create(
@@ -425,15 +321,10 @@ pub async fn crawl_job_create(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
     let kind = b.get("kind").and_then(Value::as_str).unwrap_or("sync");
-    let max = b.get("maxPages").and_then(Value::as_i64).unwrap_or(500);
-    if !(1..=10000).contains(&max) {
-        return Err(ApiError::BadRequest("预算须为1～10000".into()));
-    }
     let id = crawl::enqueue_request(
         &s.pool,
         &channel,
         kind,
-        max as i32,
         b.get("requestKey").and_then(Value::as_str),
     )
     .await?;
@@ -476,7 +367,7 @@ pub async fn crawl_job_retry(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
     let mut tx = s.pool.begin().await?;
-    let j = sqlx::query("SELECT channel_id,kind,target_message_id FROM crawl_jobs WHERE id=$1")
+    let j = sqlx::query("SELECT channel_id,kind FROM crawl_jobs WHERE id=$1")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -486,7 +377,7 @@ pub async fn crawl_job_retry(
         .bind(&channel)
         .fetch_one(&mut *tx)
         .await?;
-    let n=sqlx::query("UPDATE crawl_jobs SET status='queued',attempts=0,last_error=NULL,lease_id=NULL,lease_until=NULL,completed_at=NULL,next_run_at=now() WHERE id=$1 AND status='failed' AND EXISTS(SELECT 1 FROM crawl_channels WHERE id=$2 AND enabled AND NOT archived) AND NOT EXISTS(SELECT 1 FROM crawl_jobs WHERE channel_id=$2 AND kind=$3 AND target_message_id IS NOT DISTINCT FROM $4 AND status IN ('queued','running','paused'))").bind(id).bind(channel).bind(j.get::<String,_>("kind")).bind(j.get::<Option<i64>,_>("target_message_id")).execute(&mut *tx).await?.rows_affected();
+    let n=sqlx::query("UPDATE crawl_jobs SET status='queued',attempts=0,last_error=NULL,lease_id=NULL,lease_until=NULL,completed_at=NULL,next_run_at=now() WHERE id=$1 AND status='failed' AND EXISTS(SELECT 1 FROM crawl_channels WHERE id=$2 AND enabled) AND NOT EXISTS(SELECT 1 FROM crawl_jobs WHERE channel_id=$2 AND kind=$3 AND status IN ('queued','running','paused'))").bind(id).bind(channel).bind(j.get::<String,_>("kind")).execute(&mut *tx).await?.rows_affected();
     if n == 0 {
         return Err(ApiError::Conflict(
             "任务无法重试：频道暂停或同类任务已存在".into(),
@@ -514,24 +405,18 @@ async fn message_list(
     pool: &PgPool,
     channel: &str,
     q: HashMap<String, String>,
-    review: bool,
 ) -> Result<Value, ApiError> {
     let size = number(&q, "limit", 20, 1, 100)?;
-    let parsed = read_cursor(&q, if review { "review" } else { "messages" })?;
-    if !review && parsed.as_ref().is_some_and(|c| c.channel != channel) {
+    let parsed = read_cursor(&q, "messages")?;
+    if parsed.as_ref().is_some_and(|c| c.channel != channel) {
         return Err(ApiError::BadRequest("游标不属于该频道".into()));
     }
-    let cursor = parsed.as_ref().map(|c| c.id).unwrap_or(i64::MAX);
-    let before_channel = parsed
-        .as_ref()
-        .map(|c| c.channel.clone())
-        .unwrap_or_default();
-    let before_date = parsed.as_ref().and_then(|c| c.date);
-    let mut rows=sqlx::query("SELECT m.channel_id,m.message_id,m.published_at,m.parse_status,m.parse_error,m.parse_version,m.raw_html FROM source_messages m JOIN crawl_channels c ON c.id=m.channel_id WHERE NOT c.archived AND ($1='' OR m.channel_id=$1) AND ($2='' OR m.parse_status=$2) AND (NOT $3 OR m.parse_status IN ('failed','review')) AND ($3 OR m.message_id<$4) AND (NOT $3 OR $9::timestamptz IS NULL OR COALESCE(m.published_at,to_timestamp(0))<$9 OR (COALESCE(m.published_at,to_timestamp(0))=$9 AND (m.channel_id>$5 OR (m.channel_id=$5 AND m.message_id<$4)))) AND ($6::timestamptz IS NULL OR m.published_at>=$6) AND ($7::timestamptz IS NULL OR m.published_at<=$7) ORDER BY CASE WHEN $3 THEN COALESCE(m.published_at,to_timestamp(0)) ELSE NULL END DESC,m.channel_id,m.message_id DESC LIMIT $8").bind(channel).bind(q.get("status").cloned().unwrap_or_default()).bind(review).bind(cursor).bind(before_channel).bind(date(&q,"from")?).bind(date(&q,"to")?).bind(size+1).bind(before_date).fetch_all(pool).await?;
+    let cursor = parsed.map(|c| c.id).unwrap_or(i64::MAX);
+    let mut rows=sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version,raw_html FROM source_messages WHERE channel_id=$1 AND ($2='' OR parse_status=$2) AND message_id<$3 AND ($4::timestamptz IS NULL OR published_at>=$4) AND ($5::timestamptz IS NULL OR published_at<=$5) ORDER BY message_id DESC LIMIT $6").bind(channel).bind(q.get("status").cloned().unwrap_or_default()).bind(cursor).bind(date(&q,"from")?).bind(date(&q,"to")?).bind(size+1).fetch_all(pool).await?;
     let more = rows.len() > size as usize;
     rows.truncate(size as usize);
     Ok(
-        json!({"items":rows.iter().map(message).collect::<Vec<_>>(),"hasMore":more,"nextCursor":if more{rows.last().map(|r|cursor_value(if review{"review"}else{"messages"},r.get::<i64,_>("message_id"),r.get::<String,_>("channel_id"),if review{Some(r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("published_at").unwrap_or(chrono::DateTime::from_timestamp(0,0).unwrap()))}else{None}))}else{None}}),
+        json!({"items":rows.iter().map(message).collect::<Vec<_>>(),"hasMore":more,"nextCursor":if more {rows.last().map(|r|cursor_value("messages",r.get("message_id"),channel.into(),None))}else{None}}),
     )
 }
 pub async fn crawl_messages(
@@ -541,16 +426,7 @@ pub async fn crawl_messages(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
-    Ok(ok(message_list(&s.pool, &channel, q, false).await?))
-}
-pub async fn crawl_review(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    let channel = q.get("channel").cloned().unwrap_or_default();
-    Ok(ok(message_list(&s.pool, &channel, q, true).await?))
+    Ok(ok(message_list(&s.pool, &channel, q).await?))
 }
 pub async fn crawl_message_get(
     State(s): State<Arc<AppState>>,
@@ -617,38 +493,121 @@ pub async fn crawl_message_preview(
     .map_err(|_| ApiError::Internal("解析任务失败".into()))?;
     Ok(ok(serde_json::to_value(data).unwrap()))
 }
-pub async fn crawl_message_reparse(
+
+pub async fn crawl_settings_get(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
-    Path((channel, id)): Path<(String, i64)>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
+    Ok(ok(
+        serde_json::to_value(crawl::settings(&s.pool).await?).unwrap()
+    ))
+}
+pub async fn crawl_settings_put(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Json(f): Json<crawl::Settings>,
+) -> Result<Json<Value>, ApiError> {
+    admin_only(&h, &s).await?;
+    if !(1..=32).contains(&f.concurrent_channels)
+        || !(0..=3600).contains(&f.page_delay_seconds)
+        || !(60..=86400).contains(&f.daily_interval_seconds)
+    {
+        return Err(ApiError::BadRequest(
+            "并发1～32，等待0～3600秒，日常间隔60～86400秒".into(),
+        ));
+    }
     let mut tx = s.pool.begin().await?;
-    let c = sqlx::query_scalar::<_, bool>(
-        "SELECT enabled AND NOT archived FROM crawl_channels WHERE id=$1 FOR UPDATE",
-    )
-    .bind(&channel)
-    .fetch_optional(&mut *tx)
-    .await?
-    .unwrap_or(false);
-    if !c {
-        return Err(ApiError::Conflict("频道暂停或不存在".into()));
+    sqlx::query("SELECT pg_advisory_xact_lock(773012)")
+        .execute(&mut *tx)
+        .await?;
+    let n=sqlx::query("UPDATE crawl_settings SET concurrent_channels=$1,page_delay_seconds=$2,daily_interval_seconds=$3,version=version+1 WHERE id=1 AND version=$4").bind(f.concurrent_channels).bind(f.page_delay_seconds).bind(f.daily_interval_seconds).bind(f.version).execute(&mut *tx).await?.rows_affected();
+    if n == 0 {
+        return Err(ApiError::Conflict("配置已更新，请重新加载".into()));
     }
-    let exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM source_messages WHERE channel_id=$1 AND message_id=$2)",
-    )
-    .bind(&channel)
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !exists {
-        return Err(ApiError::NotFound("消息不存在".into()));
-    }
-    let active=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM crawl_jobs WHERE channel_id=$1 AND kind='reparse_message' AND target_message_id=$2 AND status IN ('queued','running','paused'))").bind(&channel).bind(id).fetch_one(&mut *tx).await?;
-    if active {
-        return Err(ApiError::Conflict("该消息已有重解析任务".into()));
-    }
-    let job=sqlx::query_scalar::<_,i64>("INSERT INTO crawl_jobs(channel_id,kind,target_message_id,max_pages) VALUES($1,'reparse_message',$2,1) RETURNING id").bind(channel).bind(id).fetch_one(&mut *tx).await?;
+    sqlx::query("UPDATE crawl_channels SET next_sync_at=COALESCE(last_synced_at,now())+make_interval(secs=>$1::double precision)").bind(f.daily_interval_seconds as f64).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(ok(json!({"id":job})))
+    Ok(ok(
+        serde_json::to_value(crawl::settings(&s.pool).await?).unwrap()
+    ))
+}
+pub async fn crawl_failures(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Path(channel): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    admin_only(&h, &s).await?;
+    let before = number(&q, "before", i64::MAX, 1, i64::MAX)?;
+    let rows=sqlx::query("SELECT f.*,j.status AS retry_status FROM crawl_page_failures f LEFT JOIN crawl_jobs j ON j.id=f.retry_job_id WHERE f.channel_id=$1 AND f.id<$2 ORDER BY f.id DESC LIMIT 101").bind(channel).bind(before).fetch_all(&s.pool).await?;
+    let items=rows.iter().take(100).map(|r|json!({"id":r.get::<i64,_>("id"),"kind":r.get::<String,_>("kind"),"cursorBefore":r.get::<Option<i64>,_>("cursor_before"),"pageNumber":r.get::<Option<i32>,_>("page_number"),"lastError":r.get::<String,_>("last_error"),"retryStatus":r.get::<Option<String>,_>("retry_status"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at")})).collect::<Vec<_>>();
+    Ok(ok(
+        json!({"items":items,"hasMore":rows.len()>100,"nextBefore":items.last().and_then(|v|v["id"].as_i64())}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FailureAction {
+    action: String,
+    ids: Vec<i64>,
+}
+pub async fn crawl_failures_action(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Path(channel): Path<String>,
+    Json(f): Json<FailureAction>,
+) -> Result<Json<Value>, ApiError> {
+    admin_only(&h, &s).await?;
+    let ids = f
+        .ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if ids.is_empty() || ids.len() > 100 || !matches!(f.action.as_str(), "retry" | "ignore") {
+        return Err(ApiError::BadRequest(
+            "请选择1～100条记录及重试/忽略操作".into(),
+        ));
+    }
+    let mut tx = s.pool.begin().await?;
+    let enabled =
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM crawl_channels WHERE id=$1 FOR UPDATE")
+            .bind(&channel)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
+    if f.action == "retry" && !enabled {
+        return Err(ApiError::Conflict("请先恢复频道采集".into()));
+    }
+    let rows=sqlx::query("SELECT f.* FROM crawl_page_failures f WHERE f.channel_id=$1 AND f.id=ANY($2) ORDER BY f.id FOR UPDATE").bind(&channel).bind(&ids).fetch_all(&mut *tx).await?;
+    if rows.len() != ids.len() {
+        return Err(ApiError::Conflict(
+            "所选记录不存在或不属于此频道，请刷新".into(),
+        ));
+    }
+    for r in rows {
+        let id = r.get::<i64, _>("id");
+        let retry_job = r.get::<Option<i64>, _>("retry_job_id");
+        let busy=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM crawl_jobs WHERE id=$1 AND status IN ('queued','running','paused'))").bind(retry_job).fetch_one(&mut *tx).await?;
+        if busy {
+            return Err(ApiError::Conflict("所选页面正在重试，请等待完成".into()));
+        }
+        if f.action == "ignore" {
+            sqlx::query("DELETE FROM crawl_page_failures WHERE id=$1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let job=sqlx::query_scalar::<_,i64>("INSERT INTO crawl_jobs(channel_id,kind,cursor_before,failure_id) VALUES($1,'retry',$2,$3) RETURNING id").bind(&channel).bind(r.get::<Option<i64>,_>("cursor_before")).bind(id).fetch_one(&mut *tx).await?;
+            sqlx::query(
+                "UPDATE crawl_page_failures SET retry_job_id=$2,updated_at=now() WHERE id=$1",
+            )
+            .bind(id)
+            .bind(job)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(ok(json!({"affected":ids.len(),"action":f.action})))
 }

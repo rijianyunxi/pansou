@@ -137,7 +137,6 @@ pub async fn settings_search_put(
         sqlx::query("DELETE FROM search_setting_sources WHERE source_id IN (SELECT id FROM resource_sources WHERE kind='live')")
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO search_setting_sources(source_id) SELECT id FROM resource_sources WHERE kind='telegram' AND enabled ON CONFLICT DO NOTHING").execute(&mut *transaction).await?;
         for id in &selected {
             sqlx::query(
                 "INSERT INTO search_setting_sources(source_id) VALUES($1) ON CONFLICT(source_id) DO NOTHING",
@@ -208,16 +207,10 @@ pub async fn source_put(
         return Err(ApiError::BadRequest("TG 频道请在 TG 采集页维护".into()));
     }
     let mut tx = state.pool.begin().await?;
-    let existing =
-        sqlx::query_scalar::<_, String>("SELECT kind FROM resource_sources WHERE id=$1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if existing.as_deref() == Some("telegram") {
-        return Err(ApiError::Conflict(
-            "该来源是TG搜索身份，请在采集页维护".into(),
-        ));
-    }
+    sqlx::query("SELECT id FROM resource_sources WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
     let method = src.get("method").and_then(Value::as_str).unwrap_or("GET");
     let format = src.get("format").and_then(Value::as_str).unwrap_or("json");
     let priority = src.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32;
@@ -457,15 +450,6 @@ pub async fn source_delete(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    let is_tg =
-        sqlx::query_scalar::<_, bool>("SELECT kind='telegram' FROM resource_sources WHERE id=$1")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await?
-            .unwrap_or(false);
-    if is_tg {
-        return Err(ApiError::BadRequest("TG来源请在采集页维护".into()));
-    }
     sqlx::query("DELETE FROM resource_sources WHERE id=$1 AND kind='live'")
         .bind(id)
         .execute(&state.pool)

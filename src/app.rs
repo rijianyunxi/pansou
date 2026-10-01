@@ -15,14 +15,23 @@ use tower_http::{
 
 #[derive(Clone)]
 pub struct AppState {
+    pub shutdown: tokio_util::sync::CancellationToken,
+    pub started_at: chrono::DateTime<chrono::Utc>,
     pub pool: PgPool,
     pub redis: RedisStore,
     pub http: reqwest::Client,
     pub crawl_http: reqwest::Client,
     pub cloud_http: reqwest::Client,
     #[cfg(test)]
+    pub custom_test_base: Option<String>,
+    #[cfg(test)]
     pub cloud_test_bases: Option<crate::cloud_drive::TestBases>,
     pub cloud_slots: Arc<tokio::sync::Semaphore>,
+    pub custom_link_refs: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, (chrono::DateTime<chrono::Utc>, String)>,
+        >,
+    >,
     pub search_cache: Arc<tokio::sync::Mutex<SearchCache>>,
     pub security: SecurityConfig,
 }
@@ -30,6 +39,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(pool: PgPool, redis: RedisStore) -> Self {
         Self {
+            shutdown: tokio_util::sync::CancellationToken::new(),
+            started_at: chrono::Utc::now(),
             pool,
             redis,
             http: reqwest::Client::builder()
@@ -43,8 +54,11 @@ impl AppState {
                 .expect("crawl http client"),
             cloud_http: crate::cloud_drive::transport::http_client(),
             #[cfg(test)]
+            custom_test_base: None,
+            #[cfg(test)]
             cloud_test_bases: None,
             cloud_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            custom_link_refs: Arc::new(tokio::sync::Mutex::new(Default::default())),
             search_cache: Arc::new(tokio::sync::Mutex::new(SearchCache::default())),
             security: SecurityConfig::from_env(),
         }
@@ -60,6 +74,25 @@ impl AppState {
 
 fn api_router() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/links/resolve", post(crate::link_resolution::resolve))
+        .route(
+            "/settings/link-delivery",
+            get(crate::link_resolution::get_policy).put(crate::link_resolution::put_policy),
+        )
+        .route(
+            "/settings/link-check",
+            get(crate::link_resolution::get_check_policy)
+                .put(crate::link_resolution::put_check_policy),
+        )
+        .route(
+            "/links/resolve-operations/{key}",
+            get(crate::link_resolution::poll),
+        )
+        .route("/links/status", post(crate::link_resolution::statuses))
+        .route(
+            "/resources/status",
+            post(crate::link_resolution::resource_statuses),
+        )
         .route("/admin/cloud-drive/check", post(handlers::cloud_check))
         .route("/admin/cloud-drive/save", post(handlers::cloud_save))
         .route(
@@ -79,6 +112,10 @@ fn api_router() -> Router<Arc<AppState>> {
         )
         .route("/admin/crawl/overview", get(handlers::crawl_overview))
         .route(
+            "/admin/runtime/workers/{kind}",
+            axum::routing::put(handlers::runtime_worker_update),
+        )
+        .route(
             "/admin/crawl/default-outbound",
             get(handlers::crawl_default_get).put(handlers::crawl_default_put),
         )
@@ -89,10 +126,6 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/admin/crawl/channels/{channel}",
             get(handlers::crawl_channel_get).put(handlers::crawl_channel_update),
-        )
-        .route(
-            "/admin/crawl/channels/{channel}/archive",
-            post(handlers::crawl_channel_archive),
         )
         .route(
             "/admin/crawl/channels/{channel}/jobs",
@@ -121,10 +154,13 @@ fn api_router() -> Router<Arc<AppState>> {
             post(handlers::crawl_message_preview),
         )
         .route(
-            "/admin/crawl/channels/{channel}/messages/{id}/reparse",
-            post(handlers::crawl_message_reparse),
+            "/admin/crawl/settings",
+            get(handlers::crawl_settings_get).put(handlers::crawl_settings_put),
         )
-        .route("/admin/crawl/review", get(handlers::crawl_review))
+        .route(
+            "/admin/crawl/channels/{channel}/failures",
+            get(handlers::crawl_failures).post(handlers::crawl_failures_action),
+        )
         .route("/health", get(handlers::health))
         .route("/hot-searches", get(handlers::hot_searches))
         .route("/monitor", get(handlers::monitor))
@@ -315,8 +351,25 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route_service("/favicon.ico", ServeFile::new("frontend/dist/favicon.ico"))
         .route_service("/og.svg", ServeFile::new("frontend/dist/og.svg"))
         .fallback_service(ServeFile::new("frontend/dist/index.html"))
+        .layer(axum::middleware::from_fn(private_link_responses))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn private_link_responses(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let private = request.uri().path().starts_with("/api/links/")
+        || request.uri().path() == "/api/resources/status";
+    let mut response = next.run(request).await;
+    if private {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+    }
+    response
 }
 
 #[cfg(test)]
@@ -352,7 +405,8 @@ mod tests {
             "/api/admin/proxies/proxy-id",
             "/api/admin/crawl/overview",
             "/api/admin/crawl/channels/channel-id/messages/1/preview",
-            "/api/admin/crawl/review",
+            "/api/admin/crawl/settings",
+            "/api/admin/crawl/channels/channel-id/failures",
             "/api/admin/proxies/proxy-id/references",
             "/api/admin/proxies/proxy-id/reset",
             "/api/admin/users/1",

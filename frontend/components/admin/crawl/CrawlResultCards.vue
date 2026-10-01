@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { SearchResult } from "@/shared/apiModels";
-defineProps<{ results: SearchResult[] }>();
+import type { ManagedResource } from "@/shared/apiModels";
+defineProps<{ results: ManagedResource[] }>();
 </script>
 <template>
   <div class="crawl-result-cards">
