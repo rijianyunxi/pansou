@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux-amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            name: linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl tools (linux)
+        if: endsWith(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BIN="pansou-api"
+          ARCHIVE_EXT="tar.gz"
+          if [[ "${{ matrix.os }}" == windows* ]]; then BIN="pansou-api.exe"; ARCHIVE_EXT="zip"; fi
+          mkdir -p pkg/frontend
+          cp "target/${{ matrix.target }}/release/$BIN" "pkg/$BIN"
+          cp -r frontend/dist "pkg/frontend/dist"
+          cp .env.example "pkg/.env.example"
+          if [[ -f deploy/pansou.service ]]; then
+            mkdir -p pkg/deploy
+            cp deploy/pansou.service "pkg/deploy/pansou.service"
+          fi
+          OUT="pansou-${VERSION}-${{ matrix.name }}.${ARCHIVE_EXT}"
+          tar $([ "$ARCHIVE_EXT" == "zip" ] && echo "-a") -cf "$OUT" -C pkg .
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ env.OUT }}
+            ${{ env.OUT }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Attach archives to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pansou-*
+          generate_release_notes: true
