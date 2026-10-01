@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -14,11 +14,10 @@ use rand::Rng;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 pub async fn account_session(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let auth = state.auth();
@@ -27,8 +26,6 @@ pub async fn account_session(
     let s = if let Some(session) = existing {
         session
     } else {
-        let ip = crate::security::client_ip(&headers, remote, &state.security);
-        crate::security::authorize_session_creation(&state.redis, &state.security, ip).await?;
         auth.issue(true).await?
     };
     let user = match s.user_id {

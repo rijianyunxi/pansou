@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, QueryBuilder};
 use std::{
     collections::HashMap,
     future::Future,
@@ -52,7 +52,7 @@ impl<K: Eq + Hash + Clone, V: Clone> StatsCache<K, V> {
     }
 }
 
-#[derive(Clone, sqlx::FromRow)]
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct ChannelCounts {
     pub id: String,
     pub message_count: i64,
@@ -66,12 +66,32 @@ pub struct MonitorCounts {
     pub valid: i64,
     pub invalid: i64,
     pub errors: i64,
+    pub check_due: i64,
+    pub check_failing: i64,
+    pub check_unknown: i64,
 }
 
 #[derive(Default)]
 pub struct AdminStats {
-    channel_counts: StatsCache<Vec<String>, Vec<ChannelCounts>>,
     monitor_counts: StatsCache<(), MonitorCounts>,
+    resource_totals: StatsCache<(String, String), i64>,
+}
+
+/// Optional predicates are omitted instead of hiding indexed conditions behind OR.
+pub(crate) fn resource_filters<'a>(
+    query: &mut QueryBuilder<'a, Postgres>,
+    needle: &'a str,
+    cloud_type: &'a str,
+) {
+    query.push(" WHERE deleted_at IS NULL");
+    if !needle.is_empty() {
+        query
+            .push(" AND name ILIKE ")
+            .push_bind(format!("%{needle}%"));
+    }
+    if !cloud_type.is_empty() {
+        query.push(" AND cloud_types_json ? ").push_bind(cloud_type);
+    }
 }
 
 impl AdminStats {
@@ -80,37 +100,62 @@ impl AdminStats {
         pool: &PgPool,
         ids: &[String],
     ) -> Result<HashMap<String, ChannelCounts>, sqlx::Error> {
-        let mut key = ids.to_vec();
-        key.sort();
-        key.dedup();
-        let rows = self
-            .channel_counts
-            .load(key.clone(), Duration::from_secs(30), || async {
-                sqlx::query_as::<_, ChannelCounts>(include_str!("sql/channel_summaries.sql"))
-                    .bind(&key)
-                    .fetch_all(pool)
-                    .await
-            })
+        // Incremental counts survive restarts and need no cold cache refresh.
+        let rows = sqlx::query_as::<_, ChannelCounts>(include_str!("sql/channel_summaries.sql"))
+            .bind(ids)
+            .fetch_all(pool)
             .await?;
         Ok(rows.into_iter().map(|row| (row.id.clone(), row)).collect())
     }
 
     pub async fn monitor(&self, pool: &PgPool) -> Result<MonitorCounts, sqlx::Error> {
-        self.monitor_counts.load((), Duration::from_secs(60), || async {
+        self.monitor_counts.load((), Duration::from_secs(30), || async {
             sqlx::query_as::<_, MonitorCounts>(
                 "SELECT (SELECT count(*) FROM managed_resources WHERE origin='telegram' AND enabled AND deleted_at IS NULL) resources,
                  count(*) catalog,
                  count(*) FILTER(WHERE validity=1 AND valid_until>now()) valid,
                  count(*) FILTER(WHERE validity=0 AND valid_until>now()) invalid,
-                 count(*) FILTER(WHERE validity=-1 AND last_error_code IS NOT NULL) errors
+                 count(*) FILTER(WHERE validity=-1 AND last_error_code IS NOT NULL) errors,
+                 count(*) FILTER(WHERE provider IN('baidu','quark') AND next_check_at<=now()) check_due,
+                 count(*) FILTER(WHERE provider IN('baidu','quark') AND failure_count>0) check_failing,
+                 count(*) FILTER(WHERE provider IN('baidu','quark') AND validity=-1) check_unknown
                  FROM link_catalog"
             ).fetch_one(pool).await
         }).await
     }
 
+    pub async fn resource_total(
+        &self,
+        pool: &PgPool,
+        needle: &str,
+        cloud_type: &str,
+    ) -> Result<i64, sqlx::Error> {
+        // The metadata counter is also the exact total for a provider-only filter.
+        // Counting hundreds of thousands of matching JSON rows is unnecessary.
+        if needle.is_empty() && !cloud_type.is_empty() {
+            return sqlx::query_scalar(
+                "SELECT COALESCE((SELECT resource_count FROM resource_cloud_type_counts WHERE cloud_type=$1),0)",
+            )
+            .bind(cloud_type)
+            .fetch_one(pool)
+            .await;
+        }
+        self.resource_totals
+            .load(
+                (needle.to_owned(), cloud_type.to_owned()),
+                Duration::from_secs(30),
+                || async {
+                    let mut query = QueryBuilder::new("SELECT count(*) FROM managed_resources");
+                    resource_filters(&mut query, needle, cloud_type);
+                    query.build_query_scalar().fetch_one(pool).await
+                },
+            )
+            .await
+    }
+
     pub async fn invalidate(&self) {
-        self.channel_counts.clear().await;
         self.monitor_counts.clear().await;
+        self.resource_totals.clear().await;
     }
 }
 
@@ -121,6 +166,24 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    async fn assert_channel_counts(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, ids: &[String]) {
+        let mut actual =
+            sqlx::query_as::<_, ChannelCounts>(include_str!("sql/channel_summaries.sql"))
+                .bind(ids)
+                .fetch_all(&mut **tx)
+                .await
+                .unwrap();
+        let mut expected =
+            sqlx::query_as::<_, ChannelCounts>(include_str!("sql/channel_summaries_recompute.sql"))
+                .bind(ids)
+                .fetch_all(&mut **tx)
+                .await
+                .unwrap();
+        actual.sort_by(|a, b| a.id.cmp(&b.id));
+        expected.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(actual, expected);
+    }
 
     #[tokio::test]
     async fn concurrent_refreshes_share_one_successful_load() {
@@ -199,6 +262,106 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn concurrent_channel_statistics_updates_do_not_lose_counts() {
+        let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+        let pool = crate::db::connect(&url).await.unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let prefix = uuid::Uuid::new_v4().simple().to_string();
+        let channel = format!("concurrent_{prefix}");
+        let resource = format!("resource_{prefix}");
+        sqlx::query("INSERT INTO crawl_channels(id,name) VALUES($1,$1)")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO managed_resources(id,name,origin) VALUES($1,$1,'telegram')")
+            .bind(&resource)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut tasks = tokio::task::JoinSet::new();
+        for message in 1..=12i64 {
+            let pool = pool.clone();
+            let channel = channel.clone();
+            let resource = resource.clone();
+            tasks.spawn(async move {
+                let mut tx = pool.begin().await.unwrap();
+                sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,$2,'','fixture','fixture','parsed')")
+                    .bind(&channel).bind(message).execute(&mut *tx).await.unwrap();
+                sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,'{}')")
+                    .bind(&channel).bind(message).bind(&resource).execute(&mut *tx).await.unwrap();
+                tx.commit().await.unwrap();
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        let stats = AdminStats::default();
+        let ids = vec![channel.clone()];
+        let counts = stats.channels(&pool, &ids).await.unwrap();
+        assert_eq!(
+            (
+                counts[&channel].message_count,
+                counts[&channel].resource_count
+            ),
+            (12, 1)
+        );
+        for message in 1..=12i64 {
+            let pool = pool.clone();
+            let channel = channel.clone();
+            tasks.spawn(async move {
+                let mut tx = pool.begin().await.unwrap();
+                if message % 2 == 0 {
+                    sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2")
+                        .bind(&channel).bind(message).execute(&mut *tx).await.unwrap();
+                    sqlx::query("DELETE FROM source_messages WHERE channel_id=$1 AND message_id=$2")
+                        .bind(&channel).bind(message).execute(&mut *tx).await.unwrap();
+                } else {
+                    sqlx::query("UPDATE source_messages SET parse_status='failed' WHERE channel_id=$1 AND message_id=$2")
+                        .bind(&channel).bind(message).execute(&mut *tx).await.unwrap();
+                }
+                tx.commit().await.unwrap();
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        let counts = stats.channels(&pool, &ids).await.unwrap();
+        assert_eq!(
+            (
+                counts[&channel].message_count,
+                counts[&channel].resource_count
+            ),
+            (6, 0)
+        );
+        let mut tx = pool.begin().await.unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM source_messages WHERE channel_id=$1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM managed_resources WHERE id=$1")
+            .bind(&resource)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
     async fn channel_counts_preserve_visibility_and_deduplication() {
         let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
         assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
@@ -247,6 +410,7 @@ mod tests {
                 .bind(&channel).bind(message).bind(resource).execute(&mut *tx).await.unwrap();
         }
         let ids = vec![channel.clone(), empty.clone()];
+        assert_channel_counts(&mut tx, &ids).await;
         let rows = sqlx::query_as::<_, ChannelCounts>(include_str!("sql/channel_summaries.sql"))
             .bind(&ids)
             .fetch_all(&mut *tx)
@@ -273,6 +437,90 @@ mod tests {
                 .resource_count,
             0
         );
+        assert_channel_counts(&mut tx, &ids).await;
+        // Re-enable and restore visibility without refreshing an API cache.
+        sqlx::query("UPDATE managed_resources SET enabled=true,deleted_at=NULL WHERE id=ANY($1)")
+            .bind([visible.clone(), disabled.clone(), deleted.clone()])
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+
+        // Reparse failures retain occurrences, but stop counting their resources.
+        for status in ["failed", "parsed", "empty", "parsed"] {
+            sqlx::query(
+                "UPDATE source_messages SET parse_status=$2 WHERE channel_id=$1 AND message_id=1",
+            )
+            .bind(&channel)
+            .bind(status)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            assert_channel_counts(&mut tx, &ids).await;
+        }
+        // Last-seen updates and duplicate occurrence upserts must not add counts.
+        sqlx::query("UPDATE source_messages SET last_seen_at=now() WHERE channel_id=$1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,1,$2,'{}') ON CONFLICT(channel_id,message_id,resource_id) DO UPDATE SET result_json=excluded.result_json")
+            .bind(&channel).bind(&visible).execute(&mut *tx).await.unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+
+        // Moving an occurrence to another message/channel adjusts both sides.
+        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,1,'','fixture','fixture','parsed')")
+            .bind(&empty).execute(&mut *tx).await.unwrap();
+        sqlx::query("UPDATE resource_occurrences SET channel_id=$2 WHERE channel_id=$1 AND message_id=1 AND resource_id=$3")
+            .bind(&channel).bind(&empty).bind(&visible).execute(&mut *tx).await.unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        sqlx::query("UPDATE resource_occurrences SET resource_id=$3 WHERE channel_id=$1 AND message_id=1 AND resource_id=$2")
+            .bind(&empty).bind(&visible).bind(&disabled).execute(&mut *tx).await.unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+
+        // Message removal follows the existing FK: remove occurrences first.
+        sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM source_messages WHERE channel_id=$1 AND message_id=1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        // A physical resource deletion cascades to occurrences in both channels.
+        sqlx::query("DELETE FROM managed_resources WHERE id=$1")
+            .bind(&disabled)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1")
+            .bind(&channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        sqlx::query("DELETE FROM source_messages WHERE channel_id=ANY($1)")
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
+        // Rolling back a data change must also roll back its derived statistics.
+        sqlx::query("SAVEPOINT stats_rollback")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,99,'','fixture','fixture','parsed')")
+            .bind(&channel).execute(&mut *tx).await.unwrap();
+        sqlx::query("ROLLBACK TO SAVEPOINT stats_rollback")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_channel_counts(&mut tx, &ids).await;
         tx.rollback().await.unwrap();
     }
 }

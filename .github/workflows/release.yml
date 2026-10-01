@@ -71,7 +71,10 @@ jobs:
           mkdir -p pkg/frontend
           cp "target/${{ matrix.target }}/release/$BIN" "pkg/$BIN"
           cp -r frontend/dist "pkg/frontend/dist"
+          # .env 是不含真实密钥的默认启动配置；生产部署前请按需修改。
+          cp .env.example "pkg/.env"
           cp .env.example "pkg/.env.example"
+          cp docker-compose.yml README.md pkg/
           if [[ -f deploy/pansou.service ]]; then
             mkdir -p pkg/deploy
             cp deploy/pansou.service "pkg/deploy/pansou.service"

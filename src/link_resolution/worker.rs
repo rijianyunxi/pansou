@@ -1,7 +1,7 @@
 use super::*;
 use crate::cloud_drive::{Drive, ShareInput};
 
-pub(super) async fn check(state: &AppState, id: Uuid, link: &Link) -> Result<(), ApiError> {
+async fn check(state: &AppState, id: Uuid, link: &Link, lease: (i64, Uuid)) -> Result<(), ApiError> {
     let input = ShareInput {
         url: link.url.clone(),
         provider: None,
@@ -17,15 +17,22 @@ pub(super) async fn check(state: &AppState, id: Uuid, link: &Link) -> Result<(),
             .fetch_one(&state.pool)
             .await?;
     if !allow_check(state, reference.provider, &policy, false).await? {
+        let mut tx = state.pool.begin().await?;
+        crate::crawl::lock_index(&mut tx).await?;
+        if !lock_check_lease(&mut tx, lease).await? {
+            tx.rollback().await?;
+            return Ok(());
+        }
         sqlx::query("UPDATE link_catalog SET next_check_at=now()+interval '5 minutes' WHERE id=$1")
             .bind(id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         return Ok(());
     }
     let drive = Drive::load(state, reference.provider).await?;
     let value = drive.check(&reference).await;
-    record(state, id, &value, &policy).await
+    record_with_lease(state, id, &value, &policy, Some(lease)).await
 }
 
 pub(super) async fn allow_check(
@@ -53,6 +60,24 @@ pub(super) async fn record(
     value: &Value,
     policy: &Value,
 ) -> Result<(), ApiError> {
+    record_with_lease(state, id, value, policy, None).await
+}
+
+async fn lock_check_lease(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    (job, token): (i64, Uuid),
+) -> Result<bool, ApiError> {
+    Ok(sqlx::query_scalar::<_, i64>("SELECT id FROM link_check_jobs WHERE id=$1 AND kind='original' AND status='running' AND lease_token=$2 AND lease_until>clock_timestamp() FOR UPDATE")
+        .bind(job).bind(token).fetch_optional(&mut **tx).await?.is_some())
+}
+
+async fn record_with_lease(
+    state: &AppState,
+    id: Uuid,
+    value: &Value,
+    policy: &Value,
+    lease: Option<(i64, Uuid)>,
+) -> Result<(), ApiError> {
     let validity = match value["status"].as_str() {
         Some("valid") => 1i16,
         Some("invalid") => 0,
@@ -76,6 +101,14 @@ pub(super) async fn record(
     // as ingestion/synchronization/expiry. Concurrent checks cannot publish stale facts.
     let mut tx = state.pool.begin().await?;
     crate::crawl::lock_index(&mut tx).await?;
+    // Fence observations as well as completion: an old worker returning after
+    // lease recovery must not overwrite the current owner's validity/backoff.
+    if let Some(lease) = lease
+        && !lock_check_lease(&mut tx, lease).await?
+    {
+        tx.rollback().await?;
+        return Ok(());
+    }
     if validity >= 0 {
         sqlx::query("UPDATE link_catalog SET validity=$2,checked_at=now(),valid_until=now()+make_interval(secs=>$3),last_attempt_at=now(),next_check_at=now()+make_interval(secs=>$3),failure_count=0,last_error_code=$4,updated_at=now() WHERE id=$1")
             .bind(id).bind(validity).bind(seconds as f64).bind(if validity == 0 {Some(reason)}else{None}).execute(&mut *tx).await?;
@@ -203,7 +236,9 @@ async fn sync_batch(state: &AppState) -> Result<(), ApiError> {
                         }
                     };
                     if matches!(link.r#type.as_str(), "baidu" | "quark") {
-                        sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) VALUES($1,1,'original',1) ON CONFLICT DO NOTHING").bind(link_id).execute(&mut *tx).await?;
+                        // Disabled checks should not create an ever-growing dormant queue.
+                        // The bounded catalog sweep compensates when checks are enabled later.
+                        sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',1 FROM link_catalog c WHERE c.id=$1 AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT DO NOTHING").bind(link_id).execute(&mut *tx).await?;
                     }
                     catalog.insert(key.clone(), link_id);
                     link_id
@@ -239,12 +274,22 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
     if !enabled {
         return Ok(());
     }
-    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,run_after) SELECT id,input_version,'original',now() FROM link_catalog WHERE provider IN('baidu','quark') AND next_check_at<=now() ORDER BY next_check_at LIMIT 100 ON CONFLICT DO NOTHING").execute(&state.pool).await?;
+    let providers: Vec<String> = sqlx::query_scalar("SELECT provider FROM cloud_account_settings WHERE provider IN('baidu','quark') AND length(trim(credential))>0 ORDER BY provider")
+        .fetch_all(&state.pool).await?;
+    if providers.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(include_str!("recover_checks.sql")).execute(&state.pool).await?;
+    for provider in &providers {
+        sqlx::query(include_str!("enqueue_checks.sql")).bind(provider).execute(&state.pool).await?;
+    }
     let token = Uuid::new_v4();
-    let row=sqlx::query("UPDATE link_check_jobs SET status='running',lease_token=$1,lease_until=now()+interval '90 seconds',attempts=attempts+1 WHERE id=(SELECT j.id FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE j.kind='original' AND c.next_check_at<=now() AND EXISTS(SELECT 1 FROM cloud_account_settings a WHERE a.provider=c.provider AND length(trim(a.credential))>0) AND ((j.status='queued' AND j.run_after<=now()) OR (j.status='running' AND j.lease_until<now())) ORDER BY j.priority DESC,c.last_seen_at DESC,j.run_after,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1) RETURNING id,link_id,input_version").bind(token).fetch_optional(&state.pool).await?;
+    let row = sqlx::query(include_str!("claim_check.sql")).bind(&providers).bind(token).fetch_optional(&state.pool).await?;
     if let Some(row) = row {
         let id: Uuid = row.get("link_id");
-        let c=sqlx::query("SELECT provider,original_url,original_password FROM link_catalog WHERE id=$1 AND input_version=$2").bind(id).bind(row.get::<i64,_>("input_version")).fetch_optional(&state.pool).await?;
+        // Revalidate after claiming: a concurrent foreground check may have postponed
+        // the catalog between enqueue's snapshot and the job INSERT.
+        let c=sqlx::query("SELECT provider,original_url,original_password FROM link_catalog WHERE id=$1 AND input_version=$2 AND next_check_at<=now()").bind(id).bind(row.get::<i64,_>("input_version")).fetch_optional(&state.pool).await?;
         if let Some(c) = c {
             let checked = check(
                 state,
@@ -254,19 +299,21 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
                     url: c.get("original_url"),
                     password: c.get("original_password"),
                 },
+                (row.get("id"), token),
             )
             .await;
             if checked.is_err() {
-                record(
+                record_with_lease(
                     state,
                     id,
                     &json!({"status":"unknown","errorKind":"upstream"}),
                     &json!({}),
+                    Some((row.get("id"), token)),
                 )
                 .await?;
             }
         }
-        sqlx::query("UPDATE link_check_jobs SET status='completed',lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2").bind(row.get::<i64,_>("id")).bind(token).execute(&state.pool).await?;
+        sqlx::query("UPDATE link_check_jobs SET status='completed',lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND status='running' AND lease_token=$2").bind(row.get::<i64,_>("id")).bind(token).execute(&state.pool).await?;
     }
     Ok(())
 }
@@ -288,10 +335,10 @@ async fn housekeeping(state: &AppState) -> Result<(), ApiError> {
             sqlx::query("UPDATE link_resolve_requests SET status='completed',response_json=$2,completed_at=now(),updated_at=now() WHERE id=$1 AND response_json IS NULL AND deadline_at<=now()").bind(row.get::<Uuid,_>("id")).bind(value).execute(&state.pool).await?;
         }
     }
-    sqlx::query("DELETE FROM link_resolve_requests WHERE expires_at<now()")
+    sqlx::query(include_str!("cleanup_resolves.sql"))
         .execute(&state.pool)
         .await?;
-    sqlx::query("DELETE FROM link_check_jobs WHERE status='completed' AND updated_at<now()-interval '7 days'").execute(&state.pool).await?;
+    sqlx::query(include_str!("cleanup_checks.sql")).execute(&state.pool).await?;
     Ok(())
 }
 
@@ -314,6 +361,10 @@ pub async fn run(state: Arc<AppState>) -> Result<(), ApiError> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "queue_tests.rs"]
+mod queue_tests;
 
 #[cfg(test)]
 mod tests {

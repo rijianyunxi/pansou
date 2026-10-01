@@ -9,10 +9,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct SecurityConfig {
     pub trust_proxy_headers: bool,
-    pub session_create_window_seconds: u64,
-    pub session_create_per_ip: u64,
-    pub session_create_per_subnet: u64,
-    pub session_create_global: u64,
     pub search_subnet_limit_multiplier: u64,
 }
 
@@ -20,10 +16,6 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             trust_proxy_headers: false,
-            session_create_window_seconds: 60,
-            session_create_per_ip: 5,
-            session_create_per_subnet: 30,
-            session_create_global: 300,
             search_subnet_limit_multiplier: 4,
         }
     }
@@ -56,26 +48,6 @@ impl SecurityConfig {
             trust_proxy_headers: env_bool(
                 "PANSOU_TRUST_PROXY_HEADERS",
                 defaults.trust_proxy_headers,
-            ),
-            session_create_window_seconds: env_u64(
-                "PANSOU_SESSION_CREATE_WINDOW_SECONDS",
-                defaults.session_create_window_seconds,
-                10,
-            ),
-            session_create_per_ip: env_u64(
-                "PANSOU_SESSION_CREATE_PER_IP",
-                defaults.session_create_per_ip,
-                1,
-            ),
-            session_create_per_subnet: env_u64(
-                "PANSOU_SESSION_CREATE_PER_SUBNET",
-                defaults.session_create_per_subnet,
-                1,
-            ),
-            session_create_global: env_u64(
-                "PANSOU_SESSION_CREATE_GLOBAL",
-                defaults.session_create_global,
-                1,
             ),
             search_subnet_limit_multiplier: env_u64(
                 "PANSOU_SEARCH_SUBNET_LIMIT_MULTIPLIER",
@@ -168,35 +140,6 @@ async fn consume_budgets(
         .await
         .map_err(|error| ApiError::Internal(error.to_string()))?;
     Ok(rejected == 0)
-}
-
-pub async fn authorize_session_creation(
-    redis: &RedisStore,
-    config: &SecurityConfig,
-    ip: IpAddr,
-) -> Result<(), ApiError> {
-    let budgets = [
-        ("global".to_owned(), config.session_create_global),
-        (format!("ip:{ip}"), config.session_create_per_ip),
-        (
-            format!("subnet:{}", subnet_key(ip)),
-            config.session_create_per_subnet,
-        ),
-    ];
-    if consume_budgets(
-        redis,
-        "session-create",
-        config.session_create_window_seconds,
-        &budgets,
-    )
-    .await?
-    {
-        Ok(())
-    } else {
-        Err(ApiError::SessionCreationLimitExceeded(
-            "匿名会话创建过于频繁，请稍后再试".into(),
-        ))
-    }
 }
 
 pub async fn authorize_search_rate(

@@ -80,10 +80,17 @@ pub async fn admin_resources_get(
     let offset = (page - 1) * limit;
     let needle = q.get("q").cloned().unwrap_or_default();
     let cloud_type = q.get("cloudType").cloned().unwrap_or_default();
-    let rows = sqlx::query("SELECT id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,enabled,check_status,check_message,checked_at,link_validity,link_validity_updated_at FROM managed_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%') AND ($2='' OR cloud_types_json ? $2) ORDER BY updated_at DESC LIMIT $3 OFFSET $4")
-        .bind(&needle).bind(&cloud_type).bind(limit).bind(offset).fetch_all(&state.pool).await?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%') AND ($2='' OR cloud_types_json ? $2)")
-        .bind(&needle).bind(&cloud_type).fetch_one(&state.pool).await?;
+    // OFFSET traverses only narrow index keys, not thousands of discarded JSON rows.
+    // The ID tie-breaker keeps page order deterministic without changing the API.
+    let mut query = sqlx::QueryBuilder::new(
+        "WITH page AS MATERIALIZED (SELECT id,updated_at FROM managed_resources",
+    );
+    crate::admin_stats::resource_filters(&mut query, &needle, &cloud_type);
+    query.push(" ORDER BY updated_at DESC,id DESC LIMIT ").push_bind(limit)
+        .push(" OFFSET ").push_bind(offset)
+        .push(") SELECT r.id,r.name,r.description,r.datetime,r.cloud_types_json,r.links_json,r.tags_json,r.images_json,r.enabled,r.check_status,r.check_message,r.checked_at,r.link_validity,r.link_validity_updated_at FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
+    let rows = query.build().fetch_all(&state.pool).await?;
+    let total = state.admin_stats.resource_total(&state.pool, &needle, &cloud_type).await?;
     let resources = rows.into_iter().map(|r| json!({
         "id": r.get::<String,_>("id"), "name": r.get::<String,_>("name"),
         "description": r.get::<Option<String>,_>("description"), "datetime": r.get::<Option<String>,_>("datetime"),
@@ -93,8 +100,9 @@ pub async fn admin_resources_get(
         "linkValidity":r.get::<i16,_>("link_validity"), "linkValidityUpdatedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("link_validity_updated_at"),
         "checkMessage": r.get::<Option<String>,_>("check_message"), "checkedAt": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("checked_at")
     })).collect::<Vec<_>>();
-    let cloud_types: Vec<String> = sqlx::query_scalar("SELECT DISTINCT jsonb_array_elements_text(cloud_types_json) FROM managed_resources WHERE deleted_at IS NULL ORDER BY 1")
-        .fetch_all(&state.pool).await.unwrap_or_default();
+    let cloud_types: Vec<String> = sqlx::query_scalar(
+        "SELECT cloud_type FROM resource_cloud_type_counts WHERE resource_count>0 ORDER BY cloud_type",
+    ).fetch_all(&state.pool).await?;
     Ok(ok(
         json!({"items":resources,"resources":resources,"cloudTypes":cloud_types,"page":page,"pageSize":limit,"limit":limit,"total":total}),
     ))
@@ -135,6 +143,12 @@ pub async fn admin_resources_post(
             })
         })
         .unwrap_or_else(|| json!([]));
+    if !cloud_types
+        .as_array()
+        .is_some_and(|types| types.iter().all(Value::is_string))
+    {
+        return Err(ApiError::BadRequest("cloud_types 必须是字符串数组".into()));
+    }
     let description = body.get("description").and_then(Value::as_str);
     let tags = body.get("tags").cloned().unwrap_or_else(|| json!([]));
     let images = body.get("images").cloned().unwrap_or_else(|| json!([]));

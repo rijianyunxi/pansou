@@ -75,11 +75,9 @@ pub async fn monitor(
         .fetch_all(&state.pool).await?;
     let cleanup_due: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs WHERE status='queued' AND run_after<=now() OR status='running' AND lease_until<now()")
         .fetch_one(&state.pool).await?;
-    let check_health = sqlx::query("SELECT count(*) FILTER(WHERE next_check_at<=now()) due, count(*) FILTER(WHERE failure_count>0) failing, count(*) FILTER(WHERE validity=-1) unknown FROM link_catalog WHERE provider IN('baidu','quark')")
-        .fetch_one(&state.pool).await?;
     let stuck_checks: i64 = sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE status='running' AND lease_until<now()")
         .fetch_one(&state.pool).await?;
-    let recent_failures = sqlx::query("SELECT provider,identity,validity,failure_count,last_error_code,last_attempt_at,next_check_at FROM link_catalog WHERE failure_count>0 AND last_error_code IS NOT NULL ORDER BY last_attempt_at DESC LIMIT 8")
+    let recent_failures = sqlx::query("SELECT provider,identity,validity,failure_count,last_error_code,last_attempt_at,next_check_at FROM link_catalog WHERE failure_count>0 AND last_error_code IS NOT NULL ORDER BY last_attempt_at DESC,id LIMIT 8")
         .fetch_all(&state.pool).await?.into_iter().map(|r|json!({
             "provider":r.get::<String,_>("provider"),"identity":r.get::<Option<String>,_>("identity"),
             "validity":r.get::<i16,_>("validity"),"failureCount":r.get::<i32,_>("failure_count"),
@@ -132,7 +130,7 @@ pub async fn monitor(
         "services":{"api":{"state":"online","startedAt":state.started_at},"postgres":{"state":"online","connections":state.pool.size(),"idle":state.pool.num_idle()},"redis":{"state":if redis.is_ok(){"online"}else{"unavailable"}}},
         "workers":{"crawl":crawl_worker,"links":link_worker},
         "crawl":{"queued":crawl.get::<i64,_>("queued"),"ready":crawl.get::<i64,_>("ready"),"running":crawl.get::<i64,_>("running"),"failed":crawl.get::<i64,_>("failed"),"paused":crawl.get::<i64,_>("paused"),"expired":crawl.get::<i64,_>("expired"),"lastActivityAt":crawl.get::<Option<DateTime<Utc>>,_>("last_activity"),"channels":index.get::<i64,_>("channels"),"activeChannels":index.get::<i64,_>("active_channels"),"overdueChannels":index.get::<i64,_>("overdue_channels"),"review":index.get::<i64,_>("review"),"resources":counts.resources,"lastSyncAt":index.get::<Option<DateTime<Utc>>,_>("last_sync"),"recentFailures":failures},
-        "links":{"syncPending":links.get::<i64,_>("sync_pending"),"oldestSyncAt":links.get::<Option<DateTime<Utc>>,_>("oldest_sync"),"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":check_health.get::<i64,_>("due"),"failing":check_health.get::<i64,_>("failing"),"unknown":check_health.get::<i64,_>("unknown"),"stuckJobs":stuck_checks},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
+        "links":{"syncPending":links.get::<i64,_>("sync_pending"),"oldestSyncAt":links.get::<Option<DateTime<Utc>>,_>("oldest_sync"),"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
     })))
 }
 

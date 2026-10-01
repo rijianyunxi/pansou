@@ -532,6 +532,20 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     assert!(!resource.description.as_ref().unwrap().contains('<'));
     let same = message(&channel, 101, "兰香如故", "test-a");
     assert_eq!(ingest(&state, &channel, &source, same).await, (0, false));
+    let occurrence_xmin: String = sqlx::query_scalar("SELECT xmin::text FROM resource_occurrences WHERE channel_id=$1 AND message_id=101")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
+        .fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE source_messages SET parse_version='force-reparse-test' WHERE channel_id=$1 AND message_id=101")
+        .bind(&channel).execute(&pool).await.unwrap();
+    let mut unchanged = message(&channel, 101, "兰香如故", "test-a");
+    unchanged.published = sqlx::query_scalar("SELECT published_at FROM source_messages WHERE channel_id=$1 AND message_id=101")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(ingest(&state, &channel, &source, unchanged).await, (1, false));
+    assert_eq!(sqlx::query_scalar::<_, String>("SELECT xmin::text FROM resource_occurrences WHERE channel_id=$1 AND message_id=101")
+        .bind(&channel).fetch_one(&pool).await.unwrap(), occurrence_xmin);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT revision FROM config_revisions WHERE scope='local-index'")
+        .fetch_one(&pool).await.unwrap(), revision);
     assert_eq!(
         ingest(
             &state,
@@ -608,6 +622,11 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     let session = state.auth().login(&user, &unique).await.unwrap().0;
     let anon = state.auth().issue(true).await.unwrap();
     let router = build_router(state.clone());
+    assert_eq!(
+        call(&router, "POST", "/api/admin/resources", Some(&session.token),
+            json!({"name":"invalid types fixture","cloud_types":{"not":"an array"}})).await.0,
+        StatusCode::BAD_REQUEST,
+    );
     for path in [
         "/api/admin/crawl/channels",
         "/api/admin/crawl/jobs",

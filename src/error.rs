@@ -15,8 +15,6 @@ pub enum ApiError {
     #[error("{0}")]
     SessionRequired(String),
     #[error("{0}")]
-    SessionCreationLimitExceeded(String),
-    #[error("{0}")]
     SearchLimitExceeded(String),
     #[error("{0}")]
     Forbidden(String),
@@ -39,10 +37,9 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Unauthorized(_)
-            | Self::SessionRequired(_)
-            | Self::SessionCreationLimitExceeded(_)
-            | Self::SearchLimitExceeded(_) => StatusCode::UNAUTHORIZED,
+            Self::Unauthorized(_) | Self::SessionRequired(_) | Self::SearchLimitExceeded(_) => {
+                StatusCode::UNAUTHORIZED
+            }
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
@@ -70,7 +67,6 @@ impl IntoResponse for ApiError {
         let status = self.status();
         let code = match &self {
             Self::SessionRequired(_) => "SESSION_REQUIRED",
-            Self::SessionCreationLimitExceeded(_) => "SESSION_CREATION_LIMIT_EXCEEDED",
             Self::SearchLimitExceeded(_) => "SEARCH_LIMIT_EXCEEDED",
             Self::Unavailable(_) => "SERVER_BUSY",
             Self::Unauthorized(_) => "UNAUTHORIZED",

@@ -258,7 +258,6 @@ pansou:session:{token}           -> user_id，登录会话，TTL 由 sessionDays
 pansou:anon:{token}              -> 匿名会话标记，TTL 由 sessionDays 决定
 pansou:anon_channels:{token}     -> 匿名会话的自定义频道，TTL 由 sessionDays 决定
 pansou:user_sessions:{user_id}   -> 当前用户所有 token 的 Set
-pansou:rate:session-create:*     -> 匿名 Session 创建的 IP/网段/全局固定窗口计数
 pansou:rate:search:*             -> 搜索 Session/IP/网段固定窗口计数
 pansou:concurrency:search:*      -> Session 和全站搜索并发许可，异常退出由 TTL 回收
 ```
@@ -280,8 +279,8 @@ TG 搜索结果使用 Redis 的版本化短期缓存。仅纯非 TG 查询可使
 3. `useAuth.initializeSession()` 请求 `/api/account/session`：
    - 浏览器自动携带 `pansou_session` HttpOnly Cookie；
    - 后端从 Redis 校验登录或匿名会话；
-   - 没有有效 Cookie 时，只有该接口可以创建匿名 Session；创建前同时检查 IP、网段和全局额度；
-   - 创建成功后通过 `Set-Cookie` 写入 `HttpOnly` 的 `pansou_session`；创建超限返回 HTTP `401` 和 `SESSION_CREATION_LIMIT_EXCEEDED`。
+   - 没有有效 Cookie 时，只有该接口可以创建匿名 Session；
+   - 创建成功后通过 `Set-Cookie` 写入 `HttpOnly` 的 `pansou_session`。
 4. `useSettings.syncWithSession()` 加载当前会话可用的搜索设置和自定义频道。
 5. 如果后台策略允许显示热搜，页面请求 `/api/hot-searches`。
 6. 如果 URL 是 `/?q=关键词`，初始化完成后自动执行该关键词搜索。
@@ -764,10 +763,8 @@ GET /api/search/json?kw=关键词
 
 ```text
 GET /api/account/session
-  -> 有效 Cookie/Bearer：复用现有 Session，不消费创建额度
-  -> 无有效 Session：检查 IP + 网段 + 全局创建额度
-  -> 成功：创建匿名 Session，并设置 HttpOnly Cookie
-  -> 超限：401 SESSION_CREATION_LIMIT_EXCEEDED
+  -> 有效 Cookie/Bearer：复用现有 Session
+  -> 无有效 Session：创建匿名 Session，并设置 HttpOnly Cookie
 
 POST /api/search
   -> 无有效 Session：401 SESSION_REQUIRED
@@ -818,13 +815,15 @@ docker compose up -d postgres redis
 docker compose ps
 ```
 
+PostgreSQL 和 Redis 的数据分别保存到 `docker-compose.yml` 所在目录下的 `data/postgres/` 和 `data/redis/`，首次启动时自动创建目录。`data/` 已被 Git 忽略，重建容器会继续使用这些数据。已有命名卷的数据不会自动迁移到这些目录；升级旧部署时，需要先备份并迁移数据再切换挂载方式。
+
 ### 11.3 启动 Rust
 
 PostgreSQL 与 Redis 的容器参数已直接写死在 `docker-compose.yml`（`shared_buffers 512MB`、`max_wal_size 4GB`、`checkpoint_timeout 15min`、WAL 页图像压缩、Redis `maxmemory 256mb` 及初始化账号），以同机运行 API、PostgreSQL 和 Redis 的 2 核 2 GB 服务器为保守起点，不再读取 `.env`。需要调整时直接修改 `docker-compose.yml` 后执行 `docker compose up -d postgres redis`；`work_mem` 保留 PostgreSQL 默认值。
 
 `shared_buffers` 不是 PostgreSQL 的全部内存占用，连接、排序、维护操作还会使用额外内存；`max_wal_size` 是磁盘 WAL 的软上限，不是内存预留。达到 WAL 阈值仍会提前触发检查点。2 GB 服务器可先将采集并发设为 2、页面等待设为 2 秒，再观察整机内存、CPU 和查询延迟；不要直接沿用高并发历史回填设置。
 
-后台频道列表的任务状态、失败页数仍实时查询；消息数和去重资源数共享 30 秒缓存。监控页面的资源总数及链接目录统计共享 60 秒缓存，心跳、任务队列及后台开关仍实时查询。缓存合并并发请求并限制容量，管理员修改频道或资源后会清空相关统计缓存。新建/停用/删除资源仍受原有权限和可见性规则约束。
+后台频道列表的消息数和去重资源数使用 PostgreSQL 持久化增量统计，与消息入库、重解析和资源关联变更在同一事务更新；资源停用、软删除即时从统计中排除。首次访问和程序重启不再扫描全量消息/关联表。升级时迁移 `016` 会一次性回填已有数据，回填期间会短暂阻塞采集写入；之后无需定时全量重算。任务状态、失败页数仍实时查询。监控页面的资源总数及链接目录统计共享 30 秒缓存，心跳、任务队列及后台开关仍实时查询。新建/停用/删除资源仍受原有权限和可见性规则约束。
 
 ```powershell
 cd D:\study\pansou
@@ -863,11 +862,13 @@ http://127.0.0.1:5173
 
 所有后端配置都位于根目录 `.env`，前端不保存 PostgreSQL、Redis 或管理员密码。
 
+仓库中的 `.env.example` 是不含真实密钥的默认模板。Release 压缩包会同时带上可直接启动的 `.env`、模板副本 `.env.example`、`docker-compose.yml` 和 `README.md`；正式部署前请修改数据库密码、管理员初始密码，并不要把修改后的 `.env` 提交到 Git。
+
 | 变量 | 默认/示例 | 用途 |
 | --- | --- | --- |
 | `PANSOU_DATABASE_URL` | `postgres://postgres:postgres@127.0.0.1:5432/pansou` | PostgreSQL 连接串 |
 | `PANSOU_REDIS_URL` | `redis://127.0.0.1:6379/` | Redis 连接串 |
-| `PANSOU_API_HOST` | `127.0.0.1` | Rust 监听地址 |
+| `PANSOU_API_HOST` | `0.0.0.0` | Rust 监听地址；使用可信反向代理时可改为 `127.0.0.1` |
 | `PANSOU_API_PORT` | `3666` | Rust 监听端口 |
 | `PANSOU_ADMIN_INITIAL_PASSWORD` | 空 | 首次创建管理员的密码；为空则随机生成并只输出一次 |
 | `RUST_LOG` | `pansou_api=info,tower_http=info` | tracing 日志过滤 |
@@ -879,10 +880,6 @@ http://127.0.0.1:5173
 | `PANSOU_REDIS_CONNECTION_TIMEOUT_SECONDS` | `3` | Redis 建连超时 |
 | `PANSOU_REDIS_RESPONSE_TIMEOUT_SECONDS` | `5` | Redis 命令响应超时 |
 | `PANSOU_TRUST_PROXY_HEADERS` | `false` | 是否信任 `X-Forwarded-For`/`X-Real-IP`；仅当 Rust 只能由可信反向代理访问时开启 |
-| `PANSOU_SESSION_CREATE_WINDOW_SECONDS` | `60` | 匿名 Session 创建限流窗口 |
-| `PANSOU_SESSION_CREATE_PER_IP` | `5` | 单 IP 每窗口最多创建的匿名 Session 数 |
-| `PANSOU_SESSION_CREATE_PER_SUBNET` | `30` | 单 IPv4 `/24` 或 IPv6 `/64` 网段每窗口最多创建的匿名 Session 数 |
-| `PANSOU_SESSION_CREATE_GLOBAL` | `300` | 全站每窗口最多创建的匿名 Session 数 |
 | `PANSOU_SEARCH_SUBNET_LIMIT_MULTIPLIER` | `4` | 搜索网段额度相对 IP 额度的倍数 |
 
 搜索并发（匿名单会话 / 登录单会话 / 全站）不走环境变量，在 管理后台 → 搜索限流与并发 中配置。

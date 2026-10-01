@@ -383,15 +383,9 @@ pub async fn persist_message(
     sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,published_at,parse_version,parse_status,parse_error) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(channel_id,message_id) DO UPDATE SET raw_html=EXCLUDED.raw_html,raw_hash=EXCLUDED.raw_hash,published_at=EXCLUDED.published_at,parse_version=EXCLUDED.parse_version,parse_status=EXCLUDED.parse_status,parse_error=EXCLUDED.parse_error,last_seen_at=now(),updated_at=now()")
         .bind(channel).bind(message.id).bind(&message.html).bind(raw_hash).bind(message.published).bind(version).bind(status).bind(error).execute(&mut **tx).await?;
     if status == "failed" {
-        bump(tx).await?;
         return Ok((0, true));
     }
     let old=sqlx::query("SELECT resource_id,result_json FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2").bind(channel).bind(message.id).fetch_all(&mut **tx).await?;
-    sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2")
-        .bind(channel)
-        .bind(message.id)
-        .execute(&mut **tx)
-        .await?;
     let mut claimed = std::collections::HashSet::new();
     let mut changed = Vec::new();
     for mut item in items.iter().cloned() {
@@ -434,9 +428,11 @@ pub async fn persist_message(
             .map(|r| r.get::<String, _>("resource_id"));
         let matching = if let Some(id) = matching {
             let count = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM resource_occurrences WHERE resource_id=$1",
+                "SELECT count(*) FROM resource_occurrences WHERE resource_id=$1 AND (channel_id,message_id) IS DISTINCT FROM ($2,$3)",
             )
             .bind(&id)
+            .bind(channel)
+            .bind(message.id)
             .fetch_one(&mut **tx)
             .await?;
             if count == 0 { Some(id) } else { None }
@@ -459,17 +455,21 @@ pub async fn persist_message(
         };
         claimed.insert(actual.clone());
         item.id = actual.clone();
-        sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,$4) ON CONFLICT(channel_id,message_id,resource_id) DO UPDATE SET result_json=EXCLUDED.result_json,updated_at=now()")
+        sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,$4) ON CONFLICT(channel_id,message_id,resource_id) DO UPDATE SET result_json=EXCLUDED.result_json,updated_at=now() WHERE resource_occurrences.result_json IS DISTINCT FROM EXCLUDED.result_json")
             .bind(channel).bind(message.id).bind(&actual).bind(serde_json::to_value(&item).unwrap()).execute(&mut **tx).await?;
         changed.push(actual);
     }
+    // Retain unchanged references; remove only items absent from this parse.
+    // This avoids delete/reinsert churn in the outbox, FK and statistics triggers.
+    let retained: Vec<String> = claimed.into_iter().collect();
+    sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2 AND NOT(resource_id=ANY($3))")
+        .bind(channel).bind(message.id).bind(&retained).execute(&mut **tx).await?;
     changed.extend(old.iter().map(|r| r.get::<String, _>("resource_id")));
     changed.sort();
     changed.dedup();
     for id in changed {
         refresh_resource(tx, &id).await?;
     }
-    bump(tx).await?;
     Ok((items.len(), false))
 }
 

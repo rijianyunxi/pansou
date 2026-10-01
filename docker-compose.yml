@@ -25,7 +25,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - pansou-postgres:/var/lib/postgresql
+      - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -65,7 +65,7 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
-      - pansou-redis:/data
+      - ./data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -78,9 +78,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  pansou-postgres:
-    name: pansou-postgres
-  pansou-redis:
-    name: pansou-redis

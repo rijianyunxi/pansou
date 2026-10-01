@@ -20,6 +20,8 @@ mod security;
 mod telegram;
 #[cfg(test)]
 mod telegram_tests;
+#[cfg(test)]
+mod sql_optimization_tests;
 mod transform;
 
 use anyhow::{Context, Result};

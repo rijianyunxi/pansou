@@ -28,6 +28,9 @@ pub struct AppState {
     #[cfg(test)]
     pub cloud_test_bases: Option<crate::cloud_drive::TestBases>,
     pub cloud_slots: Arc<tokio::sync::Semaphore>,
+    // Expensive DB searches have a separate budget from outbound HTTP requests.
+    pub local_search_slots: Arc<tokio::sync::Semaphore>,
+    pub local_search_locks: Arc<crate::local_index::SearchLocks>,
     pub custom_link_refs: Arc<
         tokio::sync::Mutex<
             std::collections::HashMap<String, (chrono::DateTime<chrono::Utc>, String)>,
@@ -60,6 +63,8 @@ impl AppState {
             #[cfg(test)]
             cloud_test_bases: None,
             cloud_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            local_search_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            local_search_locks: Arc::new(crate::local_index::SearchLocks::default()),
             custom_link_refs: Arc::new(tokio::sync::Mutex::new(Default::default())),
             search_cache: Arc::new(tokio::sync::Mutex::new(SearchCache::default())),
             security: SecurityConfig::from_env(),

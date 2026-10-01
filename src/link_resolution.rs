@@ -434,7 +434,9 @@ pub async fn resolve(
         }
     }
     let id = register(&state, &link).await?;
-    sqlx::query("UPDATE link_check_jobs SET priority=10 WHERE link_id=$1 AND status='queued'")
+    // A click can create urgent work even if this link was registered while checks
+    // were disabled. Never replace or steal another worker's running lease.
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',10 FROM link_catalog c WHERE c.id=$1 AND c.provider IN('baidu','quark') AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10 WHERE link_check_jobs.status='queued' AND link_check_jobs.priority<>10")
         .bind(id)
         .execute(&state.pool)
         .await?;
