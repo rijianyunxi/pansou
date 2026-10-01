@@ -5,17 +5,19 @@ services:
     image: postgres:18-alpine
     restart: unless-stopped
     init: true
-    shm_size: 256mb
+    shm_size: 1g
     command:
       - postgres
       - -c
-      - shared_buffers=${PANSOU_PG_SHARED_BUFFERS:-512MB}
+      - shared_buffers=${PANSOU_PG_SHARED_BUFFERS:-256MB}
       - -c
-      - max_wal_size=${PANSOU_PG_MAX_WAL_SIZE:-4GB}
+      - max_wal_size=${PANSOU_PG_MAX_WAL_SIZE:-1GB}
       - -c
       - checkpoint_timeout=${PANSOU_PG_CHECKPOINT_TIMEOUT:-15min}
       - -c
       - wal_compression=on
+      - -c
+      - temp_file_limit=4GB
     environment:
       POSTGRES_DB: ${PANSOU_POSTGRES_DB:-pansou}
       POSTGRES_USER: ${PANSOU_POSTGRES_USER:-postgres}

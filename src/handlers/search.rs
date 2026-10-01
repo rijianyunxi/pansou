@@ -1006,7 +1006,7 @@ pub async fn search_json(
         .await?;
     let permit = crate::security::acquire_search_permit(
         &state.redis,
-        &state.security,
+        &policy,
         &session,
         policy.search_timeout_ms.div_ceil(1000).saturating_add(30),
     )
@@ -1128,7 +1128,7 @@ pub async fn search_sse(
         .await?;
     let permit = crate::security::acquire_search_permit(
         &state.redis,
-        &state.security,
+        &policy,
         &session,
         policy.search_timeout_ms.div_ceil(1000).saturating_add(30),
     )

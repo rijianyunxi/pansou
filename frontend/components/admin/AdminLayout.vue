@@ -4,11 +4,11 @@ import { RouterView, useRoute } from "vue-router";
 import { ChevronRight } from "@lucide/vue";
 import AdminAccessGate from "./AdminAccessGate.vue";
 import AdminSidebar from "./AdminSidebar.vue";
+import AdminHeaderActions from "./AdminHeaderActions.vue";
 import AdminConfirmDialog from "./AdminConfirmDialog.vue";
 import { provideAdminConfirm } from "@/composables/admin/useAdminConfirm";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "./ui/sidebar";
 import { Separator } from "./ui/separator";
-import { Badge } from "./ui/badge";
 import { provideAdminSession } from "@/composables/admin/useAdminSession";
 import { adminNavigation } from "./navigation";
 import "../../assets/admin.css";
@@ -41,11 +41,11 @@ onMounted(session.check);
             <SidebarTrigger aria-label="切换后台侧栏" /><Separator
               orientation="vertical"
               class="tw:h-4"
-            /><span>管理后台</span><ChevronRight :size="14" /><strong>{{
+            /><span class="admin-breadcrumb-root">管理后台</span><ChevronRight class="admin-breadcrumb-divider" :size="14" /><strong :title="current?.title || '管理后台'">{{
               current?.title || "管理后台"
             }}</strong>
           </div>
-          <Badge variant="outline" class="admin-env-badge">管理工作区</Badge>
+          <AdminHeaderActions />
         </header>
         <section class="admin-main">
           <RouterView />

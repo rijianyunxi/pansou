@@ -748,11 +748,11 @@
               </div>
             </fieldset>
             <fieldset class="policy-group">
-              <legend>搜索限流</legend>
+              <legend>匿名用户搜索限流</legend>
               <div class="policy-form-grid">
                 <label class="policy-field"
                   ><span
-                    ><strong>匿名账户限流窗口</strong
+                    ><strong>限流窗口</strong
                     ><code>anonymousSearchRateLimitWindowSeconds</code></span
                   ><Input
                     v-model.number="
@@ -766,7 +766,7 @@
                 >
                 <label class="policy-field"
                   ><span
-                    ><strong>匿名账户单 Session 上限</strong
+                    ><strong>单 Session 上限</strong
                     ><code>anonymousSearchRateLimitPerSession</code></span
                   ><Input
                     v-model.number="
@@ -776,11 +776,11 @@
                     min="1"
                     max="300"
                     required
-                  /><small>范围：1–300 次</small></label
+                  /><small>范围：1–300 次 / 窗口</small></label
                 >
                 <label class="policy-field"
                   ><span
-                    ><strong>匿名账户单 IP 上限</strong
+                    ><strong>单 IP 上限</strong
                     ><code>anonymousSearchRateLimitPerIp</code></span
                   ><Input
                     v-model.number="policyForm.anonymousSearchRateLimitPerIp"
@@ -788,11 +788,28 @@
                     min="1"
                     max="1000"
                     required
-                  /><small>范围：1–1000 次</small></label
+                  /><small>范围：1–1000 次 / 窗口</small></label
                 >
                 <label class="policy-field"
                   ><span
-                    ><strong>登录账户限流窗口</strong
+                    ><strong>单会话并发</strong
+                    ><code>anonymousSearchConcurrency</code></span
+                  ><Input
+                    v-model.number="policyForm.anonymousSearchConcurrency"
+                    type="number"
+                    min="1"
+                    max="16"
+                    required
+                  /><small>范围：1–16 路 · 同一会话同时在途的搜索数</small></label
+                >
+              </div>
+            </fieldset>
+            <fieldset class="policy-group">
+              <legend>登录用户搜索限流</legend>
+              <div class="policy-form-grid">
+                <label class="policy-field"
+                  ><span
+                    ><strong>限流窗口</strong
                     ><code>loggedSearchRateLimitWindowSeconds</code></span
                   ><Input
                     v-model.number="
@@ -806,7 +823,7 @@
                 >
                 <label class="policy-field"
                   ><span
-                    ><strong>登录账户单 Session 上限</strong
+                    ><strong>单 Session 上限</strong
                     ><code>loggedSearchRateLimitPerSession</code></span
                   ><Input
                     v-model.number="policyForm.loggedSearchRateLimitPerSession"
@@ -814,11 +831,11 @@
                     min="1"
                     max="300"
                     required
-                  /><small>范围：1–300 次</small></label
+                  /><small>范围：1–300 次 / 窗口</small></label
                 >
                 <label class="policy-field"
                   ><span
-                    ><strong>登录账户单 IP 上限</strong
+                    ><strong>单 IP 上限</strong
                     ><code>loggedSearchRateLimitPerIp</code></span
                   ><Input
                     v-model.number="policyForm.loggedSearchRateLimitPerIp"
@@ -826,7 +843,36 @@
                     min="1"
                     max="1000"
                     required
-                  /><small>范围：1–1000 次</small></label
+                  /><small>范围：1–1000 次 / 窗口</small></label
+                >
+                <label class="policy-field"
+                  ><span
+                    ><strong>单会话并发</strong
+                    ><code>loggedSearchConcurrency</code></span
+                  ><Input
+                    v-model.number="policyForm.loggedSearchConcurrency"
+                    type="number"
+                    min="1"
+                    max="32"
+                    required
+                  /><small>范围：1–32 路 · 同一会话同时在途的搜索数</small></label
+                >
+              </div>
+            </fieldset>
+            <fieldset class="policy-group">
+              <legend>全站搜索并发</legend>
+              <div class="policy-form-grid">
+                <label class="policy-field"
+                  ><span
+                    ><strong>全站同时在途搜索总数</strong
+                    ><code>globalSearchConcurrency</code></span
+                  ><Input
+                    v-model.number="policyForm.globalSearchConcurrency"
+                    type="number"
+                    min="8"
+                    max="256"
+                    required
+                  /><small>范围：8–256 路 · 所有匿名 + 登录会话共享的最后防线</small></label
                 >
               </div>
             </fieldset>
@@ -1225,6 +1271,9 @@ type UserPolicy = {
   loggedSearchRateLimitWindowSeconds: number;
   loggedSearchRateLimitPerSession: number;
   loggedSearchRateLimitPerIp: number;
+  anonymousSearchConcurrency: number;
+  loggedSearchConcurrency: number;
+  globalSearchConcurrency: number;
 };
 
 const DEFAULT_POLICY: UserPolicy = {
@@ -1248,6 +1297,9 @@ const DEFAULT_POLICY: UserPolicy = {
   loggedSearchRateLimitWindowSeconds: 60,
   loggedSearchRateLimitPerSession: 60,
   loggedSearchRateLimitPerIp: 240,
+  anonymousSearchConcurrency: 2,
+  loggedSearchConcurrency: 4,
+  globalSearchConcurrency: 64,
 };
 
 const props = defineProps<{ feature: Feature }>();
@@ -1903,6 +1955,21 @@ function normalizePolicy(value: unknown): UserPolicy {
       Number.isInteger(input.loggedSearchRateLimitPerIp)
         ? input.loggedSearchRateLimitPerIp
         : DEFAULT_POLICY.loggedSearchRateLimitPerIp,
+    anonymousSearchConcurrency:
+      typeof input.anonymousSearchConcurrency === "number" &&
+      Number.isInteger(input.anonymousSearchConcurrency)
+        ? input.anonymousSearchConcurrency
+        : DEFAULT_POLICY.anonymousSearchConcurrency,
+    loggedSearchConcurrency:
+      typeof input.loggedSearchConcurrency === "number" &&
+      Number.isInteger(input.loggedSearchConcurrency)
+        ? input.loggedSearchConcurrency
+        : DEFAULT_POLICY.loggedSearchConcurrency,
+    globalSearchConcurrency:
+      typeof input.globalSearchConcurrency === "number" &&
+      Number.isInteger(input.globalSearchConcurrency)
+        ? input.globalSearchConcurrency
+        : DEFAULT_POLICY.globalSearchConcurrency,
   };
 }
 

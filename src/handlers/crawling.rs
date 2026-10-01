@@ -145,6 +145,7 @@ async fn channels_data(
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
         }
+        v["taskPhase"] = json!(task.get::<Option<String>, _>("task_phase"));
         items.push(v);
     }
     Ok(items)
@@ -312,6 +313,8 @@ pub async fn crawl_overview(
         "WITH channel_states AS ({}) SELECT
          count(*) FILTER(WHERE task_state='queued') queued,
          count(*) FILTER(WHERE task_state='running') running,
+         count(*) FILTER(WHERE task_state='backoff') backoff,
+         count(*) FILTER(WHERE task_phase='fetching') fetching,
          count(*) FILTER(WHERE task_state='failed') failed FROM channel_states",
         include_str!("../sql/channel_task_states.sql"),
     ))
@@ -324,7 +327,7 @@ pub async fn crawl_overview(
     let worker_enabled = crate::runtime::settings(&s).await?.crawl_enabled;
     let scheduling = crawl::settings(&s.pool).await?;
     Ok(ok(
-        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"failed":jobs.get::<i64,_>("failed"),"review":review,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
+        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"backoff":jobs.get::<i64,_>("backoff"),"fetching":jobs.get::<i64,_>("fetching"),"failed":jobs.get::<i64,_>("failed"),"review":review,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
     ))
 }
 pub async fn crawl_job_create(

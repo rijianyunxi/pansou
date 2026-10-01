@@ -19,6 +19,9 @@ pub async fn query(
     sqlx::query("SET LOCAL statement_timeout='5000ms'")
         .execute(&mut *tx)
         .await?;
+    sqlx::query("SET LOCAL work_mem='64MB'")
+        .execute(&mut *tx)
+        .await?;
     let revision = sqlx::query_scalar::<_, i64>(
         "SELECT revision FROM config_revisions WHERE scope='local-index'",
     )
@@ -43,12 +46,21 @@ pub async fn query(
         let gram = resource_clean::grams(&keyword)
             .into_iter()
             .find(|s| s.chars().count() == keyword.chars().count().min(2));
-        let rows = sqlx::query(include_str!("queries/telegram_search.sql"))
-            .bind(&keyword)
-            .bind(gram)
-            .bind(channels)
-            .fetch_all(&mut *tx)
-            .await?;
+        let rows = match gram.as_ref() {
+            // gram 命中时从 resource_grams 反查资源,避免全量扫描 occurrences
+            Some(g) => sqlx::query(include_str!("queries/telegram_search_gram.sql"))
+                .bind(&keyword)
+                .bind(g)
+                .bind(channels)
+                .fetch_all(&mut *tx)
+                .await?,
+            None => sqlx::query(include_str!("queries/telegram_search.sql"))
+                .bind(&keyword)
+                .bind(&gram)
+                .bind(channels)
+                .fetch_all(&mut *tx)
+                .await?,
+        };
         let values = rows
             .into_iter()
             .map(|r| r.get::<Value, _>("item"))

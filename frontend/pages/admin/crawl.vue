@@ -31,8 +31,9 @@ const {
   refresh: refreshOverview,
 } = useCrawlQuery<CrawlOverview>(ref("/api/admin/crawl/overview"), ref({}));
 const metrics = computed(() => [
-  { key: 'running', label: '采集中', value: overview.value?.running, hint: '全局处于采集中状态的频道数' },
-  { key: 'queued', label: '排队中', value: overview.value?.queued, hint: '全局排队频道数，包含翻页间隔和重试退避' },
+  { key: 'running', label: '采集中', value: overview.value?.running, hint: `包含正常翻页等待；当前正在处理页面 ${overview.value?.fetching ?? '—'} 个频道` },
+  { key: 'queued', label: '排队中', value: overview.value?.queued, hint: '已可执行，但正在等待并发槽位的频道数' },
+  { key: 'backoff', label: '退避中', value: overview.value?.backoff, hint: '请求异常或限频后，等待重试的频道数' },
   { key: 'failed', label: '已中断', value: overview.value?.failed, hint: '全局采集中断的频道数' },
   { key: 'review', label: '待复核页', value: overview.value?.review, hint: '页面解析异常，待检查' },
 ]);

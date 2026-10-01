@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Row};
 
-pub const POLICY_KEYS: [&str; 20] = [
+pub const POLICY_KEYS: [&str; 23] = [
     "showHotSearch",
     "anonymousCustomChannels",
     "showAuthButtons",
@@ -24,6 +24,9 @@ pub const POLICY_KEYS: [&str; 20] = [
     "loggedSearchRateLimitWindowSeconds",
     "loggedSearchRateLimitPerSession",
     "loggedSearchRateLimitPerIp",
+    "anonymousSearchConcurrency",
+    "loggedSearchConcurrency",
+    "globalSearchConcurrency",
 ];
 
 const LEGACY_KEYS: [&str; 4] = [
@@ -56,6 +59,9 @@ pub struct UserPolicy {
     pub logged_search_rate_limit_window_seconds: u64,
     pub logged_search_rate_limit_per_session: u64,
     pub logged_search_rate_limit_per_ip: u64,
+    pub anonymous_search_concurrency: u64,
+    pub logged_search_concurrency: u64,
+    pub global_search_concurrency: u64,
 }
 
 impl Default for UserPolicy {
@@ -81,6 +87,9 @@ impl Default for UserPolicy {
             logged_search_rate_limit_window_seconds: 60,
             logged_search_rate_limit_per_session: 60,
             logged_search_rate_limit_per_ip: 240,
+            anonymous_search_concurrency: 2,
+            logged_search_concurrency: 4,
+            global_search_concurrency: 64,
         }
     }
 }
@@ -161,6 +170,24 @@ impl UserPolicy {
             self.logged_search_rate_limit_per_ip,
             1,
             1_000,
+        )?;
+        in_range(
+            "anonymousSearchConcurrency",
+            self.anonymous_search_concurrency,
+            1,
+            16,
+        )?;
+        in_range(
+            "loggedSearchConcurrency",
+            self.logged_search_concurrency,
+            1,
+            32,
+        )?;
+        in_range(
+            "globalSearchConcurrency",
+            self.global_search_concurrency,
+            8,
+            256,
         )?;
         Ok(self)
     }

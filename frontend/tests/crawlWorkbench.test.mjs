@@ -82,13 +82,15 @@ test("durable enqueue key and timezone date filters are wired to shadcn forms", 
 test("node selection exposes only checkboxes and weights, including direct", async () => {
   const editor = await read("components/admin/OutboundPolicyEditor.vue");
   assert.match(editor, /AdminCheckbox/);
-  assert.match(editor, /sortedNodes/);
-  assert.match(editor, /权重越大越优先/);
+  assert.match(editor, /weightedShares/);
+  assert.match(editor, /加权随机/);
+  assert.match(editor, /权重 0 完全不参与/);
+  assert.match(editor, /配置占比/);
+  assert.ok(!editor.includes("尝试顺序"));
   for (const removed of [
     "maxAttempts",
     "unavailableFallback",
     "replaySafe",
-    "加权随机",
     "上移",
     "下移",
     "AdminSelect",
@@ -97,7 +99,7 @@ test("node selection exposes only checkboxes and weights, including direct", asy
   }
   assert.match(editor, /min="0"/);
 });
-test("priority order is deterministic and preserves input arrays", async () => {
+test("display order is deterministic, not a request attempt order", async () => {
   const { sortedNodes, directPolicy } = await import("../types/outbound.ts");
   const input = [
     { nodeId: "a", weight: 20 },
@@ -151,13 +153,15 @@ test("channel task states keep distinct tones and paused overrides stale job err
  assert.match(source,/aria-hidden="true"/);
 });
 
-test("queued channels share one label and use the server snapshot for wait reasons", async () => {
+test("channel labels distinguish normal page waiting, capacity queue and error backoff", async () => {
  const {channelTaskState,compactChannelTaskLabel}=await import("../types/crawl.ts");
- const base={enabled:true,historyComplete:false,taskState:"queued",taskStateAt:"2026-10-01T00:00:00Z",nextPageAt:"2026-10-01T00:00:01Z",latestJob:{status:"queued",attempts:0,kind:"backfill",nextRunAt:"2026-09-30T23:59:59Z"}};
- assert.equal(compactChannelTaskLabel(base),"排队中");
- assert.equal(channelTaskState(base,Date.parse("2026-10-01T01:00:00Z")).text,"等待下一页");
- assert.equal(compactChannelTaskLabel({...base,latestJob:{...base.latestJob,attempts:2}}),"排队中");
- assert.equal(channelTaskState({...base,latestJob:{...base.latestJob,attempts:2}}).text,"退避等待");
+ const base={enabled:true,historyComplete:false,taskState:"running",taskPhase:"page_wait",taskStateAt:"2026-10-01T00:00:00Z",nextPageAt:"2026-10-01T00:00:01Z",latestJob:{status:"queued",attempts:0,kind:"backfill",nextRunAt:"2026-09-30T23:59:59Z"}};
+ assert.equal(compactChannelTaskLabel(base),"采集中");
+ assert.match(channelTaskState(base,Date.parse("2026-10-01T01:00:00Z")).text,/等待下一页/);
+ assert.equal(compactChannelTaskLabel({...base,taskState:"queued",taskPhase:"queued"}),"排队中");
+ assert.equal(channelTaskState({...base,taskState:"queued",taskPhase:"queued"}).text,"等待并发槽位");
+ assert.equal(compactChannelTaskLabel({...base,taskState:"backoff",latestJob:{...base.latestJob,attempts:2}}),"退避中");
+ assert.equal(channelTaskState({...base,taskState:"backoff",latestJob:{...base.latestJob,attempts:2}}).text,"退避等待");
  assert.equal(compactChannelTaskLabel({...base,taskState:"running",latestJob:{...base.latestJob,status:"running"}}),"采集中");
  assert.equal(compactChannelTaskLabel({...base,taskState:"paused",enabled:false}),"已暂停");
 });

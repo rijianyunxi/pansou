@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { Database, Info, Layers, Link2, RadioTower, RefreshCw, RotateCw, Server } from '@lucide/vue';
+import { AlertTriangle, CircleCheck, Database, Eraser, Info, Layers, Link2, RadioTower, RefreshCw, RotateCw, ScanSearch, Send, Server } from '@lucide/vue';
 import { Card } from '@/components/admin/ui/card';
 import { Button } from '@/components/admin/ui/button';
 import { Switch } from '@/components/admin/ui/switch';
@@ -12,8 +12,8 @@ import AdminDialog from '../admin/AdminDialog.vue';
 import ConsoleIcon from '../sources/ConsoleIcon.vue';
 import { apiFetch, apiErrorMessage } from '../../src/appRuntime';
 import {
-  dateLabel, deliveryTotal, lastSourceRequest, monitorAlerts, monitorQueueRows,
-  sourceLabel, sourceSuccessRate, sourceTone, workerLabel, type MonitorData, type RuntimeState,
+  checkTaskRows, cleanupTaskRows, dateLabel, deliveryTotal, lastSourceRequest, monitorAlerts, monitorQueueRows,
+  sourceLabel, sourceSuccessRate, sourceTone, workerLabel, type LinkTaskTone, type LiveSource, type MonitorData, type RuntimeState,
 } from './monitorView';
 
 const emit = defineEmits<{ (event: 'unauthorized'): void }>();
@@ -66,6 +66,9 @@ const attentionItems = computed(() => data.value ? [
   { key: 'cleanup', name: '清理失败 / 阻塞', count: data.value.links.queues.cleanup.failed + (data.value.links.queues.cleanup.blocked ?? 0), description: '核实账号或云端产物状态', path: '/admin/policies', action: '链接策略', tone: 'error' },
 ].filter((item) => item.count > 0) : []);
 const completedDeliveries = computed(() => data.value ? deliveryTotal(data.value) : null);
+const checkHealth = computed(() => data.value?.links.checkHealth);
+const checkTasks = computed(() => data.value ? checkTaskRows(data.value) : []);
+const cleanupTasks = computed(() => data.value ? cleanupTaskRows(data.value) : []);
 
 function formatCount(value: number | null | undefined) {
   return value == null ? '—' : value.toLocaleString('zh-CN');
@@ -83,12 +86,32 @@ function toneClasses(tone: 'ok' | 'error' | 'muted') {
     muted: 'tw:bg-[var(--monitor-fill)] tw:text-[var(--monitor-muted)]',
   }[tone];
 }
+function attentionToneClass(tone: string) {
+  return tone === 'warning'
+    ? 'tw:bg-[var(--monitor-warning-bg)] tw:text-[var(--monitor-warning)]'
+    : 'tw:bg-[var(--monitor-error-bg)] tw:text-[var(--monitor-error)]';
+}
+function linkTaskToneClass(tone: LinkTaskTone) {
+  return {
+    ok: 'tw:bg-[var(--monitor-ok-bg)] tw:text-[var(--monitor-ok)]',
+    warn: 'tw:bg-[var(--monitor-warning-bg)] tw:text-[var(--monitor-warning)]',
+    error: 'tw:bg-[var(--monitor-error-bg)] tw:text-[var(--monitor-error)]',
+    muted: 'tw:bg-[var(--monitor-fill)] tw:text-[var(--monitor-muted)]',
+  }[tone];
+}
+function sourceRatePercent(source: LiveSource) {
+  const value = Number.parseFloat(sourceSuccessRate(source));
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+}
 function serviceLabel(state: RuntimeState) {
   return state === 'online' ? '在线' : state === 'offline' ? '离线' : state === 'unavailable' ? '不可用' : '状态未知';
 }
 function workerPresence(kind: 'crawl' | 'links') {
   const worker = data.value?.workers[kind];
   return worker ? workerLabel({ ...worker, enabled: true }) : '状态不可用';
+}
+function workerEnabled(kind: 'crawl' | 'links') {
+  return !!data.value?.workers[kind].enabled;
 }
 function scheduleLabel(kind: 'crawl' | 'links') {
   const worker = data.value?.workers[kind];
@@ -188,8 +211,8 @@ onBeforeUnmount(() => {
         <Button :class="['refresh-button', compactButtonClass]" size="sm" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spinning: loading }" />{{ loading ? '刷新中…' : '刷新状态' }}</Button>
       </div>
     </header>
-    <p v-if="error" class="runtime-error error-notice" role="alert">{{ error }}<span v-if="data"> · 当前显示上次成功读取的数据</span><Button v-else size="sm" variant="outline" :disabled="loading" @click="load">重试</Button></p>
-    <p v-if="notice" class="runtime-notice" role="status">{{ notice }}</p>
+    <p v-if="error" class="runtime-error error-notice" role="alert"><span class="notice-copy"><AlertTriangle :size="14" class="notice-icon" /><span class="notice-text">{{ error }}<span v-if="data"> · 当前显示上次成功读取的数据</span></span></span><Button v-if="!data" size="sm" variant="outline" :disabled="loading" @click="load">重试</Button></p>
+    <p v-if="notice" class="runtime-notice" role="status"><CircleCheck :size="14" class="notice-icon" /><span class="notice-text">{{ notice }}</span></p>
     <p v-if="!data && !error" class="empty-state" role="status">正在读取运行状态…</p>
 
     <template v-if="data">
@@ -199,8 +222,8 @@ onBeforeUnmount(() => {
           <span class="muted-label">更新于 {{ dateLabel(data.generatedAt) }}</span>
         </header>
         <div class="service-grid">
-          <Card v-for="service in serviceCards" :key="service.key" class="service-card tw:gap-0 tw:p-3.5 tw:rounded-2xl tw:shadow-[0_4px_16px_rgb(27_43_75_/_0.04)]" role="article" :aria-label="service.name">
-            <div class="service-card-top"><span class="service-icon"><component :is="service.icon" :size="16" /></span><Badge variant="secondary" :class="[statusBadgeClass, toneClasses(stateTone(service.state))]"><i class="monitor-status-dot"></i>{{ service.kind ? workerPresence(service.kind) : serviceLabel(service.state) }}</Badge></div>
+          <Card v-for="service in serviceCards" :key="service.key" class="service-card tw:gap-0 tw:p-3.5 tw:rounded-2xl" role="article" :aria-label="service.name">
+            <div class="service-card-top"><span class="service-icon" :class="toneClasses(stateTone(service.state))"><component :is="service.icon" :size="16" /></span><Badge variant="secondary" :class="[statusBadgeClass, toneClasses(stateTone(service.state))]"><i class="monitor-status-dot"></i>{{ service.kind ? workerPresence(service.kind) : serviceLabel(service.state) }}</Badge></div>
             <div class="service-name"><h3>{{ service.name }}</h3><small>{{ service.description }}</small></div>
             <div v-if="service.key === 'api'" class="service-info">
               <small>启动时间 · {{ datePart(data.services.api.startedAt, 'date') }}</small><strong class="service-value time-value">{{ datePart(data.services.api.startedAt, 'time') }}</strong><small>API / Web 服务</small>
@@ -211,8 +234,8 @@ onBeforeUnmount(() => {
             <div v-else-if="service.key === 'redis'" class="service-info"><small>服务职责</small><strong class="service-description">会话 · 缓存</strong><small>Worker 心跳与状态协调</small></div>
             <div v-else-if="service.kind" class="service-info"><small>在线 Worker</small><strong class="service-value">{{ formatCount(data.workers[service.kind].count) }}</strong><small>{{ scheduleLabel(service.kind) }}</small></div>
             <footer class="service-actions">
-              <Button v-if="service.kind" variant="ghost" size="sm" :class="['schedule-button', compactButtonClass, 'tw:px-0']" :disabled="!!busy || loading" :aria-label="workerNames[service.kind] + '：' + workerToggleLabel(service.kind)" @click="toggle(service.kind)">{{ workerToggleLabel(service.kind) }}</Button>
-              <Button variant="secondary" size="sm" :class="['restart-button', compactButtonClass]" disabled :aria-label="'重启 ' + service.name + '（未接入）'" aria-describedby="runtime-restart-note" title="当前部署未提供重启管理接口"><RotateCw :size="13" />重启</Button>
+              <Button v-if="service.kind" variant="ghost" size="sm" :class="['schedule-button', compactButtonClass, 'tw:px-0', 'tw:hover:bg-transparent', 'tw:hover:text-[var(--monitor-accent)]']" :disabled="!!busy || loading" :aria-label="workerNames[service.kind] + '：' + workerToggleLabel(service.kind)" @click="toggle(service.kind)"><i class="schedule-dot" :class="workerEnabled(service.kind) ? 'is-on' : 'is-paused'" aria-hidden="true"></i>{{ workerToggleLabel(service.kind) }}</Button>
+              <Button variant="secondary" size="sm" :class="['restart-button', compactButtonClass, 'tw:bg-transparent tw:text-[var(--monitor-muted)] tw:shadow-none tw:hover:bg-[var(--monitor-fill)] tw:hover:text-[var(--monitor-ink)]']" disabled :aria-label="'重启 ' + service.name + '（未接入）'" aria-describedby="runtime-restart-note" title="当前部署未提供重启管理接口"><RotateCw :size="13" />重启</Button>
             </footer>
           </Card>
         </div>
@@ -222,10 +245,47 @@ onBeforeUnmount(() => {
       <Card class="monitor-panel results-panel tw:gap-0 tw:py-0 tw:rounded-2xl" aria-label="采集与处理成果">
         <header class="panel-heading"><h2>采集与处理成果</h2><span class="muted-label">当前存量 / 累计任务</span></header>
         <div class="result-grid">
-          <article class="result-item"><h3>TG 已采集可用资源 <span>条</span></h3><strong class="result-value">{{ formatCount(data.crawl.resources) }}</strong><p>启用频道 <b>{{ formatCount(data.crawl.activeChannels) }} / {{ formatCount(data.crawl.channels) }}</b></p><p>最近同步 <b>{{ dateLabel(data.crawl.lastSyncAt) }}</b></p><small>当前可用资源，不等于历史采集次数</small></article>
-          <article class="result-item"><h3>有效性检测已完成 <span>次</span></h3><strong class="result-value">{{ formatCount(data.links.queues.checks.completed) }}</strong><p>当前有效 <b>{{ formatCount(data.links.valid) }}</b> · 失效 <b>{{ formatCount(data.links.invalid) }}</b></p><p>检测开关 <b>{{ data.links.checksEnabled ? '已启用' : '未启用' }}</b> · 已登记 <b>{{ formatCount(data.links.catalog) }}</b></p><small>检测任务累计次数；同一链接可重复检测</small></article>
-          <article class="result-item"><h3>到期清理已完成 <span>次</span></h3><strong class="result-value">{{ formatCount(data.links.queues.cleanup.completed) }}</strong><p>待清理 <b>{{ formatCount(data.links.queues.cleanup.queued) }}</b> · 阻塞 <b class="runtime-error">{{ formatCount(data.links.queues.cleanup.blocked ?? 0) }}</b></p><p>当前到期 <b>{{ formatCount(data.links.cleanupDue) }}</b></p><small>已完成清理任务，不等于删除文件数</small></article>
-          <article class="result-item"><h3>最近 24h 链接交付 <span>次</span></h3><strong class="result-value">{{ formatCount(completedDeliveries) }}</strong><template v-if="data.links.deliveryStats"><p>新转存 <b>{{ formatCount(data.links.deliveryStats.transferred) }}</b> · 复用 <b>{{ formatCount(data.links.deliveryStats.reused) }}</b></p><p>回退原链 <b>{{ formatCount(data.links.deliveryStats.fallback) }}</b> · 直出 <b>{{ formatCount(data.links.deliveryStats.direct) }}</b></p><small>确认失效 {{ formatCount(data.links.deliveryStats.unavailable) }} · 处理中 {{ formatCount(data.links.deliveryStats.processing) }}</small></template><small v-else>接口暂未返回交付统计</small></article>
+          <article class="result-item is-collect"><h3><span class="result-icon"><RadioTower :size="13" /></span>TG 已采集可用资源 <span>条</span></h3><strong class="result-value">{{ formatCount(data.crawl.resources) }}</strong><p><span>启用频道</span><span><b>{{ formatCount(data.crawl.activeChannels) }} / {{ formatCount(data.crawl.channels) }}</b></span></p><p><span>最近同步</span><span><b>{{ dateLabel(data.crawl.lastSyncAt) }}</b></span></p><small>当前可用资源，不等于历史采集次数</small></article>
+          <article class="result-item is-check"><h3><span class="result-icon"><ScanSearch :size="13" /></span>有效性检测已完成 <span>次</span></h3><strong class="result-value">{{ formatCount(data.links.queues.checks.completed) }}</strong><p><span>当前有效 <b>{{ formatCount(data.links.valid) }}</b></span><span>失效 <b>{{ formatCount(data.links.invalid) }}</b></span></p><p><span>检测开关 <b>{{ data.links.checksEnabled ? '已启用' : '未启用' }}</b></span><span>已登记 <b>{{ formatCount(data.links.catalog) }}</b></span></p><small>检测任务累计次数；同一链接可重复检测</small></article>
+          <article class="result-item is-cleanup"><h3><span class="result-icon"><Eraser :size="13" /></span>到期清理已完成 <span>次</span></h3><strong class="result-value">{{ formatCount(data.links.queues.cleanup.completed) }}</strong><p><span>待清理 <b>{{ formatCount(data.links.queues.cleanup.queued) }}</b></span><span>阻塞 <b class="runtime-error">{{ formatCount(data.links.queues.cleanup.blocked ?? 0) }}</b></span></p><p><span>当前到期</span><span><b>{{ formatCount(data.links.cleanupDue) }}</b></span></p><small>已完成清理任务，不等于删除文件数</small></article>
+          <article class="result-item is-delivery"><h3><span class="result-icon"><Send :size="13" /></span>最近 24h 链接交付 <span>次</span></h3><strong class="result-value">{{ formatCount(completedDeliveries) }}</strong><template v-if="data.links.deliveryStats"><p><span>新转存 <b>{{ formatCount(data.links.deliveryStats.transferred) }}</b></span><span>复用 <b>{{ formatCount(data.links.deliveryStats.reused) }}</b></span></p><p><span>回退原链 <b>{{ formatCount(data.links.deliveryStats.fallback) }}</b></span><span>直出 <b>{{ formatCount(data.links.deliveryStats.direct) }}</b></span></p><small>确认失效 {{ formatCount(data.links.deliveryStats.unavailable) }} · 处理中 {{ formatCount(data.links.deliveryStats.processing) }}</small></template><small v-else>接口暂未返回交付统计</small></article>
+        </div>
+        <div class="task-detail">
+          <header class="task-detail-head">
+            <h3>链接任务明细</h3>
+            <div class="task-health">
+              <span>待检测 <b>{{ formatCount(checkHealth?.due ?? 0) }}</b></span>
+              <span :class="{ 'runtime-error': (checkHealth?.stuckJobs ?? 0) > 0 }">租约过期 <b>{{ formatCount(checkHealth?.stuckJobs ?? 0) }}</b></span>
+              <span>反复失败 <b>{{ formatCount(checkHealth?.failing ?? 0) }}</b></span>
+              <span>待定 <b>{{ formatCount(checkHealth?.unknown ?? 0) }}</b></span>
+            </div>
+          </header>
+          <div class="task-columns">
+            <section class="task-list" aria-label="最近检测失败">
+              <h4>最近检测失败</h4>
+              <p v-if="!checkTasks.length" class="task-empty">最近没有检测失败的链接。</p>
+              <div v-for="task in checkTasks" :key="task.key" class="task-row">
+                <div class="task-title"><strong>{{ task.provider }}</strong><span class="task-identity" :title="task.identity">{{ task.identity }}</span></div>
+                <div class="task-sub">
+                  <Badge variant="secondary" :class="[statusBadgeClass, linkTaskToneClass(task.tone)]"><i class="monitor-status-dot"></i>{{ task.stateLabel }}</Badge>
+                  <small class="task-error">{{ task.error || '未记录错误原因' }}</small>
+                  <small>{{ task.time }} · 累计失败 {{ formatCount(task.attempts) }} 次</small>
+                </div>
+              </div>
+            </section>
+            <section class="task-list" aria-label="最近清理任务">
+              <h4>最近清理任务</h4>
+              <p v-if="!cleanupTasks.length" class="task-empty">还没有清理任务记录。</p>
+              <div v-for="task in cleanupTasks" :key="task.key" class="task-row">
+                <div class="task-title"><strong>{{ task.provider }}</strong><span class="task-identity" :title="task.identity">{{ task.identity || '云端清理' }}</span></div>
+                <div class="task-sub">
+                  <Badge variant="secondary" :class="[statusBadgeClass, linkTaskToneClass(task.tone)]"><i class="monitor-status-dot"></i>{{ task.stateLabel }}</Badge>
+                  <small class="task-error">{{ task.error || '无错误' }}</small>
+                  <small>{{ task.time }} · 已尝试 {{ formatCount(task.attempts) }} 次</small>
+                </div>
+              </div>
+            </section>
+          </div>
         </div>
       </Card>
 
@@ -238,7 +298,7 @@ onBeforeUnmount(() => {
         <div v-if="sources.length" class="source-grid">
           <article v-for="source in sources" :key="source.id" class="source-item" :aria-label="source.name">
             <div class="source-top"><h3 :title="source.name + ' · ' + source.id">{{ source.name }}</h3><Badge variant="secondary" :class="[statusBadgeClass, 'source-badge', toneClasses(sourceTone(source))]"><i class="monitor-status-dot"></i>{{ sourceLabel(source) }}</Badge></div>
-            <div class="source-key"><div><strong>{{ sourceSuccessRate(source) }}</strong><small>{{ sourceSuccessRate(source) === '—' ? '成功率' : '% 成功率' }}</small></div><div class="source-latency"><b>{{ source.health?.requestCount && source.health.avgResponseTime != null ? formatCount(source.health.avgResponseTime) + ' ms' : '—' }}</b><small>平均耗时</small></div></div>
+            <div class="source-key"><div class="source-rate" :class="'rate-' + sourceTone(source)"><strong>{{ sourceSuccessRate(source) }}</strong><small>{{ sourceSuccessRate(source) === '—' ? '成功率' : '% 成功率' }}</small><div class="source-rate-track" aria-hidden="true"><span :style="{ width: sourceRatePercent(source) + '%' }"></span></div></div><div class="source-latency"><b>{{ source.health?.requestCount && source.health.avgResponseTime != null ? formatCount(source.health.avgResponseTime) + ' ms' : '—' }}</b><small>平均耗时</small></div></div>
             <dl class="source-counts"><div><dt>请求</dt><dd>{{ formatCount(source.health?.requestCount ?? 0) }}</dd></div><div><dt>成功</dt><dd>{{ formatCount(source.health?.successCount ?? 0) }}</dd></div><div><dt>失败</dt><dd :class="{ 'runtime-error': (source.health?.totalFailureCount ?? 0) > 0 }">{{ formatCount(source.health?.totalFailureCount ?? 0) }}</dd></div><div><dt>零结果</dt><dd>{{ formatCount(source.health?.zeroResultCount ?? 0) }}</dd></div></dl>
             <div class="source-bottom"><p>最近请求 {{ lastSourceRequest(source) }}</p><small v-if="source.health?.lastErrorMessage" class="runtime-error">最近错误：{{ source.health.lastErrorMessage }}</small><small v-else>{{ !source.enabled ? '来源已停用，不参与搜索' : !source.health?.requestCount ? '尚无请求记录，不判定为健康' : '最近没有记录错误信息' }}</small></div>
           </article>
@@ -259,7 +319,7 @@ onBeforeUnmount(() => {
 
         <Card class="monitor-panel attention-panel tw:gap-0 tw:py-0 tw:rounded-2xl" aria-label="需要关注">
           <header class="panel-heading"><h2>需要关注</h2><span class="muted-label">{{ attentionItems.length ? attentionItems.length + ' 类事项' : '暂无异常事项' }}</span></header>
-          <div v-for="item in attentionItems" :key="item.key" class="attention-item"><i class="issue-dot" :class="item.tone"></i><div><h3>{{ item.name }}</h3><p>{{ item.description }}</p><RouterLink :to="item.path" class="panel-link">{{ item.action }} <ConsoleIcon name="arrow" :size="12" /></RouterLink></div><strong class="runtime-error">{{ formatCount(item.count) }}</strong></div>
+          <div v-for="item in attentionItems" :key="item.key" class="attention-item"><i class="issue-dot" :class="item.tone"></i><div><h3>{{ item.name }}</h3><p>{{ item.description }}</p><RouterLink :to="item.path" class="panel-link">{{ item.action }} <ConsoleIcon name="arrow" :size="12" /></RouterLink></div><strong class="attention-count" :class="attentionToneClass(item.tone)">{{ formatCount(item.count) }}</strong></div>
           <p v-if="!attentionItems.length" class="empty-state">暂无采集失败、待复核或清理异常。</p>
           <details v-if="alerts.length || data.crawl.recentFailures.length" id="runtime-alerts" class="diagnostics"><summary>运行诊断与最近失败 <span>{{ alerts.length + data.crawl.recentFailures.length }}</span></summary><div class="diagnostics-body"><p v-for="alert in alerts" :key="alert">{{ alert }}</p><div v-for="(failure, index) in data.crawl.recentFailures" :key="index"><strong>{{ failure.channel }} · {{ failure.kind }}</strong><small>{{ dateLabel(failure.at) }}</small><p>{{ failure.error || '未记录错误原因' }}</p></div><p>TG 暂停任务 {{ data.crawl.paused }} · 过期租约 {{ data.crawl.expired }} · 增量同步到期频道 {{ data.crawl.overdueChannels }}</p></div></details>
         </Card>
@@ -274,10 +334,17 @@ onBeforeUnmount(() => {
 @layer components {
   :global(.admin-main:has(.runtime-monitor)) { background: linear-gradient(150deg, #f8f9fd, #f4f6fa 58%); }
   .runtime-monitor {
-    --monitor-ink: #252b3b; --monitor-muted: #737c8f; --monitor-line: #edf0f6;
+    --monitor-ink: #252b3b; --monitor-muted: #737c8f; --monitor-line: #eef1f7;
     --monitor-accent: #5368bd; --monitor-accent-bg: #edf1ff; --monitor-fill: #f3f5f9;
-    --monitor-ok: #278767; --monitor-ok-bg: #edf8f3; --monitor-error: #b5474c;
-    --monitor-error-bg: #fcf0f0;
+    --monitor-ok: #278767; --monitor-ok-bg: #e9f6f1;
+    --monitor-error: #b5474c; --monitor-error-bg: #fcf0f0;
+    --monitor-warning: #b7791f; --monitor-warning-bg: #faf3e4;
+    --monitor-violet: #7a5fc9; --monitor-violet-bg: #f2eefb;
+    --monitor-card-border: #e9edf4bf; --monitor-head-bg: #f7f9fc;
+    --monitor-bar: linear-gradient(90deg, #8ea3d8, #5368bd);
+    --monitor-shadow-panel: 0 3px 14px #1b2b4b07;
+    --monitor-shadow-service: 0 4px 16px #1b2b4b0a, 0 1px 3px #1b2b4b07;
+    --monitor-shadow-service-hover: 0 8px 22px #1b2b4b12;
     --foreground: var(--monitor-ink); --muted-foreground: var(--monitor-muted);
     --border: #e9edf4bf; --secondary: var(--monitor-fill); --primary: var(--monitor-accent);
     display: grid; gap: 16px; min-width: 0; color: var(--monitor-ink);
@@ -293,26 +360,29 @@ onBeforeUnmount(() => {
   .refresh-switch { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--monitor-muted); }
   .runtime-monitor :deep([data-slot="button"]) { font-size: 11px; border-radius: 9px; }
   .refresh-button { background: var(--monitor-accent); color: #fff; border-color: transparent; box-shadow: 0 2px 5px #1b2b4b0a; }
-  .refresh-button:hover { background: #485cab; }
   .runtime-error { color: var(--monitor-error) !important; }
-  .error-notice, .runtime-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border-radius: 12px; font-size: 12px; }
-  .error-notice { background: var(--monitor-error-bg); }
-  .runtime-notice { background: var(--monitor-ok-bg); color: var(--monitor-ok); }
+  .error-notice, .runtime-notice { gap: 8px; padding: 11px 14px; border-radius: 12px; font-size: 12px; }
+  .error-notice { display: flex; align-items: flex-start; justify-content: space-between; background: var(--monitor-error-bg); border-left: 3px solid var(--monitor-error); }
+  .runtime-notice { display: flex; align-items: flex-start; background: var(--monitor-ok-bg); color: var(--monitor-ok); border-left: 3px solid var(--monitor-ok); }
+  .notice-copy { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; }
+  .notice-icon { flex: none; margin-top: 2px; }
+  .notice-text { min-width: 0; overflow-wrap: anywhere; }
   .section-heading { margin-bottom: 12px; }
   .title-inline { justify-content: flex-start; }
   .muted-label, .service-summary { font-size: 11px; }
-  .service-summary { display: inline-flex; align-items: center; gap: 5px; color: var(--monitor-ok); }
-  .monitor-status-dot, .issue-dot { display: inline-block; flex: none; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .service-summary { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; background: var(--monitor-ok-bg); color: var(--monitor-ok); }
+  .service-summary.runtime-error { background: var(--monitor-error-bg); }
+  .monitor-status-dot, .issue-dot, .schedule-dot { display: inline-block; flex: none; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .schedule-dot { width: 6px; height: 6px; }
+  .schedule-dot.is-on { background: var(--monitor-ok); }
+  .schedule-dot.is-paused { background: var(--monitor-warning); }
   .service-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-  .service-card { min-width: 0; min-height: 236px; border-color: #e9edf4a6; color: var(--monitor-ink); background: linear-gradient(155deg, #fff 65%, #fafbff); box-shadow: 0 4px 16px #1b2b4b0a, 0 1px 3px #1b2b4b07; transition: box-shadow .18s, border-color .18s; }
-  .service-card:hover { border-color: #dce2f5; box-shadow: 0 6px 20px #1b2b4b0d; }
+  .service-card { min-width: 0; border-color: var(--monitor-card-border); color: var(--monitor-ink); background: linear-gradient(155deg, #fff 65%, #fafbff); transition: box-shadow .18s, border-color .18s, transform .18s; }
+  .service-card:hover { transform: translateY(-1px); }
   .service-card-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
-  .service-icon { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 9px; color: var(--monitor-accent); background: var(--monitor-accent-bg); }
+  .service-icon { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 9px; }
   .state-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; white-space: normal; border: 0; border-radius: 999px; font-size: 11px; font-weight: 400; line-height: 1.5; }
-  .tone-ok { background: var(--monitor-ok-bg); color: var(--monitor-ok); }
-  .tone-error { background: var(--monitor-error-bg); color: var(--monitor-error); }
-  .tone-muted { background: var(--monitor-fill); color: var(--monitor-muted); }
-  .service-name { margin-top: 11px; }
+  .service-name { margin-top: 12px; }
   .service-name h3 { letter-spacing: -.15px; overflow-wrap: anywhere; }
   .service-name small { margin-top: 2px; }
   .service-info { min-height: 64px; margin: 14px 0 13px; }
@@ -323,72 +393,110 @@ onBeforeUnmount(() => {
   .service-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; min-height: 41px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--monitor-line); }
   .service-actions :deep([data-slot="button"]) { height: 30px; padding: 4px 7px; }
   .service-actions .schedule-button { margin-right: auto; padding-left: 0; padding-right: 0; background: transparent; color: var(--monitor-muted); }
-  .service-actions .schedule-button:hover { color: var(--monitor-accent); }
-  .restart-button { background: var(--monitor-fill); }
-  .restart-button:disabled { opacity: .6; }
   .section-note, .panel-note { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--monitor-muted); font-size: 11px; }
   .section-note { padding-top: 10px; }
   .section-note > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
-  .monitor-panel { min-width: 0; border-color: #e9edf4bf; color: var(--monitor-ink); box-shadow: 0 3px 14px #1b2b4b07; }
+  .monitor-panel { min-width: 0; border-color: var(--monitor-card-border); color: var(--monitor-ink); }
   .panel-heading { padding: 15px 16px; }
   .results-panel { background: linear-gradient(110deg, #fdfdff, #fff 55%); }
   .result-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding-bottom: 16px; }
   .result-item { min-width: 0; padding: 0 16px; border-right: 1px solid var(--monitor-line); }
   .result-item:last-child { border-right: 0; }
-  .result-item h3 { font-size: 12px; font-weight: 500; color: var(--monitor-muted); }
-  .result-item h3 span { margin-left: 3px; font-size: 11px; font-weight: 400; }
-  .result-value { display: block; margin: 5px 0; font-size: 27px; font-weight: 500; letter-spacing: -.9px; font-variant-numeric: tabular-nums; }
-  .result-item p { margin-bottom: 4px; font-size: 11px; overflow-wrap: anywhere; }
+  .result-item h3 { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--monitor-muted); }
+  .result-item h3 span:not(.result-icon) { margin-left: -2px; font-size: 11px; font-weight: 400; }
+  .result-icon { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 7px; }
+  .is-collect .result-icon { color: var(--monitor-accent); background: var(--monitor-accent-bg); }
+  .is-check .result-icon { color: var(--monitor-ok); background: var(--monitor-ok-bg); }
+  .is-cleanup .result-icon { color: var(--monitor-warning); background: var(--monitor-warning-bg); }
+  .is-delivery .result-icon { color: var(--monitor-violet); background: var(--monitor-violet-bg); }
+  .result-value { display: block; margin: 6px 0; font-size: 27px; font-weight: 500; letter-spacing: -.9px; font-variant-numeric: tabular-nums; color: var(--monitor-ink); }
+  .result-item p { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin-bottom: 5px; font-size: 11px; overflow-wrap: anywhere; }
   .result-item b { font-weight: 500; color: var(--monitor-ink); font-variant-numeric: tabular-nums; }
   .result-item small { overflow-wrap: anywhere; }
-  .panel-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--monitor-muted); text-decoration: none; }
+  .panel-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--monitor-muted); text-decoration: none; transition: color .15s; }
   .panel-link:hover { color: var(--monitor-accent); }
+  .panel-link svg { transition: transform .15s; }
+  .attention-item:hover .panel-link { color: var(--monitor-accent); }
+  .attention-item:hover .panel-link svg { transform: translateX(2px); }
   .monitor-source-toolbar { padding: 0 16px 16px; }
   .monitor-source-search { max-width: 290px; height: 30px; border-radius: 9px; font-size: 11px; }
   .source-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 18px; }
   .source-item { min-width: 0; padding: 0 16px 14px; border-right: 1px solid var(--monitor-line); }
   .source-item:nth-child(4n) { border-right: 0; }
   .source-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-height: 28px; }
-  .source-top h3 { flex: 1; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+  .source-top h3 { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .source-badge { flex: none; }
-  .source-key { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0; }
-  .source-key strong { font-size: 23px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .source-key { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 12px 0; }
+  .source-rate { display: grid; justify-items: start; gap: 2px; min-width: 0; color: var(--monitor-muted); }
+  .source-rate strong { font-size: 23px; font-weight: 500; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .rate-ok { color: var(--monitor-ok); }
+  .rate-error { color: var(--monitor-error); }
+  .rate-muted { color: var(--monitor-muted); }
+  .source-rate-track { width: 96px; max-width: 100%; height: 3px; overflow: hidden; border-radius: 999px; background: var(--monitor-line); }
+  .source-rate-track span { display: block; height: 100%; border-radius: 999px; background: currentColor; transition: width .3s; }
   .source-latency { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
   .source-latency b { font-weight: 500; }
   .source-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 0; font-size: 11px; }
+  .source-counts > div + div { border-left: 1px solid var(--monitor-line); padding-left: 8px; }
   .source-counts dd { margin: 2px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .source-bottom { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--monitor-line); font-size: 11px; }
   .source-bottom p, .source-bottom small { overflow-wrap: anywhere; }
   .source-bottom small { margin-top: 4px; }
   .panel-note { padding: 10px 16px; border-top: 1px solid var(--monitor-line); }
   .secondary-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-  .queue-summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 0 16px 12px; color: var(--monitor-muted); font-size: 11px; }
-  .queue-summary strong { margin-left: 5px; font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--monitor-ink); }
+  .queue-summary { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; }
+  .queue-summary span { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; background: var(--monitor-fill); color: var(--monitor-muted); font-size: 11px; }
+  .queue-summary strong { margin-left: 0; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--monitor-ink); }
+  .queue-summary span.runtime-error { background: var(--monitor-error-bg); }
+  .queue-summary span.runtime-error strong { color: var(--monitor-error); }
   .queue-table { font-size: 11px; }
   .queue-panel :deep([data-slot="table-head"]), .queue-panel :deep([data-slot="table-cell"]) { padding: 10px 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .queue-panel :deep([data-slot="table-head"]) { height: auto; background: #f8f9fc; color: var(--monitor-muted); font-weight: 400; }
+  .queue-panel :deep([data-slot="table-head"]) { height: auto; background: var(--monitor-head-bg); color: var(--monitor-muted); font-weight: 400; }
   .queue-panel :deep([data-slot="table-row"]) { border-color: var(--monitor-line); }
   .queue-panel :deep([data-slot="table-cell"]:first-child), .queue-panel :deep([data-slot="table-head"]:first-child) { padding-left: 16px; }
   .queue-panel :deep([data-slot="table-cell"]:last-child), .queue-panel :deep([data-slot="table-head"]:last-child) { padding-right: 16px; }
   .queue-bar { display: flex; align-items: center; gap: 10px; min-width: 115px; }
   .queue-bar b { min-width: 30px; font-weight: 500; text-align: right; }
-  .queue-track { flex: 1; min-width: 50px; height: 6px; overflow: hidden; border-radius: 999px; background: #f0f3f9; }
-  .queue-track span { display: block; height: 100%; border-radius: 999px; background: #8194cf; }
+  .queue-track { flex: 1; min-width: 50px; height: 6px; overflow: hidden; border-radius: 999px; background: #eef1f8; }
+  .queue-track span { display: block; height: 100%; border-radius: 999px; background: var(--monitor-bar); }
   .attention-panel > .panel-heading { border-bottom: 1px solid var(--monitor-line); }
-  .attention-item { display: flex; align-items: flex-start; gap: 8px; margin: 0 16px; padding: 11px 0; border-bottom: 1px solid var(--monitor-line); }
+  .attention-item { display: flex; align-items: flex-start; gap: 8px; margin: 0 10px; padding: 11px 6px; border-bottom: 1px solid var(--monitor-line); border-radius: 8px; transition: background .15s; }
   .attention-item:last-child { border-bottom: 0; }
+  .attention-item:hover { background: var(--monitor-fill); }
   .issue-dot { margin-top: 7px; color: var(--monitor-error); }
-  .issue-dot.warning { color: #b7791f; }
+  .issue-dot.warning { color: var(--monitor-warning); }
   .attention-item > div { flex: 1; min-width: 0; }
   .attention-item h3 { font-size: 12px; }
   .attention-item p { font-size: 11px; margin: 2px 0 3px; }
-  .attention-item > strong { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .attention-count { flex: none; margin-top: 1px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .empty-state { padding: 16px; font-size: 12px; color: var(--monitor-muted); }
   .diagnostics { margin: 10px 16px 14px; font-size: 11px; }
-  .diagnostics summary { color: var(--monitor-muted); cursor: pointer; }
-  .diagnostics summary span { margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .diagnostics summary { display: flex; align-items: center; gap: 6px; list-style: none; color: var(--monitor-muted); cursor: pointer; }
+  .diagnostics summary::-webkit-details-marker { display: none; }
+  .diagnostics summary::after { content: ''; flex: none; width: 6px; height: 6px; margin-left: 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
+  .diagnostics[open] summary::after { transform: rotate(45deg); margin-top: -3px; }
+  .diagnostics summary span { margin-left: 0; font-variant-numeric: tabular-nums; }
   .diagnostics-body { display: grid; gap: 10px; padding-top: 10px; overflow-wrap: anywhere; }
   .diagnostics-body strong { display: block; font-size: 11px; }
+  .task-detail { border-top: 1px solid var(--monitor-line); padding: 14px 16px 16px; }
+  .task-detail-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .task-detail-head h3 { font-size: 12px; font-weight: 600; }
+  .task-health { display: flex; flex-wrap: wrap; gap: 6px; }
+  .task-health span { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; background: var(--monitor-fill); color: var(--monitor-muted); font-size: 11px; }
+  .task-health b { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--monitor-ink); }
+  .task-health span.runtime-error { background: var(--monitor-error-bg); }
+  .task-health span.runtime-error b { color: var(--monitor-error); }
+  .task-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .task-list { min-width: 0; }
+  .task-list h4 { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px; font-weight: 500; color: var(--monitor-muted); }
+  .task-empty { padding: 8px 0; font-size: 11px; }
+  .task-row { padding: 8px 0; border-top: 1px solid var(--monitor-line); }
+  .task-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .task-title strong { flex: none; font-size: 11px; font-weight: 500; }
+  .task-identity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--monitor-muted); }
+  .task-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 5px; }
+  .task-error { overflow-wrap: anywhere; }
+  .task-sub small { font-size: 10.5px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .spinning { animation: monitor-spin 1s linear infinite; }
   @keyframes monitor-spin { to { transform: rotate(360deg); } }
@@ -413,7 +521,7 @@ onBeforeUnmount(() => {
     .result-item, .source-item { border-right: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .service-card { transition: none; }
+    .service-card, .attention-item, .panel-link, .panel-link svg, .source-rate-track span { transition: none; }
     .spinning { animation: none; }
   }
 }

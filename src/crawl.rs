@@ -603,10 +603,9 @@ pub async fn tick(state: &AppState) -> Result<(), ApiError> {
     if let Err(error) = process_job(state, &job, lease).await {
         let error = error.to_string();
         let attempts = job.get::<i32, _>("attempts");
-        let terminal = attempts >= 6
-            || error.contains("HTTP 403")
-            || error.contains("HTTP 404")
-            || error.contains("不公开");
+        let terminal = attempts >= 6 || error.contains("HTTP 403") || error.contains("HTTP 404");
+        // An unrecognized HTML page may be a temporary upstream response.
+        // Speculative wording in a parser error must not bypass retry/backoff.
         let retry_after = error
             .split("Retry-After=")
             .nth(1)

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { apiFetch, apiErrorMessage } from "@/src/appRuntime";
 import {
-  sortedNodes,
+  weightedShares,
   type NodeWeight,
   type OutboundPolicy,
   type ProxyNode,
@@ -41,16 +41,16 @@ const available = computed(() => [
       referenceCount: 0,
     })),
 ]);
-const priority = computed(() =>
-  sortedNodes(members.value)
+const distribution = computed(() =>
+  weightedShares(members.value)
     .map(
       (m) =>
         (nodes.value.find((n) => n.id === m.nodeId)?.name || m.nodeId) +
         "（" +
-        m.weight +
+        (m.weight > 0 ? m.percent.toFixed(1) + "%" : "不参与") +
         "）",
     )
-    .join(" → "),
+    .join("、"),
 );
 const noEnabledNodes = computed(
   () =>
@@ -58,7 +58,7 @@ const noEnabledNodes = computed(
     !error.value &&
     members.value.length > 0 &&
     !members.value.some((m) =>
-      nodes.value.some((n) => n.id === m.nodeId && n.enabled),
+      m.weight > 0 && nodes.value.some((n) => n.id === m.nodeId && n.enabled),
     ),
 );
 function selected(id: string) {
@@ -114,8 +114,8 @@ onMounted(load);
 <template>
   <section class="outbound-editor" aria-label="节点选择">
     <p class="outbound-help">
-      勾选节点并填写权重，权重越大越优先；相同权重按节点 ID
-      倒序。直连也按权重参与，不勾选就不会直连。
+      勾选节点并填写权重，每次请求按正权重加权随机选择，权重越大被选中的概率越高。
+      权重 0 完全不参与，也不作为失败兜底；直连只有勾选且权重大于 0 才会使用。
     </p>
     <p v-if="modelValue.inherit" class="outbound-help">
       当前使用 TG 默认节点。调整勾选或权重后，将独立保存当前频道的节点。
@@ -174,10 +174,11 @@ onMounted(load);
         请选择至少一个节点（可以只选择直连）。
       </p>
       <p v-if="noEnabledNodes" class="outbound-warning" role="status">
-        选中的节点均不可用，请启用节点或选择直连。
+        没有已启用的正权重节点，请启用节点并设置大于 0 的权重。
       </p>
-      <p v-if="priority" class="outbound-help outbound-priority">
-        尝试顺序：{{ priority }}
+      <p v-if="distribution" class="outbound-help outbound-priority">
+        配置占比：{{ distribution }}。停用、额度耗尽或熔断的节点会跳过；
+        可重试失败后，在未尝试的可用节点中重新按权重选择。实际短期用量可能波动。
       </p>
       <p v-if="post" class="outbound-help">
         POST 请求只发送一次，避免重复提交；不可用节点会在发送前跳过。

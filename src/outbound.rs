@@ -1,5 +1,6 @@
-//! Owner-local node selection. Higher weight wins; direct is an explicit built-in node.
+//! Owner-local weighted random selection without replacement; zero weights never participate.
 use crate::{app::AppState, error::ApiError};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::HashSet;
@@ -55,6 +56,11 @@ impl Policy {
                     "节点重复或权重不在0～10000范围".into(),
                 ));
             }
+        }
+        if !self.nodes.iter().any(|n| n.weight > 0) {
+            return Err(ApiError::BadRequest(
+                "至少一个选中节点的权重必须大于0".into(),
+            ));
         }
         Ok(())
     }
@@ -143,12 +149,20 @@ pub struct Plan {
     attempted: bool,
     allow_retry: bool,
 }
-fn sort_nodes(nodes: &mut [NodeWeight]) {
-    nodes.sort_by(|a, b| {
-        b.weight
-            .cmp(&a.weight)
-            .then_with(|| b.node_id.cmp(&a.node_id))
-    });
+fn weighted_node_index(nodes: &[NodeWeight], rng: &mut impl Rng) -> Option<usize> {
+    let total: u32 = nodes.iter().map(|n| n.weight.max(0) as u32).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut ticket = rng.random_range(0..total);
+    for (index, node) in nodes.iter().enumerate() {
+        let weight = node.weight.max(0) as u32;
+        if ticket < weight {
+            return Some(index);
+        }
+        ticket -= weight;
+    }
+    unreachable!("ticket must fall in a positive-weight interval")
 }
 impl Plan {
     pub async fn load(pool: &PgPool, owner: Owner<'_>, method: &str) -> Result<Self, ApiError> {
@@ -161,7 +175,7 @@ impl Plan {
                 .ok_or_else(|| ApiError::Upstream("TG 默认节点未配置".into()))?;
         }
         p.validate(false)?;
-        sort_nodes(&mut p.nodes);
+        p.nodes.retain(|n| n.weight > 0);
         Ok(Self {
             version: p.version,
             remaining: p.nodes,
@@ -173,8 +187,14 @@ impl Plan {
         if self.attempted && !self.allow_retry {
             return Ok(None);
         }
-        while !self.remaining.is_empty() {
-            let member = self.remaining.remove(0);
+        // Unavailable nodes are removed and redrawn, preserving relative weights
+        // among eligible nodes. Atomic reservation below still prevents quota races.
+        while let Some(index) = {
+            // Drop the thread-local RNG before any await (ThreadRng is not Send).
+            let mut rng = rand::rng();
+            weighted_node_index(&self.remaining, &mut rng)
+        } {
+            let member = self.remaining.remove(index);
             if member.node_id == DIRECT {
                 self.attempted = true;
                 return Ok(Some(None));
@@ -208,32 +228,202 @@ pub async fn record_success(state: &AppState, node: &Candidate, status: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    fn nodes(weights: &[i32]) -> Vec<NodeWeight> {
+        weights
+            .iter()
+            .enumerate()
+            .map(|(i, &weight)| NodeWeight {
+                node_id: format!("node-{i}"),
+                weight,
+            })
+            .collect()
+    }
+
     #[test]
-    fn priority_is_weight_desc_with_stable_ties() {
-        let mut n = vec![
-            NodeWeight {
-                node_id: "a".into(),
-                weight: 20,
-            },
-            NodeWeight {
+    fn weighted_draw_distributes_requests_and_excludes_zero() {
+        let n = nodes(&[20, 20, 10, 0]);
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut counts = [0usize; 4];
+        for _ in 0..50_000 {
+            counts[weighted_node_index(&n, &mut rng).unwrap()] += 1;
+        }
+        for (actual, expected) in counts.iter().zip([20_000, 20_000, 10_000, 0]) {
+            assert!(actual.abs_diff(expected) < 500, "counts: {counts:?}");
+        }
+        assert_eq!(counts[3], 0);
+    }
+
+    #[test]
+    fn zero_weights_never_become_fallbacks() {
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(weighted_node_index(&[], &mut rng), None);
+        assert_eq!(weighted_node_index(&nodes(&[0, 0]), &mut rng), None);
+        assert_eq!(weighted_node_index(&nodes(&[0, 10, 0]), &mut rng), Some(1));
+    }
+
+    #[test]
+    fn retries_draw_without_replacement_and_renormalize_weights() {
+        let mut rng = StdRng::seed_from_u64(12);
+        let mut remaining = nodes(&[20, 20, 10, 0]);
+        let mut attempted = HashSet::new();
+        while let Some(i) = weighted_node_index(&remaining, &mut rng) {
+            let node = remaining.remove(i);
+            assert!(node.weight > 0);
+            assert!(attempted.insert(node.node_id));
+        }
+        assert_eq!(attempted.len(), 3);
+        assert_eq!(remaining.len(), 1);
+        let remaining = nodes(&[20, 10]);
+        let mut first = 0usize;
+        for _ in 0..30_000 {
+            first += usize::from(weighted_node_index(&remaining, &mut rng) == Some(0));
+        }
+        assert!(first.abs_diff(20_000) < 500);
+    }
+
+    #[tokio::test]
+    async fn exhausted_plan_and_post_retry_do_not_query_database() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        let mut plan = Plan {
+            version: 1,
+            remaining: vec![NodeWeight {
                 node_id: DIRECT.into(),
                 weight: 0,
-            },
-            NodeWeight {
-                node_id: "z".into(),
-                weight: 20,
-            },
-            NodeWeight {
-                node_id: "b".into(),
-                weight: 50,
-            },
-        ];
-        sort_nodes(&mut n);
-        assert_eq!(
-            n.iter().map(|n| n.node_id.as_str()).collect::<Vec<_>>(),
-            vec!["b", "z", "a", DIRECT]
-        );
+            }],
+            attempted: false,
+            allow_retry: true,
+        };
+        assert!(plan.next(&pool).await.unwrap().is_none());
+        plan.remaining[0].weight = 10;
+        plan.allow_retry = false;
+        assert!(matches!(plan.next(&pool).await.unwrap(), Some(None)));
+        plan.remaining = vec![NodeWeight {
+            node_id: "proxy".into(),
+            weight: 20,
+        }];
+        assert!(plan.next(&pool).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn weighted_plan_preserves_atomic_quota_and_probe_guards() {
+        let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(8)
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let prefix = uuid::Uuid::new_v4().simple().to_string();
+        let channel = format!("weighted_{prefix}");
+        let ids = ["healthy", "zero", "disabled", "quota", "open"]
+            .map(|suffix| format!("{prefix}_{suffix}"));
+        for id in &ids {
+            sqlx::query(
+                "INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,'https://example.invalid')",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE proxy_nodes SET enabled=false WHERE id=$1")
+            .bind(&ids[2])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE proxy_nodes SET daily_limit=1,quota_day=CURRENT_DATE,quota_used=1 WHERE id=$1",
+        )
+        .bind(&ids[3])
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE proxy_nodes SET circuit_state='open',opened_until=now()+interval '1 hour' WHERE id=$1").bind(&ids[4]).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO crawl_channels(id) VALUES($1)")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut policy = Policy::direct();
+        policy.nodes[0].weight = 0;
+        policy
+            .nodes
+            .extend(ids.iter().enumerate().map(|(i, id)| NodeWeight {
+                node_id: id.clone(),
+                weight: if i == 1 { 0 } else { 20 },
+            }));
+        let mut tx = pool.begin().await.unwrap();
+        save(&mut tx, Owner::Channel(&channel), &policy)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut plan = Plan::load(&pool, Owner::Channel(&channel), "GET")
+            .await
+            .unwrap();
+        assert!(!plan.remaining.iter().any(|n| n.weight == 0));
+        let selected = plan.next(&pool).await.unwrap().unwrap().unwrap();
+        assert_eq!(selected.id, ids[0]);
+        assert!(
+            plan.next(&pool).await.unwrap().is_none(),
+            "zero direct must not become a fallback"
+        );
+        let zero_usage: i32 = sqlx::query_scalar("SELECT quota_used FROM proxy_nodes WHERE id=$1")
+            .bind(&ids[1])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(zero_usage, 0);
+
+        // Eight simultaneous requests can reserve the final quota slot only once.
+        sqlx::query(
+            "UPDATE proxy_nodes SET daily_limit=1,quota_day=CURRENT_DATE,quota_used=0 WHERE id=$1",
+        )
+        .bind(&ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+        let run_concurrent = || {
+            futures::future::join_all((0..8).map(|_| {
+                let pool = pool.clone();
+                let channel = channel.clone();
+                async move {
+                    let mut plan = Plan::load(&pool, Owner::Channel(&channel), "GET")
+                        .await
+                        .unwrap();
+                    plan.next(&pool).await.unwrap()
+                }
+            }))
+        };
+        let results = run_concurrent().await;
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Some(Some(_))))
+                .count(),
+            1
+        );
+        assert!(!results.iter().any(|r| matches!(r, Some(None))));
+
+        // Likewise, an expired circuit admits one half-open probe, not eight.
+        sqlx::query("UPDATE proxy_nodes SET daily_limit=0,circuit_state='open',opened_until=now()-interval '1 second',probe_in_flight=false,probe_lease_until=NULL WHERE id=$1").bind(&ids[0]).execute(&pool).await.unwrap();
+        let results = run_concurrent().await;
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Some(Some(_))))
+                .count(),
+            1
+        );
+        assert!(!results.iter().any(|r| matches!(r, Some(None))));
+        pool.close().await;
+    }
+
     #[test]
     fn selection_rejects_duplicates_empty_and_bad_weight() {
         let mut p = Policy::direct();
@@ -251,5 +441,12 @@ mod tests {
             weight: -1,
         });
         assert!(p.validate(false).is_err());
+        p.nodes[0].weight = 0;
+        assert!(p.validate(false).is_err());
+        p.nodes.push(NodeWeight {
+            node_id: "proxy".into(),
+            weight: 20,
+        });
+        assert!(p.validate(false).is_ok());
     }
 }

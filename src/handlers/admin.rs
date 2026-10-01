@@ -559,14 +559,14 @@ pub async fn admin_users_get(
         .bind(&status)
         .fetch_one(&state.pool)
         .await?;
-    let rows=sqlx::query(&format!("SELECT id,username,nickname,role,status,created_at,last_login_at,last_login_ip FROM users {filter} ORDER BY id DESC LIMIT $3 OFFSET $4"))
+    let rows=sqlx::query(&format!("SELECT id,username,nickname,role,status,created_at,last_login_at,last_login_ip,COALESCE(jsonb_array_length(custom_channels_json),0) AS channel_count FROM users {filter} ORDER BY id DESC LIMIT $3 OFFSET $4"))
         .bind(&keyword)
         .bind(&status)
         .bind(page_size)
         .bind(offset)
         .fetch_all(&state.pool).await?;
     Ok(ok(
-        json!({"items":rows.into_iter().map(|r|json!({"id":r.get::<i64,_>("id"),"username":r.get::<String,_>("username"),"nickname":r.get::<Option<String>,_>("nickname"),"role":r.get::<String,_>("role"),"status":r.get::<String,_>("status"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"lastLoginAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_login_at"),"lastLoginIp":r.get::<Option<String>,_>("last_login_ip")})).collect::<Vec<_>>(),"total":total,"page":page,"pageSize":page_size,"totalPages":(total + page_size - 1) / page_size}),
+        json!({"items":rows.into_iter().map(|r|json!({"id":r.get::<i64,_>("id"),"username":r.get::<String,_>("username"),"nickname":r.get::<Option<String>,_>("nickname"),"role":r.get::<String,_>("role"),"status":r.get::<String,_>("status"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"lastLoginAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_login_at"),"lastLoginIp":r.get::<Option<String>,_>("last_login_ip"),"channelCount":r.get::<i32,_>("channel_count")})).collect::<Vec<_>>(),"total":total,"page":page,"pageSize":page_size,"totalPages":(total + page_size - 1) / page_size}),
     ))
 }
 pub async fn admin_users_post(

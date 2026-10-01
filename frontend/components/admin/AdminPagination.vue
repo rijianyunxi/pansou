@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight } from "@lucide/vue";
-import { ref, watch } from "vue";
+import { ref, useId, watch } from "vue";
 import { Button } from "./ui/button";
 import AdminSelect from "./AdminSelect.vue";
 const props = defineProps<{
@@ -13,8 +13,10 @@ const emit = defineEmits<{
   change: [page: number];
   "update:page-size": [pageSize: number];
 }>();
-const jumpPage = ref(String(props.page));
+const jumpPage = ref<string | number>(String(props.page));
 const jumpError = ref("");
+const inputId = useId();
+const errorId = `${inputId}-error`;
 
 watch(
   () => props.page,
@@ -25,7 +27,7 @@ watch(
 );
 
 function submitJump() {
-  const value = Number(jumpPage.value.trim());
+  const value = Number(String(jumpPage.value).trim());
   if (!Number.isInteger(value) || value < 1 || value > props.totalPages) {
     jumpError.value = `请输入 1-${props.totalPages} 之间的页码`;
     return;
@@ -47,10 +49,10 @@ function submitJump() {
         ><option :value="10">10 条</option>
         <option :value="20">20 条</option>
         <option :value="50">50 条</option></AdminSelect
-      ><form class="admin-pagination-jump" @submit.prevent="submitJump">
-        <label for="admin-pagination-page-input">跳至</label>
+      ><div class="admin-pagination-jump">
+        <label :for="inputId">跳至</label>
         <input
-          id="admin-pagination-page-input"
+          :id="inputId"
           v-model="jumpPage"
           class="admin-pagination-page-input"
           type="number"
@@ -59,8 +61,9 @@ function submitJump() {
           inputmode="numeric"
           aria-label="跳转页码"
           :aria-invalid="jumpError ? 'true' : undefined"
-          :aria-describedby="jumpError ? 'admin-pagination-page-error' : undefined"
+          :aria-describedby="jumpError ? errorId : undefined"
           @focus="jumpError = ''"
+          @keydown.enter.prevent="submitJump"
         />
         <span>页</span>
         <Button
@@ -72,12 +75,12 @@ function submitJump() {
         >
         <span
           v-if="jumpError"
-          id="admin-pagination-page-error"
+          :id="errorId"
           class="admin-pagination-jump-error"
           role="alert"
           >{{ jumpError }}</span
         >
-      </form>
+      </div>
       <span class="admin-page-number">{{ page }} / {{ totalPages }}</span
       ><Button
         type="button"

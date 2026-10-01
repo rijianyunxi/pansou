@@ -28,6 +28,15 @@ export interface MonitorData {
     queues: { checks: QueueCounts; cleanup: QueueCounts; resolve: QueueCounts };
     cleanupDue: number; checksEnabled: boolean; deliveryEnabled: { baidu: boolean; quark: boolean };
     deliveryStats?: { processing: number; transferred: number; reused: number; fallback: number; direct: number; unavailable: number };
+    checkHealth?: { due: number; failing: number; unknown: number; stuckJobs: number };
+    recentCheckFailures?: Array<{
+      provider: string; identity: string | null; validity: number; failureCount: number;
+      lastErrorCode: string | null; lastAttemptAt: string | null; nextCheckAt: string | null;
+    }>;
+    recentCleanup?: Array<{
+      status: string; stage: string | null; lastErrorCode: string | null; attempts: number;
+      provider: string | null; updatedAt: string;
+    }>;
   };
   sources: LiveSource[];
 }
@@ -77,6 +86,7 @@ export function monitorAlerts(data: MonitorData): string[] {
   if (data.crawl.expired) alerts.push(`有 ${data.crawl.expired} 个 TG 任务租约过期，采集恢复后会重新排队。`);
   if (data.links.queues.cleanup.blocked) alerts.push(`有 ${data.links.queues.cleanup.blocked} 个清理任务被阻塞，需要核实账号或云端产物状态。`);
   if (!data.workers.links.enabled && data.links.cleanupDue) alerts.push(`到期清理已暂停，${data.links.cleanupDue} 个到期清理任务正在等待恢复。`);
+  if (data.links.checkHealth?.stuckJobs) alerts.push(`有 ${data.links.checkHealth.stuckJobs} 个有效性检测任务租约过期，Worker 恢复后会自动重新领取。`);
   return alerts;
 }
 export function dateLabel(value: string | number | null | undefined): string {
@@ -88,4 +98,58 @@ export function lastSourceRequest(source: LiveSource): string {
   const times = [source.health?.lastSuccessAt, source.health?.lastFailureAt]
     .filter(v => v != null).map(v => new Date(v!).getTime()).filter(Number.isFinite);
   return dateLabel(times.length ? Math.max(...times) : null);
+}
+export type LinkTaskTone = 'ok' | 'warn' | 'error' | 'muted';
+const PROVIDER_LABELS: Record<string, string> = { baidu: '百度网盘', quark: '夸克网盘' };
+export function providerLabel(provider: string | null | undefined): string {
+  return (provider && PROVIDER_LABELS[provider]) || '—';
+}
+const VALIDITY_STATES: Record<number, { label: string; tone: LinkTaskTone }> = {
+  1: { label: '有效', tone: 'ok' },
+  0: { label: '失效', tone: 'error' },
+  [-1]: { label: '待重检', tone: 'warn' },
+};
+const CLEANUP_STATES: Record<string, { label: string; tone: LinkTaskTone }> = {
+  queued: { label: '待处理', tone: 'muted' },
+  running: { label: '执行中', tone: 'warn' },
+  completed: { label: '已完成', tone: 'ok' },
+  failed: { label: '失败', tone: 'error' },
+  blocked: { label: '已阻塞', tone: 'error' },
+};
+function stateLabel(map: Record<string, { label: string; tone: LinkTaskTone }>, key: string | number | null | undefined) {
+  return (key != null && map[key]) || { label: '未知', tone: 'muted' as const };
+}
+export interface LinkTaskRow {
+  key: string; provider: string; identity: string; stateLabel: string;
+  tone: LinkTaskTone; error: string; attempts: number; time: string;
+}
+export function checkTaskRows(data: MonitorData): LinkTaskRow[] {
+  return (data.links.recentCheckFailures || []).map((row, index) => {
+    const state = stateLabel(VALIDITY_STATES, row.validity);
+    return {
+      key: `${row.provider}-${row.identity ?? index}-${row.lastAttemptAt ?? index}`,
+      provider: providerLabel(row.provider),
+      identity: row.identity || '未知链接',
+      stateLabel: state.label,
+      tone: state.tone,
+      error: row.lastErrorCode || '',
+      attempts: row.failureCount,
+      time: `最近尝试 ${dateLabel(row.lastAttemptAt)}`,
+    };
+  });
+}
+export function cleanupTaskRows(data: MonitorData): LinkTaskRow[] {
+  return (data.links.recentCleanup || []).map((row, index) => {
+    const state = stateLabel(CLEANUP_STATES, row.status);
+    return {
+      key: `${row.updatedAt}-${index}`,
+      provider: providerLabel(row.provider),
+      identity: row.stage || '',
+      stateLabel: state.label,
+      tone: state.tone,
+      error: row.lastErrorCode || '',
+      attempts: row.attempts,
+      time: `更新于 ${dateLabel(row.updatedAt)}`,
+    };
+  });
 }

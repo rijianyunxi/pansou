@@ -27,6 +27,173 @@ use std::{
 use tower::ServiceExt;
 
 const DSL: &str = r#"{"kind":"html","item_selector":".tgme_widget_message","fields":{"name":".tgme_widget_message_text","description":".tgme_widget_message_text","datetime":"time::datetime","links":".tgme_widget_message_text a::href"}}"#;
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn empty_history_page_retries_without_losing_checkpoint() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE status IN ('queued','running','paused')").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_settings SET concurrent_channels=1,page_delay_seconds=0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState::new(pool.clone(), RedisStore::disconnected()));
+    let channel = format!("empty_{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let requests = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new()
+                .fallback(|State(mock): State<Mock>| async move {
+                    let call = mock.requests.fetch_add(1, Ordering::SeqCst);
+                    let raw = if call == 1 {
+                        format!(
+                            r#"<a class="tme_messages_more" href="/s/{}?before=80"></a>{}"#,
+                            mock.channel,
+                            message(&mock.channel, 90, "重试恢复资源", "recovered").html
+                        )
+                    } else {
+                        "<html><body>temporarily unavailable</body></html>".to_owned()
+                    };
+                    ([("content-type", "text/html; charset=utf-8")], raw)
+                })
+                .with_state(Mock {
+                    channel: channel.clone(),
+                    requests: requests.clone(),
+                }),
+        )
+        .into_future(),
+    );
+    sqlx::query("INSERT INTO crawl_channels(id,name,transform,newest_message,history_cursor,history_pages,next_sync_at) VALUES($1,$1,$2,101,100,3312,now()+interval '1 day')")
+        .bind(&channel).bind(DSL).execute(&pool).await.unwrap();
+    let node = format!("node_{channel}");
+    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)")
+        .bind(&node)
+        .bind(format!("http://{addr}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    crate::outbound::save(
+        &mut tx,
+        crate::outbound::Owner::Channel(&channel),
+        &crate::outbound::Policy {
+            nodes: vec![crate::outbound::NodeWeight {
+                node_id: node,
+                weight: 10,
+            }],
+            ..crate::outbound::Policy::direct()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let job = crawl::enqueue(&pool, &channel, "backfill").await.unwrap();
+    crawl::tick(&state).await.unwrap();
+    let row = sqlx::query("SELECT status,cursor_before,attempts,next_run_at>now() deferred FROM crawl_jobs WHERE id=$1")
+        .bind(job).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        row.get::<String, _>("status"),
+        "queued",
+        "one empty response must not stop backfill"
+    );
+    assert_eq!(row.get::<Option<i64>, _>("cursor_before"), Some(100));
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert!(row.get::<bool, _>("deferred"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crawl_page_failures WHERE channel_id=$1"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "backoff must be respected"
+    );
+    sqlx::query("UPDATE crawl_jobs SET next_run_at=now() WHERE id=$1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    let row = sqlx::query("SELECT status,cursor_before,attempts FROM crawl_jobs WHERE id=$1")
+        .bind(job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "queued");
+    assert_eq!(row.get::<Option<i64>, _>("cursor_before"), Some(80));
+    assert_eq!(row.get::<i32, _>("attempts"), 0);
+    let row = sqlx::query(
+        "SELECT history_cursor,history_pages,history_complete FROM crawl_channels WHERE id=$1",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<Option<i64>, _>("history_cursor"), Some(80));
+    assert_eq!(row.get::<i32, _>("history_pages"), 3313);
+    assert!(!row.get::<bool, _>("history_complete"));
+    // Persistent empty responses still stop after the bounded retry budget.
+    sqlx::query("UPDATE crawl_jobs SET attempts=5 WHERE id=$1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM crawl_jobs WHERE id=$1")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "failed"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT history_cursor FROM crawl_channels WHERE id=$1"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        Some(80)
+    );
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT history_complete FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    server.abort();
+    pool.close().await;
+}
+
 #[derive(Clone)]
 struct Mock {
     channel: String,

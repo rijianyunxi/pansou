@@ -14,9 +14,6 @@ pub struct SecurityConfig {
     pub session_create_per_subnet: u64,
     pub session_create_global: u64,
     pub search_subnet_limit_multiplier: u64,
-    pub anonymous_search_concurrency: u64,
-    pub logged_search_concurrency: u64,
-    pub global_search_concurrency: u64,
 }
 
 impl Default for SecurityConfig {
@@ -28,9 +25,6 @@ impl Default for SecurityConfig {
             session_create_per_subnet: 30,
             session_create_global: 300,
             search_subnet_limit_multiplier: 4,
-            anonymous_search_concurrency: 2,
-            logged_search_concurrency: 4,
-            global_search_concurrency: 64,
         }
     }
 }
@@ -86,21 +80,6 @@ impl SecurityConfig {
             search_subnet_limit_multiplier: env_u64(
                 "PANSOU_SEARCH_SUBNET_LIMIT_MULTIPLIER",
                 defaults.search_subnet_limit_multiplier,
-                1,
-            ),
-            anonymous_search_concurrency: env_u64(
-                "PANSOU_ANONYMOUS_SEARCH_CONCURRENCY",
-                defaults.anonymous_search_concurrency,
-                1,
-            ),
-            logged_search_concurrency: env_u64(
-                "PANSOU_LOGGED_SEARCH_CONCURRENCY",
-                defaults.logged_search_concurrency,
-                1,
-            ),
-            global_search_concurrency: env_u64(
-                "PANSOU_GLOBAL_SEARCH_CONCURRENCY",
-                defaults.global_search_concurrency,
                 1,
             ),
         }
@@ -311,14 +290,14 @@ async fn release_permit(redis: &RedisStore, session_key: &str, global_key: &str)
 
 pub async fn acquire_search_permit(
     redis: &RedisStore,
-    config: &SecurityConfig,
+    policy: &UserPolicy,
     session: &Session,
     ttl_seconds: u64,
 ) -> Result<SearchPermit, ApiError> {
     let session_limit = if session.user_id.is_some() {
-        config.logged_search_concurrency
+        policy.logged_search_concurrency
     } else {
-        config.anonymous_search_concurrency
+        policy.anonymous_search_concurrency
     };
     let session_key = format!("pansou:concurrency:search:session:{}", session.token);
     let global_key = "pansou:concurrency:search:global".to_owned();
@@ -340,7 +319,7 @@ pub async fn acquire_search_permit(
         .key(&session_key)
         .key(&global_key)
         .arg(session_limit)
-        .arg(config.global_search_concurrency)
+        .arg(policy.global_search_concurrency)
         .arg(ttl_seconds.max(30))
         .invoke_async(&mut connection)
         .await

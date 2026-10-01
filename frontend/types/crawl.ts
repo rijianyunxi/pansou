@@ -39,7 +39,8 @@ export interface CrawlChannel {
   resourceCount: number;
   failureCount: number;
   latestJob: CrawlJob | null;
-  taskState?: 'running' | 'queued' | 'idle' | 'paused' | 'failed';
+  taskState?: 'running' | 'queued' | 'backoff' | 'idle' | 'paused' | 'failed';
+  taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | null;
   taskStateAt?: string;
   outbound: OutboundPolicy | null;
   effectiveOutbound: OutboundPolicy | null;
@@ -78,6 +79,8 @@ export interface CrawlOverview {
   workerCount: number | null;
   workerEnabled: boolean;
   queued: number;
+  backoff: number;
+  fetching: number;
   scheduling?: { concurrentChannels: number; pageDelaySeconds: number };
   running: number;
   failed: number;
@@ -113,6 +116,7 @@ export function crawlCompactTime(value?: string | null, now = Date.now()) {
 export function compactChannelTaskLabel(channel: CrawlChannel) {
   const state = channelTaskState(channel).state;
   if (state === 'running') return '采集中';
+  if (channel.taskState === 'backoff') return '退避中';
   if (channel.taskState === 'queued' || channel.latestJob?.status === 'queued' && state !== 'paused') return '排队中';
   const full = channelTaskState(channel).text;
   return ({ "历史回填中": "回填中", "增量同步中": "同步中", "失败页重试中": "重试中", "等待日常采集": "待同步", "等待历史补齐": "待回填", "等待下一页": "待续采", "等待执行": "排队中", "退避等待": "退避中", "采集中断": "已中断" } as Record<string, string>)[full] || full;
@@ -149,12 +153,14 @@ export type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "fail
 export function channelTaskState(channel: CrawlChannel, now = Date.now()): { state: ChannelTaskState; text: string } {
   if (channel.taskState) {
     if (channel.taskState === 'paused') return { state: 'paused', text: '已暂停' };
-    if (channel.taskState === 'running') return { state: 'running', text: crawlKind(channel.latestJob?.kind || '') + '中' };
+    if (channel.taskState === 'running') {
+      const phase = channel.taskPhase === 'page_wait' ? '等待下一页' : channel.taskPhase === 'ready' ? '等待调度' : '正在处理页面';
+      return { state: 'running', text: crawlKind(channel.latestJob?.kind || '') + '中 · ' + phase };
+    }
+    if (channel.taskState === 'backoff') return { state: 'waiting', text: '退避等待' };
     if (channel.taskState === 'failed') return { state: 'failed', text: '采集中断' };
     if (channel.taskState === 'queued') {
-      const observed = Date.parse(channel.taskStateAt || '') || now;
-      const delayed = Date.parse(channel.nextPageAt) > observed || Date.parse(channel.latestJob?.nextRunAt || '') > observed;
-      return { state: 'waiting', text: delayed ? (channel.latestJob?.attempts ? '退避等待' : '等待下一页') : '等待执行' };
+      return { state: 'waiting', text: '等待并发槽位' };
     }
     return channel.historyComplete ? { state: 'idle', text: '等待日常采集' } : { state: 'waiting', text: '等待历史补齐' };
   }
