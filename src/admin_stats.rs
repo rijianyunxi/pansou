@@ -287,7 +287,7 @@ mod tests {
             let resource = resource.clone();
             tasks.spawn(async move {
                 let mut tx = pool.begin().await.unwrap();
-                sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,$2,'','fixture','fixture','parsed')")
+                sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,$2,'fixture','fixture','parsed')")
                     .bind(&channel).bind(message).execute(&mut *tx).await.unwrap();
                 sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,'{}')")
                     .bind(&channel).bind(message).bind(&resource).execute(&mut *tx).await.unwrap();
@@ -385,7 +385,7 @@ mod tests {
             (4, "failed"),
             (5, "empty"),
         ] {
-            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,$2,'','fixture','fixture',$3)")
+            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,$2,'fixture','fixture',$3)")
                 .bind(&channel).bind(id).bind(status).execute(&mut *tx).await.unwrap();
         }
         let visible = format!("visible_{prefix}");
@@ -469,7 +469,7 @@ mod tests {
         assert_channel_counts(&mut tx, &ids).await;
 
         // Moving an occurrence to another message/channel adjusts both sides.
-        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,1,'','fixture','fixture','parsed')")
+        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,1,'fixture','fixture','parsed')")
             .bind(&empty).execute(&mut *tx).await.unwrap();
         sqlx::query("UPDATE resource_occurrences SET channel_id=$2 WHERE channel_id=$1 AND message_id=1 AND resource_id=$3")
             .bind(&channel).bind(&empty).bind(&visible).execute(&mut *tx).await.unwrap();
@@ -514,7 +514,7 @@ mod tests {
             .execute(&mut *tx)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,99,'','fixture','fixture','parsed')")
+        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,99,'fixture','fixture','parsed')")
             .bind(&channel).execute(&mut *tx).await.unwrap();
         sqlx::query("ROLLBACK TO SAVEPOINT stats_rollback")
             .execute(&mut *tx)

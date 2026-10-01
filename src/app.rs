@@ -157,10 +157,6 @@ fn api_router() -> Router<Arc<AppState>> {
             get(handlers::crawl_message_get),
         )
         .route(
-            "/admin/crawl/channels/{channel}/messages/{id}/preview",
-            post(handlers::crawl_message_preview),
-        )
-        .route(
             "/admin/crawl/settings",
             get(handlers::crawl_settings_get).put(handlers::crawl_settings_put),
         )
@@ -411,7 +407,7 @@ mod tests {
             "/api/admin/hot-searches/search-term",
             "/api/admin/proxies/proxy-id",
             "/api/admin/crawl/overview",
-            "/api/admin/crawl/channels/channel-id/messages/1/preview",
+            "/api/admin/crawl/channels/channel-id/messages/1",
             "/api/admin/crawl/settings",
             "/api/admin/crawl/channels/channel-id/failures",
             "/api/admin/proxies/proxy-id/references",

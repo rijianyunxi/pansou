@@ -1,5 +1,7 @@
 # SQL 设计与查询性能审计
 
+> 2026-10-02 更新：本文件记录当时的审计/验证。原文保存、摘要与规则预览已按新需求移除，迁移 019 删除旧原文列；参见 [原文存储清理](source-message-storage-cleanup.md)。文中关于保留原文和冷热分离的建议不再适用。
+
 后续状态：2026-10-02 已实现第一批修复；具体范围、验证与仍未实施事项见
 [SQL 优化验证](/Users/song/study/pansou/docs/sql-optimization-verification.md)。下文保留审计当时的运行状态与原查询测量。
 

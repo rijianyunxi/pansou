@@ -53,9 +53,6 @@ export interface CrawlMessage {
   status: string;
   parseError: string | null;
   parseVersion: string;
-  summary: string;
-  rawHtml?: string;
-  rawText?: string;
   stored?: {
     result: SearchResult;
     enabled: boolean;
@@ -86,11 +83,6 @@ export interface CrawlOverview {
   failed: number;
   review: number;
   serverTime: string;
-}
-export interface ParsePreview {
-  results: SearchResult[];
-  status: string;
-  error: string | null;
 }
 export function crawlTime(value?: string | null) {
   if (!value) return "—";

@@ -873,6 +873,33 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{list}");
+    let (status, detail) = call(
+        &router,
+        "GET",
+        &format!("/api/admin/crawl/channels/{channel}/messages/101"),
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let detail: Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(detail["data"]["messageId"], 101);
+    assert!(!detail["data"]["stored"].as_array().unwrap().is_empty());
+    let (status, messages) = call(
+        &router,
+        "GET",
+        &format!("/api/admin/crawl/channels/{channel}/messages"),
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{messages}");
+    let messages: Value = serde_json::from_str(&messages).unwrap();
+    for item in std::iter::once(&detail["data"]).chain(messages["data"]["items"].as_array().unwrap()) {
+        for removed in ["rawHtml", "rawText", "summary"] {
+            assert!(item.get(removed).is_none(), "removed field {removed}: {item}");
+        }
+    }
     let (status, preview) = call(
         &router,
         "POST",
@@ -881,8 +908,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{preview}");
-    assert!(serde_json::from_str::<Value>(&preview).unwrap()["data"]["results"].is_array());
+    assert_eq!(status, StatusCode::NOT_FOUND, "{preview}");
     let (status,edited)=call(&router,"PUT",&format!("/api/admin/resources/{}",resource.id),Some(&session.token),json!({"name":"管理员修订","description":"手动内容","links":resource.links,"cloud_types":["mobile"]})).await;
     assert_eq!(status, StatusCode::OK, "{edited}");
     assert_eq!(

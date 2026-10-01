@@ -118,7 +118,6 @@ function saved() {
       :channel="messageChannel"
       :initial-message="messageId"
       @close="close"
-      @task="overlay({ task: $event })"
     /><CrawlJobDetail
       v-else-if="taskId"
       :id="taskId"

@@ -380,8 +380,8 @@ pub async fn persist_message(
     let items = parsed.results;
     let status = parsed.status.as_str();
     let error = parsed.error;
-    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,published_at,parse_version,parse_status,parse_error) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(channel_id,message_id) DO UPDATE SET raw_html=EXCLUDED.raw_html,raw_hash=EXCLUDED.raw_hash,published_at=EXCLUDED.published_at,parse_version=EXCLUDED.parse_version,parse_status=EXCLUDED.parse_status,parse_error=EXCLUDED.parse_error,last_seen_at=now(),updated_at=now()")
-        .bind(channel).bind(message.id).bind(&message.html).bind(raw_hash).bind(message.published).bind(version).bind(status).bind(error).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,published_at,parse_version,parse_status,parse_error) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(channel_id,message_id) DO UPDATE SET raw_hash=EXCLUDED.raw_hash,published_at=EXCLUDED.published_at,parse_version=EXCLUDED.parse_version,parse_status=EXCLUDED.parse_status,parse_error=EXCLUDED.parse_error,last_seen_at=now(),updated_at=now()")
+        .bind(channel).bind(message.id).bind(raw_hash).bind(message.published).bind(version).bind(status).bind(error).execute(&mut **tx).await?;
     if status == "failed" {
         return Ok((0, true));
     }

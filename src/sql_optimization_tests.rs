@@ -3,6 +3,53 @@ use crate::{db, resource_clean};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn raw_html_removal_preserves_existing_metadata_and_resource_relationships() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = db::connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    // Replay the real pre-019 schema in a disposable namespace, including FK/trigger dependencies.
+    // The entire namespace and its data roll back; the application's public schema is untouched.
+    let schema = format!("raw_upgrade_{}", uuid::Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!("CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"))
+        .execute(&mut *tx).await.unwrap();
+    for migration in sqlx::migrate!("./migrations").iter().filter(|m| m.version < 19) {
+        sqlx::raw_sql(&migration.sql).execute(&mut *tx).await.unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO crawl_channels(id,name) VALUES('raw-fixture','fixture');
+         INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status,published_at)
+           VALUES('raw-fixture',1,repeat('<html>old original</html>',100000),'kept-hash','kept-version','parsed','2026-10-01T00:00:00Z'),
+                 ('raw-fixture',2,'failed original','failed-hash','kept-version','failed',NULL),
+                 ('raw-fixture',3,'empty original','empty-hash','kept-version','empty',NULL);
+         INSERT INTO managed_resources(id,name,origin,search_text) VALUES('raw-resource','保留资源','telegram','保留资源');
+         INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json)
+           VALUES('raw-fixture',1,'raw-resource','{\"id\":\"raw-resource\",\"name\":\"保留资源\"}');"
+    ).execute(&mut *tx).await.unwrap();
+    let before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(m)-'raw_html' FROM source_messages m ORDER BY channel_id,message_id")
+        .fetch_all(&mut *tx).await.unwrap();
+    let before_stats: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM channel_statistics s WHERE channel_id='raw-fixture'")
+        .fetch_one(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/019_remove_source_message_raw_html.sql"))
+        .execute(&mut *tx).await.unwrap();
+    let after: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(m) FROM source_messages m ORDER BY channel_id,message_id")
+        .fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(after, before);
+    let after_stats: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM channel_statistics s WHERE channel_id='raw-fixture'")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(after_stats, before_stats);
+    let relationships: i64 = sqlx::query_scalar("SELECT count(*) FROM resource_occurrences o JOIN source_messages m USING(channel_id,message_id) JOIN managed_resources r ON r.id=o.resource_id")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(relationships, 1);
+    let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='source_messages' AND column_name='raw_html')")
+        .bind(&schema).fetch_one(&mut *tx).await.unwrap();
+    assert!(!present);
+    tx.rollback().await.unwrap();
+}
+
 async fn compare_search(tx: &mut Transaction<'_, Postgres>, scope: &[String], keywords: &[&str]) {
     for keyword in keywords {
         let keyword = keyword.to_lowercase();
@@ -105,7 +152,7 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
             (&public, title.clone()),
             (&private, format!("私密标题 {i:03}")),
         ] {
-            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status,published_at) VALUES($1,$2,'','test','test','parsed',to_timestamp($3))")
+            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status,published_at) VALUES($1,$2,'test','test','parsed',to_timestamp($3))")
                 .bind(channel).bind(i+1).bind((1_700_000_000+i) as f64)
                 .execute(&mut *tx).await.unwrap();
             let item = json!({"id":"incorrect_snapshot_id","name":name,"description":"only display, not searchable","cloud_types":["quark"],"links":[],"tags":["secret-tag"],"images":[]});
@@ -216,7 +263,7 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
         .bind(&public).execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE managed_resources SET deleted_at=NULL,cloud_types_json='[\"custom-provider\",\"custom-provider\"]' WHERE id=$1")
         .bind(&ids[4]).execute(&mut *tx).await.unwrap();
-    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status) VALUES($1,6,'','test','test','parsed')")
+    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,6,'test','test','parsed')")
         .bind(&moved).execute(&mut *tx).await.unwrap();
     sqlx::query(
         "UPDATE resource_occurrences SET channel_id=$2 WHERE channel_id=$1 AND message_id=6",

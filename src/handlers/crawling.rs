@@ -416,7 +416,7 @@ pub async fn crawl_job_cancel(
     Ok(ok(json!({"ok":true})))
 }
 fn message(r: &PgRow) -> Value {
-    json!({"channelId":r.get::<String,_>("channel_id"),"messageId":r.get::<i64,_>("message_id"),"publishedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("published_at"),"status":r.get::<String,_>("parse_status"),"parseError":r.get::<Option<String>,_>("parse_error"),"parseVersion":r.get::<String,_>("parse_version"),"summary":crate::telegram::message_text(&r.get::<String, _>("raw_html")).chars().take(160).collect::<String>()})
+    json!({"channelId":r.get::<String,_>("channel_id"),"messageId":r.get::<i64,_>("message_id"),"publishedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("published_at"),"status":r.get::<String,_>("parse_status"),"parseError":r.get::<Option<String>,_>("parse_error"),"parseVersion":r.get::<String,_>("parse_version")})
 }
 async fn message_list(
     pool: &PgPool,
@@ -429,7 +429,7 @@ async fn message_list(
         return Err(ApiError::BadRequest("游标不属于该频道".into()));
     }
     let cursor = parsed.map(|c| c.id).unwrap_or(i64::MAX);
-    let mut rows=sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version,raw_html FROM source_messages WHERE channel_id=$1 AND ($2='' OR parse_status=$2) AND message_id<$3 AND ($4::timestamptz IS NULL OR published_at>=$4) AND ($5::timestamptz IS NULL OR published_at<=$5) ORDER BY message_id DESC LIMIT $6").bind(channel).bind(q.get("status").cloned().unwrap_or_default()).bind(cursor).bind(date(&q,"from")?).bind(date(&q,"to")?).bind(size+1).fetch_all(pool).await?;
+    let mut rows=sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version FROM source_messages WHERE channel_id=$1 AND ($2='' OR parse_status=$2) AND message_id<$3 AND ($4::timestamptz IS NULL OR published_at>=$4) AND ($5::timestamptz IS NULL OR published_at<=$5) ORDER BY message_id DESC LIMIT $6").bind(channel).bind(q.get("status").cloned().unwrap_or_default()).bind(cursor).bind(date(&q,"from")?).bind(date(&q,"to")?).bind(size+1).fetch_all(pool).await?;
     let more = rows.len() > size as usize;
     rows.truncate(size as usize);
     Ok(
@@ -451,7 +451,7 @@ pub async fn crawl_message_get(
     Path((channel, id)): Path<(String, i64)>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
-    let r = sqlx::query("SELECT * FROM source_messages WHERE channel_id=$1 AND message_id=$2")
+    let r = sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version FROM source_messages WHERE channel_id=$1 AND message_id=$2")
         .bind(&channel)
         .bind(id)
         .fetch_optional(&s.pool)
@@ -459,58 +459,9 @@ pub async fn crawl_message_get(
         .ok_or_else(|| ApiError::NotFound("消息不存在".into()))?;
     let stored=sqlx::query("SELECT o.result_json,r.id,r.enabled,r.manual_override,r.deleted_at FROM resource_occurrences o JOIN managed_resources r ON r.id=o.resource_id WHERE o.channel_id=$1 AND o.message_id=$2").bind(&channel).bind(id).fetch_all(&s.pool).await?;
     let mut data = message(&r);
-    data["rawHtml"] = json!(r.get::<String, _>("raw_html"));
-    data["rawText"] = json!(crate::telegram::message_text(
-        &r.get::<String, _>("raw_html")
-    ));
     data["stored"]=json!(stored.iter().map(|r|json!({"result":r.get::<Value,_>("result_json"),"enabled":r.get::<bool,_>("enabled"),"manualOverride":r.get::<bool,_>("manual_override"),"deleted":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("deleted_at").is_some()})).collect::<Vec<_>>());
     Ok(ok(data))
 }
-pub async fn crawl_message_preview(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-    Path((channel, id)): Path<(String, i64)>,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    let r = sqlx::query(
-        "SELECT raw_html,published_at FROM source_messages WHERE channel_id=$1 AND message_id=$2",
-    )
-    .bind(&channel)
-    .bind(id)
-    .fetch_optional(&s.pool)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("消息不存在".into()))?;
-    let mut source = crawl::source_for(&s.pool, &channel).await?;
-    if let Some(dsl) = body.get("transform").and_then(Value::as_str) {
-        crate::transform::validate(dsl)?;
-        source.transform = dsl.into();
-    }
-    let m = crate::telegram::Message {
-        id,
-        html: r.get("raw_html"),
-        published: r.get("published_at"),
-    };
-    static PREVIEW_SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
-        std::sync::OnceLock::new();
-    let guard = PREVIEW_SLOTS
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::Unavailable("解析预览繁忙，请稍后重试".into()))?;
-    let data = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        tokio::task::spawn_blocking(move || {
-            let _guard = guard;
-            crawl::parse_message(&source, &channel, &m)
-        }),
-    )
-    .await
-    .map_err(|_| ApiError::Unavailable("解析预览超过预算".into()))?
-    .map_err(|_| ApiError::Internal("解析任务失败".into()))?;
-    Ok(ok(serde_json::to_value(data).unwrap()))
-}
-
 pub async fn crawl_settings_get(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,

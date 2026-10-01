@@ -69,17 +69,6 @@ pub struct Message {
     pub html: String,
     pub published: Option<DateTime<Utc>>,
 }
-/// Read message content, not channel headers, footers or script/style bodies.
-pub fn message_text(raw: &str) -> String {
-    let html = Html::parse_fragment(raw);
-    let selector = Selector::parse(".tgme_widget_message_text").unwrap();
-    let content = html
-        .select(&selector)
-        .next()
-        .map(|n| n.inner_html())
-        .unwrap_or_else(|| raw.to_owned());
-    crate::resource_clean::text(&content)
-}
 pub fn messages(raw: &str, expected: &str) -> Result<Vec<Message>, ApiError> {
     let doc = Html::parse_document(raw);
     let sel = Selector::parse(".tgme_widget_message[data-post]").unwrap();

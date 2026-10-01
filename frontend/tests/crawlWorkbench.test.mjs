@@ -11,7 +11,7 @@ test("crawl main only mounts one tab and one primary overlay", async () => {
   assert.ok(!page.includes("JSON.stringify(previewData"));
   assert.match(page, /v-else-if="messageChannel"/);
 });
-test("messages use same sheet navigation and safe original text", async () => {
+test("messages retain sheet navigation and stored resources without original or preview", async () => {
   const sheet = await read("components/admin/crawl/CrawlMessagesSheet.vue");
   const detail = await read("components/admin/crawl/CrawlMessageDetail.vue");
   assert.match(sheet, /AdminDialog/);
@@ -19,8 +19,26 @@ test("messages use same sheet navigation and safe original text", async () => {
   assert.match(sheet, /scrollRegion/);
   assert.match(detail, /返回消息列表/);
   assert.ok(!detail.includes("v-html"));
-  assert.match(detail, /尚未写入/);
-  assert.ok(detail.includes("/preview"));
+  assert.match(detail, /CrawlResultCards/);
+  assert.match(detail, /这条消息没有已存资源/);
+  assert.match(detail, /role="alert"/);
+  for (const removed of ["/preview", "rawHtml", "rawText", "Textarea", "TabsTrigger", "规则预览"]) {
+    assert.ok(!detail.includes(removed), removed);
+  }
+  assert.ok(!sheet.includes("m.summary"));
+  const types = await read("types/crawl.ts");
+  for (const removed of ["ParsePreview", "rawHtml", "rawText", "summary:"]) {
+    assert.ok(!types.includes(removed), removed);
+  }
+});
+test("message preview fixture is read-only and cannot forward real API requests", async () => {
+  const fixture = await read("tests/fixtures/crawl-messages-preview.html");
+  assert.match(fixture, /CrawlMessagesSheet/);
+  assert.match(fixture, /window.fetch = async/);
+  assert.match(fixture, /options.method !== 'GET'/);
+  assert.match(fixture, /验收页禁止真实请求/);
+  assert.match(fixture, /scenario === 'empty'/);
+  assert.match(fixture, /scenario === 'error'/);
 });
 test("policies are owned by source or channel and use shared editor", async () => {
   for (const file of [
@@ -72,11 +90,7 @@ test("durable enqueue key and timezone date filters are wired to shadcn forms", 
     assert.match(text, /datetime-local/);
     assert.match(text, /crawlFilterDate/);
   }
-  assert.ok(
-    (await read("components/admin/crawl/CrawlMessageDetail.vue")).includes(
-      "rawText",
-    ),
-  );
+  assert.match(await read("components/admin/crawl/CrawlMessageDetail.vue"), /crawlTime\(data.publishedAt\)/);
 });
 
 test("node selection exposes only checkboxes and weights, including direct", async () => {

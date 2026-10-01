@@ -22,7 +22,7 @@ import {
 } from "../ui/table";
 import CrawlMessageDetail from "./CrawlMessageDetail.vue";
 const props = defineProps<{ channel: string; initialMessage?: number }>();
-const emit = defineEmits<{ close: []; task: [id: number] }>();
+const emit = defineEmits<{ close: [] }>();
 const selected = ref<number | null>(props.initialMessage || null),
   status = ref(""),
   from = ref(""),
@@ -73,7 +73,7 @@ async function back() {
 <template>
   <AdminDialog
     :title="'@' + channel + ' 的消息'"
-    description="查看与预览均不写入资源；单条重解析需要明确提交。"
+    description="查看消息解析状态与已存资源，不保存或展示消息原文。"
     drawer
     wide
     @close="emit('close')"
@@ -108,7 +108,7 @@ async function back() {
             ><TableHeader
               ><TableRow
                 ><TableHead>消息 / 发布时间</TableHead
-                ><TableHead>摘要</TableHead><TableHead>状态</TableHead
+                ><TableHead>状态</TableHead
                 ><TableHead>操作</TableHead></TableRow
               ></TableHeader
             ><TableBody
@@ -116,8 +116,6 @@ async function back() {
                 ><TableCell
                   >#{{ m.messageId }}
                   <p>{{ crawlTime(m.publishedAt) }}</p></TableCell
-                ><TableCell
-                  ><p class="message-summary">{{ m.summary }}</p></TableCell
                 ><TableCell>{{ crawlStatus(m.status) }}</TableCell
                 ><TableCell
                   ><Button
@@ -127,8 +125,8 @@ async function back() {
                     >查看详情</Button
                   ></TableCell
                 ></TableRow
-              ><TableRow v-if="!loading && !data?.items.length"
-                ><TableCell colspan="4">没有匹配的消息。</TableCell></TableRow
+              ><TableRow v-if="!loading && !error && !data?.items.length"
+                ><TableCell colspan="3">没有匹配的消息。</TableCell></TableRow
               ></TableBody
             ></Table
           >
@@ -139,7 +137,6 @@ async function back() {
           :channel="channel"
           :id="selected"
           @back="back"
-          @task="emit('task', $event)"
         />
       </div>
       <footer class="modal-actions">
@@ -171,19 +168,11 @@ async function back() {
     max-width: 200px;
   }
   .messages-table {
-    min-width: 680px;
+    min-width: 440px;
   }
   .messages-table p {
     font-size: 12px;
     color: var(--muted-foreground);
-  }
-  .message-summary {
-    max-width: 300px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    overflow-wrap: anywhere;
   }
 }
 </style>
