@@ -151,6 +151,17 @@ test("channel task states keep distinct tones and paused overrides stale job err
  assert.match(source,/aria-hidden="true"/);
 });
 
+test("queued channels share one label and use the server snapshot for wait reasons", async () => {
+ const {channelTaskState,compactChannelTaskLabel}=await import("../types/crawl.ts");
+ const base={enabled:true,historyComplete:false,taskState:"queued",taskStateAt:"2026-10-01T00:00:00Z",nextPageAt:"2026-10-01T00:00:01Z",latestJob:{status:"queued",attempts:0,kind:"backfill",nextRunAt:"2026-09-30T23:59:59Z"}};
+ assert.equal(compactChannelTaskLabel(base),"排队中");
+ assert.equal(channelTaskState(base,Date.parse("2026-10-01T01:00:00Z")).text,"等待下一页");
+ assert.equal(compactChannelTaskLabel({...base,latestJob:{...base.latestJob,attempts:2}}),"排队中");
+ assert.equal(channelTaskState({...base,latestJob:{...base.latestJob,attempts:2}}).text,"退避等待");
+ assert.equal(compactChannelTaskLabel({...base,taskState:"running",latestJob:{...base.latestJob,status:"running"}}),"采集中");
+ assert.equal(compactChannelTaskLabel({...base,taskState:"paused",enabled:false}),"已暂停");
+});
+
 test("task state text has readable contrast in both badge palettes", async () => {
  const source=await read("components/admin/crawl/CrawlChannelsTab.vue");
  const luminance=(hex)=>{
@@ -174,7 +185,7 @@ test("compact crawl times retain dates outside today in Shanghai", async () => {
  assert.equal(crawlCompactTime("2025-09-30T15:02:00Z",now),"2025-09-30 23:02");
  assert.equal(crawlCompactTime(null,now),"—");assert.equal(crawlCompactTime("invalid",now),"—");
  assert.equal(compactChannelTaskLabel({enabled:true,historyComplete:true,latestJob:null}),"待同步");
- assert.equal(compactChannelTaskLabel({enabled:true,latestJob:{status:"running",kind:"backfill"}}),"回填中");
+ assert.equal(compactChannelTaskLabel({enabled:true,latestJob:{status:"running",kind:"backfill"}}),"采集中");
 });
 
 test("compact channel columns preserve exact counts and accessible full information",async()=>{

@@ -5,14 +5,19 @@ import {apiFetch,apiErrorMessage} from "@/src/appRuntime";
 import {crawlTime,crawlCompactTime,channelTaskState,compactChannelTaskLabel,type CrawlChannel,type ChannelPage} from "@/types/crawl";
 import {LoaderCircle,Pause,Clock,CheckCircle2,AlertTriangle,History,Timer,MessageSquare,Files,ListChecks} from "@lucide/vue";
 import AdminSelect from "../AdminSelect.vue";
+import AdminPagination from "../AdminPagination.vue";
+import AdminRowActions from "../AdminRowActions.vue";
+import AdminDialog from "../AdminDialog.vue";
 import {Button} from "../ui/button";
 import {Input} from "../ui/input";
 import {Card} from "../ui/card";
 import CrawlChannelActivity from "./CrawlChannelActivity.vue";
 import CrawlHint from "./CrawlHint.vue";
 const emit=defineEmits<{edit:[id:string];messages:[id:string];task:[id:number];changed:[]}>();
-const q=ref(""),enabled=ref(""),page=ref(1),expanded=ref<string>(),busy=ref<string>(),actionError=ref("");
-const {data,loading,error,refresh}=useCrawlQuery<ChannelPage>(ref("/api/admin/crawl/channels"),computed(()=>({q:q.value,enabled:enabled.value,page:page.value,pageSize:20})),5000);
+const q=ref(""),enabled=ref(""),page=ref(1),activeChannel=ref<string>(),busy=ref<string>(),actionError=ref("");
+const pageSize=ref(20);
+const {data,loading,error,refresh}=useCrawlQuery<ChannelPage>(ref("/api/admin/crawl/channels"),computed(()=>({q:q.value,enabled:enabled.value,page:page.value,pageSize:pageSize.value})),5000);
+const pageCount=computed(()=>Math.max(1,Math.ceil((data.value?.total||0)/pageSize.value)));
 watch(enabled,()=>page.value=1);
 const stateIcons={running:LoaderCircle,waiting:Clock,idle:CheckCircle2,paused:Pause,failed:AlertTriangle};
 async function toggle(c:CrawlChannel){
@@ -24,6 +29,21 @@ async function toggle(c:CrawlChannel){
  }catch(e){actionError.value=apiErrorMessage(e);}finally{busy.value=undefined;}
 }
 function changed(){void refresh();emit("changed");}
+function openActivity(channel:string){
+ activeChannel.value=channel;
+}
+function openTask(id:number){
+ activeChannel.value=undefined;
+ emit("task",id);
+}
+function goToPage(next:number){
+ if(next<1||next>pageCount.value||next===page.value)return;
+ page.value=next;
+}
+function changePageSize(size:number){
+ pageSize.value=size;
+ page.value=1;
+}
 defineExpose({refresh});
 </script>
 <template>
@@ -44,14 +64,16 @@ defineExpose({refresh});
       <td><CrawlHint :label="channelTaskState(c).text+(c.lastError?'：'+c.lastError:'')"><span tabindex="0" class="channel-state" :class="'state-'+channelTaskState(c).state"><component :is="stateIcons[channelTaskState(c).state]" :size="15" aria-hidden="true" :class="{spinning:channelTaskState(c).state==='running'}" />{{compactChannelTaskLabel(c)}}</span></CrawlHint></td>
       <td><CrawlHint :label="'历史'+(c.historyComplete?'已补齐':'未补齐')+'，已处理 '+c.historyPages+' 页；全量采集无页数上限'"><span tabindex="0" class="history-summary"><span>{{c.historyComplete?'已补齐':!c.enabled?'未补齐':c.historyPages>0?'补齐中':'待补齐'}}</span><small>{{c.historyPages.toLocaleString('zh-CN')}} 页</small></span></CrawlHint></td>
       <td><div class="time-summary"><CrawlHint :label="'最近同步：'+crawlTime(c.lastSyncedAt)"><span tabindex="0" class="compact-value"><History :size="14" aria-hidden="true" /><time :datetime="c.lastSyncedAt||undefined">{{crawlCompactTime(c.lastSyncedAt)}}</time></span></CrawlHint><CrawlHint :label="c.enabled?'下次采集：'+crawlTime(c.nextSyncAt):'日常采集已暂停'"><span tabindex="0" class="compact-value"><Timer :size="14" aria-hidden="true" /><time v-if="c.enabled" :datetime="c.nextSyncAt">{{crawlCompactTime(c.nextSyncAt)}}</time><span v-else>暂停</span></span></CrawlHint></div></td>
-      <td><div class="data-summary"><CrawlHint :label="'查看消息：'+c.messageCount+' 条消息，'+c.resourceCount+' 个资源'"><Button variant="ghost" class="stat-button tw:h-7 tw:min-h-7 tw:px-1 tw:py-0 tw:gap-1.5 tw:justify-start tw:text-xs tw:bg-transparent" @click="emit('messages',c.id)"><MessageSquare :size="14" aria-hidden="true" />{{c.messageCount.toLocaleString('zh-CN')}}<Files :size="14" aria-hidden="true" />{{c.resourceCount.toLocaleString('zh-CN')}}</Button></CrawlHint><CrawlHint :label="'待复核 '+c.failureCount+' 页，点击查看'"><Button variant="ghost" class="stat-button review-count tw:h-7 tw:min-h-7 tw:px-1 tw:py-0 tw:gap-1.5 tw:justify-start tw:text-xs tw:bg-transparent" :class="{'has-failures':c.failureCount>0}" :aria-expanded="expanded===c.id" @click="expanded=expanded===c.id?undefined:c.id"><ListChecks :size="14" aria-hidden="true" />{{c.failureCount.toLocaleString('zh-CN')}}</Button></CrawlHint></div></td>
-      <td><div class="channel-actions"><Button variant="outline" :aria-expanded="expanded===c.id" @click="expanded=expanded===c.id?undefined:c.id">{{expanded===c.id?'收起':'任务'}}</Button><Button variant="outline" :disabled="!!busy" @click="toggle(c)">{{busy===c.id?'处理中…':c.enabled?'暂停':'继续'}}</Button><Button variant="ghost" @click="emit('edit',c.id)">编辑</Button></div></td>
+      <td><div class="data-summary"><CrawlHint :label="'查看消息：'+c.messageCount+' 条消息，'+c.resourceCount+' 个资源'"><Button variant="ghost" class="stat-button tw:h-7 tw:min-h-7 tw:px-1 tw:py-0 tw:gap-1.5 tw:justify-start tw:text-xs tw:bg-transparent" @click="emit('messages',c.id)"><MessageSquare :size="14" aria-hidden="true" />{{c.messageCount.toLocaleString('zh-CN')}}<Files :size="14" aria-hidden="true" />{{c.resourceCount.toLocaleString('zh-CN')}}</Button></CrawlHint><CrawlHint :label="'待复核 '+c.failureCount+' 页，点击查看'"><Button variant="ghost" class="stat-button review-count tw:h-7 tw:min-h-7 tw:px-1 tw:py-0 tw:gap-1.5 tw:justify-start tw:text-xs tw:bg-transparent" :class="{'has-failures':c.failureCount>0}" :aria-expanded="activeChannel===c.id" @click="openActivity(c.id)"><ListChecks :size="14" aria-hidden="true" />{{c.failureCount.toLocaleString('zh-CN')}}</Button></CrawlHint></div></td>
+      <td class="action-column"><AdminRowActions label="频道操作"><Button variant="ghost" size="sm" class="row-action-button" type="button" :aria-expanded="activeChannel===c.id" @click="openActivity(c.id)">任务</Button><Button variant="ghost" size="sm" class="row-action-button" :class="{'danger-action':c.enabled}" :disabled="!!busy" type="button" @click="toggle(c)">{{busy===c.id?'处理中…':c.enabled?'暂停':'继续'}}</Button><Button variant="ghost" size="sm" class="row-action-button" type="button" @click="emit('edit',c.id)">编辑</Button></AdminRowActions></td>
      </tr>
-     <tr v-if="expanded===c.id"><td colspan="6" class="activity-cell"><CrawlChannelActivity :channel="c.id" @task="emit('task',$event)" @changed="changed" /></td></tr>
     </template><tr v-if="data&&!data.items.length"><td colspan="6">暂无频道，新增后会自动开始采集。</td></tr></tbody>
    </table></div>
-   <footer class="channel-footer"><span>共 {{data?.total||0}} 个频道</span><div class="channel-actions"><Button variant="outline" :disabled="page<=1||loading" @click="page--">上一页</Button><span>{{page}} / {{Math.max(1,Math.ceil((data?.total||0)/20))}}</span><Button variant="outline" :disabled="page*20>=(data?.total||0)||loading" @click="page++">下一页</Button></div></footer>
+   <AdminPagination :page="page" :total-pages="pageCount" :total="data?.total||0" :page-size="pageSize" @change="goToPage" @update:page-size="changePageSize" />
   </Card>
+  <AdminDialog v-if="activeChannel" :title="'@'+activeChannel+' · 任务与待复核'" description="查看该频道的任务记录和失败页；任务操作不会展开表格行。" drawer wide @close="activeChannel=undefined">
+   <CrawlChannelActivity :channel="activeChannel" @task="openTask" @changed="changed" />
+  </AdminDialog>
  </section>
 </template>
 <style scoped>
@@ -60,7 +82,7 @@ defineExpose({refresh});
 .channel-table{width:100%;min-width:900px;border-collapse:collapse;text-align:left;font-size:13px}
 td,th{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:middle}th{font-weight:500;color:var(--muted-foreground);white-space:nowrap}
 strong{font-weight:600}small{display:block;font-size:12px;color:var(--muted-foreground);line-height:1.8}
-.channel-state,.channel-actions,.channel-footer{display:flex;align-items:center;gap:8px}.channel-actions{flex-wrap:wrap}
+.channel-state{display:flex;align-items:center;gap:8px}
 .channel-state{display:inline-flex;max-width:100%;padding:5px 9px;border-radius:6px;font-weight:500;white-space:nowrap;color:var(--state-fg);background:var(--state-bg)}
 .state-running{--state-fg:#1d4ed8;--state-bg:#eff6ff}
 .state-waiting{--state-fg:#9a3412;--state-bg:#fff7ed}
@@ -78,7 +100,7 @@ strong{font-weight:600}small{display:block;font-size:12px;color:var(--muted-fore
 .stat-button{height:28px;min-height:28px;padding:2px 4px;justify-content:flex-start;font-size:12px;gap:6px;font-variant-numeric:tabular-nums}
 .stat-button svg:nth-of-type(2){margin-left:5px}.review-count{color:var(--muted-foreground);width:fit-content}.has-failures{color:var(--destructive)}
 .history-summary:focus-visible,.compact-value:focus-visible,.channel-state:focus-visible{outline:2px solid var(--ring);outline-offset:3px;border-radius:4px}
-.activity-cell{padding:0}.channel-footer{padding:16px;justify-content:space-between}.spinning{animation:spin 1.5s linear infinite}
+.spinning{animation:spin 1.5s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinning{animation:none}}
 }
 </style>

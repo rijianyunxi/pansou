@@ -15,6 +15,7 @@ use tower_http::{
 
 #[derive(Clone)]
 pub struct AppState {
+    pub admin_stats: Arc<crate::admin_stats::AdminStats>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub pool: PgPool,
@@ -39,6 +40,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(pool: PgPool, redis: RedisStore) -> Self {
         Self {
+            admin_stats: Arc::new(crate::admin_stats::AdminStats::default()),
             shutdown: tokio_util::sync::CancellationToken::new(),
             started_at: chrono::Utc::now(),
             pool,

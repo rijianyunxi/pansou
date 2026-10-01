@@ -39,6 +39,8 @@ export interface CrawlChannel {
   resourceCount: number;
   failureCount: number;
   latestJob: CrawlJob | null;
+  taskState?: 'running' | 'queued' | 'idle' | 'paused' | 'failed';
+  taskStateAt?: string;
   outbound: OutboundPolicy | null;
   effectiveOutbound: OutboundPolicy | null;
   transform?: string | null;
@@ -76,6 +78,7 @@ export interface CrawlOverview {
   workerCount: number | null;
   workerEnabled: boolean;
   queued: number;
+  scheduling?: { concurrentChannels: number; pageDelaySeconds: number };
   running: number;
   failed: number;
   review: number;
@@ -108,6 +111,9 @@ export function crawlCompactTime(value?: string | null, now = Date.now()) {
 }
 
 export function compactChannelTaskLabel(channel: CrawlChannel) {
+  const state = channelTaskState(channel).state;
+  if (state === 'running') return '采集中';
+  if (channel.taskState === 'queued' || channel.latestJob?.status === 'queued' && state !== 'paused') return '排队中';
   const full = channelTaskState(channel).text;
   return ({ "历史回填中": "回填中", "增量同步中": "同步中", "失败页重试中": "重试中", "等待日常采集": "待同步", "等待历史补齐": "待回填", "等待下一页": "待续采", "等待执行": "排队中", "退避等待": "退避中", "采集中断": "已中断" } as Record<string, string>)[full] || full;
 }
@@ -141,6 +147,17 @@ export function crawlKind(value: string) {
 
 export type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "failed";
 export function channelTaskState(channel: CrawlChannel, now = Date.now()): { state: ChannelTaskState; text: string } {
+  if (channel.taskState) {
+    if (channel.taskState === 'paused') return { state: 'paused', text: '已暂停' };
+    if (channel.taskState === 'running') return { state: 'running', text: crawlKind(channel.latestJob?.kind || '') + '中' };
+    if (channel.taskState === 'failed') return { state: 'failed', text: '采集中断' };
+    if (channel.taskState === 'queued') {
+      const observed = Date.parse(channel.taskStateAt || '') || now;
+      const delayed = Date.parse(channel.nextPageAt) > observed || Date.parse(channel.latestJob?.nextRunAt || '') > observed;
+      return { state: 'waiting', text: delayed ? (channel.latestJob?.attempts ? '退避等待' : '等待下一页') : '等待执行' };
+    }
+    return channel.historyComplete ? { state: 'idle', text: '等待日常采集' } : { state: 'waiting', text: '等待历史补齐' };
+  }
   if (!channel.enabled || channel.latestJob?.status === "paused") return { state: "paused", text: "已暂停" };
   const job = channel.latestJob;
   if (job?.status === "running") return { state: "running", text: crawlKind(job.kind) + "中" };

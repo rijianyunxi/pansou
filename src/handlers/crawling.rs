@@ -99,25 +99,27 @@ fn job(r: &PgRow) -> Value {
 }
 const CHANNEL_SELECT: &str = "SELECT c.* FROM crawl_channels c";
 async fn channels_data(
-    pool: &PgPool,
+    state: &AppState,
     rows: Vec<PgRow>,
     details: bool,
 ) -> Result<Vec<Value>, ApiError> {
     if rows.is_empty() {
         return Ok(vec![]);
     }
+    let pool = &state.pool;
     let ids = rows
         .iter()
         .map(|r| r.get::<String, _>("id"))
         .collect::<Vec<_>>();
-    let stats = sqlx::query(include_str!("../sql/channel_summaries.sql"))
-        .bind(&ids)
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|r| (r.get::<String, _>("id"), r))
+    let stats = state.admin_stats.channels(pool, &ids).await?;
+    let failure_counts = sqlx::query("SELECT channel_id,count(*) failure_count FROM crawl_page_failures WHERE channel_id=ANY($1) GROUP BY channel_id")
+        .bind(&ids).fetch_all(pool).await?.into_iter()
+        .map(|r| (r.get::<String, _>("channel_id"), r.get::<i64, _>("failure_count")))
         .collect::<HashMap<_, _>>();
     let policies=sqlx::query(&format!("SELECT p.channel_id,p.default_key,{} FROM outbound_policies p WHERE p.channel_id=ANY($1) OR p.default_key='telegram'",outbound::POLICY_COLUMNS)).bind(&ids).fetch_all(pool).await?;
+    let task_states = sqlx::query(include_str!("../sql/channel_task_states.sql"))
+        .bind(&ids).fetch_all(pool).await?
+        .into_iter().map(|r| (r.get::<String, _>("id"), r)).collect::<HashMap<_, _>>();
     let mut by_channel = HashMap::new();
     let mut default = None;
     for r in policies {
@@ -132,13 +134,14 @@ async fn channels_data(
     for r in rows {
         let id = r.get::<String, _>("id");
         let st = &stats[&id];
+        let task = &task_states[&id];
         let p = by_channel.get(&id);
         let effective = if p.is_some_and(|p| p.inherit) {
             default.as_ref()
         } else {
             p
         };
-        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"messageCount":st.get::<i64,_>("message_count"),"resourceCount":st.get::<i64,_>("resource_count"),"failureCount":st.get::<i64,_>("failure_count"),"latestJob":st.get::<Option<Value>,_>("latest_job"),"outbound":p,"effectiveOutbound":effective});
+        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"messageCount":st.message_count,"resourceCount":st.resource_count,"failureCount":failure_counts.get(&id).copied().unwrap_or(0),"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":effective});
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
         }
@@ -172,7 +175,7 @@ pub async fn crawl_channels(
     .bind((page - 1) * size)
     .fetch_all(&s.pool)
     .await?;
-    let items = channels_data(&s.pool, rows, false).await?;
+    let items = channels_data(&s, rows, false).await?;
     Ok(ok(
         json!({"items":items,"total":total,"page":page,"pageSize":size}),
     ))
@@ -188,7 +191,7 @@ pub async fn crawl_channel_get(
         .fetch_optional(&s.pool)
         .await?
         .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
-    Ok(ok(channels_data(&s.pool, vec![r], true).await?.remove(0)))
+    Ok(ok(channels_data(&s, vec![r], true).await?.remove(0)))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -239,6 +242,7 @@ async fn save_channel(
     crawl::bump(&mut tx).await?;
     tx.commit().await?;
     *s.search_cache.lock().await = Default::default();
+    s.admin_stats.invalidate().await;
     Ok(())
 }
 pub async fn crawl_channel_create(
@@ -304,13 +308,23 @@ pub async fn crawl_overview(
             .await
             .ok(),
     };
-    let jobs=sqlx::query("SELECT count(*) FILTER(WHERE status='queued') queued,count(*) FILTER(WHERE status='running') running,count(*) FILTER(WHERE status='failed') failed FROM crawl_jobs").fetch_one(&s.pool).await?;
+    let jobs = sqlx::query(&format!(
+        "WITH channel_states AS ({}) SELECT
+         count(*) FILTER(WHERE task_state='queued') queued,
+         count(*) FILTER(WHERE task_state='running') running,
+         count(*) FILTER(WHERE task_state='failed') failed FROM channel_states",
+        include_str!("../sql/channel_task_states.sql"),
+    ))
+    .bind(Option::<Vec<String>>::None)
+    .fetch_one(&s.pool)
+    .await?;
     let review = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_page_failures")
         .fetch_one(&s.pool)
         .await?;
     let worker_enabled = crate::runtime::settings(&s).await?.crawl_enabled;
+    let scheduling = crawl::settings(&s.pool).await?;
     Ok(ok(
-        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"failed":jobs.get::<i64,_>("failed"),"review":review,"serverTime":chrono::Utc::now()}),
+        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"failed":jobs.get::<i64,_>("failed"),"review":review,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
     ))
 }
 pub async fn crawl_job_create(

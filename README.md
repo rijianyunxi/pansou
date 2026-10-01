@@ -820,6 +820,10 @@ docker compose ps
 
 ### 11.3 启动 Rust
 
+Compose 默认使用 512 MB PostgreSQL 缓冲区、4 GB WAL 上限、15 分钟检查点间隔和 WAL 页图像压缩，适合约 8 GB 内存的开发 Docker VM。小内存环境可在 `.env` 设置 `PANSOU_PG_SHARED_BUFFERS`、`PANSOU_PG_MAX_WAL_SIZE` 和 `PANSOU_PG_CHECKPOINT_TIMEOUT`。这些是调优起点；`work_mem` 保留 PostgreSQL 默认值。
+
+后台频道列表的任务状态、失败页数仍实时查询；消息数和去重资源数共享 30 秒缓存。监控页面的资源总数及链接目录统计共享 60 秒缓存，心跳、任务队列及后台开关仍实时查询。缓存合并并发请求并限制容量，管理员修改频道或资源后会清空相关统计缓存。新建/停用/删除资源仍受原有权限和可见性规则约束。
+
 ```powershell
 cd D:\study\pansou
 cargo run

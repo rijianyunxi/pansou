@@ -1,3 +1,4 @@
+mod admin_stats;
 mod app;
 mod auth;
 mod cloud_drive;

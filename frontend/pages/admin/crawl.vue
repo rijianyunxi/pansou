@@ -30,6 +30,12 @@ const {
   error: overviewError,
   refresh: refreshOverview,
 } = useCrawlQuery<CrawlOverview>(ref("/api/admin/crawl/overview"), ref({}));
+const metrics = computed(() => [
+  { key: 'running', label: '采集中', value: overview.value?.running, hint: '全局处于采集中状态的频道数' },
+  { key: 'queued', label: '排队中', value: overview.value?.queued, hint: '全局排队频道数，包含翻页间隔和重试退避' },
+  { key: 'failed', label: '已中断', value: overview.value?.failed, hint: '全局采集中断的频道数' },
+  { key: 'review', label: '待复核页', value: overview.value?.review, hint: '页面解析异常，待检查' },
+]);
 function overlay(query: Record<string, string | number | undefined>) {
   const { edit, settings, messages, message, task, ...rest } = route.query;
   void router.push({ query: { ...rest, ...query } });
@@ -53,6 +59,7 @@ function saved() {
 <template>
   <div class="admin-page crawl-workbench">
     <div class="crawl-overview">
+      <div class="crawl-status">
       <div class="crawl-health">
         <span class="worker-indicator" :class="overview?.workerState" />Worker
         {{
@@ -61,14 +68,18 @@ function saved() {
             : overview?.workerState === "offline"
               ? "未检测到在线进程"
               : "状态未知"
-        }}<span>排队 {{ overview?.queued ?? "—" }}</span
-        ><span>执行 {{ overview?.running ?? "—" }}</span
-        ><span>失败 {{ overview?.failed ?? "—" }}</span
-        ><span>待复核 {{ overview?.review ?? "—" }}</span>
+        }}
+      </div>
+      <dl class="crawl-metrics">
+        <div v-for="metric in metrics" :key="metric.key" class="crawl-metric" :title="metric.hint" :class="{ 'needs-attention': (metric.key === 'failed' || metric.key === 'review') && (metric.value ?? 0) > 0 }">
+          <dt>{{ metric.label }}</dt>
+          <dd :class="{ 'is-unavailable': metric.value == null }">{{ metric.value == null ? (overview ? '未提供' : '加载中') : metric.value.toLocaleString() }}</dd>
+        </div>
+      </dl>
       </div>
       <div class="crawl-overview-actions">
         <Button variant="outline" @click="refresh">刷新</Button
-        ><Button variant="outline" @click="overlay({ settings: 1 })"
+        ><Button variant="outline" :title="overview?.scheduling ? `并发上限 ${overview.scheduling.concurrentChannels} 个频道；每页完成后至少等待 ${overview.scheduling.pageDelaySeconds} 秒` : undefined" @click="overlay({ settings: 1 })"
           >采集设置</Button
         ><Button @click="overlay({ edit: 'new' })">新增频道</Button>
       </div>
@@ -124,7 +135,7 @@ function saved() {
   }
   .crawl-overview {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
@@ -135,14 +146,20 @@ function saved() {
   }
   .crawl-health {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
-    font-size: 12px;
+    gap: 8px;
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
   }
-  .crawl-health > span:not(.worker-indicator) {
-    color: var(--muted-foreground);
-  }
+  .crawl-status { display: flex; align-items: center; gap: 16px; min-width: 0; overflow-x: auto; }
+  .crawl-metrics { display: flex; align-items: center; gap: 16px; margin: 0; padding-left: 16px; border-left: 1px solid var(--border); }
+  .crawl-metric { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .crawl-metric dt { font-size: 13px; color: var(--muted-foreground); }
+  .crawl-metric dd { margin: 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--foreground); }
+  .crawl-metric.needs-attention dd { color: var(--destructive); }
+  .crawl-metric dd.is-unavailable { font-size: 12px; color: var(--muted-foreground); }
   .worker-indicator {
     width: 7px;
     height: 7px;
@@ -157,7 +174,7 @@ function saved() {
   }
   .crawl-overview-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-shrink: 0;
     gap: 8px;
   }
   .crawl-runtime-note {
@@ -168,9 +185,6 @@ function saved() {
   @media (max-width: 640px) {
     .crawl-overview {
       padding: 12px;
-    }
-    .crawl-overview-actions {
-      width: 100%;
     }
   }
 }

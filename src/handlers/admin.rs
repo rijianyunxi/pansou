@@ -141,6 +141,7 @@ pub async fn admin_resources_post(
     let datetime = body.get("datetime").and_then(Value::as_str);
     sqlx::query("INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,enabled,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,datetime=excluded.datetime,cloud_types_json=excluded.cloud_types_json,links_json=excluded.links_json,tags_json=excluded.tags_json,images_json=excluded.images_json,search_text=excluded.search_text,manual_override=true,updated_at=now()")
         .bind(&id).bind(&name).bind(description).bind(datetime).bind(&cloud_types).bind(&links).bind(&tags).bind(&images).bind(name.to_owned()).execute(&state.pool).await?;
+    state.admin_stats.invalidate().await;
     let resource = json!({"id":id,"name":name,"description":description,"datetime":datetime,"cloud_types":cloud_types,"links":links,"tags":tags,"images":images,"enabled":true,"checkStatus":"unchecked"});
     Ok(ok(json!({"resource":resource})))
 }
@@ -527,11 +528,45 @@ pub async fn admin_analytics_get(
 pub async fn admin_users_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    let rows=sqlx::query("SELECT id,username,nickname,role,status,created_at,last_login_at FROM users WHERE deleted_at IS NULL ORDER BY id DESC").fetch_all(&state.pool).await?;
+    let page = query
+        .get("page")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 1_000_000);
+    let page_size = query
+        .get("pageSize")
+        .or_else(|| query.get("limit"))
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    let offset = (page - 1) * page_size;
+    let keyword = query
+        .get("q")
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default();
+    let status = query
+        .get("status")
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default();
+    let filter = "WHERE deleted_at IS NULL
+        AND ($1 = '' OR username ILIKE '%' || $1 || '%' OR COALESCE(nickname, '') ILIKE '%' || $1 || '%')
+        AND ($2 = '' OR status = $2)";
+    let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM users {filter}"))
+        .bind(&keyword)
+        .bind(&status)
+        .fetch_one(&state.pool)
+        .await?;
+    let rows=sqlx::query(&format!("SELECT id,username,nickname,role,status,created_at,last_login_at,last_login_ip FROM users {filter} ORDER BY id DESC LIMIT $3 OFFSET $4"))
+        .bind(&keyword)
+        .bind(&status)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&state.pool).await?;
     Ok(ok(
-        json!({"items":rows.into_iter().map(|r|json!({"id":r.get::<i64,_>("id"),"username":r.get::<String,_>("username"),"nickname":r.get::<Option<String>,_>("nickname"),"role":r.get::<String,_>("role"),"status":r.get::<String,_>("status"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"lastLoginAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_login_at")})).collect::<Vec<_>>()}),
+        json!({"items":rows.into_iter().map(|r|json!({"id":r.get::<i64,_>("id"),"username":r.get::<String,_>("username"),"nickname":r.get::<Option<String>,_>("nickname"),"role":r.get::<String,_>("role"),"status":r.get::<String,_>("status"),"createdAt":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),"lastLoginAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_login_at"),"lastLoginIp":r.get::<Option<String>,_>("last_login_ip")})).collect::<Vec<_>>(),"total":total,"page":page,"pageSize":page_size,"totalPages":(total + page_size - 1) / page_size}),
     ))
 }
 pub async fn admin_users_post(
@@ -607,6 +642,7 @@ pub async fn admin_resources_enabled(
             .execute(&state.pool)
             .await?
             .rows_affected();
+    state.admin_stats.invalidate().await;
     Ok(Json(
         json!({"code":0,"message":if enabled {"enabled"} else {"disabled"},"data":{"count":count}}),
     ))
@@ -624,6 +660,7 @@ pub async fn admin_resources_batch_delete(
         .execute(&state.pool)
         .await?
         .rows_affected();
+    state.admin_stats.invalidate().await;
     Ok(Json(
         json!({"code":0,"message":"deleted","data":{"count":count}}),
     ))
@@ -688,6 +725,7 @@ pub async fn admin_resource_delete(
         .bind(id)
         .execute(&state.pool)
         .await?;
+    state.admin_stats.invalidate().await;
     Ok(Json(json!({"code":0,"message":"deleted"})))
 }
 
