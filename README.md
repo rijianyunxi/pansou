@@ -862,7 +862,7 @@ http://127.0.0.1:5173
 
 所有后端配置都位于根目录 `.env`，前端不保存 PostgreSQL、Redis 或管理员密码。
 
-仓库中的 `.env.example` 是不含真实密钥的默认模板。Release 压缩包会同时带上可直接启动的 `.env`、模板副本 `.env.example`、`docker-compose.yml` 和 `README.md`；正式部署前请修改数据库密码、管理员初始密码，并不要把修改后的 `.env` 提交到 Git。
+仓库中的 `.env.example` 是不含真实密钥的默认模板。Release 压缩包会同时带上可直接启动的 `.env`、模板副本 `.env.example`、`docker-compose.yml`、`README.md` 和 `docs/source-message-storage-cleanup.md`；正式部署前请修改数据库密码、管理员初始密码，并不要把修改后的 `.env` 提交到 Git。
 
 | 变量 | 默认/示例 | 用途 |
 | --- | --- | --- |

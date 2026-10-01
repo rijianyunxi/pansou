@@ -31,6 +31,13 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Validate release tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF_NAME" != v* ]]; then
+            echo "::error::发布必须选择 v 开头的标签，不能直接从分支发布。"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -38,6 +45,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
+      - name: Test release packaging
+        if: runner.os != 'Windows'
+        run: node --test .github/tests/release-workflow.test.mjs
 
       - name: Build frontend
         working-directory: frontend
@@ -63,30 +74,53 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
+        env:
+          PACKAGE_OS: ${{ matrix.os }}
+          PACKAGE_TARGET: ${{ matrix.target }}
+          PACKAGE_NAME: ${{ matrix.name }}
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME}"
           BIN="pansou-api"
           ARCHIVE_EXT="tar.gz"
-          if [[ "${{ matrix.os }}" == windows* ]]; then BIN="pansou-api.exe"; ARCHIVE_EXT="zip"; fi
+          if [[ "$PACKAGE_OS" == windows* ]]; then BIN="pansou-api.exe"; ARCHIVE_EXT="zip"; fi
           mkdir -p pkg/frontend
-          cp "target/${{ matrix.target }}/release/$BIN" "pkg/$BIN"
+          cp "target/$PACKAGE_TARGET/release/$BIN" "pkg/$BIN"
           cp -r frontend/dist "pkg/frontend/dist"
           # .env 是不含真实密钥的默认启动配置；生产部署前请按需修改。
           cp .env.example "pkg/.env"
           cp .env.example "pkg/.env.example"
           cp docker-compose.yml README.md pkg/
+          mkdir -p pkg/docs
+          cp docs/source-message-storage-cleanup.md pkg/docs/
           if [[ -f deploy/pansou.service ]]; then
             mkdir -p pkg/deploy
             cp deploy/pansou.service "pkg/deploy/pansou.service"
           fi
-          OUT="pansou-${VERSION}-${{ matrix.name }}.${ARCHIVE_EXT}"
-          tar $([ "$ARCHIVE_EXT" == "zip" ] && echo "-a") -cf "$OUT" -C pkg .
-          sha256sum "$OUT" > "$OUT.sha256"
+          OUT="pansou-${VERSION}-${PACKAGE_NAME}.${ARCHIVE_EXT}"
+          if [[ "$ARCHIVE_EXT" == "zip" ]]; then
+            # Windows runner 自带 7-Zip；传入目录 "."，不使用会遗漏 .env 的 shell 通配符。
+            (cd pkg && 7z a -tzip "../$OUT" .)
+            7z t "$OUT"
+          else
+            tar -czf "$OUT" -C pkg .
+            gzip -t "$OUT"
+            tar -tzf "$OUT" > /dev/null
+          fi
+          # macOS 不保证有 GNU sha256sum，使用系统 shasum 回退。
+          if command -v sha256sum > /dev/null 2>&1; then
+            sha256sum "$OUT" > "$OUT.sha256"
+            sha256sum --check "$OUT.sha256"
+          else
+            shasum -a 256 "$OUT" > "$OUT.sha256"
+            shasum -a 256 --check "$OUT.sha256"
+          fi
           echo "OUT=$OUT" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
+          if-no-files-found: error
           path: |
             ${{ env.OUT }}
             ${{ env.OUT }}.sha256
@@ -103,5 +137,7 @@ jobs:
       - name: Attach archives to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: dist/pansou-*
+          fail_on_unmatched_files: true
           generate_release_notes: true
