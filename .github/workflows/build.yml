@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [rust, main]
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -46,7 +46,7 @@ jobs:
 
       - name: Package binary with frontend dist
         run: |
-          mkdir -p pkg/frontend
+          mkdir -p pkg/frontend pkg/deploy
           cp target/x86_64-unknown-linux-musl/release/pansou-api pkg/
           cp -r frontend/dist pkg/frontend/dist
           cp deploy/pansou.service pkg/deploy/pansou.service
