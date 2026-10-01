@@ -9,7 +9,7 @@
     </button>
 
     <Teleport to="body">
-      <div v-if="openState && currentUser" class="account-menu-layer" :class="`account-theme-${settings.settings.value.theme}`" @click.self="close">
+      <div v-if="openState && currentUser" class="account-menu-layer" @click.self="close">
         <section class="account-menu" aria-label="账号操作">
           <div class="account-menu-summary">
             <strong>{{ displayName }}</strong>
@@ -22,7 +22,7 @@
           <button class="account-danger" type="button" :disabled="busy" @click="signOut">退出登录</button>
         </section>
       </div>
-      <div v-else-if="openState" class="account-mask" :class="`account-theme-${settings.settings.value.theme}`" @click.self="close">
+      <div v-else-if="openState" class="account-mask" @click.self="close">
         <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
           <header class="account-header">
             <div>

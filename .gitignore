@@ -24,6 +24,7 @@ logs/
 
 # Search load-test reports
 load-reports/
+/loadtest-report*.md
 
 # Local migration snapshots and isolated verification credentials
 /data/tg-workbench-qa/

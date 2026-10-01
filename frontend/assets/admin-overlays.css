@@ -6,6 +6,7 @@
   padding: 0;
   width: min(600px, calc(100vw - 32px));
   max-width: none;
+  max-height: calc(100vh - 48px);
   max-height: calc(100dvh - 48px);
   overflow: hidden;
   border-radius: 10px;
@@ -82,6 +83,14 @@
   display: flex;
   min-height: 0;
   overflow: hidden;
+}
+/* Directory picker: the folder list is the single scroll region, so the
+   trail, actions and hint stay put while the list flexes to fit. */
+.admin-root .admin-dialog-body:has(.directory-picker) {
+  display: flex;
+}
+.admin-root .admin-dialog-body:has(.directory-picker) > .directory-picker {
+  flex: 1 1 auto;
 }
 .admin-root .admin-dialog-form {
   display: flex;

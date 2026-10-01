@@ -1,6 +1,6 @@
 <template>
   <div v-if="isAdminConsole" class="source-console-layout"><RouterView /></div>
-  <div v-else class="layout" :class="`theme-${settings.theme}`">
+  <div v-else class="layout">
     <!-- 顶部导航：左侧 Logo，右侧公共操作与账号入口 -->
     <header class="topnav" :inert="openSettings">
       <RouterLink v-if="canOpenAdminFromBrand" to="/admin" class="brand" aria-label="进入管理后台" title="进入管理后台">
@@ -22,23 +22,6 @@
         <span class="brand-text">{{ siteName }}</span>
       </span>
       <nav class="topnav-actions" aria-label="主导航">
-        <button
-          class="theme-toggle nav-action-button"
-          type="button"
-          :aria-label="themeToggleLabel"
-          :title="themeToggleLabel"
-          @click="setTheme(settings.theme === 'classic' ? 'geometric' : 'classic')">
-          <svg v-if="settings.theme === 'classic'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-            <rect x="4" y="4" width="16" height="16" rx="5" />
-            <path d="M4 10h16M10 10v10" />
-          </svg>
-          <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="7" cy="7" r="3" />
-            <path d="m17 3 4 7h-8z" />
-            <rect x="4" y="14" width="6" height="6" rx="1" />
-            <path d="m17 13 4 4-4 4-4-4z" />
-          </svg>
-        </button>
         <UserAccountPanel variant="wechat" />
       </nav>
     </header>
@@ -118,17 +101,10 @@ setDocumentHead(() => ({
   ],
 }));
 
-const { settings, settingsReady, storageError, loadSettings, saveSettings, resetToDefault } = useSettings();
+const { settings, settingsReady, storageError, loadSettings, resetToDefault } = useSettings();
 const auth = useAuth();
 const canOpenAdminFromBrand = computed(() => route.path === "/" && auth.user.value?.role === "admin");
-const themeToggleLabel = computed(() => settings.value.theme === "classic"
-  ? "当前为原始风格，切换到明快风格"
-  : "当前为明快风格，切换到原始风格");
 const openSettings = ref(false);
-
-function setTheme(theme: "classic" | "geometric") {
-  settings.value.theme = theme;
-}
 
 watch(() => route.path, () => {
   openSettings.value = false;
@@ -167,13 +143,6 @@ function openChannelSettings() {
   openSettings.value = true;
 }
 provide("openChannelSettings", openChannelSettings);
-
-// 监听设置变化并持久化（设置抽屉内即时生效）
-watch(() => JSON.stringify(settings.value), (newVal, oldVal) => {
-  if (settingsReady.value && oldVal !== newVal) {
-    saveSettings();
-  }
-}, { flush: "sync" });
 
 onMounted(() => {
   window.addEventListener("pansou:api-error", handleGlobalApiError);
@@ -372,196 +341,6 @@ button {
 
 </style>
 
-<style>
-/* 明快几何主题：仅作用于搜索站点，不影响后台控制台 */
-.layout.theme-geometric,
-.account-theme-geometric {
-  --primary: #3155e7;
-  --primary-dark: #243fb5;
-  --primary-soft: #e9edff;
-  --ink: #20201e;
-  --ink-hover: #000000;
-  --bg-primary: #fffefa;
-  --bg-secondary: #fffbed;
-  --text-primary: #20201e;
-  --text-secondary: #56564f;
-  --text-tertiary: #76766b;
-  --border-light: #252621;
-  --border-medium: #20201e;
-  --shadow-sm: 3px 3px 0 rgba(32, 32, 30, 0.92);
-  --shadow-md: 4px 4px 0 rgba(32, 32, 30, 0.92);
-  --shadow-lg: 5px 5px 0 rgba(32, 32, 30, 0.92);
-  --shadow-xl: 6px 6px 0 rgba(32, 32, 30, 0.92);
-  --radius-sm: 5px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 10px;
-}
-.layout.theme-geometric { background: #fffbed; }
-
-.layout.theme-geometric .topnav {
-  background: #fffbed;
-  border-bottom: 2px solid #20201e;
-}
-
-.layout.theme-geometric .brand-mark {
-  background: #ffe48a;
-  border: 2px solid #20201e;
-}
-
-.layout.theme-geometric .brand-mark svg { stroke: #20201e; }
-.layout.theme-geometric .brand-text { font-weight: 850; }
-.layout.theme-geometric .nav-action-button {
-  --nav-action-border: 2px solid var(--border-light);
-  --nav-action-bg: #ffe48a;
-  --nav-action-hover-bg: #ffda62;
-  --nav-action-color: var(--ink);
-  --nav-action-shadow: 2px 2px 0 var(--ink);
-}
-.layout.theme-geometric .btn-icon:hover { background: #ffe48a; color: #20201e; }
-.layout.theme-geometric .main { max-width: 1240px; padding: 30px 28px 42px; }
-.layout.theme-geometric .home { max-width: 1040px; gap: 20px; }
-.layout.theme-geometric .hero {
-  position: relative;
-  text-align: left;
-  padding: 28px 150px 18px 8px;
-}
-.layout.theme-geometric .hero::after {
-  content: "";
-  position: absolute;
-  right: 25px;
-  top: 15px;
-  width: 92px;
-  height: 92px;
-  border: 2px solid #20201e;
-  border-radius: 50%;
-  background: #ffe48a;
-  box-shadow: 18px 22px 0 -5px #ffb687, 18px 22px 0 -3px #20201e;
-}
-.layout.theme-geometric .hero-title {
-  max-width: 650px;
-  font-size: clamp(37px, 5vw, 58px);
-  line-height: 1.15;
-  letter-spacing: -0.05em;
-}
-.layout.theme-geometric .hero-title::after {
-  content: "";
-  display: block;
-  width: 184px;
-  height: 10px;
-  margin-top: -12px;
-  background: #ffe48a;
-  transform: rotate(-2deg);
-  position: relative;
-  z-index: -1;
-}
-.layout.theme-geometric .hero-description { color: #56564f; font-weight: 500; }
-.layout.theme-geometric .search-workspace {
-  position: relative;
-  gap: 12px;
-  padding: 18px 20px 20px;
-  border: 2px solid #20201e;
-  border-radius: 10px;
-  background: #3155e7;
-  box-shadow: 5px 5px 0 #20201e;
-}
-.layout.theme-geometric .search-toolbar { align-items: center; }
-.layout.theme-geometric .search-workspace .scope-control {
-  padding: 3px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-}
-.layout.theme-geometric .search-workspace .scope-control button {
-  color: #fffefa;
-  border: 1px solid transparent;
-  border-radius: 5px;
-}
-.layout.theme-geometric .search-workspace .scope-control button[aria-pressed="true"] {
-  background: #ffe48a;
-  color: #20201e;
-  border-color: #20201e;
-  box-shadow: 2px 2px 0 #20201e;
-}
-.layout.theme-geometric .search-workspace .scope-control .count {
-  background: #fffefa;
-  color: #20201e;
-}
-.layout.theme-geometric .manage-channels { color: #fffefa; }
-.layout.theme-geometric .manage-channels:hover { background: rgba(255,255,255,.16); }
-.layout.theme-geometric .search-workspace .search-box {
-  padding: 13px 14px 12px;
-  gap: 11px;
-  background: #fffefa;
-  border: 2px solid #20201e;
-  border-radius: 5px;
-  box-shadow: none;
-}
-.layout.theme-geometric .search-workspace .search-box.focused {
-  border-color: #20201e;
-  box-shadow: 3px 3px 0 #ffe48a;
-}
-.layout.theme-geometric .search-workspace .search-input { color: #20201e; font-weight: 550; }
-.layout.theme-geometric .search-workspace .search-input::placeholder { color: #76766b; }
-.layout.theme-geometric .search-workspace .search-icon { color: #20201e; }
-.layout.theme-geometric .search-workspace .action-btn.primary {
-  background: #ffe48a;
-  color: #20201e;
-  border: 1px solid #20201e;
-  border-radius: 4px;
-  box-shadow: 2px 2px 0 #20201e;
-}
-.layout.theme-geometric .search-workspace .action-btn.primary:hover:not(:disabled) {
-  background: #ffb687;
-  transform: translate(1px, 1px);
-  box-shadow: 1px 1px 0 #20201e;
-}
-.layout.theme-geometric .search-workspace .action-btn.reset,
-.layout.theme-geometric .search-workspace .action-btn.pause,
-.layout.theme-geometric .search-workspace .action-btn.resume {
-  border-color: #20201e;
-  border-radius: 4px;
-  color: #20201e;
-  background: #fffbed;
-}
-.layout.theme-geometric .channel-configuration-notice,
-.layout.theme-geometric .search-notice,
-.layout.theme-geometric .stats-bar {
-  border: 2px solid #20201e;
-  border-radius: 6px;
-  background: #fffefa;
-  box-shadow: 3px 3px 0 #20201e;
-}
-.layout.theme-geometric .scope-summary { color: #fffefa; }
-.layout.theme-geometric .channel-chip { color: #20201e; background: #ffe48a; border-color: #20201e; border-radius: 4px; }
-.layout.theme-geometric .configure-channels { border: 2px solid #20201e; border-radius: 4px; background: #ffe48a; color: #20201e; }
-.layout.theme-geometric .hot-search-section .tag-cloud-card {
-  padding: 18px;
-  border: 2px solid #20201e;
-  border-radius: 6px;
-  background: #fffefa;
-  box-shadow: 4px 4px 0 #20201e;
-}
-.layout.theme-geometric .hot-search-section .cloud-title {
-  color: #20201e;
-  text-align: left;
-  font-weight: 800;
-  letter-spacing: .04em;
-}
-.layout.theme-geometric .hot-search-section .hot-tagcloud-item { color: #3155e7 !important; }
-.layout.theme-geometric .hot-search-section .hot-tagcloud-item:hover { color: #d65f3f !important; }
-.layout.theme-geometric .filter-pill.active { background: #ffe48a; color: #20201e; border-color: #20201e; }
-.layout.theme-geometric .sort-select { border: 2px solid #20201e; border-radius: 4px; background: #fffefa; color: #20201e; }
-
-@media (max-width: 640px) {
-  .layout.theme-geometric .main { padding: 16px 14px 30px; }
-  .layout.theme-geometric .hero { padding: 25px 8px 12px; }
-  .layout.theme-geometric .hero::after { right: 12px; top: 9px; width: 58px; height: 58px; box-shadow: 12px 14px 0 -4px #ffb687, 12px 14px 0 -2px #20201e; }
-  .layout.theme-geometric .hero-title { padding-right: 42px; font-size: 38px; }
-  .layout.theme-geometric .search-workspace { padding: 13px; }
-}
-</style>
-
 <style scoped>
 /* 主布局：顶部导航 + 内容区 */
 .layout {
@@ -623,8 +402,6 @@ button {
   min-width: 0;
   flex: 1 1 auto;
 }
-
-.theme-toggle { flex: 0 0 44px; width: 44px; padding: 0; }
 
 .topnav-link {
   font-size: 14px;
@@ -769,7 +546,6 @@ button {
     border-radius: inherit;
   }
 
-  /* 沿用各主题的按钮配色和阴影。 */
   .topnav-actions :deep(.nav-action-button svg) {
     width: 18px;
     height: 18px;

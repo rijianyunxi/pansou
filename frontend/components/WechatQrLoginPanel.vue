@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="qr-layer" :class="`account-theme-${settings.settings.value.theme}`" @click.self="emit('close')">
+    <div class="qr-layer" @click.self="emit('close')">
       <section class="qr-card" role="dialog" aria-modal="true" aria-labelledby="qr-login-title">
         <header class="qr-header">
           <div>

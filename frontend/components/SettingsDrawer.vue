@@ -171,6 +171,7 @@ async function addChannel() {
       method: "POST",
       body: { channel: name },
       credentials: "include",
+      silentError: true,
     });
     if (!validation.ok) {
       channelError.value = validation.message || "该频道不可用或不是公开频道，未添加。";

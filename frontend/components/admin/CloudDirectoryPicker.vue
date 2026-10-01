@@ -51,11 +51,21 @@ onBeforeUnmount(() => controller.abort());
 </template>
 <style scoped>
 @layer components {
-.directory-picker { display: grid; gap: 16px; color: var(--foreground); }
+.directory-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 24px;
+  color: var(--foreground);
+}
 .directory-picker p { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 .directory-trail, .directory-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .directory-trail button, .directory-actions button, .directory-row { min-height: 44px; }
-.directory-list { max-height: 40vh; overflow-y: auto; }
+.directory-actions { justify-content: flex-end; }
+/* The list is the dialog's one scroll region: it shrinks before anything
+   else, so trail, actions and hint stay visible on short viewports. */
+.directory-list { flex: 0 1 auto; min-height: 96px; overflow-y: auto; overscroll-behavior: contain; }
 .directory-row { width: 100%; justify-content: flex-start; height: auto; text-align: left; }
 .directory-row span { flex: 1; white-space: normal; overflow-wrap: anywhere; }
 .directory-hint { color: var(--muted-foreground); }

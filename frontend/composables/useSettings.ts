@@ -8,15 +8,12 @@ const USER_SETTINGS_STORAGE_KEY = "pansou.settings";
 export interface UserSettings {
   /** 用户添加的公开频道（当前即 Telegram 公开频道）：仅在首页选择“自定义频道”时使用 */
   userChannels: string[];
-  /** 首页视觉风格 */
-  theme: "classic" | "geometric";
 }
 
 export interface UseSettingsReturn {
   settings: Ref<UserSettings>;
   loadSettings: () => void;
   syncWithSession: () => Promise<void>;
-  saveSettings: () => boolean;
   saveChannels: (channels?: string[]) => Promise<boolean>;
   applyChannels: (channels: string[]) => void;
   channelLimit: Ref<number>;
@@ -32,13 +29,9 @@ function sanitizeChannels(value: unknown): string[] {
     .filter((name) => CHANNEL_NAME_PATTERN.test(name)).slice(0, MAX_USER_CHANNELS);
 }
 
-function sanitizeTheme(value: unknown): UserSettings["theme"] {
-  return value === "geometric" ? "geometric" : "classic";
-}
-
 export function useSettings(): UseSettingsReturn {
   const auth = useAuth();
-  const settings = useSharedState<UserSettings>("user-search-settings", () => ({ userChannels: [], theme: "classic" }));
+  const settings = useSharedState<UserSettings>("user-search-settings", () => ({ userChannels: [] }));
   // Channels are no longer stored in localStorage; both authenticated and
   // permitted anonymous channels live in PostgreSQL (users.custom_channels_json or
   // sessions.custom_channels_json).
@@ -47,24 +40,11 @@ export function useSettings(): UseSettingsReturn {
   const settingsReady = useSharedState<boolean>("user-search-settings-ready", () => false);
   const storageError = useSharedState<string>("user-search-settings-error", () => "");
 
-  function readLocalSettings(): void {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      const theme = sanitizeTheme(parsed && typeof parsed === "object" ? (parsed as { theme?: unknown }).theme : undefined);
-      // Remove legacy browser channel data while retaining the visual setting.
-      settings.value = { userChannels: [], theme };
-      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({ theme }));
-    } catch {
-      settings.value = { ...settings.value, userChannels: [] };
-      storageError.value = "无法读取浏览器设置，当前使用默认配置。";
-    }
-  }
-
   function loadSettings(): void {
     if (typeof window === "undefined" || settingsReady.value) return;
-    readLocalSettings();
+    // Nothing is persisted in the browser anymore; drop the key older
+    // versions used for theme/channel data so stale entries do not linger.
+    localStorage.removeItem(USER_SETTINGS_STORAGE_KEY);
     settingsReady.value = true;
   }
 
@@ -87,6 +67,9 @@ export function useSettings(): UseSettingsReturn {
         anonymousCustomChannels?: boolean;
       }>("/api/account/channels", {
         credentials: "include", cache: "no-store",
+        // A 403 here is an expected policy state for anonymous visitors; the
+        // catch branch handles it. Never broadcast it as a global page error.
+        silentError: true,
       });
       if (typeof result.anonymousCustomChannels === "boolean") {
         auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
@@ -111,22 +94,6 @@ export function useSettings(): UseSettingsReturn {
     }
   }
 
-  function saveSettings(): boolean {
-    if (typeof window === "undefined" || !settingsReady.value) return false;
-    try {
-      // Theme is the only browser-persisted setting. Channel data is always
-      // written through /api/account/channels.
-      localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify({
-        theme: settings.value.theme,
-      }));
-      storageError.value = "";
-      return true;
-    } catch {
-      storageError.value = "无法保存到浏览器：刷新后可能丢失本地设置，请检查浏览器存储权限。";
-      return false;
-    }
-  }
-
   async function saveChannels(channels = settings.value.userChannels): Promise<boolean> {
     const next = sanitizeChannels(channels).slice(0, channelLimit.value);
     if (!auth.sessionReady.value) {
@@ -141,6 +108,9 @@ export function useSettings(): UseSettingsReturn {
         anonymousCustomChannels?: boolean;
       }>("/api/account/channels", {
         method: "POST", body: { channels: next }, credentials: "include",
+        // Callers surface failures inline (settings drawer / storageError);
+        // a global toast would only duplicate that feedback.
+        silentError: true,
       });
       if (typeof result.anonymousCustomChannels === "boolean") {
         auth.anonymousCustomChannels.value = result.anonymousCustomChannels;
@@ -172,7 +142,6 @@ export function useSettings(): UseSettingsReturn {
     settings,
     loadSettings,
     syncWithSession,
-    saveSettings,
     saveChannels,
     applyChannels,
     channelLimit,
