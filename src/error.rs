@@ -11,6 +11,8 @@ pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
+    CloudAuthRequired(String),
+    #[error("{0}")]
     Unauthorized(String),
     #[error("{0}")]
     SessionRequired(String),
@@ -36,7 +38,7 @@ pub enum ApiError {
 impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::CloudAuthRequired(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized(_) | Self::SessionRequired(_) | Self::SearchLimitExceeded(_) => {
                 StatusCode::UNAUTHORIZED
             }
@@ -72,6 +74,7 @@ impl IntoResponse for ApiError {
             Self::Unauthorized(_) => "UNAUTHORIZED",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::CloudAuthRequired(_) => "CLOUD_AUTH_REQUIRED",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Conflict(_) => "CONFLICT",
             Self::Gone(_) => "REF_EXPIRED",

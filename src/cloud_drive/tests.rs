@@ -1,5 +1,33 @@
 use super::*;
 #[test]
+fn extended_share_hosts_and_account_credentials_are_strict() {
+    for (provider, host) in [(Provider::Aliyun,"www.alipan.com"),(Provider::Xunlei,"pan.xunlei.com"),(Provider::Guangya,"www.guangyapan.com")] {
+        let reference=ShareInput{url:format!("https://{host}/s/share-123?pwd=p123"),provider:Some(provider),password:None}.parse().unwrap();
+        assert_eq!(reference.password,"p123");
+        assert_eq!(reference.provider,provider);
+        for url in [format!("https://{host}.evil.test/s/share-123"),format!("https://user@{host}/s/share-123"),format!("https://{host}:9000/s/share-123")] {
+            assert!(ShareInput{url,provider:Some(provider),password:None}.parse().is_err());
+        }
+        let valid=json!({"access_token":"old-token","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha","device_id":"device-1"});
+        assert!(validate_credential(provider,&valid.to_string()).is_ok());
+        let mut rotated=valid.clone();rotated["access_token"]=json!("new-token");
+        assert_eq!(credential_fingerprint(provider,&valid.to_string()),credential_fingerprint(provider,&rotated.to_string()));
+        rotated["user_id"]=json!("account-2");
+        assert_ne!(credential_fingerprint(provider,&valid.to_string()),credential_fingerprint(provider,&rotated.to_string()));
+        for invalid in [json!({"refresh_token":"not-access"}),json!({"access_token":"a","user_id":"../unsafe"}),json!({"access_token":"a\r\nx-evil: 1","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha"})] {
+            assert!(validate_credential(provider,&invalid.to_string()).is_err());
+        }
+        for field in ["base_url","apiHost","headers"] {
+            let mut invalid=valid.clone();invalid[field]=json!("https://evil.test");
+            assert!(validate_credential(provider,&invalid.to_string()).is_err());
+        }
+        let headers=extended::credential_headers(provider,&valid.to_string()).unwrap();
+        assert_eq!(headers.get("authorization").unwrap(),"Bearer old-token");
+        assert!(headers.get("cookie").is_none());
+        assert!(validate_dir(provider,Some("../unsafe")).is_err());
+    }
+}
+#[test]
 fn strict_share_hosts_and_passwords() {
     let r = ShareInput {
         url: "https://pan.baidu.com/s/1ABC-def?pwd=a1b2".into(),
@@ -192,7 +220,7 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
     let input: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let mut mock = state.lock().await;
     mock.calls
-        .push((method.clone(), path.clone(), body.clone(), cookie));
+        .push((method.clone(), path.clone(), body.clone(), cookie.clone()));
     if path == "/redirect" {
         return (StatusCode::FOUND, [("location", "/steal")], "").into_response();
     }
@@ -221,6 +249,8 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
         .into_response();
     }
     let payload = match (path.as_str(), method.as_str()) {
+        ("/pan.quark.cn/account/info",_)=>json!({"success":true,"code":"OK","data":{"uid":if cookie.contains("fixture-switched"){"fixture-two"}else{"fixture-one"},"nickname":"fixture"}}),
+        ("/pan.baidu.com/api/gettemplatevariable",_)=>json!({"errno":0,"result":{"uk":if mock.own_share{2}else{3},"bdstoken":"fixture-bdstoken"}}),
         ("/qshare/share/sharepage/token", _) => json!({"code":0,"data":{"stoken":"fixture-token"}}),
         ("/qshare/share/sharepage/detail", _) => {
             let page = query.get("_page").map(|s| s.as_ref()).unwrap_or("1");
@@ -640,6 +670,7 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let mock = Mock::start().await;
     let mut state = AppState::new(pool.clone(), redis);
     state.cloud_test_bases = Some(mock.bases.clone());
+    state.cloud_auth_test_base=Some(mock.bases.baidu.as_str().to_owned());
     let state = Arc::new(state);
     let router = build_router(state.clone());
     let unique = uuid::Uuid::new_v4().simple().to_string();
@@ -735,10 +766,10 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     assert_eq!(
         api(
             &router,
-            "PUT",
-            "/api/settings/quark",
+            "POST",
+            "/api/admin/cloud-accounts/quark/import",
             token,
-            json!({"cookie":"__puus=fixture-switched"})
+            json!({"credential":"__puus=fixture-switched","intent":"replace","expectedEpoch":crate::cloud_auth::stored(&state,Provider::Quark).await.unwrap().unwrap().binding_epoch})
         )
         .await
         .0,
@@ -765,10 +796,10 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     assert_eq!(
         api(
             &router,
-            "PUT",
-            "/api/settings/quark",
+            "POST",
+            "/api/admin/cloud-accounts/quark/import",
             token,
-            json!({"cookie":"__puus=fixture"})
+            json!({"credential":"__puus=fixture","intent":"replace","expectedEpoch":crate::cloud_auth::stored(&state,Provider::Quark).await.unwrap().unwrap().binding_epoch})
         )
         .await
         .0,

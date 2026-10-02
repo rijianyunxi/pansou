@@ -340,15 +340,8 @@ pub async fn cloud_get(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let provider = uri.0.path().split('/').next_back().unwrap_or("");
-    let credential: Option<String> =
-        sqlx::query_scalar("SELECT credential FROM cloud_account_settings WHERE provider=$1")
-            .bind(provider)
-            .fetch_optional(&state.pool)
-            .await?;
-    let cookie = credential.unwrap_or_default();
-    Ok(ok(
-        json!({"provider":provider,"configured":!cookie.is_empty(),"cookieLength":cookie.chars().count()}),
-    ))
+    let configured:bool=sqlx::query_scalar("SELECT credential<>'' OR credential_cipher IS NOT NULL FROM cloud_account_settings WHERE provider=$1").bind(provider).fetch_optional(&state.pool).await?.unwrap_or(false);
+    Ok(ok(json!({"provider":provider,"configured":configured,"cookieLength":0})))
 }
 pub async fn cloud_put(
     State(state): State<Arc<AppState>>,
@@ -356,29 +349,30 @@ pub async fn cloud_put(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    super::cloud_accounts::cloud_origin(&headers)?;
     admin_only(&headers, &state).await?;
     let provider = uri.0.path().split('/').next_back().unwrap_or("");
-    if !matches!(provider, "baidu" | "quark") {
-        return Err(ApiError::BadRequest("不支持的网盘类型".into()));
-    }
-    let cookie = match body.get("cookie") {
+    let kind = crate::cloud_drive::Provider::from_name(provider)?;
+    let cookie = match body.get(if kind.token_auth() { "credential" } else { "cookie" }) {
         Some(Value::Null) => Some(String::new()),
         Some(Value::String(s)) if s.trim().is_empty() => None,
         Some(Value::String(s)) => Some(s.trim().to_owned()),
         _ => {
             return Err(ApiError::BadRequest(
-                "cookie 必须为字符串；null 表示清除，留空不修改".into(),
+                "登录凭据必须为字符串；null 表示清除，留空不修改".into(),
             ));
         }
     };
     if let Some(cookie) = cookie {
         if cookie.len() > 16384
-            || cookie.chars().any(char::is_control)
-            || (!cookie.is_empty() && !cookie.contains('='))
+            || (!kind.token_auth() && (cookie.chars().any(char::is_control) || (!cookie.is_empty() && !cookie.contains('='))))
         {
             return Err(ApiError::BadRequest(
-                "Cookie 格式不正确或超过长度限制".into(),
+                "登录凭据格式不正确或超过长度限制".into(),
             ));
+        }
+        if kind.token_auth() && !cookie.is_empty() {
+            crate::cloud_drive::validate_credential(kind, &cookie)?;
         }
         if provider == "baidu" && !cookie.is_empty() {
             use crate::cloud_drive::transport::cookie_value;
@@ -391,19 +385,9 @@ pub async fn cloud_put(
                 ));
             }
         }
-        let mut tx = state.pool.begin().await?;
-        let locked: bool =
-            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
-                .bind(format!("pansou:cloud-write:{provider}"))
-                .fetch_one(&mut *tx)
-                .await?;
-        if !locked {
-            return Err(ApiError::Conflict(
-                "网盘写操作进行中，暂不能修改登录态".into(),
-            ));
-        }
-        sqlx::query("INSERT INTO cloud_account_settings(provider,credential,updated_at) VALUES($1,$2,now()) ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,updated_at=now()").bind(provider).bind(cookie).execute(&mut *tx).await?;
-        tx.commit().await?;
+        let epoch=crate::cloud_auth::stored(&state,kind).await?.map(|s|s.binding_epoch).unwrap_or(0);
+        if cookie.is_empty(){crate::cloud_auth::disconnect(&state,kind,epoch).await?;}
+        else{crate::cloud_auth::import(&state,kind,&cookie,"reauthorize",epoch).await?;}
     }
     cloud_get(State(state), uri, headers).await
 }

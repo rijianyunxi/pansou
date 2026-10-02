@@ -142,6 +142,16 @@
   min-width: 0;
   width: 100%;
 }
+/* Form fields stretch full width, but inline widgets like the shared
+   pagination keep their compact sizes inside dialogs too. */
+.admin-root .admin-form-fields .admin-pagination :is(.admin-select-trigger, [data-slot="input"]) {
+  width: auto;
+  min-width: 75px;
+}
+.admin-root .admin-form-fields .admin-pagination .admin-pagination-page-input {
+  width: 58px;
+  min-width: 0;
+}
 .admin-root .admin-form-fields .node-weight-input {
   width: 80px;
 }

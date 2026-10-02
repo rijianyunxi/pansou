@@ -2,6 +2,7 @@ mod admin_stats;
 mod app;
 mod auth;
 mod cloud_drive;
+mod cloud_auth;
 mod crawl;
 mod db;
 mod error;
@@ -43,11 +44,32 @@ async fn main() -> Result<()> {
             anyhow::bail!("读取 .env 失败：请检查配置语法，包含空格或分号的 Cookie 必须整体加引号")
         }
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            env::var("RUST_LOG").unwrap_or_else(|_| "pansou_api=info,tower_http=info".into()),
-        )
-        .init();
+    let filter = env::var("RUST_LOG").unwrap_or_else(|_| "pansou_api=info,tower_http=info".into());
+    if let Ok(path) = env::var("PANSOU_LOG_FILE") {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => {
+                use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+                tracing_subscriber::registry()
+                    .with(tracing_subscriber::EnvFilter::try_new(filter.clone())?)
+                    .with(tracing_subscriber::fmt::layer())
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_ansi(false)
+                            .with_writer(std::sync::Arc::new(file)),
+                    )
+                    .init();
+            }
+            Err(error) => {
+                eprintln!("无法打开日志文件 {path}: {error}，仅输出到终端");
+                tracing_subscriber::fmt().with_env_filter(filter).init();
+            }
+        }
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     let database_url = env::var("PANSOU_DATABASE_URL")
         .context("缺少 PANSOU_DATABASE_URL，请在项目根目录 .env 中配置 PostgreSQL")?;
     let redis_url = env::var("PANSOU_REDIS_URL")
@@ -70,6 +92,12 @@ async fn main() -> Result<()> {
         anyhow::bail!("运行模式必须是 serve、worker、link-worker 或 migration-preflight");
     }
     let mut workers = tokio::task::JoinSet::new();
+    // Authentication is not controlled by crawling/link-delivery switches.
+    // Database leases serialize it when API and link Worker run separately.
+    if mode=="serve"||mode=="link-worker" {
+        let auth_state=state.clone();
+        workers.spawn(async move {cloud_auth::worker(auth_state).await});
+    }
     if mode != "serve" {
         let worker_state = state.clone();
         workers.spawn(async move {
@@ -118,7 +146,7 @@ async fn main() -> Result<()> {
     let (result, server_finished) = tokio::select! {
         result = &mut server => (result.map_err(anyhow::Error::from), true),
         _ = runtime::shutdown_signal() => (Ok(()), false),
-        result = workers.join_next(), if embedded => {
+        result = workers.join_next() => {
             (Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")), false)
         }
     };

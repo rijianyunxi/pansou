@@ -137,13 +137,13 @@ test("built-in direct node has no management mutation menu", async () => {
 
 test("admin resource search advertises name-only matching",async()=>{const page=await read("components/admin/AdminResourcesPage.vue");assert.match(page,/仅按资源名称查询/);assert.ok(!page.includes("按名称、描述或标签查询"));});
 
-test("channel list owns tasks and failed-page bulk operations without public bindings",async()=>{
+test("channel list retries interrupted jobs inline without a task drawer",async()=>{
  const channels=await read("components/admin/crawl/CrawlChannelsTab.vue");
- assert.match(channels,/CrawlChannelActivity/);assert.match(channels,/aria-expanded/);
+ assert.ok(!channels.includes("CrawlChannelActivity"));assert.ok(!channels.includes("任务与待复核"));
+ assert.ok(channels.includes('"/api/admin/crawl/jobs/"+c.latestJob.id+"/retry"'));
+ assert.match(channels,/点击重新排队采集/);
  const editor=await read("components/admin/crawl/CrawlChannelEditor.vue");
  for(const removed of ["公共搜索身份","bindings","publish","intervalSeconds"]) assert.ok(!editor.includes(removed));
- const activity=await read("components/admin/crawl/CrawlChannelActivity.vue");
- assert.match(activity,/一键重试/);assert.match(activity,/一键忽略/);assert.match(activity,/ids:selected.value/);
  const settings=await read("components/admin/crawl/CrawlSettings.vue");
  for(const key of ["concurrentChannels","pageDelaySeconds","dailyIntervalSeconds"]) assert.match(settings,new RegExp(key));
 });
@@ -210,8 +210,11 @@ test("compact channel columns preserve exact counts and accessible full informat
  const source=await read("components/admin/crawl/CrawlChannelsTab.vue");
  assert.ok(!source.includes("已处理 {{c.historyPages}} 页 · 无总页数上限"));
  assert.ok(!source.includes("最近：{{"));assert.ok(!source.includes("下次：{{"));
- for(const icon of ["History","Timer","MessageSquare","Files","ListChecks"]) assert.ok(source.includes(icon));
- for(const count of ["historyPages","messageCount","resourceCount","failureCount"]) assert.ok(source.includes(count+".toLocaleString('zh-CN')"));
- assert.match(source,/CrawlHint/);assert.match(source,/tabindex="0"/);assert.match(source,/emit\('messages',c.id\)/);
+ for(const icon of ["History","Timer","Files","AlertTriangle"]) assert.ok(source.includes(icon));
+ assert.ok(!source.includes("MessageSquare"));assert.ok(!source.includes("ListChecks"));
+ for(const count of ["historyPages","resourceCount","failedMessageCount"]) assert.ok(source.includes(count+".toLocaleString('zh-CN')"));
+ assert.ok(source.includes("入库资源"));assert.ok(source.includes("失败记录"));
+ assert.match(source,/CrawlHint/);assert.match(source,/tabindex="0"/);
+ assert.match(source,/emit\('messages',c\.id\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
  const hint=await read("components/admin/crawl/CrawlHint.vue");assert.match(hint,/TooltipTrigger as-child :aria-label="label"/);assert.match(hint,/TooltipContent/);
 });

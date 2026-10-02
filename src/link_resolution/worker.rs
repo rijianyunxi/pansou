@@ -1,7 +1,13 @@
 use super::*;
+use super::delivery::{ProviderPolicy, load_provider};
 use crate::cloud_drive::{Drive, ShareInput};
 
-async fn check(state: &AppState, id: Uuid, link: &Link, lease: (i64, Uuid)) -> Result<(), ApiError> {
+async fn check(
+    state: &AppState,
+    id: Uuid,
+    link: &Link,
+    lease: (i64, Uuid),
+) -> Result<(), ApiError> {
     let input = ShareInput {
         url: link.url.clone(),
         provider: None,
@@ -12,10 +18,7 @@ async fn check(state: &AppState, id: Uuid, link: &Link, lease: (i64, Uuid)) -> R
         Err(_) => return Ok(()),
     };
     // Background checks cannot consume the quota reserved for interactive delivery.
-    let policy: Value =
-        sqlx::query_scalar("SELECT value_json FROM policy_settings WHERE key='link-check'")
-            .fetch_one(&state.pool)
-            .await?;
+    let policy = load_provider(state, reference.provider).await?;
     if !allow_check(state, reference.provider, &policy, false).await? {
         let mut tx = state.pool.begin().await?;
         crate::crawl::lock_index(&mut tx).await?;
@@ -38,17 +41,11 @@ async fn check(state: &AppState, id: Uuid, link: &Link, lease: (i64, Uuid)) -> R
 pub(super) async fn allow_check(
     state: &AppState,
     provider: crate::cloud_drive::Provider,
-    policy: &Value,
+    policy: &ProviderPolicy,
     foreground: bool,
 ) -> Result<bool, ApiError> {
-    let budget = policy["dailyBudget"]
-        .as_i64()
-        .unwrap_or(1000)
-        .clamp(1, 100000);
-    let interval = policy["intervalSeconds"]
-        .as_i64()
-        .unwrap_or(2)
-        .clamp(2, 3600);
+    let budget = (policy.check_daily_budget as i64).clamp(1, 100000);
+    let interval = (policy.check_interval_seconds as i64).clamp(2, 3600);
     let mut conn = state.redis.connection()?;
     let gate: i64=redis::Script::new("if redis.call('GET',KEYS[1]) or redis.call('GET',KEYS[3]) then return 0 end; local n=tonumber(redis.call('GET',KEYS[2]) or '0'); local b=tonumber(redis.call('GET',KEYS[4]) or '0'); if n>=tonumber(ARGV[1]) or (ARGV[3]=='0' and b>=tonumber(ARGV[4])) then return 0 end; redis.call('SET',KEYS[1],'1','EX',ARGV[2]); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],86400); if ARGV[3]=='0' then redis.call('INCR',KEYS[4]); redis.call('EXPIRE',KEYS[4],86400) end; return 1")
         .key(format!("pansou:link-check:gate:{}",provider.name())).key(format!("pansou:link-check:budget:{}:{}",provider.name(),Utc::now().date_naive())).key(format!("pansou:link-check:breaker:{}",provider.name())).key(format!("pansou:link-check:background:{}:{}",provider.name(),Utc::now().date_naive())).arg(budget).arg(interval).arg(if foreground {1}else{0}).arg(budget * 4 / 5).invoke_async(&mut conn).await.map_err(|_|ApiError::Unavailable("检测调度暂不可用".into()))?;
@@ -58,7 +55,7 @@ pub(super) async fn record(
     state: &AppState,
     id: Uuid,
     value: &Value,
-    policy: &Value,
+    policy: &ProviderPolicy,
 ) -> Result<(), ApiError> {
     record_with_lease(state, id, value, policy, None).await
 }
@@ -75,7 +72,7 @@ async fn record_with_lease(
     state: &AppState,
     id: Uuid,
     value: &Value,
-    policy: &Value,
+    policy: &ProviderPolicy,
     lease: Option<(i64, Uuid)>,
 ) -> Result<(), ApiError> {
     let validity = match value["status"].as_str() {
@@ -92,9 +89,9 @@ async fn record_with_lease(
         _ => "check_failed",
     };
     let seconds = if validity == 1 {
-        policy["validSeconds"].as_i64().unwrap_or(86400)
+        policy.check_valid_seconds as i64
     } else {
-        policy["invalidSeconds"].as_i64().unwrap_or(604800)
+        policy.check_invalid_seconds as i64
     }
     .clamp(60, 2592000);
     // Keep observations and their resource aggregates atomic, with the same lock order
@@ -235,7 +232,7 @@ async fn sync_batch(state: &AppState) -> Result<(), ApiError> {
                             .await?
                         }
                     };
-                    if matches!(link.r#type.as_str(), "baidu" | "quark") {
+                    if crate::cloud_drive::Provider::from_name(&link.r#type).is_ok() {
                         // Disabled checks should not create an ever-growing dormant queue.
                         // The bounded catalog sweep compensates when checks are enabled later.
                         sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',1 FROM link_catalog c WHERE c.id=$1 AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT DO NOTHING").bind(link_id).execute(&mut *tx).await?;
@@ -274,17 +271,26 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
     if !enabled {
         return Ok(());
     }
-    let providers: Vec<String> = sqlx::query_scalar("SELECT provider FROM cloud_account_settings WHERE provider IN('baidu','quark') AND length(trim(credential))>0 ORDER BY provider")
+    let providers: Vec<String> = sqlx::query_scalar("SELECT provider FROM cloud_account_settings WHERE provider IN('baidu','quark','aliyun','xunlei','guangya') AND (length(trim(credential))>0 OR credential_cipher IS NOT NULL) AND auth_status NOT IN('reauthorization_required','disconnected') ORDER BY provider")
         .fetch_all(&state.pool).await?;
     if providers.is_empty() {
         return Ok(());
     }
-    sqlx::query(include_str!("recover_checks.sql")).execute(&state.pool).await?;
+    sqlx::query(include_str!("recover_checks.sql"))
+        .execute(&state.pool)
+        .await?;
     for provider in &providers {
-        sqlx::query(include_str!("enqueue_checks.sql")).bind(provider).execute(&state.pool).await?;
+        sqlx::query(include_str!("enqueue_checks.sql"))
+            .bind(provider)
+            .execute(&state.pool)
+            .await?;
     }
     let token = Uuid::new_v4();
-    let row = sqlx::query(include_str!("claim_check.sql")).bind(&providers).bind(token).fetch_optional(&state.pool).await?;
+    let row = sqlx::query(include_str!("claim_check.sql"))
+        .bind(&providers)
+        .bind(token)
+        .fetch_optional(&state.pool)
+        .await?;
     if let Some(row) = row {
         let id: Uuid = row.get("link_id");
         // Revalidate after claiming: a concurrent foreground check may have postponed
@@ -307,7 +313,7 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
                     state,
                     id,
                     &json!({"status":"unknown","errorKind":"upstream"}),
-                    &json!({}),
+                    &ProviderPolicy::default(),
                     Some((row.get("id"), token)),
                 )
                 .await?;
@@ -319,7 +325,7 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
 }
 
 async fn housekeeping(state: &AppState) -> Result<(), ApiError> {
-    let rows = sqlx::query("SELECT id,request_key,link_id,authorization_json FROM link_resolve_requests WHERE status IN('queued','running') AND deadline_at<=now() ORDER BY deadline_at LIMIT 100").fetch_all(&state.pool).await?;
+    let rows = sqlx::query("SELECT id,subject_key,request_key,link_id,authorization_json FROM link_resolve_requests WHERE status IN('queued','running') AND deadline_at<=now() ORDER BY deadline_at LIMIT 100").fetch_all(&state.pool).await?;
     for row in rows {
         let auth: Value = row.get("authorization_json");
         let link: Option<Link> = auth["linkRef"]
@@ -332,32 +338,51 @@ async fn housekeeping(state: &AppState) -> Result<(), ApiError> {
                 &fact(state, row.get("link_id")).await?,
                 "deadline_exceeded",
             );
-            sqlx::query("UPDATE link_resolve_requests SET status='completed',response_json=$2,completed_at=now(),updated_at=now() WHERE id=$1 AND response_json IS NULL AND deadline_at<=now()").bind(row.get::<Uuid,_>("id")).bind(value).execute(&state.pool).await?;
+            complete_resolution(
+                state,
+                &row.get::<String, _>("subject_key"),
+                row.get("request_key"),
+                &value,
+                false,
+            )
+            .await?;
         }
     }
     sqlx::query(include_str!("cleanup_resolves.sql"))
         .execute(&state.pool)
         .await?;
-    sqlx::query(include_str!("cleanup_checks.sql")).execute(&state.pool).await?;
+    sqlx::query(include_str!("cleanup_checks.sql"))
+        .execute(&state.pool)
+        .await?;
     Ok(())
 }
 
 pub async fn run(state: Arc<AppState>) -> Result<(), ApiError> {
     tracing::info!("link worker started; delivery/check policies control upstream access");
     let _heartbeat =
-        crate::runtime::Heartbeat::start(state.clone(), crate::runtime::WorkerKind::Links);
+        crate::runtime::Heartbeat::start(state.clone(), crate::runtime::WorkerKind::LinkSchedule);
     // Separate lanes keep slow upstream cleanup from starving ingestion synchronization/checks.
-    use crate::runtime::{WorkerKind, always_lane, lane};
+    use crate::runtime::{WorkerKind, lane};
     tokio::join!(
-        always_lane(&state, "link-sync", 2, || sync_batch(&state)),
-        always_lane(&state, "link-check", 2, || check_tick(&state)),
+        lane(&state, WorkerKind::LinkSync, "link-sync", 2, || {
+            sync_batch(&state)
+        }),
+        lane(&state, WorkerKind::LinkCheck, "link-check", 2, || {
+            check_tick(&state)
+        }),
         lane(&state, WorkerKind::Links, "link-cleanup", 2, || {
             delivery::cleanup_tick(&state)
         }),
-        always_lane(&state, "link-maintenance", 30, || async {
-            refresh_aggregates(&state).await?;
-            housekeeping(&state).await
-        }),
+        lane(
+            &state,
+            WorkerKind::LinkMaintenance,
+            "link-maintenance",
+            30,
+            || async {
+                refresh_aggregates(&state).await?;
+                housekeeping(&state).await
+            }
+        ),
     );
     Ok(())
 }
@@ -415,10 +440,10 @@ mod tests {
             sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,'worker performance fixture',$2)").bind(id).bind(links).execute(&pool).await.unwrap();
         }
         // Existing observations must propagate when a resource is first associated.
-        record(&state, first_id, &json!({"status":"invalid"}), &json!({}))
+        record(&state, first_id, &json!({"status":"invalid"}), &ProviderPolicy::default())
             .await
             .unwrap();
-        record(&state, second_id, &json!({"status":"valid"}), &json!({}))
+        record(&state, second_id, &json!({"status":"valid"}), &ProviderPolicy::default())
             .await
             .unwrap();
         sync_batch(&state).await.unwrap();
@@ -508,14 +533,14 @@ mod tests {
             &state,
             second_id,
             &json!({"status":"unknown","errorKind":"upstream"}),
-            &json!({}),
+            &ProviderPolicy::default(),
         )
         .await
         .unwrap();
         assert_eq!(validity(&multiple).await, -1);
         let valid = json!({"status":"valid"});
         let unknown = json!({"status":"unknown","errorKind":"upstream"});
-        let policy = json!({});
+        let policy = ProviderPolicy::default();
         let (a, b) = tokio::join!(
             record(&state, first_id, &valid, &policy),
             record(&state, first_id, &unknown, &policy)

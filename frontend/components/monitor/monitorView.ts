@@ -1,6 +1,6 @@
 export type RuntimeState = 'online' | 'offline' | 'unknown' | 'unavailable';
-export interface WorkerStatus { state: RuntimeState; count: number | null; enabled: boolean }
-export interface QueueCounts { queued: number; running: number; failed: number; completed: number; blocked?: number }
+export interface WorkerStatus { state: RuntimeState; count: number | null; enabled: boolean; scheduleEnabled?: boolean; syncEnabled?: boolean; checkEnabled?: boolean; maintenanceEnabled?: boolean }
+interface QueueCounts { queued: number; running: number; failed: number; completed: number; blocked?: number }
 export interface LiveSource {
   id: string; name: string; enabled: boolean;
   health: null | {
@@ -26,9 +26,9 @@ export interface MonitorData {
   links: {
     syncPending: number; oldestSyncAt: string | null; catalog: number; valid: number; invalid: number; errors: number;
     queues: { checks: QueueCounts; cleanup: QueueCounts; resolve: QueueCounts };
-    cleanupDue: number; checksEnabled: boolean; deliveryEnabled: { baidu: boolean; quark: boolean };
+    cleanupDue: number; checksEnabled: boolean; deliveryEnabled: { baidu: boolean; quark: boolean; aliyun?: boolean; xunlei?: boolean; guangya?: boolean };
     deliveryStats?: { processing: number; transferred: number; reused: number; fallback: number; direct: number; unavailable: number };
-    checkHealth?: { due: number; failing: number; unknown: number; stuckJobs: number };
+    checkHealth?: { due: number; failing: number; unknown: number; stuckJobs: number; readyAccounts?: number };
     recentCheckFailures?: Array<{
       provider: string; identity: string | null; validity: number; failureCount: number;
       lastErrorCode: string | null; lastAttemptAt: string | null; nextCheckAt: string | null;
@@ -43,7 +43,7 @@ export interface MonitorData {
 export function workerLabel(worker: WorkerStatus): string {
   if (worker.state === 'unknown' || worker.state === 'unavailable') return '状态不可用';
   if (worker.state === 'offline') return '未检测到在线 Worker';
-  return worker.enabled ? '运行中' : '已暂停调度';
+  return worker.enabled && worker.scheduleEnabled !== false ? '运行中' : '已暂停调度';
 }
 export function sourceLabel(source: LiveSource): string {
   if (!source.enabled) return '已停用';
@@ -100,8 +100,8 @@ export function lastSourceRequest(source: LiveSource): string {
   return dateLabel(times.length ? Math.max(...times) : null);
 }
 export type LinkTaskTone = 'ok' | 'warn' | 'error' | 'muted';
-const PROVIDER_LABELS: Record<string, string> = { baidu: '百度网盘', quark: '夸克网盘' };
-export function providerLabel(provider: string | null | undefined): string {
+const PROVIDER_LABELS: Record<string, string> = { baidu: '百度网盘', quark: '夸克网盘', aliyun: '阿里云盘', xunlei: '迅雷云盘', guangya: '光鸭网盘' };
+function providerLabel(provider: string | null | undefined): string {
   return (provider && PROVIDER_LABELS[provider]) || '—';
 }
 const VALIDITY_STATES: Record<number, { label: string; tone: LinkTaskTone }> = {
@@ -119,7 +119,7 @@ const CLEANUP_STATES: Record<string, { label: string; tone: LinkTaskTone }> = {
 function stateLabel(map: Record<string, { label: string; tone: LinkTaskTone }>, key: string | number | null | undefined) {
   return (key != null && map[key]) || { label: '未知', tone: 'muted' as const };
 }
-export interface LinkTaskRow {
+interface LinkTaskRow {
   key: string; provider: string; identity: string; stateLabel: string;
   tone: LinkTaskTone; error: string; attempts: number; time: string;
 }

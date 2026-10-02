@@ -1,6 +1,6 @@
 import type { OutboundPolicy } from "./outbound";
 import type { ManagedResource as SearchResult } from "@/shared/apiModels";
-export interface CrawlJob {
+interface CrawlJob {
   id: number;
   channelId: string;
   kind: string;
@@ -35,9 +35,8 @@ export interface CrawlChannel {
   nextSyncAt: string;
   coverage: string;
   lastError: string | null;
-  messageCount: number;
+  failedMessageCount: number;
   resourceCount: number;
-  failureCount: number;
   latestJob: CrawlJob | null;
   taskState?: 'running' | 'queued' | 'backoff' | 'idle' | 'paused' | 'failed';
   taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | null;
@@ -60,10 +59,18 @@ export interface CrawlMessage {
     deleted: boolean;
   }[];
 }
-export interface CursorPage<T> {
-  items: T[];
-  hasMore: boolean;
-  nextCursor: string | null;
+interface MessageCounts {
+  all: number;
+  parsed: number;
+  empty: number;
+  failed: number;
+}
+export interface MessagePage {
+  items: CrawlMessage[];
+  total: number;
+  page: number;
+  pageSize: number;
+  counts: MessageCounts;
 }
 export interface ChannelPage {
   items: CrawlChannel[];
@@ -129,7 +136,7 @@ export function crawlStatus(value: string) {
     )[value] || value
   );
 }
-export function crawlKind(value: string) {
+function crawlKind(value: string) {
   return (
     (
       {
@@ -141,7 +148,7 @@ export function crawlKind(value: string) {
   );
 }
 
-export type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "failed";
+type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "failed";
 export function channelTaskState(channel: CrawlChannel, now = Date.now()): { state: ChannelTaskState; text: string } {
   if (channel.taskState) {
     if (channel.taskState === 'paused') return { state: 'paused', text: '已暂停' };
@@ -163,21 +170,6 @@ export function channelTaskState(channel: CrawlChannel, now = Date.now()): { sta
   if (job?.status === "queued") return { state: "waiting", text: job.attempts > 0 ? "退避等待" : Date.parse(job.nextRunAt) > now ? "等待下一页" : "等待执行" };
   return channel.historyComplete ? { state: "idle", text: "等待日常采集" } : { state: "waiting", text: "等待历史补齐" };
 }
-export function crawlReason(value?: string | null) {
-  return (
-    (
-      {
-        pending: "尚未回填",
-        backfilling: "历史回填中",
-        checkpoint_reached: "已覆盖增量检查点",
-        accessible_history_end: "已到公开页面可访问边界",
-        admin_cancelled: "管理员取消",
-      } as Record<string, string>
-    )[value || ""] ||
-    value ||
-    "—"
-  );
-}
 
 /** Filter inputs are local wall-clock dates; API always receives an explicit UTC instant. */
 export function crawlFilterDate(value: string): string | undefined {
@@ -187,4 +179,3 @@ export function crawlFilterDate(value: string): string | undefined {
 }
 
 export interface CrawlSettingsValue { concurrentChannels: number; pageDelaySeconds: number; dailyIntervalSeconds: number; version: number }
-export interface CrawlPageFailure { id: number; kind: string; cursorBefore: number | null; pageNumber: number | null; lastError: string; retryStatus: string | null; createdAt: string }

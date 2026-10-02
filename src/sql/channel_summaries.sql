@@ -7,7 +7,7 @@ WITH inactive_counts AS (
  WHERE (NOT r.enabled OR r.deleted_at IS NOT NULL) AND refs.channel_id=ANY($1)
  GROUP BY refs.channel_id
 )
-SELECT c.id,COALESCE(s.message_count,0) message_count,
+SELECT c.id,COALESCE(s.failed_count,0) failed_count,
  COALESCE(s.parsed_resource_count,0)-COALESCE(hidden.n,0) resource_count
 FROM crawl_channels c
 LEFT JOIN channel_statistics s ON s.channel_id=c.id

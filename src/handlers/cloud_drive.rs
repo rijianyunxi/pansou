@@ -57,11 +57,7 @@ async fn reference(state: &AppState, target: &Target) -> Result<Reference, ApiEr
         .as_array()
         .and_then(|a| a.get(index))
         .ok_or_else(|| ApiError::BadRequest("链接索引不存在".into()))?;
-    let provider = match link["type"].as_str() {
-        Some("baidu") => Provider::Baidu,
-        Some("quark") => Provider::Quark,
-        _ => return Err(ApiError::BadRequest("云端写操作只支持百度和夸克".into())),
-    };
+    let provider = Provider::from_name(link["type"].as_str().unwrap_or(""))?;
     ShareInput {
         url: link["url"].as_str().unwrap_or("").into(),
         provider: Some(provider),
@@ -173,6 +169,11 @@ pub async fn cloud_ping(
     let _slot = slot(&state).await?;
     let drive = Drive::load(&state, input.provider).await?;
     let root = cloud_drive::validate_dir(input.provider, None)?;
+    if input.provider.token_auth() {
+        let mut connection = state.pool.acquire().await?;
+        tokio::time::timeout(Duration::from_secs(45), drive.ensure_current_account(&mut connection))
+            .await.map_err(|_| ApiError::Upstream("账号身份检测超时".into()))??;
+    }
     let files = tokio::time::timeout(Duration::from_secs(45), drive.list(&root))
         .await
         .map_err(|_| ApiError::Upstream("登录态检测超时".into()))?
@@ -475,10 +476,12 @@ pub async fn resources_check(
         .filter(|id| !found.contains(*id))
         .map(|id| json!({"id":id,"status":"invalid","message":"资源不存在"}))
         .collect::<Vec<_>>();
-    let credentials = sqlx::query("SELECT provider,credential FROM cloud_account_settings WHERE provider IN ('baidu','quark')")
-        .fetch_all(&state.pool).await?.into_iter()
-        .map(|row| (row.get::<String,_>("provider"),row.get::<String,_>("credential")))
-        .collect::<std::collections::HashMap<_,_>>();
+    let mut credentials=std::collections::HashMap::new();
+    for p in Provider::ALL {
+        if let Ok(Some(account))=crate::cloud_auth::credentials(&state,p).await {
+            if let Ok(raw)=account.raw(p){credentials.insert(p.name().to_owned(),raw);}
+        }
+    }
     let credentials = Arc::new(credentials);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     use futures::{StreamExt, stream};
@@ -514,10 +517,9 @@ async fn check_resource(
         let _permit = slot(&state).await?;
         let mut statuses = vec![];
         for link in links.as_array().into_iter().flatten().take(20) {
-            let provider = match link["type"].as_str() {
-                Some("baidu") => Provider::Baidu,
-                Some("quark") => Provider::Quark,
-                _ => {
+            let provider = match Provider::from_name(link["type"].as_str().unwrap_or("")) {
+                Ok(provider) => provider,
+                Err(_) => {
                     statuses.push(json!({"status":"unknown","reason":"该网盘暂不支持原生检测"}));
                     continue;
                 }

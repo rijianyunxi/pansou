@@ -10,7 +10,6 @@ import CrawlChannelsTab from "@/components/admin/crawl/CrawlChannelsTab.vue";
 import CrawlChannelEditor from "@/components/admin/crawl/CrawlChannelEditor.vue";
 import CrawlSettings from "@/components/admin/crawl/CrawlSettings.vue";
 import CrawlMessagesSheet from "@/components/admin/crawl/CrawlMessagesSheet.vue";
-import CrawlJobDetail from "@/components/admin/crawl/CrawlJobDetail.vue";
 setDocumentHead({ title: "TG 采集 - pansou" });
 const route = useRoute(),
   router = useRouter();
@@ -21,8 +20,10 @@ const settings = computed(() => route.query.settings === "1"),
   messageChannel = computed(() =>
     typeof route.query.messages === "string" ? route.query.messages : undefined,
   ),
-  messageId = computed(() => Number(route.query.message) || undefined),
-  taskId = computed(() => Number(route.query.task) || undefined);
+  messageStatus = computed(() =>
+    typeof route.query.status === "string" ? route.query.status : undefined,
+  ),
+  messageId = computed(() => Number(route.query.message) || undefined);
 const channelsRef = ref<InstanceType<typeof CrawlChannelsTab>>();
 const notice = ref("");
 const {
@@ -38,11 +39,11 @@ const metrics = computed(() => [
   { key: 'review', label: '待复核页', value: overview.value?.review, hint: '页面解析异常，待检查' },
 ]);
 function overlay(query: Record<string, string | number | undefined>) {
-  const { edit, settings, messages, message, task, ...rest } = route.query;
+  const { edit, settings, messages, message, status, ...rest } = route.query;
   void router.push({ query: { ...rest, ...query } });
 }
 function close() {
-  const { edit, settings, messages, message, task, ...rest } = route.query;
+  const { edit, settings, messages, message, status, ...rest } = route.query;
   void router.replace({ query: rest });
 }
 async function refresh() {
@@ -98,7 +99,7 @@ function saved() {
       {{ overviewError }}
     </p>
     <p v-if="notice" role="status" class="feature-notice">{{ notice }}</p>
-    <CrawlChannelsTab ref="channelsRef" @edit="overlay({edit:$event})" @messages="overlay({messages:$event})" @task="overlay({task:$event})" @changed="refreshOverview" />
+    <CrawlChannelsTab ref="channelsRef" @edit="overlay({edit:$event})" @messages="(channel, st) => overlay({messages:channel,status:st||undefined})" @changed="refreshOverview" />
     <CrawlChannelEditor
       v-if="editId !== undefined"
       :key="editId"
@@ -117,10 +118,7 @@ function saved() {
       :key="messageChannel"
       :channel="messageChannel"
       :initial-message="messageId"
-      @close="close"
-    /><CrawlJobDetail
-      v-else-if="taskId"
-      :id="taskId"
+      :initial-status="messageStatus"
       @close="close"
       @changed="refresh"
     />

@@ -17,7 +17,7 @@ const confirmation = provideAdminConfirm();
 const { checking, locked, authenticated, error } = session;
 const route = useRoute();
 const current = computed(() =>
-  adminNavigation.find((item) => item.path === route.path),
+  adminNavigation.find((item) => item.path === (route.path === '/admin/link-cleanup' ? '/admin/tasks' : route.path)),
 );
 watch(
   () => route.fullPath,

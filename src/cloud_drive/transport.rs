@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -30,15 +30,32 @@ pub struct Wire {
     cookie: Arc<Mutex<String>>,
     pub trace: Arc<Mutex<Vec<Timing>>>,
     pub wrote: Arc<AtomicBool>,
+    pub headers: reqwest::header::HeaderMap,
+    pub write_deadline_ms: Arc<AtomicI64>,
+    pub confirmed_file_ids: Arc<Mutex<Vec<String>>>,
+    binding: Arc<std::sync::OnceLock<CookieBinding>>,
 }
+struct CookieBinding { pool:sqlx::PgPool, epoch:i64, revision:AtomicI64 }
 impl Wire {
     pub fn new(client: Client, provider: Provider, cookie: String) -> Self {
+        let headers = if provider.token_auth() { super::extended::credential_headers(provider, &cookie).unwrap_or_default() } else { Default::default() };
         Self {
             client,
             provider,
             cookie: Arc::new(Mutex::new(cookie)),
             trace: Arc::new(Mutex::new(vec![])),
             wrote: Arc::new(AtomicBool::new(false)),
+            headers,
+            write_deadline_ms: Arc::new(AtomicI64::new(0)),
+            confirmed_file_ids: Arc::new(Mutex::new(vec![])),
+            binding:Arc::new(std::sync::OnceLock::new()),
+        }
+    }
+    pub fn bind_cookies(&self,pool:sqlx::PgPool,epoch:i64,revision:i64){let _=self.binding.set(CookieBinding{pool,epoch,revision:AtomicI64::new(revision)});}
+    pub async fn snapshot(&self)->String{self.cookie.lock().await.clone()}
+    pub async fn auth_rejected(&self,can_refresh:bool){
+        if let Some(b)=self.binding.get(){
+            let _=sqlx::query("UPDATE cloud_account_settings SET auth_status=CASE WHEN refreshable AND $4 THEN 'degraded' ELSE 'reauthorization_required' END,last_error_code=CASE WHEN refreshable AND $4 THEN 'access_rejected' ELSE 'reauthorization_required' END,expires_at=CASE WHEN refreshable AND $4 THEN now() ELSE expires_at END,next_check_at=now() WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND refresh_lease IS NULL").bind(self.provider.name()).bind(b.epoch).bind(b.revision.load(Ordering::SeqCst)).bind(can_refresh).execute(&b.pool).await;
         }
     }
     pub async fn cookie_value(&self, key: &str) -> String {
@@ -47,7 +64,11 @@ impl Wire {
     pub async fn require_login(&self) -> Result<(), DriveError> {
         let cookie = self.cookie.lock().await;
         if cookie.trim().is_empty() {
-            return Err(self.error(ErrorKind::Login, "请先在后台云端操作设置中配置 Cookie"));
+            return Err(self.error(ErrorKind::Login, "请先在后台“网盘账号”菜单连接账号"));
+        }
+        if self.provider.token_auth() {
+            super::validate_credential(self.provider, &cookie)
+                .map_err(|_| self.error(ErrorKind::Login, "请配置有效的访问令牌和设备凭据"))?;
         }
         if self.provider == Provider::Baidu
             && ((cookie_value(&cookie, "BDUSS").is_empty()
@@ -93,10 +114,12 @@ impl Wire {
         write: bool,
         text: bool,
     ) -> Result<String, DriveError> {
-        let referer = if self.provider == Provider::Quark {
-            "https://pan.quark.cn/"
-        } else {
-            "https://pan.baidu.com/disk/main"
+        let referer = match self.provider {
+            Provider::Quark => "https://pan.quark.cn/",
+            Provider::Baidu => "https://pan.baidu.com/disk/main",
+            Provider::Aliyun => "https://www.alipan.com/",
+            Provider::Xunlei => "https://pan.xunlei.com/",
+            Provider::Guangya => "https://www.guangyapan.com/",
         };
         let mut request = self
             .client
@@ -112,12 +135,15 @@ impl Wire {
                 },
             )
             .header("X-Requested-With", "XMLHttpRequest");
+        request = request.headers(self.headers.clone());
         let cookie = self.cookie.lock().await.clone();
-        if !cookie.is_empty() {
+        if !cookie.is_empty() && !self.provider.token_auth() {
             request = request.header(COOKIE, cookie);
         }
         if self.provider == Provider::Quark {
             request = request.header("Origin", "https://pan.quark.cn");
+        } else if self.provider == Provider::Guangya {
+            request = request.header("Origin", "https://www.guangyapan.com");
         }
         if let Some(form) = form {
             request = request.form(form);
@@ -126,9 +152,16 @@ impl Wire {
             request = request.json(json);
         }
         if write {
+            let deadline = self.write_deadline_ms.load(Ordering::SeqCst);
+            if deadline > 0 && chrono::Utc::now().timestamp_millis() >= deadline {
+                return Err(self.error(ErrorKind::Limit, "取链已超时，未继续执行新的网盘写操作"));
+            }
             self.wrote.store(true, Ordering::SeqCst);
         }
-        let mut response = request.send().await.map_err(|_| {
+        let mut response = request.send().await.map_err(|e| {
+            // without_url strips paths and query strings; only the failure class
+            // (timeout/connect/body) is logged, never credentials or URLs.
+            tracing::warn!(provider=%self.provider.name(), error=%e.without_url(), "cloud drive request failed");
             self.error(
                 ErrorKind::Network,
                 "网盘请求超时或连接失败；写操作结果可能未确认，请勿重复提交",
@@ -148,9 +181,16 @@ impl Wire {
             .filter_map(|v| v.to_str().ok())
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        if !values.is_empty() {
+        // Token providers keep JSON credentials, not a mutable Cookie jar.
+        if !self.provider.token_auth() && !values.is_empty() {
             let mut cookie = self.cookie.lock().await;
             *cookie = merge_cookies(&cookie, &values);
+            if let Some(binding)=self.binding.get(){
+                let updates=values.iter().filter(|v|!v.split(';').next().unwrap_or("").trim_start().starts_with("BDCLND=")).cloned().collect::<Vec<_>>();
+                if !updates.is_empty(){
+                    if let Ok(Some(revision))=crate::cloud_auth::persist_cookies(&binding.pool,self.provider,binding.epoch,binding.revision.load(Ordering::SeqCst),&updates).await {binding.revision.store(revision,Ordering::SeqCst);}
+                }
+            }
         }
         if response
             .content_length()
@@ -159,7 +199,8 @@ impl Wire {
             return Err(self.error(ErrorKind::Upstream, "网盘响应超过大小限制"));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| {
+        while let Some(chunk) = response.chunk().await.map_err(|e| {
+            tracing::warn!(provider=%self.provider.name(), error=%e.without_url(), "cloud drive response interrupted");
             self.error(
                 ErrorKind::Network,
                 "读取网盘响应超时或连接中断；请勿重复写操作",
@@ -174,10 +215,18 @@ impl Wire {
             return Err(self.error(ErrorKind::RateLimit, "网盘限制操作频率，请稍后再试"));
         }
         if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(self.error(ErrorKind::Login, "网盘拒绝访问，请检查 Cookie 或账号权限"));
+            self.auth_rejected(status.as_u16()==401).await;
+            return Err(self.error(ErrorKind::Login, "网盘拒绝访问，请检查登录凭据或账号权限"));
         }
         if !status.is_success() {
-            return Err(self.error(ErrorKind::Upstream, "网盘上游服务异常"));
+            // Only the status is logged; never the body or the URL. Without this
+            // the caller sees a generic upstream failure with no way to tell a
+            // rejected request from a provider-side outage.
+            tracing::warn!(provider=%self.provider.name(), http_status=status.as_u16(), "cloud drive rejected the request");
+            return Err(self.error(
+                ErrorKind::Upstream,
+                &format!("网盘上游服务异常（HTTP {}）", status.as_u16()),
+            ));
         }
         String::from_utf8(bytes)
             .map_err(|_| self.error(ErrorKind::Upstream, "网盘返回了无效的 UTF-8 响应"))
@@ -218,7 +267,9 @@ impl Wire {
                 .ok_or_else(|| self.error(ErrorKind::Upstream, "网盘返回无法识别的状态码"))?,
         };
         if code != 0 {
-            return Err(DriveError::from_code(self.provider, code));
+            let error=DriveError::from_code(self.provider,code);
+            if error.kind==ErrorKind::Login{self.auth_rejected(true).await;}
+            return Err(error);
         }
         if payload["status"] == "error" {
             return Err(self.error(ErrorKind::Upstream, "网盘操作失败"));
@@ -234,7 +285,27 @@ pub fn cookie_value(cookie: &str, key: &str) -> String {
         .map(|(_, v)| v.to_owned())
         .unwrap_or_default()
 }
-fn merge_cookies(cookie: &str, values: &[String]) -> String {
+/// Servers delete cookies with an expired `expires` or non-positive `max-age`;
+/// keeping the stale value would replay a dead session alongside the live one.
+fn cookie_deleted(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("max-age=0") || lower.contains("max-age=-") {
+        return true;
+    }
+    let Some(raw) = value.split(';').find_map(|p| {
+        let (k, v) = p.trim().split_once('=')?;
+        k.eq_ignore_ascii_case("expires").then(|| v.to_owned())
+    }) else {
+        return false;
+    };
+    // Cookie dates come in RFC 1123 ("21 Oct 2015") and legacy hyphenated
+    // ("21-Oct-2015") shapes; normalize both into an RFC 2822 parse.
+    let normalized = raw.trim().trim_end_matches("GMT").trim().replace('-', " ");
+    chrono::DateTime::parse_from_rfc2822(&format!("{normalized} +0000"))
+        .map(|t| t.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+        .unwrap_or(false)
+}
+pub(crate) fn merge_cookies(cookie: &str, values: &[String]) -> String {
     let mut jar: BTreeMap<String, String> = cookie
         .split(';')
         .filter_map(|s| s.trim().split_once('='))
@@ -246,7 +317,7 @@ fn merge_cookies(cookie: &str, values: &[String]) -> String {
             .next()
             .and_then(|s| s.trim().split_once('='))
         {
-            if v.is_empty() || value.to_ascii_lowercase().contains("max-age=0") {
+            if v.is_empty() || cookie_deleted(value) {
                 jar.remove(k);
             } else {
                 jar.insert(k.into(), v.into());
@@ -268,4 +339,37 @@ pub fn http_client() -> Client {
         .pool_max_idle_per_host(8)
         .build()
         .expect("cloud drive HTTP client")
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::*;
+
+    #[test]
+    fn merge_cookies_replays_updates_and_honors_deletions() {
+        assert_eq!(merge_cookies("a=1; b=2", &["b=3".into()]), "a=1; b=3");
+        assert_eq!(merge_cookies("a=1", &["a=".into()]), "");
+        assert_eq!(merge_cookies("a=1", &["a=; max-age=0".into()]), "");
+        assert_eq!(merge_cookies("a=1", &["a=; max-age=-1".into()]), "");
+        // Servers mark deletion with an already-past expires timestamp.
+        assert_eq!(
+            merge_cookies(
+                "PASSID=keep",
+                &["PASSID=c9IKyH; expires=Thu, 02-Oct-2025 14:00:51 GMT; path=/".into()]
+            ),
+            ""
+        );
+        assert_eq!(
+            merge_cookies(
+                "PASSID=old",
+                &["PASSID=new; expires=Wed, 21 Oct 2099 07:28:00 GMT".into()]
+            ),
+            "PASSID=new"
+        );
+        // Unparseable dates never delete; conservative by design.
+        assert_eq!(
+            merge_cookies("a=1", &["a=2; expires=not-a-date".into()]),
+            "a=2"
+        );
+    }
 }

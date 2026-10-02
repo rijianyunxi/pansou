@@ -54,6 +54,7 @@ import { executeLinkAction, invalidLink, type LinkAction } from '~/utils/linkAct
 import ResourceDescription from "./ResourceDescription.vue";
 import type { SearchLink, ResolvedLink } from "~/shared/apiModels";
 import type { DisplaySearchResult } from "~/utils/resultDisplay";
+import type { ShowToast } from "~/composables/useToast";
 
 const props = withDefaults(defineProps<{
   title: string;
@@ -80,7 +81,7 @@ const resolved = reactive<Record<string, ResolvedLink>>({});
 const loading = reactive<Record<string, LinkAction | undefined>>({});
 const keys = reactive<Record<string, string>>({});
 const controllers = new Set<AbortController>();
-const showToast = inject<(message: string, type?: 'info' | 'success' | 'error') => void>('showToast', () => {});
+const showToast = inject<ShowToast>('showToast', () => () => {});
 let gone = false;
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const timer = setInterval(() => {
@@ -104,21 +105,31 @@ function prepareOpen() {
     close() { if (popup && !popup.closed) popup.close(); },
   };
 }
-function copyDeferred(text: Promise<string>) {
+async function copyDeferred(text: Promise<string>) {
   if (!navigator.clipboard) throw new Error('当前浏览器无法访问剪贴板，请使用打开链接');
-  if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
-    return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then(value => new Blob([value], { type: 'text/plain' })) })]);
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then(value => new Blob([value], { type: 'text/plain' })) })]);
+    } else {
+      await navigator.clipboard.writeText(await text);
+    }
+  } catch (error) {
+    if (error instanceof Error && ['NotAllowedError', 'SecurityError'].includes(error.name)) {
+      throw new Error('复制未完成，请允许剪贴板访问后重试，或使用打开链接');
+    }
+    throw new Error('复制未完成，请重试，或使用打开链接');
   }
-  return text.then(value => navigator.clipboard.writeText(value));
 }
 async function act(action: LinkAction, resource: DisplaySearchResult, link: SearchLink) {
   const ref = link.linkRef;
   if (loading[ref]) return;
   loading[ref] = action;
+  if (copiedKey.value === ref) copiedKey.value = '';
+  const dismissProgress = showToast(action === 'copy' ? '正在获取并复制链接，请稍候…' : '正在获取链接，即将打开，请稍候…', 'info', { duration: 0, loading: true });
   const resume = !!keys[ref];
-  keys[ref] ||= crypto.randomUUID();
   const controller = new AbortController(); controllers.add(controller);
   try {
+    keys[ref] ||= crypto.randomUUID();
     const completed = await executeLinkAction(action, async () => {
       const value = await resolveLink(resource.resultRef, ref, keys[ref]!, controller.signal, resume);
       if (gone || controller.signal.aborted) throw new Error('操作已取消');
@@ -129,15 +140,22 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
     }, {
       prepareOpen,
       copy: copyDeferred,
-      invalid: value => showToast(value.reasonCode === 'resource_missing' ? '分享中的资源已不存在' : '原分享链接已失效', 'error'),
+      invalid: value => { if (!gone && !controller.signal.aborted) showToast(value.reasonCode === 'resource_missing' ? '分享中的资源已不存在，请尝试其他资源' : '原分享链接已失效，请尝试其他资源', 'error'); },
       failed: message => { if (!gone && !controller.signal.aborted) showToast(message, 'error'); },
     });
-    if (!gone && completed && action === 'copy' && !isInvalid(link)) {
-      copiedKey.value = ref;
-      clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
+    if (!gone && !controller.signal.aborted && completed && !isInvalid(link)) {
+      if (action === 'copy') {
+        showToast(completed.password ? '链接和提取码已复制，可粘贴打开' : '链接已复制，可粘贴打开', 'success');
+        copiedKey.value = ref;
+        clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
+      } else {
+        showToast('链接已就绪，已请求浏览器打开', 'success');
+      }
     }
-  } finally { loading[ref] = undefined; controllers.delete(controller); }
+  } catch {
+    if (!gone && !controller.signal.aborted) showToast('操作未能开始，请刷新页面后重试', 'error');
+  } finally { dismissProgress(); loading[ref] = undefined; controllers.delete(controller); }
 }
 const visibleItems = computed(() => props.expanded ? props.items : props.items.slice(0, props.initialVisible));
 

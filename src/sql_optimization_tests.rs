@@ -5,6 +5,89 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn hot_search_counts_recover_history_and_increment_without_overriding_moderation() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = db::connect(&url).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let schema = format!("hot_search_{}", uuid::Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!("CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"))
+        .execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/001_init.sql"))
+        .execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO hot_searches(term,normalized_term,score,last_searched) VALUES('已有热词','已有热词',4,'2026-09-27');
+         INSERT INTO hot_searches(term,score,last_searched,status,source,pinned,manual_weight)
+           SELECT status,50,'2026-09-27',status,'manual',true,9 FROM unnest(ARRAY['blocked','hidden','pending']) status;
+         INSERT INTO search_logs(keyword,ip,search_scope,created_at)
+           SELECT '已有热词','127.0.0.1','system','2026-09-26'::timestamptz FROM generate_series(1,4);
+         INSERT INTO search_logs(keyword,ip,search_scope,created_at)
+           SELECT term,'127.0.0.1','system','2026-10-01'::timestamptz + i * interval '1 second'
+           FROM unnest(ARRAY['已有热词','新热词','blocked','hidden','pending']) term CROSS JOIN generate_series(1,3) i;
+         INSERT INTO search_logs(keyword,ip,search_scope) VALUES('   ','127.0.0.1','system');"
+    ).execute(&mut *tx).await.unwrap();
+    let backfill = include_str!("../migrations/020_restore_hot_search_counts.sql");
+    sqlx::raw_sql(backfill).execute(&mut *tx).await.unwrap();
+    let snapshot: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h ORDER BY term")
+        .fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(snapshot.len(), 5);
+    assert_eq!(snapshot.iter().find(|h| h["term"] == "已有热词").unwrap()["score"], 7);
+    let new_term = snapshot.iter().find(|h| h["term"] == "新热词").unwrap();
+    assert_eq!(new_term["score"], 3);
+    assert_eq!(new_term["status"], "approved");
+    assert_eq!(new_term["source"], "auto");
+    for status in ["blocked", "hidden", "pending"] {
+        let item = snapshot.iter().find(|h| h["term"] == status).unwrap();
+        assert_eq!(item["score"], 53);
+        assert_eq!(item["status"], status);
+        assert_eq!(item["source"], "manual");
+        assert_eq!(item["pinned"], true);
+        assert_eq!(item["manual_weight"], 9);
+    }
+    sqlx::raw_sql(backfill).execute(&mut *tx).await.unwrap();
+    let replay: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h ORDER BY term")
+        .fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(replay, snapshot, "backfill must not count history twice");
+
+    for term in ["blocked", "blocked", "New Term", "New Term"] {
+        let id: i64 = sqlx::query_scalar(include_str!("queries/create_search_log.sql"))
+            .bind("test-session").bind(None::<i64>).bind(term).bind("127.0.0.1")
+            .bind("system").bind(json!([])).bind(json!([])).bind(term.to_lowercase())
+            .fetch_one(&mut *tx).await.unwrap();
+        // Completing a search does not cause a second popularity increment.
+        sqlx::query("UPDATE search_logs SET status='completed' WHERE id=$1")
+            .bind(id).execute(&mut *tx).await.unwrap();
+    }
+    let blocked: Value = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h WHERE term='blocked'")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(blocked["score"], 55);
+    assert_eq!(blocked["status"], "blocked");
+    assert_eq!(blocked["source"], "manual");
+    assert_eq!(blocked["pinned"], true);
+    assert_eq!(blocked["manual_weight"], 9);
+    let new_term: (String, i64, String) = sqlx::query_as("SELECT normalized_term,score,status FROM hot_searches WHERE term='New Term'")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(new_term, ("new term".into(), 2, "approved".into()));
+    let logs: i64 = sqlx::query_scalar("SELECT count(*) FROM search_logs WHERE session_id='test-session'")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(logs, 4);
+
+    // A log failure must leave its popularity unchanged.
+    sqlx::raw_sql("SAVEPOINT invalid_search").execute(&mut *tx).await.unwrap();
+    let result = sqlx::query_scalar::<_, i64>(include_str!("queries/create_search_log.sql"))
+        .bind("invalid-session").bind(i64::MAX).bind("New Term").bind("127.0.0.1")
+        .bind("system").bind(json!([])).bind(json!([])).bind("new term")
+        .fetch_one(&mut *tx).await;
+    assert!(result.is_err());
+    sqlx::raw_sql("ROLLBACK TO SAVEPOINT invalid_search").execute(&mut *tx).await.unwrap();
+    let score: i64 = sqlx::query_scalar("SELECT score FROM hot_searches WHERE term='New Term'")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(score, 2);
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
 async fn raw_html_removal_preserves_existing_metadata_and_resource_relationships() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));

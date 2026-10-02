@@ -1,4 +1,5 @@
 use super::*;
+use super::delivery::ProviderPolicy;
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
@@ -13,6 +14,17 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
     let pool = crate::db::connect(&database).await.unwrap();
     crate::db::init_db(&pool).await.unwrap();
     let mut tx = pool.begin().await.unwrap();
+    // Other integration tests leave due jobs in this shared test database. Hide
+    // them only inside this rolled-back transaction so FIFO assertions exercise
+    // this fixture, not previously enqueued high-priority user requests.
+    sqlx::query(
+        "UPDATE link_catalog SET next_check_at=now()+interval '1 day' WHERE provider='quark'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE link_check_jobs SET run_after=now()+interval '1 day' WHERE provider='quark' AND status IN('queued','running')")
+        .execute(&mut *tx).await.unwrap();
     let prefix = Uuid::new_v4().to_string();
     let ids: Vec<Uuid> = sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,next_check_at) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/fixture'||i,$1||i,now()-interval '100 days'+make_interval(secs=>i) FROM generate_series(1,700) i RETURNING id")
         .bind(&prefix).fetch_all(&mut *tx).await.unwrap();
@@ -258,7 +270,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         &state,
         id,
         &json!({"status":"valid"}),
-        &json!({}),
+        &ProviderPolicy::default(),
         Some((lease.0, Uuid::new_v4())),
     )
     .await
@@ -275,7 +287,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         &state,
         id,
         &json!({"status":"valid"}),
-        &json!({}),
+        &ProviderPolicy::default(),
         Some(lease),
     )
     .await
@@ -297,7 +309,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         &state,
         id,
         &json!({"status":"invalid"}),
-        &json!({}),
+        &ProviderPolicy::default(),
         Some(lease),
     )
     .await

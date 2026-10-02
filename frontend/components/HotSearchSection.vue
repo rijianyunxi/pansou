@@ -58,8 +58,8 @@ interface Props {
 interface HotSearchItem {
   term: string;
   score: number;
-  lastSearched: number;
-  createdAt: number;
+  pinned: boolean;
+  status: string;
 }
 
 const props = defineProps<Props>();
@@ -67,6 +67,7 @@ const apiBase = appConfig.apiBase;
 const loading = ref(false);
 const searches = ref<HotSearchItem[]>([]);
 const hasInitialized = ref(false);
+let initialization: Promise<void> | undefined;
 const HOT_TERM_MAX_CHARS = 18;
 
 function truncateTerm(term: string) {
@@ -81,9 +82,9 @@ async function fetchHotSearches() {
       { query: { limit: 10 }, cache: "no-store" },
     );
     if (data.code === 0 && data.data?.hotSearches) {
-      searches.value = data.data.hotSearches
-        .sort((a: HotSearchItem, b: HotSearchItem) => b.score - a.score)
-        .slice(0, 10);
+      // The API orders pinned terms first, then score and last search time.
+      searches.value = data.data.hotSearches.slice(0, 10);
+      hasInitialized.value = true;
     } else {
       searches.value = [];
     }
@@ -96,8 +97,13 @@ async function fetchHotSearches() {
 
 async function init() {
   if (hasInitialized.value) return;
-  hasInitialized.value = true;
-  await fetchHotSearches();
+  if (initialization) return initialization;
+  initialization = fetchHotSearches();
+  try {
+    await initialization;
+  } finally {
+    initialization = undefined;
+  }
 }
 
 
@@ -244,4 +250,3 @@ defineExpose({ init });
 
 .hidden { display: none; }
 </style>
-

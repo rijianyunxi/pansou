@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Activity,
+  Cloud,
   Layers,
   Database,
   Network,
@@ -28,8 +29,10 @@ import {
   useSidebar,
 } from "./ui/sidebar";
 const route = useRoute();
+const activePath = computed(() => route.path === '/admin/link-cleanup' ? '/admin/tasks' : route.path);
 const { setOpenMobile, isMobile } = useSidebar();
 const icons = {
+  cloud: Cloud,
   activity: Activity,
   layers: Layers,
   database: Database,
@@ -79,12 +82,12 @@ function navigated() {
             ><SidebarMenuItem v-for="item in group.items" :key="item.path">
               <SidebarMenuButton
                 as-child
-                :is-active="route.path === item.path"
+                :is-active="activePath === item.path"
                 :tooltip="item.title"
               >
                 <RouterLink
                   :to="item.path"
-                  :aria-current="route.path === item.path ? 'page' : undefined"
+                  :aria-current="activePath === item.path ? 'page' : undefined"
                   @click="navigated"
                   ><component :is="icons[item.icon]" /><span>{{
                     item.title

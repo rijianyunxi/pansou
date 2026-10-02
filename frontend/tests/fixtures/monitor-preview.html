@@ -1,21 +1,18 @@
 <!doctype html>
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>运行监控组件验收 · 示例数据</title></head>
-<body style="margin:0;background:#f4f6fa">
-  <div class="admin-root" style="padding:24px;background:transparent">
-    <p style="margin:0 0 16px;color:#737c8f;font-size:12px">开发验收 · 示例数据 · 不连接真实服务，操作仅修改本页模拟状态</p>
-    <div id="monitor-test-root"></div>
-  </div>
-  <div id="admin-portals" class="admin-root admin-portals"></div>
+<body style="margin:0"><div id="monitor-test-root"></div>
   <script type="module">
     import { createApp, h } from 'vue';
-    import { createMemoryHistory, createRouter } from 'vue-router';
+    import { createMemoryHistory, createRouter, RouterView } from 'vue-router';
     import MonitorPanel from '/components/monitor/MonitorPanel.vue';
     import '/assets/admin.css';
+    import '/app.vue';
+    import AdminLayout from '/components/admin/AdminLayout.vue';
     const fixture = {
       generatedAt: '2026-10-01T01:27:10Z',
       services: { api: { state: 'online', startedAt: '2026-10-01T01:26:42Z' }, postgres: { state: 'online', connections: 8, idle: 6 }, redis: { state: 'online' } },
-      workers: { crawl: { state: 'online', count: 1, enabled: true }, links: { state: 'online', count: 1, enabled: true } },
+      workers: { crawl: { state: 'online', count: 1, enabled: true }, links: { state: 'online', count: 1, enabled: true, scheduleEnabled: true } },
       crawl: { queued: 842, ready: 42, running: 24, failed: 9, paused: 0, expired: 0, channels: 52, activeChannels: 48, overdueChannels: 0, review: 6, resources: 42680, lastActivityAt: '2026-10-01T01:26:52Z', lastSyncAt: '2026-10-01T01:26:10Z', recentFailures: [] },
       links: {
         syncPending: 0, oldestSyncAt: null, catalog: 12180, valid: 9208, invalid: 432, errors: 18,
@@ -47,6 +44,7 @@
     // Fail closed: this harness must never forward a request or mutate real services.
     window.fetch = async (url, options = {}) => {
       const path = new URL(String(url), location.origin).pathname;
+      if (path === '/api/account/session') return Response.json({ authenticated: true, sessionId: 'fixture-only', user: { id: 1, username: '模拟管理员', role: 'admin', status: 'active' } });
       if (path === '/api/monitor') {
         if (scenario === 'error') return Response.json({ message: '模拟状态读取失败' }, { status: 503 });
         return Response.json({ data: fixture });
@@ -62,8 +60,9 @@
       }
       throw new Error('验收页禁止真实网络请求：' + path);
     };
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    createApp({ render: () => h(MonitorPanel) }).use(router).mount('#monitor-test-root');
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin', component: AdminLayout, children: [{path: 'monitor', component: MonitorPanel}, {path: ':pathMatch(.*)*', component: {render: () => h('p', '仅预览运行监控')}}] }] });
+    await router.push('/admin/monitor');
+    createApp({ render: () => h(RouterView) }).use(router).mount('#monitor-test-root');
   </script>
 </body>
 </html>

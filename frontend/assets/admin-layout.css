@@ -79,20 +79,12 @@
   border-radius: 10px;
   box-shadow: none;
 }
-/* Approved monitor skin: override legacy admin chrome only inside this page.
-   Tokens live on .runtime-monitor in MonitorPanel.vue; these unlayered rules
-   must keep out-ranking the global admin chrome below. */
+/* Monitor panels share the neutral admin card treatment. */
 .admin-root .runtime-monitor [data-slot="card"] {
-  border-radius: 16px;
-  border-color: var(--monitor-card-border, #e9edf4bf);
-  box-shadow: var(--monitor-shadow-panel, 0 3px 14px #1b2b4b07);
-}
-.admin-root .runtime-monitor .service-card {
-  box-shadow: var(--monitor-shadow-service, 0 4px 16px #1b2b4b0a, 0 1px 3px #1b2b4b07);
-}
-.admin-root .runtime-monitor .service-card:hover {
-  border-color: #dce2f5;
-  box-shadow: var(--monitor-shadow-service-hover, 0 8px 22px #1b2b4b12);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.025);
 }
 .admin-root .runtime-monitor .monitor-source-toolbar {
   padding: 0 16px 16px;
@@ -100,11 +92,11 @@
   border: 0;
 }
 .admin-root .runtime-monitor .monitor-source-search {
-  height: 30px;
+  height: 36px;
   max-width: 290px;
   min-width: 0;
-  border-radius: 9px;
-  font-size: 11px;
+  border-radius: 6px;
+  font-size: 12px;
 }
 .admin-root .runtime-monitor .queue-panel [data-slot="table-head"],
 .admin-root .runtime-monitor .queue-panel [data-slot="table-cell"] {

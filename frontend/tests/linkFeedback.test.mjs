@@ -1,0 +1,147 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { parse, compileScript } from '@vue/compiler-sfc';
+import ts from 'typescript';
+import * as vue from 'vue';
+import { useToast } from '../composables/useToast.ts';
+import * as linkActions from '../utils/linkActions.ts';
+
+const available = { status: 'completed', validity: 1, url: 'https://example.test/share', password: '1234' };
+const resource = { resultRef: 'result' };
+const link = { linkRef: 'link' };
+
+async function setupCard({ resolve = async () => available, copy = async () => {}, crypto = { randomUUID: () => 'test-key' } } = {}) {
+  const source = await readFile(new URL('../components/ResultGroup.vue', import.meta.url), 'utf8');
+  const { descriptor } = parse(source);
+  const script = compileScript(descriptor, { id: 'link-feedback-test' });
+  const compiled = ts.transpileModule(script.content, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const feedback = useToast();
+  const messages = [];
+  const showToast = (...args) => { messages.push(args); return feedback.showToast(...args); };
+  const hooks = [];
+  const popup = { opener: {}, document: { title: '', body: { textContent: '' } }, closed: false,
+    location: { replace(url) { popup.url = url; } }, close() { popup.closed = true; } };
+  const require = name => {
+    if (name === 'vue') return { ...vue, inject: () => showToast, onBeforeUnmount: hook => hooks.push(hook) };
+    if (name.includes('linkActions')) return linkActions;
+    if (name.includes('linkResolution')) return { resolveLink: resolve };
+    return {};
+  };
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', 'window', 'navigator', 'ClipboardItem', 'crypto', compiled)(
+    require, module, module.exports, { open: () => popup }, { clipboard: { writeText: copy } }, undefined, crypto,
+  );
+  const component = module.exports.default.setup({ items: [], expanded: true }, { expose() {}, emit() {} });
+  return { component, feedback, messages, popup, unmount() { hooks.forEach(hook => hook()); },
+    cleanup() { hooks.forEach(hook => hook()); feedback.hideToast(); } };
+}
+
+test('processing feedback remains until the clipboard write succeeds', async () => {
+  let finishResolve;
+  let finishCopy;
+  let markCopyStarted;
+  const copyStarted = new Promise(resolve => { markCopyStarted = resolve; });
+  const card = await setupCard({
+    resolve: () => new Promise(resolve => { finishResolve = resolve; }),
+    copy: () => new Promise(resolve => { finishCopy = resolve; markCopyStarted(); }),
+  });
+  try {
+    const action = card.component.act('copy', resource, link);
+    assert.equal(card.feedback.toast.value.loading, true);
+    assert.match(card.feedback.toast.value.message, /正在获取并复制/);
+    finishResolve(available);
+    await copyStarted;
+    assert.equal(card.feedback.toast.value.type, 'info');
+    assert.equal(card.component.copiedKey.value, '');
+    finishCopy();
+    await action;
+    assert.equal(card.feedback.toast.value.type, 'success');
+    assert.match(card.feedback.toast.value.message, /链接和提取码已复制/);
+    assert.equal(card.feedback.toast.value.show, true);
+    assert.equal(card.component.copiedKey.value, 'link');
+    assert.equal(card.component.loading.link, undefined);
+  } finally { card.cleanup(); }
+});
+
+test('open reports progress immediately and success after requesting navigation', async () => {
+  let finish;
+  const card = await setupCard({ resolve: () => new Promise(resolve => { finish = resolve; }) });
+  try {
+    const action = card.component.act('open', resource, link);
+    assert.match(card.feedback.toast.value.message, /即将打开/);
+    assert.equal(card.popup.url, undefined);
+    finish(available);
+    await action;
+    assert.equal(card.popup.url, available.url);
+    assert.equal(card.feedback.toast.value.type, 'success');
+    assert.match(card.feedback.toast.value.message, /已请求浏览器打开/);
+  } finally { card.cleanup(); }
+});
+
+test('copy without a password reports only the copied link', async () => {
+  const card = await setupCard({ resolve: async () => ({ ...available, password: null }) });
+  try {
+    await card.component.act('copy', resource, link);
+    assert.equal(card.feedback.toast.value.message, '链接已复制，可粘贴打开');
+  } finally { card.cleanup(); }
+});
+
+test('clipboard denial, invalid links and setup failures show errors without success', async () => {
+  for (const options of [
+    { copy: async () => { throw new DOMException('Write permission denied', 'NotAllowedError'); } },
+    { resolve: async () => ({ status: 'unavailable', validity: 0, reasonCode: 'resource_missing' }) },
+    { crypto: { randomUUID: () => { throw new Error('当前浏览器不支持此操作'); } } },
+  ]) {
+    const card = await setupCard(options);
+    try {
+      await card.component.act('copy', resource, link);
+      assert.equal(card.feedback.toast.value.type, 'error');
+      assert.equal(card.feedback.toast.value.show, true);
+      assert.ok(!card.messages.some(([, type]) => type === 'success'));
+      assert.equal(card.component.copiedKey.value, '');
+      assert.equal(card.component.loading.link, undefined);
+      assert.ok(!card.feedback.toast.value.message.includes('Write permission denied'));
+    } finally { card.cleanup(); }
+  }
+});
+
+test('unmount cancels pending feedback and duplicate clicks do not start another request', async () => {
+  let calls = 0;
+  const card = await setupCard({ resolve: (_result, _link, _key, signal) => {
+    calls++;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('已取消')), { once: true }));
+  } });
+  try {
+    const action = card.component.act('copy', resource, link);
+    await card.component.act('copy', resource, link);
+    assert.equal(calls, 1);
+    assert.equal(card.messages.length, 1);
+    card.unmount();
+    await action;
+    assert.equal(card.feedback.toast.value.show, false);
+    assert.equal(card.messages.length, 1);
+  } finally { card.cleanup(); }
+});
+
+test('progress persists, completed notices expire, and older cleanup cannot hide newer feedback', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const feedback = useToast();
+  try {
+    const dismissProgress = feedback.showToast('正在复制', 'info', { duration: 0, loading: true });
+    t.mock.timers.tick(20000);
+    assert.equal(feedback.toast.value.show, true);
+    feedback.showToast('复制完成', 'success');
+    dismissProgress();
+    assert.equal(feedback.toast.value.show, true);
+    t.mock.timers.tick(3499);
+    assert.equal(feedback.toast.value.show, true);
+    t.mock.timers.tick(1);
+    assert.equal(feedback.toast.value.show, false);
+    feedback.showToast('请重试', 'error');
+    t.mock.timers.tick(6000);
+    assert.equal(feedback.toast.value.show, false);
+  } finally { feedback.hideToast(); }
+});

@@ -10,12 +10,6 @@
         {{ notice }}
       </p>
       <Card class="query-panel" aria-label="资源查询与操作">
-        <div class="resource-view-hint">
-          <ConsoleIcon name="database" :size="15" />
-          <span
-            >资源库由管理员直接维护，新增资源后立即进入列表和前台搜索。</span
-          >
-        </div>
         <form class="query-toolbar" @submit.prevent="loadResources">
           <label class="query-input">
             <ConsoleIcon name="search" :size="16" /><Input

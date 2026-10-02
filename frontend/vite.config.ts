@@ -15,7 +15,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": { target: apiTarget, changeOrigin: true },
+      // Preserve the browser Host so same-origin credential mutations can be
+      // checked by the API behind this development proxy.
+      "/api": { target: apiTarget, changeOrigin: false },
       "/robots.txt": { target: apiTarget, changeOrigin: true },
       "/sitemap.xml": { target: apiTarget, changeOrigin: true },
     },

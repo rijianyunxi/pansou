@@ -1,6 +1,12 @@
-//! Native Baidu/Quark share operations. No Node subprocess, no caller-controlled upstream.
+//! Native cloud-drive operations. No Node subprocess or caller-controlled upstream.
 mod baidu;
 mod quark;
+mod extended;
+pub use extended::validate_credential;
+pub(crate) use extended::guangya_auth_headers;
+pub(crate) fn extended_headers(provider: Provider, raw: &str) -> Result<reqwest::header::HeaderMap, ApiError> {
+    extended::credential_headers(provider, raw).map_err(|_| ApiError::BadRequest("凭证请求头格式不正确".into()))
+}
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -23,14 +29,29 @@ use url::Url;
 pub enum Provider {
     Baidu,
     Quark,
+    Aliyun,
+    Xunlei,
+    Guangya,
 }
 impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Self::Baidu => "baidu",
             Self::Quark => "quark",
+            Self::Aliyun => "aliyun",
+            Self::Xunlei => "xunlei",
+            Self::Guangya => "guangya",
         }
     }
+    pub const ALL: [Self; 5] = [Self::Baidu, Self::Quark, Self::Aliyun, Self::Xunlei, Self::Guangya];
+    pub fn from_name(name: &str) -> Result<Self, ApiError> {
+        Self::ALL.into_iter().find(|p| p.name() == name)
+            .ok_or_else(|| ApiError::BadRequest("不支持的网盘类型".into()))
+    }
+    pub fn root(self) -> &'static str {
+        match self { Self::Baidu => "/", Self::Aliyun => "root", _ => "0" }
+    }
+    pub fn token_auth(self) -> bool { !matches!(self, Self::Baidu | Self::Quark) }
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +120,7 @@ impl DriveError {
                 ApiError::BadRequest(self.message)
             }
             ErrorKind::Ownership => ApiError::Forbidden(self.message),
-            ErrorKind::Login => ApiError::BadRequest(self.message),
+            ErrorKind::Login => ApiError::CloudAuthRequired(self.message),
             ErrorKind::Limit => ApiError::Unavailable(self.message),
             _ => ApiError::Upstream(self.message),
         }
@@ -125,7 +146,7 @@ impl ShareInput {
             return Err(ApiError::BadRequest("分享链接过长".into()));
         }
         let url = Url::parse(self.url.trim())
-            .map_err(|_| ApiError::BadRequest("请输入完整的百度或夸克分享链接".into()))?;
+            .map_err(|_| ApiError::BadRequest("请输入支持网盘的完整分享链接".into()))?;
         if !matches!(url.scheme(), "https" | "http")
             || !url.username().is_empty()
             || url.password().is_some()
@@ -138,9 +159,12 @@ impl ShareInput {
         let provider = match url.host_str() {
             Some("pan.baidu.com") => Provider::Baidu,
             Some("pan.quark.cn") => Provider::Quark,
+            Some("alipan.com" | "www.alipan.com" | "aliyundrive.com" | "www.aliyundrive.com") => Provider::Aliyun,
+            Some("pan.xunlei.com") => Provider::Xunlei,
+            Some("guangyapan.com" | "www.guangyapan.com") => Provider::Guangya,
             _ => {
                 return Err(ApiError::BadRequest(
-                    "仅支持 pan.baidu.com 和 pan.quark.cn 的分享链接".into(),
+                    "仅支持百度、夸克、阿里、迅雷和光鸭的官方分享链接".into(),
                 ));
             }
         };
@@ -176,7 +200,7 @@ impl ShareInput {
             .map(|s| s.trim().to_owned())
             .or_else(|| {
                 url.query_pairs()
-                    .find(|(k, _)| k == "pwd" || k == "passcode")
+                    .find(|(k, _)| k == "pwd" || k == "passcode" || k == "code" || k == "password")
                     .map(|(_, v)| v.into_owned())
             })
             .unwrap_or_default();
@@ -186,6 +210,9 @@ impl ShareInput {
         let canonical = match provider {
             Provider::Baidu => format!("https://pan.baidu.com/s/1{key}"),
             Provider::Quark => format!("https://pan.quark.cn/s/{key}"),
+            Provider::Aliyun => format!("https://www.alipan.com/s/{key}"),
+            Provider::Xunlei => format!("https://pan.xunlei.com/s/{key}"),
+            Provider::Guangya => format!("https://www.guangyapan.com/s/{key}"),
         };
         Ok(Reference {
             provider,
@@ -238,35 +265,47 @@ pub struct Drive {
     pub wire: Wire,
     baidu: baidu::Baidu,
     quark: quark::Quark,
+    extended: extended::Extended,
     pub account: String,
+    managed: Option<(AppState, i64, i64)>,
 }
 impl Drive {
     pub async fn load(state: &AppState, provider: Provider) -> Result<Self, ApiError> {
-        let cookie = sqlx::query_scalar::<_, String>(
-            "SELECT credential FROM cloud_account_settings WHERE provider=$1",
-        )
-        .bind(provider.name())
-        .fetch_optional(&state.pool)
-        .await?
-        .unwrap_or_default();
-        Ok(Self::from_state(state, provider, cookie))
+        let Some(account)=crate::cloud_auth::credentials(state,provider).await? else {return Ok(Self::from_state(state,provider,String::new()))};
+        let mut drive=Self::from_state(state,provider,account.raw(provider)?);
+        if let Some(key)=account.account_key {
+            drive.account=key;
+            drive.managed=Some((state.clone(),account.binding_epoch,account.token_revision));
+            drive.wire.bind_cookies(state.pool.clone(),account.binding_epoch,account.token_revision);
+        }
+        Ok(drive)
     }
     /// Call under the provider advisory lock, before any mutating upstream request.
     pub async fn ensure_current_account(
         &self,
         connection: &mut sqlx::PgConnection,
     ) -> Result<(), ApiError> {
-        let cookie = sqlx::query_scalar::<_, String>(
-            "SELECT credential FROM cloud_account_settings WHERE provider=$1",
-        )
-        .bind(self.wire.provider.name())
-        .fetch_optional(connection)
-        .await?
-        .unwrap_or_default();
-        if credential_fingerprint(self.wire.provider, &cookie) != self.account {
+        use sqlx::Row;
+        let row=sqlx::query("SELECT credential,account_key,binding_epoch,token_revision,auth_status FROM cloud_account_settings WHERE provider=$1").bind(self.wire.provider.name()).fetch_optional(connection).await?;
+        let current=row.as_ref().map(|r|r.get::<Option<String>,_>("account_key").unwrap_or_else(||credential_fingerprint(self.wire.provider,&r.get::<String,_>("credential"))));
+        if current.as_ref()!=Some(&self.account) || self.managed.as_ref().is_some_and(|(_,epoch,_)|row.as_ref().is_none_or(|r|r.get::<i64,_>("binding_epoch")!=*epoch)) {
             return Err(ApiError::Conflict(
                 "等待期间网盘登录态已变化，未执行写操作；请重新检测或预检".into(),
             ));
+        }
+        if self.managed.as_ref().is_some_and(|(_,_,revision)|self.wire.provider.token_auth()&&row.as_ref().is_some_and(|r|r.get::<i64,_>("token_revision")!=*revision)){
+            return Err(ApiError::Unavailable("网盘凭证已更新，稍后重试当前任务".into()));
+        }
+        if row.as_ref().is_some_and(|r|r.get::<String,_>("auth_status")=="reauthorization_required"){return Err(ApiError::CloudAuthRequired("网盘需要重新授权，未执行写操作".into()));}
+        if let Some((state,_,_))=&self.managed {
+            if !self.wire.provider.token_auth(){
+                crate::cloud_auth::verify_binding_identity(state,self.wire.provider,&self.wire.snapshot().await,&self.account).await?;
+            }
+        }
+        if self.wire.provider.token_auth() {
+            self.extended.verify_account().await.map_err(|error| {
+                if error.kind == ErrorKind::Ownership { ApiError::Conflict(error.message) } else { error.api() }
+            })?;
         }
         Ok(())
     }
@@ -279,6 +318,8 @@ impl Drive {
                 drive.baidu.base = bases.baidu.clone();
                 drive.quark.pc_base = bases.quark_pc.clone();
                 drive.quark.share_base = bases.quark_share.clone();
+                drive.extended.base = bases.baidu.clone();
+                drive.extended.account_base = bases.baidu.clone();
             }
             drive
         };
@@ -286,18 +327,21 @@ impl Drive {
     }
     pub fn new(http: reqwest::Client, provider: Provider, cookie: String) -> Self {
         let account = credential_fingerprint(provider, &cookie);
-        let wire = Wire::new(http, provider, cookie);
+        let wire = Wire::new(http, provider, cookie.clone());
         Self {
             baidu: baidu::Baidu::new(wire.clone()),
             quark: quark::Quark::new(wire.clone()),
+            extended: extended::Extended::new(wire.clone(), &cookie),
             wire,
             account,
+            managed: None,
         }
     }
     pub async fn resolve(&self, reference: &Reference) -> Result<Context, DriveError> {
         let context = match reference.provider {
             Provider::Baidu => self.baidu.resolve(reference).await?,
             Provider::Quark => self.quark.resolve(reference).await?,
+            _ => self.extended.resolve(reference).await?,
         };
         if context
             .files
@@ -318,12 +362,14 @@ impl Drive {
         match self.wire.provider {
             Provider::Baidu => self.baidu.list(dir).await,
             Provider::Quark => self.quark.list(dir).await,
+            _ => self.extended.list(dir).await,
         }
     }
     pub async fn share(&self, files: &[File]) -> Result<Value, DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.share(files).await,
             Provider::Quark => self.quark.share(files).await,
+            _ => self.extended.share(files, 7).await,
         }
     }
     pub async fn begin_temporary_share(
@@ -334,11 +380,12 @@ impl Drive {
         match self.wire.provider {
             Provider::Baidu => self.baidu.share_days(files, days).await,
             Provider::Quark => self.quark.begin_share(files, days).await,
+            _ => self.extended.share(files, days).await,
         }
     }
     pub async fn finish_temporary_share(&self, share: &Value) -> Result<Value, DriveError> {
         match self.wire.provider {
-            Provider::Baidu => Ok(share.clone()),
+            Provider::Baidu | Provider::Aliyun | Provider::Xunlei | Provider::Guangya => Ok(share.clone()),
             Provider::Quark => {
                 self.quark
                     .finish_share(share["shareId"].as_str().unwrap_or(""))
@@ -357,6 +404,7 @@ impl Drive {
         match self.wire.provider {
             Provider::Baidu => self.baidu.create_directory(parent, name).await,
             Provider::Quark => self.quark.create_directory(parent, name).await,
+            _ => self.extended.create_directory(parent, name).await,
         }
     }
     pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
@@ -366,24 +414,28 @@ impl Drive {
         match self.wire.provider {
             Provider::Baidu => self.baidu.revoke_share(id).await,
             Provider::Quark => self.quark.revoke_share(id).await,
+            _ => self.extended.revoke_share(id).await,
         }
     }
     pub async fn transfer(&self, context: &Context, dir: &str) -> Result<Vec<String>, DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.save(context, &context.files, dir).await,
             Provider::Quark => self.quark.save(context, &context.files, dir).await,
+            _ => self.extended.transfer(context, dir).await,
         }
     }
     pub async fn owned(&self, context: &Context) -> Result<(), DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.owned(context).await,
             Provider::Quark => self.quark.owned(context).await,
+            _ => Err(self.wire.error(ErrorKind::Ownership, "该平台的公开分享不作为删除归属证明；仅清理本流程创建的产物")),
         }
     }
     pub async fn delete_files(&self, files: &[File]) -> Result<(), DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.delete(files).await,
             Provider::Quark => self.quark.delete(files).await,
+            _ => self.extended.delete(files).await,
         }
     }
     pub async fn check(&self, reference: &Reference) -> Value {
@@ -432,6 +484,10 @@ impl Drive {
             saved_ids = match reference.provider {
                 Provider::Baidu => self.baidu.save(&context, &missing, &dir).await?,
                 Provider::Quark => self.quark.save(&context, &missing, &dir).await?,
+                _ => {
+                    let mut partial = context.clone(); partial.files = missing.clone();
+                    self.extended.transfer(&partial, &dir).await?
+                },
             };
         }
         let mut share = Value::Null;
@@ -484,6 +540,14 @@ impl Drive {
     }
 }
 pub fn credential_fingerprint(provider: Provider, cookie: &str) -> String {
+    if provider.token_auth()
+        && let Ok(value) = serde_json::from_str::<Value>(cookie)
+        && let Some(user) = ["user_id","userId","sub"].iter().map(|key|scalar(&value[*key])).find(|id|valid_id(id,false))
+    {
+        let drive = if provider == Provider::Aliyun { scalar(&value["drive_id"]) } else { String::new() };
+        let drive = if provider == Provider::Aliyun && drive.is_empty() { scalar(&value["driveId"]) } else { drive };
+        return format!("{:x}", Sha256::digest(format!("{}:account:{user}:drive:{drive}",provider.name())));
+    }
     format!(
         "{:x}",
         Sha256::digest(format!("{}:{cookie}", provider.name()))
@@ -492,15 +556,11 @@ pub fn credential_fingerprint(provider: Provider, cookie: &str) -> String {
 pub fn validate_dir(provider: Provider, dir: Option<&str>) -> Result<String, ApiError> {
     let dir = dir
         .filter(|s| !s.is_empty())
-        .unwrap_or(if provider == Provider::Quark {
-            "0"
-        } else {
-            "/"
-        });
-    if provider == Provider::Quark {
+        .unwrap_or(provider.root());
+    if provider != Provider::Baidu {
         if !valid_id(dir, true) {
             return Err(ApiError::BadRequest(
-                "夸克目标目录必须是 fid，根目录填 0".into(),
+                "目标目录必须是文件夹 ID".into(),
             ));
         }
     } else if !dir.starts_with('/')

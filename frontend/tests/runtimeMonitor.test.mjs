@@ -67,16 +67,14 @@ test('24-hour delivery total includes all completed outcomes, excludes in-flight
   assert.equal(deliveryTotal({ links: { deliveryStats: { processing: 99, transferred: 10, reused: 5, fallback: 3, direct: 2, unavailable: 1 } } }), 21);
   assert.equal(deliveryTotal({ links: { deliveryStats: { processing: 0, transferred: 0, reused: 0, fallback: 0, direct: 0, unavailable: 0 } } }), 0);
 });
-test('approved monitor layout keeps services, results, live source health and queues visible in order', async () => {
+test('monitor puts queues and attention before secondary source health', async () => {
   const page = await readFile(new URL('../components/monitor/MonitorPanel.vue', import.meta.url), 'utf8');
-  const sections = ['aria-label="服务运行状态"', 'aria-label="采集与处理成果"', 'aria-label="实时来源健康"', 'aria-label="任务队列与需要关注"'];
+  const sections = ['aria-label="服务运行状态"', 'aria-label="采集与处理成果"', 'aria-label="任务队列与需要关注"', 'aria-label="实时来源健康"'];
   const positions = sections.map(section => page.indexOf(section));
   assert.ok(positions.every(position => position >= 0));
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
   assert.match(page, /\.service-grid\s*\{[^}]*repeat\(5,/);
   assert.match(page, /class="service-card[^"]*" role="article"/);
-  assert.match(page, /aria-label="'重启 ' \+ service.name \+ '（未接入）'"/);
-  assert.match(page, /variant="secondary" size="sm"[^>]+disabled[^>]+aria-describedby="runtime-restart-note"/);
   assert.ok(page.includes('data.links.queues.checks.completed'));
   assert.ok(page.includes('data.crawl.resources'));
 });

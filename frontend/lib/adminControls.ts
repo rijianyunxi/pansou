@@ -1,7 +1,7 @@
 import { isVNode, type VNode } from "vue";
 
 export const EMPTY_SELECT_VALUE = "__pansou_admin_empty__";
-export interface AdminSelectOption {
+interface AdminSelectOption {
   value: string;
   text: string;
   disabled: boolean;

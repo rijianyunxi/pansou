@@ -967,145 +967,6 @@
           </form>
         </Card>
         <Card
-          v-else-if="activeSettingsTab === 'cloud'"
-          id="settings-panel-cloud"
-          class="feature-card admin-account-card settings-tab-panel cloud-operations-card"
-          role="tabpanel"
-          aria-labelledby="settings-tab-cloud"
-        >
-          <div class="policy-card-header">
-            <div class="policy-card-copy">
-              <h2 id="cloud-operations-title">云端操作</h2>
-              <p>
-                先配置账号，再选择需要启用的功能。登录凭据只保存在服务端，页面不会回显完整 Cookie。
-              </p>
-            </div>
-            <div class="policy-card-actions">
-              <span class="policy-count"
-                >{{
-                  Number(quarkSettings.configured) +
-                  Number(baiduSettings.configured)
-                }}/2 已配置</span
-              >
-            </div>
-          </div>
-          <div class="cloud-account-grid">
-            <section
-              class="cloud-provider-card"
-              aria-labelledby="quark-account-title"
-            >
-              <div class="cloud-provider-heading">
-                <div>
-                  <h3 id="quark-account-title">夸克网盘</h3>
-                  <p>{{ quarkSettings.configured ? '登录凭据已保存，不代表登录仍有效' : '配置登录凭据后可使用云端功能' }}</p>
-                </div>
-                <span class="policy-count">{{
-                  quarkSettings.configured ? "已配置" : "未配置"
-                }}</span>
-              </div>
-              <details class="cloud-credentials" :open="!quarkSettings.configured">
-                <summary>{{ quarkSettings.configured ? '更新登录凭据' : '配置登录凭据' }}</summary>
-              <form
-                class="admin-account-form"
-                @submit.prevent="saveQuarkSettings"
-              >
-                <label class="policy-field"
-                  ><span
-                    ><strong>夸克 Cookie</strong
-                    ><small>{{ quarkCookieHint }}</small></span
-                  ><Textarea
-                    v-model="quarkForm.cookie"
-                    rows="4"
-                    maxlength="50000"
-                    autocomplete="off"
-                    :placeholder="
-                      quarkSettings.configured
-                        ? '留空表示不修改已保存的 Cookie'
-                        : '从浏览器复制 pan.quark.cn 的 Cookie 请求头粘贴到这里'
-                    "
-                /></label>
-                <div class="admin-account-actions">
-                  <Button
-                    variant="default"
-                    class="primary-button"
-                    type="submit"
-                    :disabled="busy || !quarkForm.cookie.trim()"
-                    ><ConsoleIcon name="check" :size="14" />{{
-                      busy ? "保存中…" : "保存登录凭据"
-                    }}</Button
-                  ><Button
-                    variant="outline"
-                    v-if="quarkSettings.configured"
-                    class="secondary-button"
-                    type="button"
-                    :disabled="busy"
-                    @click="clearQuarkSettings"
-                    >清除 Cookie</Button
-                  >
-                </div>
-              </form>
-              </details>
-            </section>
-            <section
-              class="cloud-provider-card"
-              aria-labelledby="baidu-account-title"
-            >
-              <div class="cloud-provider-heading">
-                <div>
-                  <h3 id="baidu-account-title">百度网盘</h3>
-                  <p>{{ baiduSettings.configured ? '登录凭据已保存，不代表登录仍有效' : '配置登录凭据后可使用云端功能' }}</p>
-                </div>
-                <span class="policy-count">{{
-                  baiduSettings.configured ? "已配置" : "未配置"
-                }}</span>
-              </div>
-              <details class="cloud-credentials" :open="!baiduSettings.configured">
-                <summary>{{ baiduSettings.configured ? '更新登录凭据' : '配置登录凭据' }}</summary>
-              <form
-                class="admin-account-form"
-                @submit.prevent="saveBaiduSettings"
-              >
-                <label class="policy-field"
-                  ><span
-                    ><strong>百度 Cookie</strong
-                    ><small>{{ baiduCookieHint }}</small></span
-                  ><Textarea
-                    v-model="baiduForm.cookie"
-                    rows="4"
-                    maxlength="50000"
-                    autocomplete="off"
-                    :placeholder="
-                      baiduSettings.configured
-                        ? '留空表示不修改已保存的 Cookie'
-                        : '从浏览器复制 pan.baidu.com 的完整 Cookie 请求头粘贴到这里'
-                    "
-                /></label>
-                <div class="admin-account-actions">
-                  <Button
-                    variant="default"
-                    class="primary-button"
-                    type="submit"
-                    :disabled="busy || !baiduForm.cookie.trim()"
-                    ><ConsoleIcon name="check" :size="14" />{{
-                      busy ? "保存中…" : "保存登录凭据"
-                    }}</Button
-                  ><Button
-                    variant="outline"
-                    v-if="baiduSettings.configured"
-                    class="secondary-button"
-                    type="button"
-                    :disabled="busy"
-                    @click="clearBaiduSettings"
-                    >清除 Cookie</Button
-                  >
-                </div>
-              </form>
-              </details>
-            </section>
-          </div>
-          <LinkDeliverySettings :quark-configured="quarkSettings.configured" :baidu-configured="baiduSettings.configured" />
-        </Card>
-        <Card
           v-else-if="activeSettingsTab === 'admin'"
           id="settings-panel-admin"
           class="feature-card admin-account-card settings-tab-panel"
@@ -1199,7 +1060,6 @@ import { useAdminSession } from "@/composables/admin/useAdminSession";
 const { locked, authenticated } = useAdminSession();
 
 import { apiFetch } from "../../src/appRuntime";
-import LinkDeliverySettings from './LinkDeliverySettings.vue';
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 
@@ -1307,7 +1167,6 @@ const feature = computed(() => props.feature);
 const settingsTabs = [
   { key: "search", label: "搜索配置", description: "首页与搜索策略" },
   { key: "wechat", label: "微信小程序", description: "登录与小程序码" },
-  { key: "cloud", label: "云端操作", description: "夸克 / 百度 Cookie" },
   { key: "admin", label: "管理员账号", description: "登录账号与密码" },
 ] as const;
 type SettingsTab = (typeof settingsTabs)[number]["key"];
@@ -1343,10 +1202,6 @@ type WechatForm = {
   qrPage: string;
   envVersion: WechatEnvVersion;
 };
-type QuarkSettingsView = { configured: boolean; cookieLength: number };
-type QuarkForm = { cookie: string };
-type BaiduSettingsView = { configured: boolean; cookieLength: number };
-type BaiduForm = { cookie: string };
 const DEFAULT_WECHAT_SETTINGS: WechatSettingsView = {
   appId: "",
   qrPage: "pages/login/index",
@@ -1368,26 +1223,6 @@ const wechatSecretHint = computed(() =>
   wechatSettings.value.secretConfigured
     ? `已保存 ${wechatSettings.value.secretLength} 位密钥，留空表示不修改`
     : "与 AppID 配套，仅保存在服务端，保存后不会回显",
-);
-const quarkSettings = ref<QuarkSettingsView>({
-  configured: false,
-  cookieLength: 0,
-});
-const quarkForm = ref<QuarkForm>({ cookie: "" });
-const quarkCookieHint = computed(() =>
-  quarkSettings.value.configured
-    ? `已保存 ${quarkSettings.value.cookieLength} 个字符，留空表示不修改`
-    : "从浏览器开发者工具复制 Cookie 请求头内容",
-);
-const baiduSettings = ref<BaiduSettingsView>({
-  configured: false,
-  cookieLength: 0,
-});
-const baiduForm = ref<BaiduForm>({ cookie: "" });
-const baiduCookieHint = computed(() =>
-  baiduSettings.value.configured
-    ? `已保存 ${baiduSettings.value.cookieLength} 个字符，留空表示不修改`
-    : "需包含 BDUSS、BAIDUID，建议同时包含 STOKEN",
 );
 const newUser = ref({ username: "", password: "", nickname: "" });
 const createUserOpen = ref(false);
@@ -1583,14 +1418,10 @@ async function loadData() {
         policyResult,
         accountResult,
         wechatResult,
-        quarkResult,
-        baiduResult,
       ] = await Promise.all([
         apiFetch<any>("/api/settings/user-policy", { cache: "no-store" }),
         apiFetch<any>("/api/admin/account", { cache: "no-store" }),
         apiFetch<any>("/api/settings/wechat", { cache: "no-store" }),
-        apiFetch<any>("/api/settings/quark", { cache: "no-store" }),
-        apiFetch<any>("/api/settings/baidu", { cache: "no-store" }),
       ]);
       const loadedPolicy = normalizePolicy(
         unwrap<Partial<UserPolicy>>(policyResult, "policy"),
@@ -1620,10 +1451,6 @@ async function loadData() {
         qrPage: loadedWechat.qrPage,
         envVersion: loadedWechat.envVersion,
       };
-      quarkSettings.value = unwrap<QuarkSettingsView>(quarkResult, "data");
-      quarkForm.value = { cookie: "" };
-      baiduSettings.value = unwrap<BaiduSettingsView>(baiduResult, "data");
-      baiduForm.value = { cookie: "" };
     }
   } catch (error: any) {
     if ([401, 403].includes(statusOf(error))) {
@@ -2052,92 +1879,6 @@ async function saveWechatSettings() {
         ? "微信配置已保存，扫码登录与小程序登录立即生效。"
         : "已保存，但 AppID 或 AppSecret 仍为空，微信登录暂不可用。",
     );
-  } catch (error: any) {
-    show(apiError(error), true);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function saveQuarkSettings() {
-  if (busy.value || !quarkForm.value.cookie.trim()) return;
-  busy.value = true;
-  try {
-    const result = await apiFetch<any>("/api/settings/quark", {
-      method: "PUT",
-      body: { cookie: quarkForm.value.cookie },
-    });
-    quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
-    quarkForm.value = { cookie: "" };
-    show("夸克 Cookie 已保存，检测、转存和云端删除会立即使用新的登录态。");
-  } catch (error: any) {
-    show(apiError(error), true);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function clearQuarkSettings() {
-  if (
-    busy.value ||
-    typeof window === "undefined" ||
-    !(await confirmAction(
-      "确定清除已保存的夸克 Cookie 吗？清除后云端写操作将不可用。",
-    ))
-  )
-    return;
-  busy.value = true;
-  try {
-    const result = await apiFetch<any>("/api/settings/quark", {
-      method: "PUT",
-      body: { cookie: null },
-    });
-    quarkSettings.value = unwrap<QuarkSettingsView>(result, "data");
-    quarkForm.value = { cookie: "" };
-    show("夸克 Cookie 已清除。");
-  } catch (error: any) {
-    show(apiError(error), true);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function saveBaiduSettings() {
-  if (busy.value || !baiduForm.value.cookie.trim()) return;
-  busy.value = true;
-  try {
-    const result = await apiFetch<any>("/api/settings/baidu", {
-      method: "PUT",
-      body: { cookie: baiduForm.value.cookie },
-    });
-    baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
-    baiduForm.value = { cookie: "" };
-    show("百度 Cookie 已保存，检测、转存和云端删除会立即使用新的登录态。");
-  } catch (error: any) {
-    show(apiError(error), true);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function clearBaiduSettings() {
-  if (
-    busy.value ||
-    typeof window === "undefined" ||
-    !(await confirmAction(
-      "确定清除已保存的百度 Cookie 吗？清除后云端写操作将不可用。",
-    ))
-  )
-    return;
-  busy.value = true;
-  try {
-    const result = await apiFetch<any>("/api/settings/baidu", {
-      method: "PUT",
-      body: { cookie: null },
-    });
-    baiduSettings.value = unwrap<BaiduSettingsView>(result, "data");
-    baiduForm.value = { cookie: "" };
-    show("百度 Cookie 已清除。");
   } catch (error: any) {
     show(apiError(error), true);
   } finally {

@@ -46,8 +46,13 @@
   </div>
 
   <!-- 全局接口通知：公共页面和管理后台共用。 -->
-  <div v-if="toast.show" class="toast" :class="toast.type" role="alert" aria-live="assertive">
-    {{ toast.message }}
+  <div v-if="toast.show" class="toast" :class="toast.type" :role="toast.type === 'error' ? 'alert' : 'status'" :aria-live="toast.type === 'error' ? 'assertive' : 'polite'" aria-atomic="true">
+    <svg class="toast-icon" :class="{ 'toast-icon--loading': toast.loading }" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path v-if="toast.loading" d="M12 3a9 9 0 1 1-9 9" />
+      <path v-else-if="toast.type === 'success'" d="m5 12 4 4L19 6" />
+      <g v-else><circle cx="12" cy="12" r="9" /><path d="M12 8v5m0 3h.01" /></g>
+    </svg>
+    <span class="toast-message">{{ toast.message }}</span>
   </div>
 </template>
 
@@ -57,6 +62,7 @@ import { useRoute, RouterLink, RouterView } from "vue-router";
 import { appConfig, setDocumentHead } from "./src/appRuntime";
 import { useAuth } from "./composables/useAuth";
 import { useSettings } from "./composables/useSettings";
+import { useToast } from "./composables/useToast";
 
 import SettingsDrawer from "./components/SettingsDrawer.vue";
 import UserAccountPanel from "./components/UserAccountPanel.vue";
@@ -110,24 +116,7 @@ watch(() => route.path, () => {
   openSettings.value = false;
 });
 
-// Toast 状态
-const toast = ref({
-  show: false,
-  message: "",
-  type: "info" as "info" | "success" | "error",
-});
-
-// 显示 Toast
-let toastTimer: ReturnType<typeof setTimeout> | undefined;
-function showToast(message: string, type: "info" | "success" | "error" = "info") {
-  if (!message.trim()) return;
-  if (toastTimer) clearTimeout(toastTimer);
-  toast.value = { show: true, message, type };
-  toastTimer = setTimeout(() => {
-    toast.value.show = false;
-    toastTimer = undefined;
-  }, type === "error" ? 6000 : 3500);
-}
+const { toast, showToast, hideToast } = useToast();
 
 function handleGlobalApiError(event: Event) {
   const detail = (event as CustomEvent<{ message?: string }>).detail;
@@ -151,7 +140,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("pansou:api-error", handleGlobalApiError);
-  if (toastTimer) clearTimeout(toastTimer);
+  hideToast();
 });
 
 // 暴露给子组件使用
@@ -480,7 +469,9 @@ button {
 .toast {
   position: fixed;
   top: 72px;
-  right: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
   padding: 12px 20px;
   border-radius: var(--radius-md);
   background: var(--bg-primary);
@@ -488,18 +479,27 @@ button {
   border: 1px solid var(--border-light);
   font-weight: 500;
   z-index: 1000;
-  animation: slideInRight 0.3s ease;
+  animation: toastEnter 0.2s ease;
   display: flex;
   align-items: center;
   gap: 8px;
+  max-width: min(440px, calc(100vw - 32px));
+  box-sizing: border-box;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
-.toast::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
+.toast-icon { flex-shrink: 0; }
+.toast-icon--loading { animation: toastSpin 1s linear infinite; }
+.toast-message { min-width: 0; overflow-wrap: anywhere; }
+
+@keyframes toastSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes toastEnter {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .toast.info {
@@ -508,12 +508,12 @@ button {
 }
 
 .toast.success {
-  color: var(--success);
+  color: var(--text-primary);
   border-left: 4px solid var(--success);
 }
 
 .toast.error {
-  color: var(--error);
+  color: var(--text-primary);
   border-left: 4px solid var(--error);
 }
 
@@ -574,6 +574,9 @@ button {
     right: 16px;
     left: 16px;
     top: 64px;
+    width: auto;
+    transform: none;
+    animation: fadeIn 0.2s ease;
   }
 }
 

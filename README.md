@@ -244,7 +244,8 @@ AppState
 | `managed_resources` | 人工资源和 TG 采集资源的统一库（来源与可见性分开） |
 | `policy_settings` | 匿名频道、热搜、认证按钮等策略 |
 | `search_settings` / `system_settings` | 搜索并发、超时等系统设置 |
-| `cloud_account_settings` | 云盘账号配置 |
+| `cloud_account_settings` | 云盘账号凭证、绑定版本与登录状态 |
+| `cloud_provider_policies` | 每个网盘一行的按需转存开关/目录/清理时间与有效性检测参数 |
 | `wechat_mini_settings` | 微信小程序配置 |
 
 `002_storage_optimizations.sql` 启用 `pg_trgm`，并为日志关键词、资源搜索、热搜、代理路由、用户列表等查询建立 B-tree、GIN 和部分索引。
@@ -527,7 +528,7 @@ HTML 来源示例：
 
 后台运行监控页面通过管理员接口 `/api/monitor` 展示 API / PostgreSQL / Redis 状态、TG 与链接服务心跳、任务队列、最近 24 小时点击交付结果和实时来源统计。TG 搜索身份不再混入实时来源健康统计。TG 调度与到期清理可以分别暂停，开关存入 PostgreSQL `policy_settings.background-workers`，默认启用；暂停在当前批次完成后生效，重启保留。兼容旧字段 `linkEnabled`，但其含义现仅为到期清理应急开关（接口 `/api/admin/runtime/workers/cleanup`）；本地关联同步、状态汇总与按需取链不受影响。旧的显式暂停不会被自动恢复。
 
-「系统设置 → 云端操作」将账号凭据与功能开关分开。已配置的 Cookie 编辑区默认收起；开启按需转存后可浏览选择项目专用目录（不能选根目录），首次启用默认保留 24 小时，其余参数在高级设置中。修改开关后需保存才生效，保存不会恢复应急暂停的清理。转存仅在用户复制/打开时发生，没有定时批量转存；关闭转存不取消既有产物的清理，也不禁止复用仍可用的自产分享。后台巡检独立控制，关闭只停止批量检测。
+「系统 → 网盘账号」集中管理五家网盘的扫码连接、凭证维护、按需转存与有效性检测，系统设置只保留跳转入口。阿里、光鸭令牌支持自动续期，百度、夸克维护 Cookie 并定期检查；迅雷暂用高级导入。凭证在服务端加密保存，首次保存生成的密钥文件需与数据库一同备份。详见 [网盘账号管理](docs/cloud-accounts.md)。页面不再分页签：每家网盘是一张卡片，上半部分管理授权，下半部分展示转存与检测状态；卡片上的「转存」按钮打开配置弹窗，设置按需转存开关、项目专用目录（不能选根目录）、清理时间、平台分享期限，以及检测间隔、每日额度与缓存参数，弹窗的「转存」保存生效、「清除」关闭并清空转存配置。每个网盘的配置存在 `cloud_provider_policies` 一行里（迁移 026 从原 `link-delivery` / `link-check` JSON 搬运并删除旧键），`link-check` 只保留后台检测总开关。转存仅在用户复制/打开时发生，没有定时批量转存；关闭转存不取消既有产物的清理，也不禁止复用仍可用的自产分享。后台巡检独立控制，关闭只停止批量检测，保存检测参数不会改变启停状态。
 
 入库只解析并记录链接，通过本地 outbox 异步关联与排队检测，不阻塞采集。`validity=1` 表示明确有效，`0` 仅表示原分享明确失效/资源不存在，`-1` 表示未知：网络、登录、限频、密码或接口错误均覆盖当前有效性为 `-1`，不会沿用旧的 `0/1`。后台巡检跳过未配置凭据或仍在检测缓存/退避期的链接，优先新入库与最近被点击的链接；每网盘每日原链检测预算至少保留 20% 给点击请求。
 
@@ -862,7 +863,7 @@ http://127.0.0.1:5173
 
 所有后端配置都位于根目录 `.env`，前端不保存 PostgreSQL、Redis 或管理员密码。
 
-仓库中的 `.env.example` 是不含真实密钥的默认模板。Release 压缩包会同时带上可直接启动的 `.env`、模板副本 `.env.example`、`docker-compose.yml`、`README.md` 和 `docs/source-message-storage-cleanup.md`；正式部署前请修改数据库密码、管理员初始密码，并不要把修改后的 `.env` 提交到 Git。
+仓库中的 `.env.example` 是不含真实密钥的默认模板。Release 压缩包只包含 `pansou-api` 二进制、`frontend/dist` 和由模板生成的默认 `.env`，部署辅助文件（`docker-compose.yml`、systemd 服务文件等）不进包，以本仓库和 README 为准；正式部署前请修改数据库密码、管理员初始密码，并不要把修改后的 `.env` 提交到 Git。
 
 | 变量 | 默认/示例 | 用途 |
 | --- | --- | --- |
@@ -907,9 +908,9 @@ target/release/pansou-api
 
 Rust 进程的当前工作目录应为项目根目录，因为静态文件路径是 `frontend/dist/*`。
 
-### 13.1 服务器部署（GitHub Actions 产物 + systemd）
+### 13.1 服务器部署（GitHub Release 产物 + systemd）
 
-每次 push 到 `rust` / `main` 分支时，GitHub Actions 自动构建前端与 x86_64 musl **静态**二进制（不依赖宿主机 glibc，Debian 11 及以上均可直接运行），并把 `pansou-api`、`frontend/dist` 与 `deploy/pansou.service` 打成单个 tar 包，挂在 Actions 构建页面的 Artifacts 中（保留 14 天，附 sha256）。
+推送 `v*` 标签后，GitHub Actions 自动构建前端与 x86_64 musl **静态**二进制（不依赖宿主机 glibc，Debian 11 及以上均可直接运行），并把 `pansou-api`、`frontend/dist` 与默认 `.env` 打成单个压缩包，附加到 GitHub Release（附 sha256）。包内只有这三项；`docker-compose.yml`、systemd 服务文件等部署辅助文件从本仓库获取。
 
 首次安装（PostgreSQL/Redis 用本仓库 docker-compose 启动，端口仅绑定 `127.0.0.1`）：
 
@@ -917,10 +918,38 @@ Rust 进程的当前工作目录应为项目根目录，因为静态文件路径
 sudo useradd -r -s /usr/sbin/nologin pansou
 sudo mkdir -p /opt/pansou
 tar xzf pansou-linux-amd64.tar.gz -C /opt/pansou
-# 编写 /opt/pansou/.env（参照仓库 .env.example：
+# 修改 /opt/pansou/.env（包内 .env 是不含真实密钥的默认配置）：
 # PANSOU_DATABASE_URL=postgres://…@127.0.0.1:5432/pansou
-# PANSOU_REDIS_URL=redis://127.0.0.1:6379/）
-sudo cp /opt/pansou/deploy/pansou.service /etc/systemd/system/
+# PANSOU_REDIS_URL=redis://127.0.0.1:6379/
+```
+
+systemd 服务文件不随包发布，把以下内容写到 `/etc/systemd/system/pansou.service`：
+
+```ini
+[Unit]
+Description=pansou API (Rust + static frontend)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pansou
+Group=pansou
+WorkingDirectory=/opt/pansou
+EnvironmentFile=/opt/pansou/.env
+ExecStart=/opt/pansou/pansou-api
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+然后执行：
+
+```bash
 sudo chown -R pansou:pansou /opt/pansou
 sudo systemctl daemon-reload
 sudo systemctl enable --now pansou
@@ -1096,6 +1125,6 @@ npm run build
 
 ## 原生网盘工具（百度 / 夸克）
 
-后台「网盘资源 → 网盘工具」支持分享检测、按文件去重转存、创建新分享，以及按自己的分享链接删除云端资源；每条链接旁也能进入工具。Cookie 仍在「系统设置 → 云端操作」管理，仅 Rust 后端读取。删除必须预检并核对条目，写操作使用持久化 requestKey 幂等，响应丢失只查询，不自动重做。
+后台「网盘资源 → 网盘工具」支持分享检测、按文件去重转存、创建新分享，以及按自己的分享链接删除云端资源；每条链接旁也能进入工具。凭证在「系统 → 网盘账号」管理，仅 Rust 后端解密读取。删除必须预检并核对条目，写操作使用持久化 requestKey 幂等，响应丢失只查询，不自动重做。
 
 完全使用 Rust / reqwest，不依赖 wangpan 分支的 Node 服务。010 只新增操作/确认记录表，不清空资源或 TG 索引。能力、接口和验收边界见 [原生网盘实现](docs/native-cloud-drive.md)。

@@ -1,7 +1,11 @@
 //! Public link capabilities. Search snapshots are private, session-bound and short lived.
 mod delivery;
+mod management;
 mod worker;
-pub use delivery::{get_policy, put_policy};
+pub use delivery::{
+    clear_cloud_provider_delivery, get_cloud_providers, put_cloud_provider,
+};
+pub use management::{cleanup_jobs, retry_cleanup};
 pub use worker::run as worker;
 
 use crate::{
@@ -28,6 +32,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const REF_SECONDS: u64 = 1800;
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 async fn admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     let session = state.auth().session(headers).await?;
     let id = session
@@ -112,10 +117,8 @@ pub(crate) async fn record_check(
     value: &Value,
 ) -> Result<(), ApiError> {
     let id = register(state, link).await?;
-    let policy: Value =
-        sqlx::query_scalar("SELECT value_json FROM policy_settings WHERE key='link-check'")
-            .fetch_one(&state.pool)
-            .await?;
+    let policy =
+        delivery::load_provider(state, crate::cloud_drive::Provider::from_name(&link.r#type)?).await?;
     worker::record(state, id, value, &policy).await
 }
 const FACT_COLUMNS: &str = "id,validity,checked_at,valid_until,last_attempt_at,last_error_code";
@@ -405,6 +408,8 @@ pub async fn resolve(
     headers: HeaderMap,
     Json(input): Json<ResolveInput>,
 ) -> Result<Response, ApiError> {
+    let end = tokio::time::Instant::now() + RESOLVE_TIMEOUT;
+    let deadline = Utc::now() + chrono::Duration::seconds(RESOLVE_TIMEOUT.as_secs() as i64);
     let session = state.auth().session(&headers).await?;
     let snap = snapshot(&state, &session, &input.result_ref).await?;
     let link = snap
@@ -436,12 +441,12 @@ pub async fn resolve(
     let id = register(&state, &link).await?;
     // A click can create urgent work even if this link was registered while checks
     // were disabled. Never replace or steal another worker's running lease.
-    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',10 FROM link_catalog c WHERE c.id=$1 AND c.provider IN('baidu','quark') AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10 WHERE link_check_jobs.status='queued' AND link_check_jobs.priority<>10")
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',10 FROM link_catalog c WHERE c.id=$1 AND c.provider IN('baidu','quark','aliyun','xunlei','guangya') AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10 WHERE link_check_jobs.status='queued' AND link_check_jobs.priority<>10")
         .bind(id)
         .execute(&state.pool)
         .await?;
-    let inserted=sqlx::query("INSERT INTO link_resolve_requests(id,request_key,subject_key,user_id,request_fingerprint,link_id,authorization_json,status,deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,'queued',now()+interval '60 seconds') ON CONFLICT(subject_key,request_key) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(input.request_key).bind(subject(&session)).bind(session.user_id).bind(&fp).bind(id).bind(json!({"snapshot":snap,"linkRef":input.link_ref})).execute(&state.pool).await?.rows_affected();
+    let inserted=sqlx::query("INSERT INTO link_resolve_requests(id,request_key,subject_key,user_id,request_fingerprint,link_id,authorization_json,status,deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,'queued',$8) ON CONFLICT(subject_key,request_key) DO NOTHING")
+        .bind(Uuid::new_v4()).bind(input.request_key).bind(subject(&session)).bind(session.user_id).bind(&fp).bind(id).bind(json!({"snapshot":snap,"linkRef":input.link_ref})).bind(deadline).execute(&state.pool).await?.rows_affected();
     if inserted == 0 {
         let old:String=sqlx::query_scalar("SELECT request_fingerprint FROM link_resolve_requests WHERE subject_key=$1 AND request_key=$2").bind(subject(&session)).bind(input.request_key).fetch_one(&state.pool).await?;
         if old != fp {
@@ -456,14 +461,26 @@ pub async fn resolve(
             }
         });
     }
-    let end = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let out = operation(&state, &session, input.request_key).await?;
-        if out.0 != StatusCode::ACCEPTED || tokio::time::Instant::now() >= end {
+        let out = operation(&state, &session, input.request_key, tokio::time::Instant::now() >= end).await?;
+        if out.0 != StatusCode::ACCEPTED {
             return Ok(response(out.0, out.1));
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep_until(end.min(tokio::time::Instant::now() + Duration::from_millis(250))).await;
     }
+}
+async fn complete_resolution(
+    state: &AppState,
+    subject_key: &str,
+    key: Uuid,
+    result: &Value,
+    require_live_deadline: bool,
+) -> Result<Option<Value>, ApiError> {
+    Ok(sqlx::query_scalar(include_str!("link_resolution/complete_resolve.sql"))
+        .bind(subject_key).bind(key).bind(result)
+        .bind(result["delivery"].as_str()).bind(result["reasonCode"].as_str())
+        .bind(if result["status"] == "unavailable" { "unavailable" } else { "available" })
+        .bind(require_live_deadline).fetch_optional(&state.pool).await?)
 }
 async fn run_resolution(
     state: &AppState,
@@ -472,10 +489,12 @@ async fn run_resolution(
     id: Uuid,
     link: &Link,
 ) -> Result<(), ApiError> {
-    sqlx::query("UPDATE link_resolve_requests SET status='running',updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status='queued'").bind(subject(session)).bind(key).execute(&state.pool).await?;
+    if sqlx::query("UPDATE link_resolve_requests SET status='running',updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status='queued' AND deadline_at>clock_timestamp()").bind(subject(session)).bind(key).execute(&state.pool).await?.rows_affected() == 0 {
+        return Ok(());
+    }
     let current = fact(state, id).await?;
     // Delivery owns the decision: check our exact owned-share mapping before the source.
-    let result = if matches!(link.r#type.as_str(), "baidu" | "quark") {
+    let result = if crate::cloud_drive::Provider::from_name(&link.r#type).is_ok() {
         match delivery::deliver(state, session, key, id, link, &current).await {
             Ok(result) => result,
             Err(error) => {
@@ -495,8 +514,10 @@ async fn run_resolution(
             },
         )
     };
-    sqlx::query("UPDATE link_resolve_requests SET status='completed',response_json=$3,delivery=$4,reason_code=$5,result_kind=$6,completed_at=now(),updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status IN('queued','running')")
-        .bind(subject(session)).bind(key).bind(&result).bind(result["delivery"].as_str()).bind(result["reasonCode"].as_str()).bind(if result["status"]=="unavailable"{"unavailable"}else{"available"}).execute(&state.pool).await?;
+    // A late upstream response must never replace the original-link timeout result.
+    if complete_resolution(state, &subject(session), key, &result, true).await?.is_none() {
+        delivery::retire_timed_out_artifacts(state, session, key).await?;
+    }
     Ok(())
 }
 async fn authorize_write(state: &AppState, session: &Session, key: Uuid) -> Result<(), ApiError> {
@@ -521,6 +542,7 @@ async fn operation(
     state: &AppState,
     session: &Session,
     key: Uuid,
+    force_timeout: bool,
 ) -> Result<(StatusCode, Value), ApiError> {
     let row =
         sqlx::query("SELECT * FROM link_resolve_requests WHERE subject_key=$1 AND request_key=$2")
@@ -541,15 +563,19 @@ async fn operation(
         .get(auth["linkRef"].as_str().unwrap_or(""))
         .ok_or_else(|| ApiError::NotFound("链接不存在".into()))?;
     let mut result: Option<Value> = row.get("response_json");
-    if result.is_none() && row.get::<DateTime<Utc>, _>("deadline_at") <= Utc::now() {
+    if result.is_none() && (force_timeout || row.get::<DateTime<Utc>, _>("deadline_at") <= Utc::now()) {
         let value = fallback(
             key,
             link,
             &fact(state, row.get("link_id")).await?,
             "deadline_exceeded",
         );
-        sqlx::query("UPDATE link_resolve_requests SET status='completed',response_json=$3,completed_at=now() WHERE subject_key=$1 AND request_key=$2 AND response_json IS NULL").bind(subject(session)).bind(key).bind(&value).execute(&state.pool).await?;
-        result = Some(value);
+        result = complete_resolution(state, &subject(session), key, &value, false).await?;
+        if result.is_none() {
+            // Another caller may have finalized this request after our initial read.
+            result = sqlx::query_scalar("SELECT response_json FROM link_resolve_requests WHERE subject_key=$1 AND request_key=$2")
+                .bind(subject(session)).bind(key).fetch_one(&state.pool).await?;
+        }
     }
     if let Some(mut value) = result {
         let current = fact(state, row.get("link_id")).await?;
@@ -557,17 +583,11 @@ async fn operation(
             value = fallback(key, link, &current, "original_invalid");
         }
         if value["delivery"] == "reshared" {
-            let share=sqlx::query("SELECT s.target_account_key,c.provider,a.credential FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id JOIN cloud_account_settings a ON a.provider=c.provider WHERE s.id=$1 AND s.state='ready' AND s.share_validity=1 AND s.cleanup_after>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)) AND (s.share_expires_at IS NULL OR s.share_expires_at>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)))").bind(row.get::<Option<Uuid>,_>("share_cache_id")).fetch_optional(&state.pool).await?;
+            let share=sqlx::query("SELECT s.target_account_key,c.provider,a.credential,a.account_key,a.auth_status FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id JOIN cloud_account_settings a ON a.provider=c.provider WHERE s.id=$1 AND s.state='ready' AND s.share_validity=1 AND s.cleanup_after>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)) AND (s.share_expires_at IS NULL OR s.share_expires_at>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)))").bind(row.get::<Option<Uuid>,_>("share_cache_id")).fetch_optional(&state.pool).await?;
             let ready = share.is_some_and(|r| {
-                let provider = if r.get::<String, _>("provider") == "baidu" {
-                    crate::cloud_drive::Provider::Baidu
-                } else {
-                    crate::cloud_drive::Provider::Quark
-                };
-                crate::cloud_drive::credential_fingerprint(
-                    provider,
-                    &r.get::<String, _>("credential"),
-                ) == r.get::<String, _>("target_account_key")
+                let Ok(provider) = crate::cloud_drive::Provider::from_name(&r.get::<String, _>("provider")) else { return false; };
+                if r.get::<String,_>("auth_status")=="reauthorization_required" {return false;}
+                r.get::<Option<String>,_>("account_key").unwrap_or_else(||crate::cloud_drive::credential_fingerprint(provider,&r.get::<String,_>("credential"))) == r.get::<String,_>("target_account_key")
             });
             if !ready {
                 value = fallback(key, link, &current, "delivery_expired");
@@ -589,7 +609,7 @@ pub async fn poll(
     Path(key): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let session = state.auth().session(&headers).await?;
-    let (status, value) = operation(&state, &session, key).await?;
+    let (status, value) = operation(&state, &session, key, false).await?;
     Ok(response(status, value))
 }
 #[derive(Deserialize)]
@@ -640,45 +660,6 @@ pub async fn statuses(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceStatusInput {
     result_refs: Vec<String>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CheckPolicy {
-    enabled: bool,
-    valid_seconds: i64,
-    invalid_seconds: i64,
-    interval_seconds: i64,
-    daily_budget: i64,
-}
-pub async fn get_check_policy(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    admin(&state, &headers).await?;
-    let value: Value =
-        sqlx::query_scalar("SELECT value_json FROM policy_settings WHERE key='link-check'")
-            .fetch_one(&state.pool)
-            .await?;
-    Ok(response(StatusCode::OK, value))
-}
-pub async fn put_check_policy(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(policy): Json<CheckPolicy>,
-) -> Result<Response, ApiError> {
-    admin(&state, &headers).await?;
-    if !(60..=2592000).contains(&policy.valid_seconds)
-        || !(60..=2592000).contains(&policy.invalid_seconds)
-        || !(2..=3600).contains(&policy.interval_seconds)
-        || !(1..=100000).contains(&policy.daily_budget)
-    {
-        return Err(ApiError::BadRequest("检测预算或时间间隔无效".into()));
-    }
-    sqlx::query("UPDATE policy_settings SET value_json=$1,updated_at=now() WHERE key='link-check'")
-        .bind(json!(policy))
-        .execute(&state.pool)
-        .await?;
-    Ok(response(StatusCode::OK, json!(policy)))
 }
 pub async fn resource_statuses(
     State(state): State<Arc<AppState>>,

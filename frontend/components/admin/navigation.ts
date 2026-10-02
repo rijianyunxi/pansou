@@ -48,6 +48,18 @@ export const adminNavigation = [
     group: "运营管理",
   },
   {
+    path: "/admin/cloud-accounts",
+    title: "网盘账号",
+    icon: "cloud",
+    group: "系统",
+  },
+  {
+    path: "/admin/tasks",
+    title: "链接后台处理",
+    icon: "logs",
+    group: "系统",
+  },
+  {
     path: "/admin/policies",
     title: "系统设置",
     icon: "settings",

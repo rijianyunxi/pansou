@@ -629,7 +629,6 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     );
     for path in [
         "/api/admin/crawl/channels",
-        "/api/admin/crawl/jobs",
         "/api/search/json?kw=x",
     ] {
         assert_eq!(
@@ -974,15 +973,8 @@ async fn telegram_ingestion_search_and_admin_contracts() {
             .unwrap(),
         "paused"
     );
-    let (status, cancel) = call(
-        &router,
-        "POST",
-        &format!("/api/admin/crawl/jobs/{job}/cancel"),
-        Some(&session.token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{cancel}");
+    let cancel=sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL,stop_reason='admin_cancelled',completed_at=now(),updated_at=now() WHERE id=$1 AND status IN ('queued','running','paused')").bind(job).execute(&pool).await.unwrap().rows_affected();
+    assert_eq!(cancel, 1);
     sqlx::query("UPDATE crawl_channels SET next_page_at=now() WHERE id=$1")
         .bind(&channel)
         .execute(&pool)
@@ -1361,4 +1353,136 @@ async fn channel_scheduling_and_page_failures() {
     );
     state.auth().revoke_session(&session).await.unwrap();
     server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn failed_message_actions_bulk_ignore_and_page_retry() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").expect("test database URL");
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,resource_occurrences,source_messages,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
+    let redis = RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").expect("test Redis URL")).await.unwrap();
+    let state = Arc::new(AppState::new(pool.clone(), redis));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let channel = format!("act_{unique}");
+    sqlx::query("INSERT INTO crawl_channels(id,name,transform) VALUES($1,'批量测试',$2)")
+        .bind(&channel).bind(DSL).execute(&pool).await.unwrap();
+    for (id, status) in [(300i64, "failed"), (310, "failed"), (500, "failed"), (600, "parsed")] {
+        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status,parse_error) VALUES($1,$2,'h','v',$3,'x')")
+            .bind(&channel).bind(id).bind(status).execute(&pool).await.unwrap();
+    }
+    let user = format!("admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&user).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&user, &unique).await.unwrap().0;
+    let anon = state.auth().issue(true).await.unwrap();
+    let router = build_router(state.clone());
+    let path = format!("/api/admin/crawl/channels/{channel}/messages/action");
+
+    assert_eq!(
+        call(&router, "POST", &path, None, json!({"action":"ignore","ids":[300]})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Retry on a paused channel is refused.
+    sqlx::query("UPDATE crawl_channels SET enabled=false WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+    assert_eq!(
+        call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[300]})).await.0,
+        StatusCode::CONFLICT
+    );
+    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+
+    // Bulk retry groups 300/310 into one page window and 500 into another.
+    let (code, reply) = call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[300,310,500]})).await;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(reply["data"]["affected"], 3, "{reply}");
+    assert_eq!(reply["data"]["jobs"], 2, "{reply}");
+    let jobs = sqlx::query("SELECT cursor_before,stop_at FROM crawl_jobs WHERE channel_id=$1 AND kind='retry' AND status='queued' ORDER BY cursor_before").bind(&channel).fetch_all(&pool).await.unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert_eq!((jobs[0].get::<i64,_>("cursor_before"), jobs[0].get::<i64,_>("stop_at")), (311, 300));
+    assert_eq!((jobs[1].get::<i64,_>("cursor_before"), jobs[1].get::<i64,_>("stop_at")), (501, 500));
+
+    // Ignore deletes only failed rows and decrements the maintained counts.
+    let (code, reply) = call(&router, "POST", &path, Some(&session.token), json!({"action":"ignore","ids":[300]})).await;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    let left: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM source_messages WHERE channel_id=$1 ORDER BY message_id").bind(&channel).fetch_all(&pool).await.unwrap();
+    assert_eq!(left, vec![310, 500, 600]);
+    let counts = sqlx::query("SELECT message_count,parsed_count,failed_count FROM channel_statistics WHERE channel_id=$1").bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!((counts.get::<i64,_>("message_count"), counts.get::<i64,_>("parsed_count"), counts.get::<i64,_>("failed_count")), (3, 1, 2));
+    // Retrying a non-failed selection is rejected wholesale.
+    assert_eq!(
+        call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[600]})).await.0,
+        StatusCode::CONFLICT
+    );
+    state.auth().revoke_session(&session).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn deleting_crawl_channel_preserves_resources_and_discards_inflight_page() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false").execute(&pool).await.unwrap();
+    let state = Arc::new(AppState::new(pool.clone(), RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap()).await.unwrap()));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let channel = format!("delete_{unique}");
+    let other = format!("keep_{unique}");
+    for (id, enabled) in [(&channel, true), (&other, false)] {
+        sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,$2,$3)").bind(id).bind(enabled).bind(DSL).execute(&pool).await.unwrap();
+    }
+    let source = crawl::source_for(&pool, &channel).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    crawl::persist_message(&mut tx, &channel, &message(&channel, 10, "独有资源", "exclusive"), &source).await.unwrap();
+    crawl::persist_message(&mut tx, &channel, &message(&channel, 11, "共享资源", "shared"), &source).await.unwrap();
+    crawl::persist_message(&mut tx, &other, &message(&other, 11, "共享资源", "shared"), &source).await.unwrap();
+    tx.commit().await.unwrap();
+    let resource_ids: Vec<String> = sqlx::query_scalar("SELECT resource_id FROM resource_occurrences WHERE channel_id=$1 ORDER BY resource_id").bind(&channel).fetch_all(&pool).await.unwrap();
+    assert_eq!(resource_ids.len(), 2);
+    let resources_before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap();
+    let links_before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(l) FROM resource_links l WHERE resource_id=ANY($1) ORDER BY resource_id,identity").bind(&resource_ids).fetch_all(&pool).await.unwrap();
+    let job: i64 = sqlx::query_scalar("INSERT INTO crawl_jobs(channel_id,kind) VALUES($1,'sync') RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
+    let failure: i64 = sqlx::query_scalar("INSERT INTO crawl_page_failures(channel_id,job_id,retry_job_id,kind,last_error) VALUES($1,$2,$2,'sync','fixture') RETURNING id").bind(&channel).bind(job).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET failure_id=$2 WHERE id=$1").bind(job).bind(failure).execute(&pool).await.unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, Router::new().fallback({
+        let started = started.clone(); let release = release.clone(); let channel = channel.clone();
+        move || { let started = started.clone(); let release = release.clone(); let channel = channel.clone(); async move {
+            started.notify_one(); release.notified().await;
+            message(&channel, 12, "不应写入的晚到消息", "late").html
+        }}
+    })).into_future());
+    let node = format!("node_{unique}");
+    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)").bind(&node).bind(format!("http://{address}")).execute(&pool).await.unwrap();
+    let policy: i64 = sqlx::query_scalar("INSERT INTO outbound_policies(channel_id) VALUES($1) RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO outbound_policy_nodes(policy_id,node_id,weight) VALUES($1,$2,10)").bind(policy).bind(&node).execute(&pool).await.unwrap();
+    let username = format!("delete_admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&username).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&username, &unique).await.unwrap().0;
+    let router = build_router(state.clone());
+    let path = format!("/api/admin/crawl/channels/{channel}");
+    assert_eq!(call(&router, "DELETE", &path, None, json!({})).await.0, StatusCode::UNAUTHORIZED);
+    let worker = tokio::spawn({let state = state.clone(); async move { crawl::tick(&state).await }});
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified()).await.unwrap();
+    let (status, body) = call(&router, "DELETE", &path, Some(&session.token), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
+    for table in ["crawl_channels", "crawl_jobs", "crawl_page_failures", "source_messages", "resource_occurrences", "resource_search_occurrences", "channel_statistics", "channel_resource_references", "outbound_policies"] {
+        let key = if table == "crawl_channels" { "id" } else { "channel_id" };
+        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {key}=$1")).bind(&channel).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM source_messages WHERE channel_id=$1").bind(&other).fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap(), resources_before);
+    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT to_jsonb(l) FROM resource_links l WHERE resource_id=ANY($1) ORDER BY resource_id,identity").bind(&resource_ids).fetch_all(&pool).await.unwrap(), links_before);
+    assert_eq!(call(&router, "DELETE", &path, Some(&session.token), json!({})).await.0, StatusCode::NOT_FOUND);
+    state.auth().revoke_session(&session).await.unwrap();
+    server.abort();
+    pool.close().await;
 }

@@ -17,9 +17,11 @@ use sqlx::Row;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerUpdate {
     enabled: bool,
+    #[serde(default)]
+    activate_checks: bool,
 }
 
 pub async fn runtime_worker_update(
@@ -29,20 +31,46 @@ pub async fn runtime_worker_update(
     Json(update): Json<WorkerUpdate>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
+    if update.activate_checks && (kind != "link-check" || !update.enabled) {
+        return Err(ApiError::BadRequest(
+            "只能在启用后台检测时激活检测功能".into(),
+        ));
+    }
     let key = match kind.as_str() {
         "crawl" => "crawlEnabled",
         // Legacy links switch now pauses cleanup only, never local sync or click delivery.
         "links" | "cleanup" => "linkEnabled",
+        "link-schedule" => "linkScheduleEnabled",
+        "link-sync" => "linkSyncEnabled",
+        "link-check" => "linkCheckEnabled",
+        "link-maintenance" => "linkMaintenanceEnabled",
         _ => return Err(ApiError::BadRequest("未知后台任务类型".into())),
     };
     // Merge only the selected switch, so simultaneous edits cannot overwrite the other.
-    sqlx::query("INSERT INTO policy_settings(key,value_json) VALUES('background-workers',$1) ON CONFLICT(key) DO UPDATE SET value_json=policy_settings.value_json || $2")
-        .bind(json!({"crawlEnabled":true,"linkEnabled":true,key:update.enabled}))
-        .bind(json!({key:update.enabled})).execute(&state.pool).await?;
-    Ok(ok(json!({"settings":runtime::settings(&state).await?})))
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("INSERT INTO policy_settings(key,value_json) VALUES('background-workers',$1) ON CONFLICT(key) DO UPDATE SET value_json=policy_settings.value_json || $2,updated_at=now()")
+        .bind(json!({"crawlEnabled":true,"linkEnabled":true,"linkScheduleEnabled":true,"linkSyncEnabled":true,"linkCheckEnabled":true,"linkMaintenanceEnabled":true,key:update.enabled}))
+        .bind(json!({key:update.enabled})).execute(&mut *tx).await?;
+    // An explicit, confirmed activation is separate from resuming an existing lane.
+    // Preserve budgets/cache policy; ordinary pauses and the global switch never enable it.
+    if update.activate_checks {
+        let updated = sqlx::query("UPDATE policy_settings SET value_json=value_json || '{\"enabled\":true}'::jsonb,updated_at=now() WHERE key='link-check'")
+            .execute(&mut *tx).await?;
+        if updated.rows_affected() != 1 {
+            return Err(ApiError::Unavailable(
+                "检测参数尚未初始化，未修改任何开关".into(),
+            ));
+        }
+    }
+    tx.commit().await?;
+    let checks_enabled = sqlx::query_scalar::<_, bool>("SELECT COALESCE((value_json->>'enabled')::boolean,false) FROM policy_settings WHERE key='link-check'")
+        .fetch_optional(&state.pool).await?.unwrap_or(false);
+    Ok(ok(
+        json!({"settings":runtime::settings(&state).await?,"checksEnabled":checks_enabled}),
+    ))
 }
 
-async fn worker_status(state: &AppState, kind: WorkerKind, enabled: bool) -> Value {
+pub(super) async fn worker_status(state: &AppState, kind: WorkerKind, enabled: bool) -> Value {
     let count = match state.redis.connection() {
         Ok(mut conn) => conn
             .zcount::<_, _, _, i64>(kind.key(), Utc::now().timestamp() - 45, "+inf")
@@ -59,23 +87,35 @@ pub async fn monitor(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let settings = runtime::settings(&state).await?;
-    let (crawl_worker, link_worker, redis) = tokio::join!(
+    let (crawl_worker, mut link_worker, redis) = tokio::join!(
         worker_status(&state, WorkerKind::Crawl, settings.crawl_enabled),
         worker_status(&state, WorkerKind::Links, settings.link_enabled),
         state.redis.ping(),
     );
+    link_worker["scheduleEnabled"] = json!(settings.link_schedule_enabled);
+    link_worker["syncEnabled"] = json!(settings.link_sync_enabled);
+    link_worker["checkEnabled"] = json!(settings.link_check_enabled);
+    link_worker["maintenanceEnabled"] = json!(settings.link_maintenance_enabled);
     let crawl = sqlx::query("SELECT count(*) FILTER(WHERE j.status='queued') queued, count(*) FILTER(WHERE j.status='running') running, count(*) FILTER(WHERE j.status='failed') failed, count(*) FILTER(WHERE j.status='paused') paused, count(*) FILTER(WHERE j.status='running' AND j.lease_until<now()) expired, count(*) FILTER(WHERE j.status='queued' AND j.next_run_at<=now() AND c.enabled AND c.next_page_at<=now() AND NOT EXISTS(SELECT 1 FROM crawl_jobs running WHERE running.channel_id=j.channel_id AND running.status='running')) ready, MAX(j.updated_at) last_activity FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id")
         .fetch_one(&state.pool).await?;
     let index = sqlx::query("SELECT (SELECT count(*) FROM crawl_channels) channels, (SELECT count(*) FROM crawl_channels WHERE enabled) active_channels, (SELECT count(*) FROM crawl_page_failures) review, (SELECT MAX(last_synced_at) FROM crawl_channels) last_sync, (SELECT count(*) FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now()) overdue_channels")
         .fetch_one(&state.pool).await?;
     let counts = state.admin_stats.monitor(&state.pool).await?;
-    let links = sqlx::query("SELECT count(*) sync_pending,min(updated_at) oldest_sync FROM link_sync_queue")
-        .fetch_one(&state.pool).await?;
+    let links = sqlx::query(
+        "SELECT count(*) sync_pending,min(updated_at) oldest_sync FROM link_sync_queue",
+    )
+    .fetch_one(&state.pool)
+    .await?;
     let link_queues = sqlx::query("SELECT 'checks' kind,status,count(*) count FROM link_check_jobs GROUP BY status UNION ALL SELECT 'cleanup',status,count(*) FROM link_cleanup_jobs GROUP BY status UNION ALL SELECT 'resolve',status,count(*) FROM link_resolve_requests GROUP BY status")
         .fetch_all(&state.pool).await?;
     let cleanup_due: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs WHERE status='queued' AND run_after<=now() OR status='running' AND lease_until<now()")
         .fetch_one(&state.pool).await?;
-    let stuck_checks: i64 = sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE status='running' AND lease_until<now()")
+    let stuck_checks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM link_check_jobs WHERE status='running' AND lease_until<now()",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let ready_check_accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_account_settings WHERE provider IN('baidu','quark','aliyun','xunlei','guangya') AND (length(trim(credential))>0 OR credential_cipher IS NOT NULL) AND auth_status NOT IN('reauthorization_required','disconnected')")
         .fetch_one(&state.pool).await?;
     let recent_failures = sqlx::query("SELECT provider,identity,validity,failure_count,last_error_code,last_attempt_at,next_check_at FROM link_catalog WHERE failure_count>0 AND last_error_code IS NOT NULL ORDER BY last_attempt_at DESC,id LIMIT 8")
         .fetch_all(&state.pool).await?.into_iter().map(|r|json!({
@@ -92,23 +132,20 @@ pub async fn monitor(
             "updatedAt":r.get::<DateTime<Utc>, _>("updated_at")})).collect::<Vec<_>>();
     let outcomes = sqlx::query("SELECT count(*) FILTER(WHERE status IN('queued','running') AND deadline_at>now()) processing,count(*) FILTER(WHERE status='completed' AND delivery='reshared' AND response_json->>'cacheHit'='false') transferred,count(*) FILTER(WHERE status='completed' AND delivery='reshared' AND response_json->>'cacheHit'='true') reused,count(*) FILTER(WHERE status='completed' AND delivery='original' AND reason_code NOT IN('delivery_disabled','unsupported_provider')) fallback,count(*) FILTER(WHERE status='completed' AND delivery='original' AND reason_code IN('delivery_disabled','unsupported_provider')) direct,count(*) FILTER(WHERE status='completed' AND response_json->>'status'='unavailable') unavailable FROM link_resolve_requests WHERE created_at>now()-interval '24 hours'").fetch_one(&state.pool).await?;
     let delivery_stats = json!({"processing":outcomes.get::<i64,_>("processing"),"transferred":outcomes.get::<i64,_>("transferred"),"reused":outcomes.get::<i64,_>("reused"),"fallback":outcomes.get::<i64,_>("fallback"),"direct":outcomes.get::<i64,_>("direct"),"unavailable":outcomes.get::<i64,_>("unavailable")});
-    let policies = sqlx::query(
-        "SELECT key,value_json FROM policy_settings WHERE key IN('link-delivery','link-check')",
+    let policies = sqlx::query("SELECT provider,delivery_enabled FROM cloud_provider_policies")
+        .fetch_all(&state.pool)
+        .await?;
+    let checks_enabled = sqlx::query_scalar::<_, bool>(
+        "SELECT COALESCE((value_json->>'enabled')::boolean,false) FROM policy_settings WHERE key='link-check'",
     )
-    .fetch_all(&state.pool)
-    .await?;
-    let mut checks_enabled = false;
-    let mut delivery_enabled = json!({"baidu":false,"quark":false});
+    .fetch_optional(&state.pool)
+    .await?
+    .unwrap_or(false);
+    let mut delivery_enabled =
+        json!({"baidu":false,"quark":false,"aliyun":false,"xunlei":false,"guangya":false});
     for row in policies {
-        let value: Value = row.get("value_json");
-        if row.get::<String, _>("key") == "link-check" {
-            checks_enabled = value["enabled"].as_bool().unwrap_or(false);
-        } else {
-            for provider in ["baidu", "quark"] {
-                delivery_enabled[provider] =
-                    json!(value[provider]["enabled"].as_bool().unwrap_or(false));
-            }
-        }
+        let provider: String = row.get("provider");
+        delivery_enabled[provider] = json!(row.get::<bool, _>("delivery_enabled"));
     }
     let rows = sqlx::query("SELECT s.id,s.name,s.priority,s.enabled,s.updated_at,h.snapshot_json FROM resource_sources s LEFT JOIN source_health h ON h.source_id=s.id WHERE s.kind='live' ORDER BY s.priority,s.id")
         .fetch_all(&state.pool).await?;
@@ -130,7 +167,7 @@ pub async fn monitor(
         "services":{"api":{"state":"online","startedAt":state.started_at},"postgres":{"state":"online","connections":state.pool.size(),"idle":state.pool.num_idle()},"redis":{"state":if redis.is_ok(){"online"}else{"unavailable"}}},
         "workers":{"crawl":crawl_worker,"links":link_worker},
         "crawl":{"queued":crawl.get::<i64,_>("queued"),"ready":crawl.get::<i64,_>("ready"),"running":crawl.get::<i64,_>("running"),"failed":crawl.get::<i64,_>("failed"),"paused":crawl.get::<i64,_>("paused"),"expired":crawl.get::<i64,_>("expired"),"lastActivityAt":crawl.get::<Option<DateTime<Utc>>,_>("last_activity"),"channels":index.get::<i64,_>("channels"),"activeChannels":index.get::<i64,_>("active_channels"),"overdueChannels":index.get::<i64,_>("overdue_channels"),"review":index.get::<i64,_>("review"),"resources":counts.resources,"lastSyncAt":index.get::<Option<DateTime<Utc>>,_>("last_sync"),"recentFailures":failures},
-        "links":{"syncPending":links.get::<i64,_>("sync_pending"),"oldestSyncAt":links.get::<Option<DateTime<Utc>>,_>("oldest_sync"),"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
+        "links":{"syncPending":links.get::<i64,_>("sync_pending"),"oldestSyncAt":links.get::<Option<DateTime<Utc>>,_>("oldest_sync"),"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks,"readyAccounts":ready_check_accounts},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
     })))
 }
 
@@ -324,20 +361,304 @@ mod tests {
         );
         let settings = runtime::settings(&state).await.unwrap();
         assert!(!settings.crawl_enabled && !settings.link_enabled);
+        let check_policy_before = sqlx::query_scalar::<_, Value>(
+            "SELECT value_json FROM policy_settings WHERE key='link-check'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        // Each lane is persisted independently and really stops taking batches.
+        let lanes = [
+            ("link-sync", WorkerKind::LinkSync, "syncEnabled"),
+            ("link-check", WorkerKind::LinkCheck, "checkEnabled"),
+            (
+                "link-maintenance",
+                WorkerKind::LinkMaintenance,
+                "maintenanceEnabled",
+            ),
+        ];
+        for (endpoint, kind, flag) in lanes {
+            let (status, body) = call(
+                &router,
+                "PUT",
+                &format!("/api/admin/runtime/workers/{endpoint}"),
+                Some(&admin.token),
+                json!({"enabled":false}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(!runtime::enabled(&state, kind).await.unwrap());
+            let fresh = AppState::new(pool.clone(), state.redis.clone());
+            assert!(
+                !runtime::enabled(&fresh, kind).await.unwrap(),
+                "independent pause survives a fresh process state"
+            );
+            for (other, other_kind, _) in lanes {
+                if other != endpoint {
+                    assert!(runtime::enabled(&state, other_kind).await.unwrap());
+                }
+            }
+            let (_, monitor) = call(
+                &router,
+                "GET",
+                "/api/monitor",
+                Some(&admin.token),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(monitor["data"]["workers"]["links"][flag], false);
+            let paused_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
+            let ticks = AtomicUsize::new(0);
+            let cancel_state = paused_state.clone();
+            let cancel = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                cancel_state.shutdown.cancel();
+            });
+            runtime::lane(&paused_state, kind, "test-independent-pause", 1, || async {
+                ticks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            cancel.await.unwrap();
+            assert_eq!(
+                ticks.load(Ordering::SeqCst),
+                0,
+                "{endpoint} must not run while independently paused"
+            );
+            let (status, _) = call(
+                &router,
+                "PUT",
+                &format!("/api/admin/runtime/workers/{endpoint}"),
+                Some(&admin.token),
+                json!({"enabled":true}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let resumed_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
+            runtime::lane(
+                &resumed_state,
+                kind,
+                "test-independent-resume",
+                1,
+                || async {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                    resumed_state.shutdown.cancel();
+                    Ok(())
+                },
+            )
+            .await;
+            assert_eq!(ticks.load(Ordering::SeqCst), 1);
+        }
+        // Concurrent updates merge just their own keys, never overwrite sibling controls.
+        let (sync_update, check_update) = tokio::join!(
+            call(
+                &router,
+                "PUT",
+                "/api/admin/runtime/workers/link-sync",
+                Some(&admin.token),
+                json!({"enabled":false})
+            ),
+            call(
+                &router,
+                "PUT",
+                "/api/admin/runtime/workers/link-check",
+                Some(&admin.token),
+                json!({"enabled":false})
+            )
+        );
+        assert_eq!(sync_update.0, StatusCode::OK);
+        assert_eq!(check_update.0, StatusCode::OK);
+        let saved = runtime::settings(&state).await.unwrap();
+        assert!(
+            !saved.link_sync_enabled
+                && !saved.link_check_enabled
+                && !saved.link_enabled
+                && !saved.crawl_enabled
+        );
+        assert!(saved.link_schedule_enabled && saved.link_maintenance_enabled);
+        let check_policy_after = sqlx::query_scalar::<_, Value>(
+            "SELECT value_json FROM policy_settings WHERE key='link-check'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            check_policy_before, check_policy_after,
+            "runtime switches must not alter detection policy"
+        );
+        for endpoint in ["link-sync", "link-check"] {
+            assert_eq!(
+                call(
+                    &router,
+                    "PUT",
+                    &format!("/api/admin/runtime/workers/{endpoint}"),
+                    Some(&admin.token),
+                    json!({"enabled":true})
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+        }
         let sync_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
         let independent = Arc::new(AtomicUsize::new(0));
         let sync_ticks = independent.clone();
-        runtime::always_lane(&sync_state, "local-sync-independent", 1, || async {
-            sync_ticks.fetch_add(1, Ordering::SeqCst);
-            sync_state.shutdown.cancel();
-            Ok(())
-        })
+        runtime::lane(
+            &sync_state,
+            runtime::WorkerKind::LinkSync,
+            "local-sync-independent",
+            1,
+            || async {
+                sync_ticks.fetch_add(1, Ordering::SeqCst);
+                sync_state.shutdown.cancel();
+                Ok(())
+            },
+        )
         .await;
         assert_eq!(
             independent.load(Ordering::SeqCst),
             1,
             "cleanup pause must not pause local synchronization"
         );
+        assert_eq!(
+            call(
+                &router,
+                "PUT",
+                "/api/admin/runtime/workers/link-sync",
+                Some(&admin.token),
+                json!({"enabled":false})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let (status, body) = call(
+            &router,
+            "PUT",
+            "/api/admin/runtime/workers/link-schedule",
+            Some(&admin.token),
+            json!({"enabled":false}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved = runtime::settings(&state).await.unwrap();
+        assert!(!saved.link_schedule_enabled && !saved.link_enabled && !saved.crawl_enabled);
+        assert!(
+            !runtime::enabled(&state, runtime::WorkerKind::LinkSchedule)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !runtime::enabled(&state, runtime::WorkerKind::Links)
+                .await
+                .unwrap()
+        );
+        for kind in [
+            WorkerKind::LinkSync,
+            WorkerKind::LinkCheck,
+            WorkerKind::LinkMaintenance,
+        ] {
+            assert!(!runtime::enabled(&state, kind).await.unwrap());
+        }
+        let paused_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
+        let paused_ticks = Arc::new(AtomicUsize::new(0));
+        let ticks = paused_ticks.clone();
+        let timer_state = paused_state.clone();
+        let cancel = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            timer_state.shutdown.cancel();
+        });
+        runtime::lane(
+            &paused_state,
+            runtime::WorkerKind::LinkSync,
+            "link-sync",
+            1,
+            || async {
+                ticks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        cancel.await.unwrap();
+        assert_eq!(
+            paused_ticks.load(Ordering::SeqCst),
+            0,
+            "global pause must stop new link batches"
+        );
+        let (_, paused_monitor) = call(
+            &router,
+            "GET",
+            "/api/monitor",
+            Some(&admin.token),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            paused_monitor["data"]["workers"]["links"]["scheduleEnabled"],
+            false
+        );
+        let (status, _) = call(
+            &router,
+            "PUT",
+            "/api/admin/runtime/workers/link-schedule",
+            Some(&admin.token),
+            json!({"enabled":true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            runtime::enabled(&state, runtime::WorkerKind::LinkSchedule)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !runtime::enabled(&state, runtime::WorkerKind::Links)
+                .await
+                .unwrap(),
+            "resuming scheduling must preserve independent cleanup pause"
+        );
+        assert!(
+            !runtime::enabled(&state, WorkerKind::LinkSync)
+                .await
+                .unwrap(),
+            "total resume preserves independent sync pause"
+        );
+        assert!(
+            runtime::enabled(&state, WorkerKind::LinkCheck)
+                .await
+                .unwrap()
+        );
+        assert!(
+            runtime::enabled(&state, WorkerKind::LinkMaintenance)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            call(
+                &router,
+                "PUT",
+                "/api/admin/runtime/workers/link-sync",
+                Some(&admin.token),
+                json!({"enabled":true})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let resumed_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
+        runtime::lane(
+            &resumed_state,
+            runtime::WorkerKind::LinkSync,
+            "link-sync",
+            1,
+            || async {
+                paused_ticks.fetch_add(1, Ordering::SeqCst);
+                resumed_state.shutdown.cancel();
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(paused_ticks.load(Ordering::SeqCst), 1);
         let fresh_state = AppState::new(pool.clone(), state.redis.clone());
         assert!(
             !runtime::settings(&fresh_state).await.unwrap().crawl_enabled,
@@ -452,5 +773,158 @@ mod tests {
             .await
             .unwrap()
         );
+        // Activation is explicit; parameter saves cannot copy a stale enable flag back.
+        sqlx::query("UPDATE policy_settings SET value_json=value_json || '{\"enabled\":false}'::jsonb WHERE key='link-check'")
+            .execute(&pool).await.unwrap();
+        let (status, ordinary_resume) = call(
+            &router,
+            "PUT",
+            "/api/admin/runtime/workers/link-check",
+            Some(&admin.token),
+            json!({"enabled":true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ordinary_resume["data"]["checksEnabled"], false);
+        for (endpoint, body) in [
+            ("link-check", json!({"enabled":false,"activateChecks":true})),
+            ("cleanup", json!({"enabled":true,"activateChecks":true})),
+        ] {
+            assert_eq!(
+                call(
+                    &router,
+                    "PUT",
+                    &format!("/api/admin/runtime/workers/{endpoint}"),
+                    Some(&admin.token),
+                    body
+                )
+                .await
+                .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let before_activation: Value =
+            sqlx::query_scalar("SELECT value_json FROM policy_settings WHERE key='link-check'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let (status, activated) = call(
+            &router,
+            "PUT",
+            "/api/admin/runtime/workers/link-check",
+            Some(&admin.token),
+            json!({"enabled":true,"activateChecks":true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{activated}");
+        assert_eq!(activated["data"]["checksEnabled"], true);
+        let after_activation: Value =
+            sqlx::query_scalar("SELECT value_json FROM policy_settings WHERE key='link-check'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut expected = before_activation;
+        expected["enabled"] = json!(true);
+        assert_eq!(
+            after_activation, expected,
+            "activation must preserve budgets and caching parameters"
+        );
+        assert!(
+            !runtime::settings(&state).await.unwrap().link_enabled,
+            "activation must not change cleanup pause"
+        );
+        // Per-provider policy lives in its own row and must never touch worker switches.
+        let provider_policy = json!({
+            "enabled": false,
+            "targetDir": null,
+            "targetDirName": "",
+            "retentionSeconds": null,
+            "deliveryMinRemainingSeconds": 300,
+            "platformShareDays": 7,
+            "checkIntervalSeconds": 5,
+            "checkValidSeconds": 900,
+            "checkInvalidSeconds": 3600,
+            "checkDailyBudget": 500,
+            "revision": 1
+        });
+        let (status, saved) = call(
+            &router,
+            "PUT",
+            "/api/settings/cloud-providers/quark",
+            Some(&admin.token),
+            provider_policy,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["data"]["checkDailyBudget"], 500);
+        assert_eq!(saved["data"]["revision"], 2);
+        assert!(
+            !runtime::settings(&state).await.unwrap().link_check_enabled,
+            "saving provider policy must not resume an independent pause"
+        );
+        // Detection parameters and delivery directories are still validated.
+        assert_eq!(
+            call(
+                &router,
+                "PUT",
+                "/api/settings/cloud-providers/quark",
+                Some(&admin.token),
+                json!({"checkIntervalSeconds": 1})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                &router,
+                "PUT",
+                "/api/settings/cloud-providers/quark",
+                Some(&admin.token),
+                json!({"enabled": true, "targetDir": "/", "retentionSeconds": 86400, "deliveryMinRemainingSeconds": 300, "platformShareDays": 7})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        // Clearing the delivery half keeps the detection parameters and the row.
+        let (status, cleared) = call(
+            &router,
+            "DELETE",
+            "/api/settings/cloud-providers/quark/delivery",
+            Some(&admin.token),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{cleared}");
+        assert_eq!(cleared["data"]["enabled"], false);
+        assert_eq!(cleared["data"]["checkDailyBudget"], 500);
+        let policy: Value = sqlx::query_scalar(
+            "DELETE FROM policy_settings WHERE key='link-check' RETURNING value_json",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            call(
+                &router,
+                "PUT",
+                "/api/admin/runtime/workers/link-check",
+                Some(&admin.token),
+                json!({"enabled":true,"activateChecks":true})
+            )
+            .await
+            .0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            !runtime::settings(&state).await.unwrap().link_check_enabled,
+            "failed activation must roll back the lane update"
+        );
+        sqlx::query("INSERT INTO policy_settings(key,value_json) VALUES('link-check',$1)")
+            .bind(policy)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

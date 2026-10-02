@@ -55,7 +55,7 @@ impl<K: Eq + Hash + Clone, V: Clone> StatsCache<K, V> {
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct ChannelCounts {
     pub id: String,
-    pub message_count: i64,
+    pub failed_count: i64,
     pub resource_count: i64,
 }
 
@@ -162,6 +162,7 @@ impl AdminStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Row;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -302,10 +303,10 @@ mod tests {
         let counts = stats.channels(&pool, &ids).await.unwrap();
         assert_eq!(
             (
-                counts[&channel].message_count,
+                counts[&channel].failed_count,
                 counts[&channel].resource_count
             ),
-            (12, 1)
+            (0, 1)
         );
         for message in 1..=12i64 {
             let pool = pool.clone();
@@ -330,7 +331,7 @@ mod tests {
         let counts = stats.channels(&pool, &ids).await.unwrap();
         assert_eq!(
             (
-                counts[&channel].message_count,
+                counts[&channel].failed_count,
                 counts[&channel].resource_count
             ),
             (6, 0)
@@ -358,6 +359,63 @@ mod tests {
             .await
             .unwrap();
         tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn message_status_counters_track_inserts_flips_and_deletes() {
+        let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+        let pool = crate::db::connect(&url).await.unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let prefix = uuid::Uuid::new_v4().simple().to_string();
+        let channel = format!("status_counts_{prefix}");
+        sqlx::query("INSERT INTO crawl_channels(id,name) VALUES($1,$1)")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let counts = || async {
+            let r = sqlx::query("SELECT message_count,parsed_count,empty_count,failed_count FROM channel_statistics WHERE channel_id=$1")
+                .bind(&channel)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            (
+                r.get::<i64, _>("message_count"),
+                r.get::<i64, _>("parsed_count"),
+                r.get::<i64, _>("empty_count"),
+                r.get::<i64, _>("failed_count"),
+            )
+        };
+        for (id, status) in [(1i64, "parsed"), (2, "empty"), (3, "failed"), (4, "parsed")] {
+            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,$2,'fixture','fixture',$3)")
+                .bind(&channel).bind(id).bind(status).execute(&pool).await.unwrap();
+        }
+        assert_eq!(counts().await, (4, 2, 1, 1));
+        sqlx::query("UPDATE source_messages SET parse_status='failed' WHERE channel_id=$1 AND message_id=1")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(counts().await, (4, 1, 1, 2));
+        sqlx::query("DELETE FROM source_messages WHERE channel_id=$1 AND message_id=2")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(counts().await, (3, 1, 0, 2));
+        sqlx::query("DELETE FROM source_messages WHERE channel_id=$1")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(counts().await, (0, 0, 0, 0));
+        sqlx::query("DELETE FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -417,9 +475,9 @@ mod tests {
             .await
             .unwrap();
         let populated = rows.iter().find(|r| r.id == channel).unwrap();
-        assert_eq!((populated.message_count, populated.resource_count), (5, 1));
+        assert_eq!((populated.failed_count, populated.resource_count), (1, 1));
         let vacant = rows.iter().find(|r| r.id == empty).unwrap();
-        assert_eq!((vacant.message_count, vacant.resource_count), (0, 0));
+        assert_eq!((vacant.failed_count, vacant.resource_count), (0, 0));
         sqlx::query("UPDATE managed_resources SET enabled=false WHERE id=$1")
             .bind(&visible)
             .execute(&mut *tx)

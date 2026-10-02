@@ -38,6 +38,9 @@ const router = createRouter({
         },
         { path: "users", component: () => import("../pages/admin/users.vue") },
         { path: "logs", component: () => import("../pages/admin/logs.vue") },
+        { path: "link-cleanup", redirect: to => ({ path: "/admin/tasks", query: { ...to.query, kind: "cleanup" } }) },
+        { path: "tasks", component: () => import("../pages/admin/tasks.vue") },
+        { path: "cloud-accounts", component: () => import("../pages/admin/cloud-accounts.vue") },
         {
           path: "policies",
           component: () => import("../pages/admin/policies.vue"),

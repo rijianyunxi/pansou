@@ -30,8 +30,8 @@ git push origin v2.0.1
 
 - Linux/macOS 使用 `tar -czf`，是真正的 gzip 压缩文件，并在上传前检查 gzip 和 tar。
 - Windows 使用 7-Zip 显式创建 ZIP，再执行 `7z t` 检查归档。
-- 默认 `.env` 与 `.env.example` 都来自仓库模板，不读取本地私有 `.env`。
-- 附带数据库原文清理说明；SQLx 迁移本身已经编译进 Rust 程序。
+- 压缩包只包含 `pansou-api`、`frontend/dist` 和默认 `.env`；`.env` 由仓库 `.env.example` 模板生成，不读取本地私有 `.env`。
+- `docker-compose.yml`、systemd 服务文件等部署辅助文件不进包，部署步骤见 README；SQLx 迁移本身已经编译进 Rust 程序。
 - 优先使用 `sha256sum`，没有时回退到 `shasum -a 256`，上传前核验校验和。
 - 缺少下载包或产物匹配失败会终止流程，不发布空下载列表。
 

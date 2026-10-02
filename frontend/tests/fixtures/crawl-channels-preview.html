@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>频道删除验收 · 示例数据</title></head>
+<body style="margin:0"><div id="preview-root"></div>
+<script type="module">
+import {createApp,h} from 'vue';
+import {createMemoryHistory,createRouter,RouterView} from 'vue-router';
+import AdminLayout from '/components/admin/AdminLayout.vue';
+import CrawlChannelsTab from '/components/admin/crawl/CrawlChannelsTab.vue';
+import '/app.vue';
+const scenario=new URLSearchParams(location.search).get('scenario');
+let items=Array.from({length:scenario==='pagination'?21:1},(_,i)=>({
+ id:`fixture_${i+1}`,name:`示例频道 ${i+1}`,enabled:true,version:1,
+ historyComplete:true,historyPages:120,lastSyncedAt:new Date().toISOString(),nextSyncAt:new Date().toISOString(),
+ resourceCount:1800,failedMessageCount:0,latestJob:null,taskState:'idle',lastError:null,
+}));
+// Every request is mocked; deletion must never reach the real admin API.
+window.fetch=async(input,options={})=>{
+ const url=new URL(String(input),location.origin),path=url.pathname,method=options.method||'GET';
+ if(path==='/api/account/session'&&method==='GET')return Response.json({authenticated:true,user:{id:1,username:'模拟管理员',role:'admin',status:'active'}});
+ if(path==='/api/admin/crawl/channels'&&method==='GET'){
+  const page=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||20);
+  return Response.json({data:{items:items.slice((page-1)*pageSize,page*pageSize),total:items.length,page,pageSize}});
+ }
+ if(/^\/api\/admin\/crawl\/channels\/fixture_\d+$/.test(path)&&method==='DELETE'){
+  await new Promise(resolve=>setTimeout(resolve,400));
+  if(scenario==='error')return Response.json({message:'模拟删除失败，请重试'},{status:503});
+  items=items.filter(c=>c.id!==path.split('/').at(-1));return Response.json({data:{}});
+ }
+ throw new Error('验收页禁止真实请求：'+method+' '+path);
+};
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/admin',component:AdminLayout,children:[{path:'crawl',component:{render:()=>h('main',{style:'padding:24px'},[h(CrawlChannelsTab)])}}]}]});
+await router.push('/admin/crawl');await router.isReady();
+createApp({render:()=>h(RouterView)}).use(router).mount('#preview-root');
+</script></body></html>

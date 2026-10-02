@@ -914,10 +914,9 @@ async fn create_search_log(
     };
     let channels = req.channels.clone().unwrap_or_default();
     let source_ids = req.source_ids.clone().unwrap_or_default();
-    sqlx::query_scalar::<_, i64>(
-        "INSERT INTO search_logs(session_id,user_id,keyword,ip,search_scope,channels_json,source_ids_json,status,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,'started',now()) RETURNING id",
-    )
+    // Both JSON and SSE (including cache hits) record one accepted search here.
+    // Keep the log and popularity increment atomic without changing moderation settings.
+    sqlx::query_scalar::<_, i64>(include_str!("../queries/create_search_log.sql"))
     .bind(&session.token)
     .bind(session.user_id)
     .bind(keyword)
@@ -925,6 +924,7 @@ async fn create_search_log(
     .bind(scope)
     .bind(json!(channels))
     .bind(json!(source_ids))
+    .bind(keyword.to_lowercase())
     .fetch_one(&state.pool)
     .await
     .map_err(|error| tracing::warn!(%error, "search log create failed"))

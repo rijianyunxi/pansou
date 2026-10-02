@@ -572,6 +572,22 @@ pub async fn worker(state: Arc<AppState>) -> Result<(), ApiError> {
     while tasks.join_next().await.is_some() {}
     Ok(())
 }
+/// Whether a failed crawl page goes straight to the failure record instead of
+/// burning the retry budget.
+///
+/// Exhausted outbound nodes (`选中的节点均不可用`) and failed proxy connections
+/// (`采集连接失败`) are infrastructure faults, not transient upstream blips:
+/// backing off only re-runs the same dead nodes, so the page is parked in
+/// `crawl_page_failures` for an explicit manual re-crawl. `HTTP 403/404` means
+/// the page itself is gone, and `attempts >= 6` is the general retry cap.
+fn is_terminal_failure(error: &str, attempts: i32) -> bool {
+    attempts >= 6
+        || error.contains("HTTP 403")
+        || error.contains("HTTP 404")
+        || error.contains("选中的节点均不可用")
+        || error.contains("采集连接失败")
+}
+
 pub async fn tick(state: &AppState) -> Result<(), ApiError> {
     // Serialize claim + global slot count across every worker process.
     let mut tx = state.pool.begin().await?;
@@ -603,7 +619,7 @@ pub async fn tick(state: &AppState) -> Result<(), ApiError> {
     if let Err(error) = process_job(state, &job, lease).await {
         let error = error.to_string();
         let attempts = job.get::<i32, _>("attempts");
-        let terminal = attempts >= 6 || error.contains("HTTP 403") || error.contains("HTTP 404");
+        let terminal = is_terminal_failure(&error, attempts);
         // An unrecognized HTML page may be a temporary upstream response.
         // Speculative wording in a parser error must not bypass retry/backoff.
         let retry_after = error
@@ -617,10 +633,13 @@ pub async fn tick(state: &AppState) -> Result<(), ApiError> {
             .min(3600)
             .max(retry_after);
         let mut tx = state.pool.begin().await?;
-        sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
+        let channel_exists = sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
             .bind(&channel)
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
+        if channel_exists.is_none() {
+            return Ok(());
+        }
         let updated=sqlx::query("UPDATE crawl_jobs SET status=$3,last_error=$4,failures=failures+1,lease_id=NULL,lease_until=NULL,next_run_at=now()+make_interval(secs=>$5::double precision),updated_at=now() WHERE id=$1 AND lease_id=$2").bind(id).bind(lease).bind(if terminal {"failed"}else{"queued"}).bind(&error).bind(delay as f64).execute(&mut *tx).await?.rows_affected();
         if updated > 0 {
             sqlx::query("UPDATE crawl_channels SET last_error=$2,next_page_at=now()+make_interval(secs=>$3::double precision) WHERE id=$1").bind(&channel).bind(&error).bind(if terminal {0.0}else{delay as f64}).execute(&mut *tx).await?;
@@ -658,7 +677,13 @@ async fn process_job(
     let newest = messages.iter().map(|m| m.id).max();
     let head = job.get::<Option<i64>, _>("head_message").or(newest);
     let reached = kind == "sync" && (stop == 0 || previous.is_some_and(|c| c <= stop));
-    let done = kind == "retry" || previous.is_none() || reached;
+    // Retry jobs walk until their target window is covered; stop_at=0 retry
+    // jobs (checkpoint retries) stay single-page like before.
+    let done = if kind == "retry" {
+        previous.is_none() || (stop > 0 && previous.is_some_and(|c| c <= stop))
+    } else {
+        previous.is_none() || reached
+    };
     let reason = if kind == "retry" {
         "failed_page_retried"
     } else if reached {
@@ -668,10 +693,13 @@ async fn process_job(
     };
     let mut tx = state.pool.begin().await?;
     lock_index(&mut tx).await?;
-    sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
+    let channel_exists = sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
         .bind(&channel)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+    if channel_exists.is_none() {
+        return Ok(());
+    }
     let owned=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM (SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.id=$1 AND j.lease_id=$2 AND j.status='running' AND j.lease_until>now() AND c.enabled FOR UPDATE OF j) owned)").bind(id).bind(lease).fetch_one(&mut *tx).await?;
     if !owned {
         return Err(ApiError::Conflict("任务租约已失效，拒绝提交页面".into()));
@@ -730,7 +758,43 @@ async fn process_job(
             .bind(failure_id)
             .execute(&mut *tx)
             .await?;
+        if failure_id.is_none() && done {
+            // Synthesized message retries cover a cursor window: stale
+            // checkpoints inside it are resolved. Checkpoints re-created while
+            // walking (still-failing pages) keep newer updated_at and survive.
+            sqlx::query("DELETE FROM crawl_page_failures WHERE channel_id=$1 AND cursor_before>$2 AND cursor_before<=$3 AND updated_at<(SELECT created_at FROM crawl_jobs WHERE id=$4)")
+                .bind(&channel).bind(stop).bind(job.get::<Option<i64>, _>("cursor_before").unwrap_or(0)).bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
     }
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_terminal_failure;
+
+    #[test]
+    fn exhausted_outbound_nodes_are_terminal_on_first_attempt() {
+        // Every configured node failed / none was eligible: park the page
+        // immediately instead of backing off against the same dead nodes.
+        assert!(is_terminal_failure("选中的节点均不可用，未选择直连", 1));
+        assert!(is_terminal_failure("采集连接失败：error sending request", 1));
+    }
+
+    #[test]
+    fn gone_pages_and_retry_cap_are_terminal() {
+        assert!(is_terminal_failure("采集 HTTP 404", 1));
+        assert!(is_terminal_failure("采集 HTTP 403", 1));
+        assert!(is_terminal_failure("anything", 6));
+    }
+
+    #[test]
+    fn transient_upstream_errors_still_retry() {
+        assert!(!is_terminal_failure("采集 HTTP 429；Retry-After=120", 1));
+        assert!(!is_terminal_failure("采集总预算超时", 1));
+        assert!(!is_terminal_failure("无法识别频道页面结构", 2));
+    }
 }

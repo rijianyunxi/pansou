@@ -89,8 +89,12 @@ for (const [os, platform, fallback] of [
       assert.deepEqual([...bytes.subarray(0, 2)], [0x1f, 0x8b]);
       const listing = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
       assert.equal(listing.status, 0, listing.stderr);
-      for (const entry of [".env", ".env.example", "pansou-api", "frontend/dist/index.html", "docs/source-message-storage-cleanup.md", "deploy/pansou.service"]) {
-        assert.ok(listing.stdout.split("\n").includes("./" + entry), "missing package entry: " + entry);
+      const entries = listing.stdout.split("\n");
+      for (const entry of [".env", "pansou-api", "frontend/dist/index.html"]) {
+        assert.ok(entries.includes("./" + entry), "missing package entry: " + entry);
+      }
+      for (const entry of [".env.example", "README.md", "docker-compose.yml", "docs/source-message-storage-cleanup.md", "deploy/pansou.service"]) {
+        assert.ok(!entries.includes("./" + entry), "unexpected package entry: " + entry);
       }
       const content = spawnSync("tar", ["-xzOf", archive, "./.env"], { encoding: "utf8" });
       assert.equal(content.status, 0, content.stderr);
