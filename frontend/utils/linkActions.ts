@@ -2,7 +2,7 @@ import type { ResolvedLink } from '../shared/apiModels';
 import { usable } from './linkResolution.ts';
 
 export type LinkAction = 'open' | 'copy';
-export interface LinkActionEffects {
+interface LinkActionEffects {
   prepareOpen: () => { navigate: (url: string) => void; close: () => void };
   copy: (text: Promise<string>) => Promise<void>;
   invalid: (value: ResolvedLink) => void;
@@ -14,7 +14,7 @@ export function invalidLink(value?: ResolvedLink): boolean {
 export function invalidReason(value?: ResolvedLink): string {
   return value?.reasonCode === 'resource_missing' ? '分享中的资源已不存在' : '原分享链接已失效';
 }
-export function clipboardText(value: ResolvedLink): string {
+function clipboardText(value: ResolvedLink): string {
   if (!usable(value) || invalidLink(value)) throw new Error('链接已失效');
   return value.url + (value.password ? '\n提取码：' + value.password : '');
 }

@@ -1,6 +1,6 @@
 import type { SearchLink, SearchResult } from '../shared/apiModels';
 export function linkIdentity(link: SearchLink): string { return link.linkKey; }
-export function mergeSameResult(current: SearchResult, incoming: SearchResult): SearchResult {
+function mergeSameResult(current: SearchResult, incoming: SearchResult): SearchResult {
   // Keep references and their links as one indivisible authorization snapshot.
   return { ...incoming, id: current.id, name: current.name,
     description: incoming.description || current.description };
@@ -13,7 +13,4 @@ export function mergeResultsByLink(results: SearchResult[]): SearchResult[] {
     buckets.set(key, current ? mergeSameResult(current, result) : result);
   }
   return [...buckets.values()];
-}
-export function mergeLocalResources(local: SearchResult[], sources: SearchResult[]): SearchResult[] {
-  return mergeResultsByLink([...local, ...sources]);
 }

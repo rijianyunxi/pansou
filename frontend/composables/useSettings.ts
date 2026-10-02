@@ -10,7 +10,7 @@ export interface UserSettings {
   userChannels: string[];
 }
 
-export interface UseSettingsReturn {
+interface UseSettingsReturn {
   settings: Ref<UserSettings>;
   loadSettings: () => void;
   syncWithSession: () => Promise<void>;

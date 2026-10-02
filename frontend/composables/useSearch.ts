@@ -8,14 +8,14 @@ import type {
   SearchStreamResultData,
 } from "../shared/apiModels";
 
-export interface SearchOptions {
+interface SearchOptions {
   apiBase: string;
   keyword: string;
   userChannels?: string[];
   onlyUserChannels?: boolean;
   onSessionExpired?: () => void | Promise<void>;
 }
-export interface SearchState {
+interface SearchState {
   loading: boolean;
     paused: boolean;
   error: string;

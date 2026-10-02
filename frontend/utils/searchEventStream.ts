@@ -1,4 +1,4 @@
-export interface ServerSentEvent {
+interface ServerSentEvent {
   event: string;
   data: string;
   id?: string;

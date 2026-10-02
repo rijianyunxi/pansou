@@ -1,4 +1,4 @@
-export interface SourceRequestConfig {
+interface SourceRequestConfig {
   query?: Record<string, unknown>;
   headers?: Record<string, string>;
   bodyType?: "json" | "form";
@@ -25,14 +25,14 @@ export interface SourceDefinition {
   outbound?: import("./outbound").OutboundPolicy;
 }
 
-export type ProbeState = "available" | "warning" | "error";
+type ProbeState = "available" | "warning" | "error";
 export interface ProbeRequestDetails {
   url: string;
   query: Record<string, string | string[]>;
   headers: Record<string, string>;
   body?: unknown;
 }
-export interface ProbeTrace {
+interface ProbeTrace {
   stage?: string;
   url: string;
   method: string;

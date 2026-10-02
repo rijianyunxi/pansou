@@ -55,16 +55,6 @@ function appendParameters(
   }
 }
 
-function appendBodyPreview(url: URL, body: unknown, variables: DebugVariables): void {
-  if (body === undefined) return;
-  const rendered = renderTemplate(body, variables);
-  if (rendered && typeof rendered === "object" && !Array.isArray(rendered)) {
-    appendParameters(url, rendered as Record<string, unknown>, variables);
-    return;
-  }
-  url.searchParams.set("_body", parameterText(rendered));
-}
-
 function debugVariables(_source: SourceDefinition, keyword: string): DebugVariables {
   return {
     keyword: keyword.trim(),
@@ -120,25 +110,6 @@ export function buildSourceRequestPreview(
     headers,
     ...(body !== undefined ? { body } : {}),
   };
-}
-
-/**
- * Build a browser-openable request preview for the source directory.
- * Explicit query values match the real request. POST body fields are mirrored
- * into the query string so they remain inspectable when opened in a new tab.
- */
-export function buildSourceDebugUrl(
-  source: SourceDefinition,
-  keyword: string,
-): string {
-  try {
-    const preview = buildSourceRequestPreview(source, keyword);
-    const url = new URL(preview.url);
-    if (source.method === "POST") appendBodyPreview(url, preview.body, debugVariables(source, keyword));
-    return url.toString();
-  } catch {
-    return source.url;
-  }
 }
 
 /** Build the stable address shown in the source directory without a keyword. */
