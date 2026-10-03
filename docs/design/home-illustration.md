@@ -1,10 +1,8 @@
 # 首页插画
 
-当前首页使用手绘矢量资源 `frontend/public/images/discovery-hero.svg`，无需加载 PNG。保留橙色放大镜、书本、胶片和文件夹，透明背景，无内嵌位图及外部依赖。
+当前首页使用手绘矢量资源 `frontend/assets/discovery-hero.svg`，由组件 import 打包进 `dist/assets/`（带内容 hash），无需加载 PNG。保留橙色放大镜、书本、胶片和文件夹，透明背景，无内嵌位图及外部依赖。
 
-以下为早期位图素材记录。
-
-使用内置 image_gen 生成，资源文件：`frontend/public/images/discovery-hero.png`。
+以下为早期位图素材记录（PNG 源文件已删除）。
 
 ## 最终提示词
 

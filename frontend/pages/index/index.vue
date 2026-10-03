@@ -7,7 +7,7 @@
         <h1 v-else class="hero-title hero-title--custom">{{ homeTitle }}</h1>
         <p class="hero-description">{{ homeDescription }}</p>
       </div>
-      <img class="hero-art" src="/images/discovery-hero.svg" alt="" width="720" height="480" fetchpriority="high" />
+      <img class="hero-art" :src="discoveryHeroSvg" alt="" width="720" height="480" fetchpriority="high" />
     </header>
 
     <HomeSearchWorkspace
@@ -81,6 +81,7 @@ import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } fr
 import { CLOUD_TYPE_LABELS, sortCloudTypes } from "~/shared/cloudTypes";
 import { DEFAULT_HOME_SEARCH_PLACEHOLDER } from "~/shared/homeSearch";
 import { flattenResultsForDisplay, type DisplaySearchResult } from "~/utils/resultDisplay";
+import discoveryHeroSvg from "~/assets/discovery-hero.svg";
 
 import HomeResultsPanel from "../../components/home/HomeResultsPanel.vue";
 import HomeSearchWorkspace from "../../components/home/HomeSearchWorkspace.vue";
