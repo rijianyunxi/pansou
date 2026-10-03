@@ -178,6 +178,15 @@
 .link-main text { overflow-wrap: anywhere; }
 .link-btn[disabled] { opacity: .55; }
 .link-btn::after { border: none; }
+.link-progress { grid-column: 1 / -1; min-width: 0; }
+.progress-caption { display: flex; align-items: center; gap: 14rpx; color: var(--text-secondary); font-size: 24rpx; }
+.progress-elapsed { margin-left: auto; color: var(--text-tertiary); }
+.progress-spinner { width: 24rpx; height: 24rpx; border: 3rpx solid var(--border-light); border-top-color: var(--text-primary); border-radius: 50%; animation: link-spin .8s linear infinite; }
+.progress-track { height: 6rpx; margin-top: 18rpx; border-radius: 999rpx; overflow: hidden; background: var(--border-light); }
+.progress-sweep { width: 35%; height: 100%; border-radius: inherit; background: var(--text-secondary); animation: link-sweep 1.6s ease-in-out infinite; }
+@keyframes link-spin { to { transform: rotate(360deg); } }
+@keyframes link-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { .progress-spinner, .progress-sweep { animation: none; } }
 
 .btn-hover {
   border-color: var(--primary);

@@ -350,6 +350,9 @@ impl Drive {
             Provider::Quark => self.quark.resolve(reference).await?,
             _ => self.extended.resolve(reference).await?,
         };
+        self.validate_context(context)
+    }
+    fn validate_context(&self, context: Context) -> Result<Context, DriveError> {
         if context
             .files
             .iter()
@@ -365,11 +368,9 @@ impl Drive {
         }
         Ok(context)
     }
-    /// Resolve with a previously recorded share identity. Baidu's page parse is
-    /// the slowest step of a delivery and the extraction-code round trip is not,
-    /// so a cached `{shareId, owner, files}` turns a retry into one fast call.
-    /// Stale or wrong caches still fail closed: verification runs against the
-    /// live share, and the transferred ids must exactly match the source list.
+    /// Reuse only Baidu's public share identity. Read the current file list and
+    /// validate it on every attempt so changed membership cannot be transferred
+    /// from an old snapshot. No share/session tokens are cached.
     pub async fn resolve_cached(
         &self,
         reference: &Reference,
@@ -379,20 +380,11 @@ impl Drive {
             if let Some(cached) = cached {
                 let share_id = scalar(&cached["shareId"]);
                 let owner = scalar(&cached["owner"]);
-                let files: Vec<File> = serde_json::from_value(cached["files"].clone())
-                    .map_err(|_| {
-                        self.wire.error(ErrorKind::Upstream, "缓存的分享列表无效")
-                    })?;
-                if !share_id.is_empty() && !owner.is_empty() && !files.is_empty() {
+                let numeric = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+                if numeric(&share_id) && numeric(&owner) {
                     let sekey = self.baidu.verify_share(reference).await?;
-                    return Ok(Context {
-                        reference: reference.clone(),
-                        title: String::new(),
-                        files,
-                        token: sekey,
-                        owner,
-                        share_id,
-                    });
+                    let context = self.baidu.resolve_identity(reference, sekey, share_id, owner).await?;
+                    return self.validate_context(context);
                 }
             }
         }
@@ -462,6 +454,13 @@ impl Drive {
             Provider::Baidu => self.baidu.save(context, &context.files, dir).await,
             Provider::Quark => self.quark.save(context, &context.files, dir).await,
             _ => self.extended.transfer(context, dir).await,
+        }
+    }
+    /// Reuse the listing already checked by providers that confirm transfers via list.
+    pub async fn transfer_with_listing(&self, context: &Context, dir: &str) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
+        match self.wire.provider {
+            Provider::Baidu | Provider::Quark => self.transfer(context, dir).await.map(|ids| (ids, None)),
+            _ => self.extended.transfer_with_listing(context, dir).await,
         }
     }
     pub async fn owned(&self, context: &Context) -> Result<(), DriveError> {

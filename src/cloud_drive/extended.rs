@@ -635,7 +635,9 @@ impl Extended {
         if !valid_id(id, false) {
             return Err(self.wire.error(ErrorKind::Upstream, "任务身份无效"));
         }
-        for _ in 0..30 {
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        while tokio::time::Instant::now() < deadline {
             let value = match self.wire.provider {
                 Provider::Aliyun => {
                     self.post(
@@ -679,7 +681,16 @@ impl Extended {
             if matches!(state.as_str(), "Failed" | "PHASE_TYPE_ERROR" | "3") {
                 return Err(self.wire.error(ErrorKind::Upstream, "网盘任务失败"));
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Short jobs should not pay a full second between acknowledgements.
+            // Back off for longer jobs to keep provider polling bounded.
+            let interval = if started.elapsed() < Duration::from_secs(2) {
+                Duration::from_millis(250)
+            } else if started.elapsed() < Duration::from_secs(5) {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_secs(1)
+            };
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + interval)).await;
         }
         Err(self
             .wire
@@ -715,6 +726,9 @@ impl Extended {
         Ok(owned)
     }
     pub async fn transfer(&self, context: &Context, dir: &str) -> Result<Vec<String>, DriveError> {
+        self.transfer_with_listing(context, dir).await.map(|(ids, _)| ids)
+    }
+    pub async fn transfer_with_listing(&self, context: &Context, dir: &str) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
         self.wire.require_login().await?;
         let ids: Vec<&str> = context.files.iter().map(|f| f.id.as_str()).collect();
         let mut acknowledged = vec![];
@@ -733,7 +747,7 @@ impl Extended {
                 self.wire.confirmed_file_ids.lock().await.push(id.clone());
                 acknowledged.push(id);
             }
-            return Ok(acknowledged);
+            return Ok((acknowledged, None));
         }
         let value = if self.wire.provider == Provider::Xunlei {
             self.post("drive/v1/share/restore",json!({"share_id":context.reference.key,"pass_code_token":context.token,"file_ids":ids,"specify_parent_id":true,"parent_id":dir,"ancestor_ids":[]}),None,true).await?
@@ -759,7 +773,7 @@ impl Extended {
                 .wire
                 .error(ErrorKind::Ownership, "转存结果与来源不匹配，拒绝确认或删除"));
         }
-        Ok(files.into_iter().map(|f| f.id).collect())
+        Ok((files.iter().map(|f| f.id.clone()).collect(), Some(files)))
     }
     pub async fn share(&self, files: &[File], days: u32) -> Result<Value, DriveError> {
         self.wire.require_login().await?;
@@ -952,6 +966,25 @@ mod tests {
         for other in [Provider::Aliyun, Provider::Xunlei] {
             assert!(provider(other).array(&json!({"msg":"success","data":{}})).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn short_tasks_are_confirmed_without_whole_second_polling_gaps() {
+        async fn status(State(calls): State<std::sync::Arc<std::sync::atomic::AtomicUsize>>) -> Json<Value> {
+            let count = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Json(json!({"code":0,"data":{"status":if count < 2 {1} else {2}}}))
+        }
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut drive = provider(Provider::Guangya);
+        drive.base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let app = Router::new().fallback(any(status)).with_state(calls.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let started = std::time::Instant::now();
+        drive.wait_task("fixture-task").await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(started.elapsed() < Duration::from_millis(1800), "short task waited {:?}", started.elapsed());
+        server.abort();
     }
 
     #[tokio::test]

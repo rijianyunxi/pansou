@@ -21,6 +21,10 @@
         <button class="link-btn" hover-class="btn-hover" disabled="{{!!loading[link.key]}}" loading="{{loading[link.key] === 'open'}}" data-key="{{link.key}}" bindtap="onOpen">{{loading[link.key] === 'open' ? '正在打开' : '打开链接'}}</button>
         <button class="link-btn" hover-class="btn-hover" disabled="{{!!loading[link.key]}}" loading="{{loading[link.key] === 'copy'}}" data-key="{{link.key}}" bindtap="onCopy">{{loading[link.key] === 'copy' ? '正在复制' : copiedKey === link.key ? '已复制' : '复制链接'}}</button>
       </view>
+      <view wx:if="{{loading[link.key] && progress[link.key]}}" class="link-progress" aria-role="status" aria-label="{{progress[link.key].label}}">
+        <view class="progress-caption"><view class="progress-spinner" /><text>{{progress[link.key].label}}</text><text class="progress-elapsed">{{progress[link.key].elapsed}} 秒</text></view>
+        <view class="progress-track"><view class="progress-sweep" /></view>
+      </view>
     </view>
   </view>
 </view>

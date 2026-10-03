@@ -1,0 +1,22 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>取链等待效果 · 示例</title></head><body style="margin:0"><main id="preview-root" style="max-width:760px;margin:48px auto;padding:16px"></main>
+<script type="module">
+import {createApp,h} from 'vue';
+import ResultGroup from '/components/ResultGroup.vue';
+import '/app.vue';
+const operations=new Map();
+// All requests are simulated; this preview never submits a real transfer.
+window.fetch=async(input,options={})=>{
+ const path=new URL(String(input),location.origin).pathname;
+ let key;
+ if(path==='/api/links/resolve'&&options.method==='POST'){
+  key=JSON.parse(options.body).requestKey;operations.set(key,Date.now());
+ }else if(path.startsWith('/api/links/resolve-operations/'))key=path.split('/').pop();
+ else throw new Error('验收页禁止真实请求');
+ if(!operations.has(key))return Response.json({message:'操作不存在'},{status:404});
+ const elapsed=Date.now()-operations.get(key);
+ if(elapsed>20000)return Response.json({data:{requestKey:key,status:'completed',url:'https://example.com',validity:1,delivery:'reshared'}});
+ const stage=elapsed<2000?'queued':elapsed<6000?'checking':elapsed<14000?'transferring':'sharing';
+ return Response.json({data:{requestKey:key,status:'processing',stage,pollAfterMs:750}},{status:202});
+};
+createApp({render:()=>h(ResultGroup,{title:'分享链接',color:'#18181b',icon:'☁',expanded:true,initialVisible:3,platformLabel:()=> '夸克网盘',items:[{id:'preview',name:'凡人修仙传 · 4K 合集',description:'按季度整理，包含多个版本。',resultRef:'preview',links:[{type:'quark',linkRef:'preview-link'}]}]})}).mount('#preview-root');
+</script></body></html>

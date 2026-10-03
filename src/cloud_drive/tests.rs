@@ -1200,3 +1200,54 @@ async fn quark_rejects_non_owner_entries_even_when_share_id_matches() {
     );
     assert!(!drive.wrote());
 }
+
+#[tokio::test]
+async fn baidu_cached_identity_reads_current_membership_without_html() {
+    use axum::{Router, body::Body, extract::State, http::Request, response::IntoResponse, routing::any};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Default)]
+    struct Fixture { mode: AtomicUsize, html: AtomicUsize, lists: AtomicUsize }
+    async fn upstream(State(state): State<Arc<Fixture>>, request: Request<Body>) -> axum::response::Response {
+        match request.uri().path() {
+            "/share/verify" => axum::Json(json!({"errno":0,"randsk":"fixture"})).into_response(),
+            "/s/1fixture" => {
+                state.html.fetch_add(1, Ordering::SeqCst);
+                "shareid=123;share_uk=456".into_response()
+            }
+            "/share/list" => {
+                state.lists.fetch_add(1, Ordering::SeqCst);
+                let file = |id| json!({"fs_id":id,"server_filename":format!("file{id}.mp4"),"size":42,"isdir":0});
+                let files = match state.mode.load(Ordering::SeqCst) {
+                    1 => vec![],
+                    2 => vec![file(2),file(2)],
+                    _ => vec![file(2),file(3)],
+                };
+                axum::Json(json!({"errno":0,"list":files})).into_response()
+            }
+            path => panic!("unexpected read {path}"),
+        }
+    }
+    let fixture = Arc::new(Fixture::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+    let app = Router::new().fallback(any(upstream)).with_state(fixture.clone());
+    let task = tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    let mut drive = Drive::new(transport::http_client(),Provider::Baidu,"BDUSS=fixture".into());
+    drive.baidu.base=base;
+    let reference=ShareInput{url:"https://pan.baidu.com/s/1fixture".into(),provider:Some(Provider::Baidu),password:Some("1234".into())}.parse().unwrap();
+    // Legacy caches contain old files; ignore them and use the current membership.
+    let cached=json!({"shareId":"123","owner":"456","files":[{"id":"1","name":"removed.mp4","size":42,"isDir":false}]});
+    let context=drive.resolve_cached(&reference,Some(&cached)).await.unwrap();
+    assert_eq!(context.files.iter().map(|f|f.id.as_str()).collect::<Vec<_>>(),vec!["2","3"]);
+    assert_eq!(fixture.html.load(Ordering::SeqCst),0);
+    assert_eq!(fixture.lists.load(Ordering::SeqCst),1);
+    fixture.mode.store(1,Ordering::SeqCst);
+    assert!(drive.resolve_cached(&reference,Some(&cached)).await.unwrap().files.is_empty());
+    fixture.mode.store(2,Ordering::SeqCst);
+    assert!(drive.resolve_cached(&reference,Some(&cached)).await.is_err());
+    fixture.mode.store(0,Ordering::SeqCst);
+    let without_cache=drive.resolve_cached(&reference,Some(&json!({"shareId":"broken","owner":"456"}))).await.unwrap();
+    assert_eq!(without_cache.files.len(),2);
+    assert_eq!(fixture.html.load(Ordering::SeqCst),1);
+    task.abort();
+}

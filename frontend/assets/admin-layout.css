@@ -905,3 +905,57 @@
   background: var(--background);
   box-shadow: -1px 0 var(--border);
 }
+
+/* Resource summaries stay bounded; full link URLs live in the detail drawer. */
+.admin-root .resource-list-panel .resource-list-table td {
+  padding: 16px 12px;
+  vertical-align: top;
+  white-space: normal;
+}
+.admin-root .resource-list-panel .resource-list-table th {
+  background: var(--muted);
+}
+
+/* Shared semantic colors for resource availability and per-link observations. */
+.admin-root .resource-status {
+  --resource-status-text: #52525b;
+  --resource-status-bg: #f4f4f5;
+  --resource-status-border: #e4e4e7;
+  color: var(--resource-status-text);
+  background: var(--resource-status-bg);
+  border-color: var(--resource-status-border);
+}
+.admin-root .resource-status[data-tone="valid"] {
+  --resource-status-text: #047857;
+  --resource-status-bg: #ecfdf5;
+  --resource-status-border: #a7f3d0;
+}
+.admin-root .resource-status[data-tone="invalid"] {
+  --resource-status-text: #b91c1c;
+  --resource-status-bg: #fef2f2;
+  --resource-status-border: #fecaca;
+}
+.admin-root .resource-status[data-tone="pending"] {
+  --resource-status-text: #b45309;
+  --resource-status-bg: #fffbeb;
+  --resource-status-border: #fde68a;
+}
+.admin-root .resource-status[data-tone="checking"] {
+  --resource-status-text: #1d4ed8;
+  --resource-status-bg: #eff6ff;
+  --resource-status-border: #bfdbfe;
+}
+
+/* Keep batch actions consistent with outline/ghost buttons despite legacy overrides. */
+.admin-root .resource-batch [data-slot="button"].batch-delete {
+  color: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 30%, var(--border));
+  background: var(--background);
+}
+.admin-root .resource-batch [data-slot="button"].batch-delete:hover:not(:disabled) {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--background));
+}
+.admin-root .resource-batch [data-slot="button"].batch-cancel {
+  color: var(--muted-foreground);
+}

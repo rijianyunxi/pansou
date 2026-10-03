@@ -91,7 +91,7 @@ pub async fn admin_resources_get(
         .push(") SELECT r.id,r.name,r.description,r.datetime,r.cloud_types_json,r.links_json,r.tags_json,r.images_json,r.enabled,r.check_status,r.check_message,r.checked_at,r.link_validity,r.link_validity_updated_at FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
     let rows = query.build().fetch_all(&state.pool).await?;
     let total = state.admin_stats.resource_total(&state.pool, &needle, &cloud_type).await?;
-    let resources = rows.into_iter().map(|r| json!({
+    let mut resources = rows.into_iter().map(|r| json!({
         "id": r.get::<String,_>("id"), "name": r.get::<String,_>("name"),
         "description": r.get::<Option<String>,_>("description"), "datetime": r.get::<Option<String>,_>("datetime"),
         "cloud_types": r.get::<Value,_>("cloud_types_json"), "links": r.get::<Value,_>("links_json"),
@@ -100,6 +100,7 @@ pub async fn admin_resources_get(
         "linkValidity":r.get::<i16,_>("link_validity"), "linkValidityUpdatedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("link_validity_updated_at"),
         "checkMessage": r.get::<Option<String>,_>("check_message"), "checkedAt": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("checked_at")
     })).collect::<Vec<_>>();
+    crate::link_resolution::admin_resource_observations(&state, &mut resources).await?;
     let cloud_types: Vec<String> = sqlx::query_scalar(
         "SELECT cloud_type FROM resource_cloud_type_counts WHERE resource_count>0 ORDER BY cloud_type",
     ).fetch_all(&state.pool).await?;

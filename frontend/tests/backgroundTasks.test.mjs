@@ -37,7 +37,7 @@ test('observations distinguish job completion, link validity and safe fallback',
   assert.equal(taskObservation({status:'completed',validity:-1}),'有效性未确认');
   assert.equal(taskObservation({status:'completed',delivery:'original'}),'返回原链接');
   assert.equal(taskObservation({delivery:'reshared',cacheHit:true}),'已复用转存分享');
-  assert.match(taskReason('deadline_exceeded'),/5 秒.*另行清理/);
+  assert.match(taskReason('deadline_exceeded'),/超时.*另行清理/);
   assert.match(taskReason('rate_limited'),/不要连续重试/);
   assert.equal(taskLabel('uncertain'),'结果待核实');
 });

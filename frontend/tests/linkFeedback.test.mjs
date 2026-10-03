@@ -89,6 +89,26 @@ test('copy without a password reports only the copied link', async () => {
   } finally { card.cleanup(); }
 });
 
+test('inline progress follows backend stages and is removed on completion', async () => {
+  let finish, notify;
+  const card = await setupCard({ resolve: (_r, _l, _k, _signal, _resume, onProgress) => {
+    notify = onProgress;
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  try {
+    const pending = card.component.act('open', resource, link);
+    assert.equal(card.component.progress.link.stage, 'queued');
+    notify({ stage: 'transferring' });
+    assert.equal(card.component.progress.link.stage, 'transferring');
+    notify({ stage: 'sharing' });
+    assert.equal(card.component.stageLabel(card.component.progress.link.stage), '生成分享');
+    assert.match(card.popup.document.body.innerHTML, /spinner/);
+    finish(available);
+    await pending;
+    assert.equal(card.component.progress.link, undefined);
+  } finally { card.cleanup(); }
+});
+
 test('clipboard denial, invalid links and setup failures show errors without success', async () => {
   for (const options of [
     { copy: async () => { throw new DOMException('Write permission denied', 'NotAllowedError'); } },

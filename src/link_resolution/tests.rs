@@ -32,6 +32,7 @@ struct Upstream {
     finish_share_delay_ms: u64,
     empty_source: bool,
     unknown_file: bool,
+    directory_reads: usize,
 }
 fn qfile(id: &str, name: &str, size: u64, dir: bool) -> Value {
     json!({"fid":id,"file_name":name,"size":size,"dir":dir,"share_fid_token":"fixture-token"})
@@ -70,6 +71,7 @@ async fn mock(State(state): State<Arc<Mutex<Upstream>>>, request: Request<Body>)
             json!({"code":0,"data":{"list":list,"share":{"title":"fixture"}}})
         }
         "/qp/file/sort" => {
+            state.directory_reads += 1;
             let parent = query.get("pdir_fid").map(|s| s.as_ref()).unwrap_or("");
             let mut list = if parent == "project" {
                 state.directories.values().cloned().collect::<Vec<_>>()
@@ -133,6 +135,18 @@ async fn mock(State(state): State<Arc<Mutex<Upstream>>>, request: Request<Body>)
     Json(value)
 }
 async fn call(router: &Router, session: &Session, path: &str, value: Value) -> (StatusCode, Value) {
+    let mut out = call_once(router, session, path, value).await;
+    let end = tokio::time::Instant::now() + Duration::from_secs(20);
+    while out.0 == StatusCode::ACCEPTED && path == "/api/links/resolve" {
+        assert!(tokio::time::Instant::now() < end, "operation did not finish: {out:?}");
+        let key = out.1["data"]["requestKey"].as_str().unwrap();
+        let path = format!("/api/links/resolve-operations/{key}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        out = call_once(router, session, &path, Value::Null).await;
+    }
+    out
+}
+async fn call_once(router: &Router, session: &Session, path: &str, value: Value) -> (StatusCode, Value) {
     let response = router
         .clone()
         .oneshot(
@@ -159,11 +173,24 @@ async fn call(router: &Router, session: &Session, path: &str, value: Value) -> (
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
 }
+async fn wait_for_cloud_writer(pool: &sqlx::PgPool, provider: &str) {
+    let end = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut tx = pool.begin().await.unwrap();
+        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("pansou:cloud-write:{provider}")).fetch_one(&mut *tx).await.unwrap();
+        tx.rollback().await.unwrap();
+        if free { return; }
+        assert!(tokio::time::Instant::now() < end, "writer did not release its lock");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 
 #[derive(Default)]
 struct ExtendedUpstream {
     dirs: HashMap<String, Value>, files: HashMap<String, Vec<Value>>,
     created: usize, transfers: usize, shares: usize, deleted: usize, revoked: usize,
+    directory_lists: usize,
     late: bool, wrong_account: bool, multi_file: bool, login_required:bool,
 }
 fn extended_file(id: &str, name: &str, directory: bool) -> Value {
@@ -194,6 +221,7 @@ async fn extended_mock(State(state): State<Arc<Mutex<ExtendedUpstream>>>, reques
         "/nd.bizuserres.s/v1/get_share_page_files_list"=>json!({"code":0,"data":{"list":[extended_file("source","movie.mp4",false)],"total":1}}),
         "/adrive/v3/file/list"|"/drive/v1/files"|"/userres/v1/file/get_file_list" if path!="/drive/v1/files" || input.is_null()=>{
             let parent=input["parent_file_id"].as_str().or(input["parentId"].as_str()).or_else(||params.get("parent_id").map(|s|s.as_ref())).unwrap_or("");
+            if parent.starts_with("dir") { state.directory_lists += 1; }
             let files=if matches!(parent,"project"|"0"|""|"root"){state.dirs.values().cloned().collect::<Vec<_>>()}else{state.files.get(parent).cloned().unwrap_or_default()};
             json!({"code":0,"items":files,"files":files,"data":{"list":files,"files":files,"total":files.len()},"next_marker":""})
         },
@@ -228,6 +256,7 @@ async fn extended_providers_transfer_reuse_timeout_cleanup_and_admin_retry() {
     let upstream=Arc::new(Mutex::new(ExtendedUpstream::default()));let server=Router::new().fallback(any(extended_mock)).with_state(upstream.clone());let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let origin=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();let task=tokio::spawn(async move{axum::serve(listener,server).await.unwrap()});
     let mut state=AppState::new(pool.clone(),RedisStore::connect(&redis).await.unwrap());state.cloud_auth_test_base=Some(origin.as_str().to_owned());state.cloud_test_bases=Some(TestBases{baidu:origin.clone(),quark_pc:origin.clone(),quark_share:origin});let state=Arc::new(state);let router=crate::app::build_router(state.clone());let anon=state.auth().issue(true).await.unwrap();
     let username=format!("cleanup-{}",Uuid::new_v4());sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&username).bind(crate::auth::hash_password("fixture-password").unwrap()).execute(&pool).await.unwrap();let(admin,_)=state.auth().login(&username,"fixture-password").await.unwrap();
+    state.resolve_test_timeout_seconds.store(5, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(call(&router,&anon,"/api/admin/link-cleanup?status=all",Value::Null).await.0,StatusCode::FORBIDDEN);
     for provider in ["aliyun","xunlei","guangya"] {
         let credential=json!({"access_token":"fixture-access","user_id":"fixture-account","drive_id":"fixture-drive","x-captcha-token":"fixture-captcha","device_id":"fixture-device"}).to_string();
@@ -237,7 +266,9 @@ async fn extended_providers_transfer_reuse_timeout_cleanup_and_admin_retry() {
         assert_eq!(call(&router,&admin,"/api/admin/cloud-drive/ping",json!({"provider":provider})).await.0,StatusCode::OK);
         sqlx::query("UPDATE cloud_provider_policies SET delivery_enabled=true,target_dir='project',retention_seconds=3600,delivery_min_remaining_seconds=5,platform_share_days=7 WHERE provider=$1").bind(provider).execute(&pool).await.unwrap();
         let host=match provider{"aliyun"=>"www.alipan.com","xunlei"=>"pan.xunlei.com",_=>"www.guangyapan.com"};let link=Link{r#type:provider.into(),url:format!("https://{host}/s/source{}",Uuid::new_v4().simple()),password:Some("secr".into())};let(out,id)=seed(&state,&anon,link.clone()).await;
+        let lists_before=upstream.lock().await.directory_lists;
         let first=call(&router,&anon,"/api/links/resolve",request(&out,Uuid::new_v4())).await;assert_eq!(first.0,StatusCode::OK);assert_eq!(first.1["data"]["delivery"],"reshared","{provider}: {first:?}");
+        assert_eq!(upstream.lock().await.directory_lists-lists_before,2,"{provider}: only the empty-directory and confirmed-transfer lists are needed");
         let transferred=upstream.lock().await.transfers;let reused=call(&router,&anon,"/api/links/resolve",request(&out,Uuid::new_v4())).await;assert_eq!(reused.1["data"]["cacheHit"],true,"{reused:?}");assert_eq!(upstream.lock().await.transfers,transferred);
         let scheduled=call(&router,&admin,&format!("/api/admin/link-cleanup?status=all&provider={provider}"),Value::Null).await;
         let not_due=scheduled.1["data"]["items"][0]["id"].as_i64().unwrap();assert_eq!(scheduled.1["data"]["items"][0]["canRetry"],false);assert_eq!(scheduled.1["data"]["items"][0]["retryUnavailableReason"],"not_due");assert!(!scheduled.1.to_string().contains("\"token\""));assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{not_due}/retry"),json!({})).await.0,StatusCode::CONFLICT);
@@ -257,9 +288,11 @@ async fn extended_providers_transfer_reuse_timeout_cleanup_and_admin_retry() {
         let attention=call(&router,&admin,&format!("/api/admin/link-cleanup?status=attention&provider={provider}"),Value::Null).await;assert_eq!(attention.0,StatusCode::OK);assert!(!attention.1.to_string().contains("fixture-access"));let job=attention.1["data"]["items"][0]["id"].as_i64().unwrap();assert_eq!(attention.1["data"]["items"][0]["status"],"blocked");
         assert_eq!(call(&router,&anon,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::FORBIDDEN);
         upstream.lock().await.wrong_account=false;assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::OK);delivery::cleanup_tick(&state).await.unwrap();assert_eq!(upstream.lock().await.deleted,before+1);assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::CONFLICT);
-        upstream.lock().await.late=true;upstream.lock().await.multi_file=provider=="aliyun";let key=Uuid::new_v4();let start=std::time::Instant::now();let fallback=call(&router,&anon,"/api/links/resolve",request(&out,key)).await;assert!(start.elapsed()<Duration::from_millis(5800));assert_eq!(fallback.1["data"]["url"],link.url,"{provider}: {fallback:?}");assert_eq!(fallback.1["data"]["delivery"],"original");
+        upstream.lock().await.late=true;upstream.lock().await.multi_file=provider=="aliyun";let key=Uuid::new_v4();let start=tokio::time::Instant::now();let pending=call_once(&router,&anon,"/api/links/resolve",request(&out,key)).await;assert_eq!(pending.0,StatusCode::ACCEPTED);assert!(start.elapsed()<Duration::from_secs(2));
+        tokio::time::sleep_until(start+Duration::from_millis(5100)).await;
+        let fallback=call_once(&router,&anon,&format!("/api/links/resolve-operations/{key}"),Value::Null).await;assert_eq!(fallback.1["data"]["url"],link.url,"{provider}: {fallback:?}");assert_eq!(fallback.1["data"]["delivery"],"original");
         let end=tokio::time::Instant::now()+Duration::from_secs(6);loop{let retired:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM link_share_cache s JOIN link_resolve_requests r ON r.share_cache_id=s.id WHERE r.request_key=$1 AND s.state='expiring')").bind(key).fetch_one(&pool).await.unwrap();if retired{break;}assert!(tokio::time::Instant::now()<end,"{provider}: late write was not retired");tokio::time::sleep(Duration::from_millis(20)).await;}
-        delivery::cleanup_tick(&state).await.unwrap();assert!(upstream.lock().await.dirs.is_empty(),"{provider}: late artifact remained");upstream.lock().await.late=false;
+        wait_for_cloud_writer(&pool,provider).await;delivery::cleanup_tick(&state).await.unwrap();assert!(upstream.lock().await.dirs.is_empty(),"{provider}: late artifact remained");upstream.lock().await.late=false;
         // Live leases cannot be reset by the admin retry endpoint.
         let lease_token=Uuid::new_v4();sqlx::query("UPDATE link_cleanup_jobs SET status='running',lease_token=$2,lease_until=now()+interval '3 minutes' WHERE id=$1").bind(job).bind(lease_token).execute(&pool).await.unwrap();assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::CONFLICT);
         assert!(delivery::cleanup_checkpoint(&state,job,lease_token,"verify").await.is_ok());assert!(delivery::cleanup_checkpoint(&state,job,Uuid::new_v4(),"delete_files").await.is_err());
@@ -308,7 +341,7 @@ fn request(out: &Value, key: Uuid) -> Value {
 }
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
-async fn resolution_returns_original_after_five_seconds_and_fences_late_results() {
+async fn resolution_waits_beyond_http_budget_and_fences_expired_results() {
     let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(Url::parse(&database).unwrap().path().ends_with("_test"));
     let redis_url = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
@@ -329,6 +362,7 @@ async fn resolution_returns_original_after_five_seconds_and_fences_late_results(
     let state = Arc::new(state);
     let router = crate::app::build_router(state.clone());
     let session = state.auth().issue(true).await.unwrap();
+    state.resolve_test_timeout_seconds.store(5, std::sync::atomic::Ordering::SeqCst);
     sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','timeout-fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential")
         .execute(&pool).await.unwrap();
     sqlx::query("UPDATE cloud_provider_policies SET delivery_enabled=true,target_dir='project',retention_seconds=3600,delivery_min_remaining_seconds=5,platform_share_days=7 WHERE provider='quark'")
@@ -352,8 +386,15 @@ async fn resolution_returns_original_after_five_seconds_and_fences_late_results(
         let link = Link { r#type: "quark".into(), url: format!("https://pan.quark.cn/s/timeout{}", Uuid::new_v4().simple()), password: Some("secr".into()) };
         let (out, _) = seed(&state, &session, link.clone()).await;
         let key = Uuid::new_v4();
-        let started = std::time::Instant::now();
-        let (status, result) = call(&router, &session, "/api/links/resolve", request(&out, key)).await;
+        let started = tokio::time::Instant::now();
+        let pending = call_once(&router, &session, "/api/links/resolve", request(&out, key)).await;
+        assert_eq!(pending.0, StatusCode::ACCEPTED, "{scenario}: {pending:?}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(pending.1["data"]["status"], "processing");
+        assert!(pending.1["data"]["stage"].is_string());
+        // A test-only shorter work budget exercises deadline fencing without waiting two minutes.
+        tokio::time::sleep_until(started + Duration::from_millis(5100)).await;
+        let (status, result) = call_once(&router, &session, &format!("/api/links/resolve-operations/{key}"), Value::Null).await;
         let elapsed = started.elapsed();
         println!("{scenario}: returned original in {elapsed:?}");
         assert_eq!(status, StatusCode::OK, "{scenario}: {result}");
@@ -388,6 +429,7 @@ async fn resolution_returns_original_after_five_seconds_and_fences_late_results(
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             // An unrelated file at the project root must survive cleanup.
+            wait_for_cloud_writer(&pool, "quark").await;
             upstream.lock().await.directories.insert("foreign-root".into(), qfile("foreign-root", "personal", 0, true));
             if scenario == "directory" {
                 let mut busy = pool.begin().await.unwrap();
@@ -427,6 +469,28 @@ async fn resolution_returns_original_after_five_seconds_and_fences_late_results(
     let unsafe_cache: i64 = sqlx::query_scalar("SELECT count(*) FROM link_share_cache WHERE state='ready'")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(unsafe_cache, 0, "an interrupted transfer must not become a ready share");
+    // A source taking longer than the old five-second limit must still complete.
+    state.resolve_test_timeout_seconds.store(120, std::sync::atomic::Ordering::SeqCst);
+    {
+        let mut mock = upstream.lock().await;
+        mock.source_delay_ms = 6000;
+        mock.directory_delay_ms = 0;
+        mock.transfer_delay_ms = 0;
+        mock.share_delay_ms = 0;
+        mock.finish_share_delay_ms = 0;
+    }
+    let link = Link { r#type: "quark".into(), url: format!("https://pan.quark.cn/s/slow{}", Uuid::new_v4().simple()), password: None };
+    let (out, _) = seed(&state, &session, link).await;
+    let key = Uuid::new_v4();
+    let transfers = upstream.lock().await.transfer_count;
+    let pending = call_once(&router, &session, "/api/links/resolve", request(&out, key)).await;
+    assert_eq!(pending.0, StatusCode::ACCEPTED);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let still_pending = call_once(&router, &session, &format!("/api/links/resolve-operations/{key}"), Value::Null).await;
+    assert_eq!(still_pending.0, StatusCode::ACCEPTED, "{still_pending:?}");
+    let finished = call(&router, &session, "/api/links/resolve", request(&out, key)).await;
+    assert_eq!(finished.1["data"]["delivery"], "reshared", "{finished:?}");
+    assert_eq!(upstream.lock().await.transfer_count, transfers + 1, "retrying the same key cannot repeat the transfer");
     task.abort();
 }
 
@@ -855,5 +919,127 @@ async fn public_link_contracts_and_owned_cleanup() {
         ])
         .await
         .unwrap();
+    task.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn admin_observations_are_per_link_password_scoped_and_read_only() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new().max_connections(4).connect(&url).await.unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let state = AppState::new(pool.clone(), RedisStore::disconnected());
+    let unique = Uuid::new_v4().simple().to_string();
+    let mut links = vec![];
+    for (index, validity, stale) in [(0, 1, false), (1, 0, false), (2, 1, true)] {
+        let link = Link { r#type: "quark".into(), url: format!("https://pan.quark.cn/s/{unique}{index}"), password: Some("1234".into()) };
+        let id = register(&state, &link).await.unwrap();
+        sqlx::query("UPDATE link_catalog SET validity=$2,checked_at=now(),valid_until=now()+make_interval(secs=>$3::double precision) WHERE id=$1").bind(id).bind(validity as i16).bind(if stale {-60.0} else {3600.0}).execute(&pool).await.unwrap();
+        links.push(serde_json::to_value(link).unwrap());
+    }
+    let mut different_password = links[0].clone();
+    different_password["password"] = json!("other");
+    links.push(different_password);
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM link_catalog").fetch_one(&pool).await.unwrap();
+    let mut resources = vec![json!({"linkValidity":1,"links":links}), json!({"links":[]})];
+    admin_resource_observations(&state, &mut resources).await.unwrap();
+    let links = resources[0]["links"].as_array().unwrap();
+    assert_eq!(links[0]["validity"],1);
+    assert_eq!(links[1]["validity"],0);
+    assert_eq!(links[2]["validity"],-1);
+    assert_eq!(links[2]["stale"],true);
+    assert_eq!(links[3]["validity"],-1);
+    assert!(links[3]["checkedAt"].is_null());
+    assert_eq!(links[0]["password"],"1234");
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM link_catalog").fetch_one(&pool).await.unwrap(),before);
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn admin_manual_check_targets_only_the_selected_link() {
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(Url::parse(&database).unwrap().path().ends_with("_test"));
+    let redis = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert_eq!(Url::parse(&redis).unwrap().path(), "/15");
+    let pool = PgPoolOptions::new().max_connections(4).connect(&database).await.unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let upstream = Arc::new(Mutex::new(Upstream::default()));
+    let server = Router::new().fallback(any(mock)).with_state(upstream.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let mut state = AppState::new(pool.clone(), RedisStore::connect(&redis).await.unwrap());
+    state.cloud_test_bases = Some(TestBases {
+        baidu: Url::parse(&origin).unwrap(),
+        quark_pc: Url::parse(&(origin.clone()+"qp/")).unwrap(),
+        quark_share: Url::parse(&(origin+"qs/")).unwrap(),
+    });
+    let state = Arc::new(state);
+    let router = crate::app::build_router(state.clone());
+    let username = format!("link-check-{}", Uuid::new_v4());
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
+        .bind(&username).bind(crate::auth::hash_password("fixture-password").unwrap()).execute(&pool).await.unwrap();
+    let (admin, _) = state.auth().login(&username,"fixture-password").await.unwrap();
+    let anon = state.auth().issue(true).await.unwrap();
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential").execute(&pool).await.unwrap();
+    let link = Link { r#type:"quark".into(),url:format!("https://pan.quark.cn/s/{}?pwd=1234",Uuid::new_v4().simple()),password:None };
+    let sibling = Link { password:Some("different".into()),..link.clone() };
+    let sibling_id = register(&state,&sibling).await.unwrap();
+    worker::record(&state,sibling_id,&json!({"status":"invalid"}),&ProviderPolicy::default()).await.unwrap();
+    let resource = format!("manual-check-{}",Uuid::new_v4());
+    sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,'manual check',$2)").bind(&resource).bind(json!([link,sibling])).execute(&pool).await.unwrap();
+    let path = format!("/api/admin/resources/{resource}/links/check");
+    let input = json!({"linkKey":fingerprint(&link)});
+    assert_eq!(call(&router,&anon,&path,input.clone()).await.0,StatusCode::FORBIDDEN);
+    assert_eq!(call(&router,&admin,&path,json!({"linkKey":"outdated"})).await.0,StatusCode::CONFLICT);
+    // Clear only this provider's test DB quota keys, never production Redis.
+    use redis::AsyncCommands;
+    let mut conn = state.redis.connection().unwrap();
+    let _:i64 = conn.del(&[
+        "pansou:link-check:gate:quark".to_owned(),
+        "pansou:link-check:breaker:quark".to_owned(),
+        format!("pansou:link-check:budget:quark:{}",Utc::now().date_naive()),
+    ]).await.unwrap();
+    let (status, result) = call(&router,&admin,&path,input.clone()).await;
+    assert_eq!(status,StatusCode::OK,"{result}");
+    assert_eq!(result["data"]["validity"],1,"{result}");
+    assert_eq!(result["data"]["linkKey"],fingerprint(&link));
+    assert!(result["data"]["checkedAt"].is_string());
+    assert_eq!(fact(&state,sibling_id).await.unwrap().validity,0);
+    let mut rows=vec![json!({"links":[link,sibling]})];
+    admin_resource_observations(&state,&mut rows).await.unwrap();
+    assert_eq!(rows[0]["links"][0]["validity"],1);
+    assert_eq!(rows[0]["links"][1]["validity"],0);
+    assert_eq!(rows[0]["links"][0]["checkSupported"],true);
+    assert_eq!(call(&router,&admin,&path,input).await.0,StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(upstream.lock().await.transfer_count,0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn ownership_manifest_reuses_root_listing_but_reads_all_descendants() {
+    use crate::cloud_drive::{Drive, Provider, File};
+    let upstream = Arc::new(Mutex::new(Upstream::default()));
+    let root_files = vec![qfile("sub", "season", 0, true),qfile("rootfile","movie.mp4",42,false)];
+    upstream.lock().await.files.insert("root".into(),root_files.clone());
+    upstream.lock().await.files.insert("sub".into(),vec![qfile("child","episode.mp4",42,false)]);
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin=format!("http://{}/",listener.local_addr().unwrap());
+    let server=Router::new().fallback(any(mock)).with_state(upstream.clone());
+    let task=tokio::spawn(async move {axum::serve(listener,server).await.unwrap()});
+    let pool=PgPoolOptions::new().connect_lazy("postgres://fixture:fixture@localhost/not_connected_test").unwrap();
+    let mut state=AppState::new(pool,RedisStore::disconnected());
+    state.cloud_test_bases=Some(TestBases{baidu:Url::parse(&origin).unwrap(),quark_pc:Url::parse(&(origin.clone()+"qp/")).unwrap(),quark_share:Url::parse(&(origin+"qs/")).unwrap()});
+    let drive=Drive::from_state(&state,Provider::Quark,"fixture=1".into());
+    let files=vec![File{id:"sub".into(),name:"season".into(),size:0,is_dir:true,md5:String::new(),path:String::new(),token:"fixture-token".into()},File{id:"rootfile".into(),name:"movie.mp4".into(),size:42,is_dir:false,md5:String::new(),path:String::new(),token:"fixture-token".into()}];
+    let reused=delivery::manifest_from_listing(&drive,"root",Some(files.clone())).await.unwrap();
+    assert_eq!(upstream.lock().await.directory_reads,1,"only descendants are fetched");
+    let live=delivery::manifest(&drive,"root").await.unwrap();
+    assert_eq!(live,reused);
+    assert_eq!(upstream.lock().await.directory_reads,3,"cleanup/resume reads root live");
+    let oversized=vec![File{is_dir:false,..files[1].clone()};5001];
+    assert!(delivery::manifest_from_listing(&drive,"root",Some(oversized)).await.is_err());
     task.abort();
 }

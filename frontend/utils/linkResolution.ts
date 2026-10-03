@@ -8,8 +8,8 @@ export function usable(value?: ResolvedLink): value is ResolvedLink & { url: str
   return !!value && value.status === 'completed' && canOpenLink(value.url)
     && [value.deliveryExpiresAt, value.shareExpiresAt].every(t => !t || Date.parse(t) > Date.now());
 }
-export async function resolveLink(resultRef: string, linkRef: string, requestKey: string, signal: AbortSignal, resume = false): Promise<ResolvedLink> {
-  const deadline = Date.now() + 75000;
+export async function resolveLink(resultRef: string, linkRef: string, requestKey: string, signal: AbortSignal, resume = false, onProgress?: (value: ResolvedLink) => void): Promise<ResolvedLink> {
+  const deadline = Date.now() + 150000;
   let poll = resume;
   while (!signal.aborted && Date.now() < deadline) {
     let response: Response;
@@ -29,14 +29,15 @@ export async function resolveLink(resultRef: string, linkRef: string, requestKey
       ? '会话、资源或链接已变化，请重新搜索' : (body.message || '获取失败，请稍后重试'));
     const data = body.data as ResolvedLink;
     if (response.status === 200 && ['completed','unavailable'].includes(data.status)) return data;
-    poll = true; await delay(signal);
+    onProgress?.(data);
+    poll = true; await delay(signal, data.pollAfterMs);
   }
   throw new Error('等待超时，可继续查询本次操作');
 }
-function delay(signal: AbortSignal) {
+function delay(signal: AbortSignal, interval = 1500) {
   return new Promise<void>((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(new Error('已停止查询')); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 1500);
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, Math.max(500, Math.min(3000, interval || 1500)));
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
   });

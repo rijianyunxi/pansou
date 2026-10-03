@@ -108,6 +108,28 @@ test('hiding a page stops polling, never repeats the write', async () => {
   } finally { auth.request = original; }
 });
 
+test('slow operations keep stage feedback and poll the same key beyond 75 seconds', async () => {
+  stored = { token: 'session' };
+  const original = auth.request, nowBefore = Date.now;
+  let now = nowBefore();
+  Date.now = () => now;
+  const stages = [], requests = [];
+  auth.request = async (path, options) => {
+    requests.push([path, options?.method || 'GET']);
+    if (options?.method === 'POST') {
+      now += 80000;
+      return { statusCode: 202, data: { data: { status: 'processing', stage: 'sharing', pollAfterMs: 500 } } };
+    }
+    return { statusCode: 200, data: { data: { status: 'completed', url: 'https://example.test/share' } } };
+  };
+  try {
+    const value = await links.resolveLink('r', 'l', 'stable', {}, false, progress => stages.push(progress.stage));
+    assert.equal(value.status, 'completed');
+    assert.deepEqual(stages, ['sharing']);
+    assert.deepEqual(requests, [['/api/links/resolve', 'POST'], ['/api/links/resolve-operations/stable', 'GET']]);
+  } finally { auth.request = original; Date.now = nowBefore; }
+});
+
 test('a changed session cannot resume a pending operation', async () => {
   stored = { token: 'old-session' };
   const original = auth.request;
@@ -149,6 +171,40 @@ test('recycled cards discard late results and expired URLs', async () => {
     card.expireLinks();
     assert.deepEqual(card.data.resolved, {});
     assert.equal(card._keys.expired, undefined);
+  } finally {
+    spec.lifetimes.detached.call(card);
+    links.resolveLink = original;
+    delete global.Component;
+  }
+});
+
+test('card progress follows actual stages and hiding clears timers and late updates', async () => {
+  const original = links.resolveLink;
+  let finish, notify;
+  links.resolveLink = (_r, _l, _key, _control, _resume, onProgress) => {
+    notify = onProgress;
+    return new Promise(resolve => { finish = resolve; });
+  };
+  let spec; global.Component = value => { spec = value; };
+  delete require.cache[require.resolve('../components/resource-card/index')];
+  require('../components/resource-card/index');
+  const card = { data: { ...spec.data, progress: {}, loading: {}, item: { id: 'item', resultRef: 'r', links: [{ key: 'l', linkRef: 'ref' }] } }, setData(data) { Object.assign(this.data, data); } };
+  for (const [key, value] of Object.entries(spec.methods)) card[key] = value.bind(card);
+  spec.lifetimes.attached.call(card);
+  try {
+    const pending = card.onOpen({ currentTarget: { dataset: { key: 'l' } } });
+    assert.equal(card.data.progress.l.label, '排队中');
+    notify({ stage: 'transferring' });
+    assert.equal(card.data.progress.l.label, '正在转存');
+    notify({ stage: 'sharing' });
+    assert.equal(card.data.progress.l.label, '生成分享');
+    spec.pageLifetimes.hide.call(card);
+    assert.deepEqual(card.data.progress, {});
+    assert.deepEqual(card.data.loading, {});
+    notify({ stage: 'sharing' });
+    assert.deepEqual(card.data.progress, {});
+    finish(null);
+    await pending;
   } finally {
     spec.lifetimes.detached.call(card);
     links.resolveLink = original;

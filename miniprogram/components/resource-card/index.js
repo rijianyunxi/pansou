@@ -9,7 +9,7 @@ Component({
     item: { type: Object, value: {} },
   },
 
-  data: { descExpanded: false, copiedKey: '', resolved: {}, loading: {} },
+  data: { descExpanded: false, copiedKey: '', resolved: {}, loading: {}, progress: {} },
   lifetimes: {
     attached() { this._gone = false; this._controls = {}; this._keys = {}; },
     detached() { this._gone = true; this.stopQueries(); clearTimeout(this._copyTimer); clearInterval(this._expiryTimer); },
@@ -40,7 +40,7 @@ Component({
 
   methods: {
     startExpiryTimer() { if (!this._expiryTimer) this._expiryTimer = setInterval(() => this.expireLinks(), 1000); },
-    stopQueries() { Object.values(this._controls || {}).forEach(stop); this._controls = {}; this.setData({ loading: {} }); },
+    stopQueries() { Object.values(this._controls || {}).forEach(control => { stop(control); clearInterval(control.progressTimer); }); this._controls = {}; this.setData({ loading: {}, progress: {} }); },
     expireLinks() {
       const resolved = { ...this.data.resolved };
       for (const key of Object.keys(resolved)) {
@@ -57,8 +57,17 @@ Component({
       const resume = !!this._keys[key]; this._keys[key] ||= uuid();
       const control = {}; this._controls[key] = control;
       this.setData({ loading: { ...this.data.loading, [key]: action } });
+      const startedAt = Date.now();
+      let stage = 'queued';
+      const updateProgress = () => {
+        if (control.stopped || this._gone || this._controls[key] !== control || this.data.item.id !== item.id) return;
+        const labels = { queued: '排队中', checking: '读取分享', transferring: '正在转存', sharing: '生成分享', reusing: '验证已有分享' };
+        this.setData({ progress: { ...this.data.progress, [key]: { label: labels[stage] || '正在获取链接', elapsed: Math.floor((Date.now() - startedAt) / 1000) } } });
+      };
+      updateProgress();
+      control.progressTimer = setInterval(updateProgress, 1000);
       try {
-        const value = await resolveLink(item.resultRef, link.linkRef, this._keys[key], control, resume);
+        const value = await resolveLink(item.resultRef, link.linkRef, this._keys[key], control, resume, value => { stage = value.stage || 'checking'; updateProgress(); });
         if (value && !control.stopped && !this._gone && this.data.item.id === item.id) {
           this.setData({ resolved: { ...this.data.resolved, [key]: value } });
           delete this._keys[key];
@@ -80,8 +89,12 @@ Component({
         }
       } catch (e) { if (!this._gone && !control.stopped && this.data.item.id === item.id) feedback.showToast({ title: e.message || '获取失败，请稍后重试', icon: 'error' }); }
       finally {
+        clearInterval(control.progressTimer);
         if (this._controls[key] === control) {
-          if (!this._gone && this.data.item.id === item.id) this.setData({ loading: { ...this.data.loading, [key]: false } });
+          if (!this._gone && this.data.item.id === item.id) {
+            const progress = { ...this.data.progress }; delete progress[key];
+            this.setData({ loading: { ...this.data.loading, [key]: false }, progress });
+          }
           delete this._controls[key];
         }
       }

@@ -25,7 +25,7 @@ export function cleanupError(code: string | null, status: string) {
     cleanup_timeout: '本次清理超时，结果尚未确认。请检查网盘状态后重试。',
     cleanup_busy: '该网盘正在处理其他写操作，约 10 秒后自动重试。',
     cleanup_retry: '上游操作未成功或结果未确认，请检查登录态与网盘服务。',
-    deadline_exceeded: '取链超过 5 秒，正在清理未交付产物。',
+    deadline_exceeded: '取链超时，正在清理未交付产物。',
   };
   if (!code) return '';
   const reason = reasons[code] || `未识别的失败原因（${code}），请查看运行诊断。`;

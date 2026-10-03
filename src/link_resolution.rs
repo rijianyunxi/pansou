@@ -32,7 +32,9 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const REF_SECONDS: u64 = 1800;
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+// HTTP responsiveness and the external write lifetime are separate budgets.
+const RESPONSE_WAIT: Duration = Duration::from_millis(500);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(120);
 async fn admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     let session = state.auth().session(headers).await?;
     let id = session
@@ -122,6 +124,83 @@ pub(crate) async fn record_check(
     worker::record(state, id, value, &policy).await
 }
 const FACT_COLUMNS: &str = "id,validity,checked_at,valid_until,last_attempt_at,last_error_code";
+/// Read existing per-link observations in one batch. Listing admin resources
+/// must not register links or enqueue checks, and must match the password too.
+pub(crate) async fn admin_resource_observations(
+    state: &AppState,
+    resources: &mut [Value],
+) -> Result<(), ApiError> {
+    let fingerprints: Vec<String> = resources.iter()
+        .filter_map(|r| r["links"].as_array())
+        .flatten()
+        .filter_map(|l| serde_json::from_value::<Link>(l.clone()).ok())
+        .map(|l| fingerprint(&l)).collect();
+    if fingerprints.is_empty() { return Ok(()); }
+    let rows = sqlx::query(&format!(
+        "SELECT input_fingerprint,{FACT_COLUMNS} FROM link_catalog WHERE input_fingerprint=ANY($1)"
+    )).bind(&fingerprints).fetch_all(&state.pool).await?;
+    let facts: HashMap<String, Fact> = rows.iter()
+        .map(|r| Ok((r.try_get("input_fingerprint")?, sqlx::FromRow::from_row(r)?)))
+        .collect::<Result<_, sqlx::Error>>()?;
+    for resource in resources {
+        if let Some(links) = resource["links"].as_array_mut() {
+            for value in links {
+                let Ok(link) = serde_json::from_value::<Link>(value.clone()) else { continue };
+                let observation = facts.get(&fingerprint(&link)).map(Fact::public)
+                    .unwrap_or_else(|| json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null}));
+                if let (Some(link), Some(fields)) = (value.as_object_mut(), observation.as_object()) {
+                    link.extend(fields.clone());
+                }
+                value["linkKey"] = json!(fingerprint(&link));
+                value["checkSupported"] = json!(crate::cloud_drive::Provider::from_name(&link.r#type).is_ok());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminLinkCheck {
+    link_key: String,
+}
+
+/// A manual check targets the exact current link input, not a mutable array
+/// index or the resource aggregate. It shares the normal quota and breaker.
+pub async fn admin_resource_link_check(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(input): Json<AdminLinkCheck>,
+) -> Result<Json<Value>, ApiError> {
+    admin(&state, &headers).await?;
+    let stored: Value = sqlx::query_scalar("SELECT links_json FROM managed_resources WHERE id=$1 AND deleted_at IS NULL")
+        .bind(&id).fetch_optional(&state.pool).await?
+        .ok_or_else(|| ApiError::NotFound("资源不存在".into()))?;
+    let link = stored.as_array().into_iter().flatten()
+        .filter_map(|v| serde_json::from_value::<Link>(v.clone()).ok())
+        .find(|link| fingerprint(link) == input.link_key)
+        .ok_or_else(|| ApiError::Conflict("链接已变更，请刷新后重试".into()))?;
+    let provider = crate::cloud_drive::Provider::from_name(&link.r#type)?;
+    let reference = crate::cloud_drive::ShareInput {
+        url: link.url.clone(), provider: Some(provider), password: link.password.clone(),
+    }.parse()?;
+    let _slot = state.cloud_slots.clone().try_acquire_owned()
+        .map_err(|_| ApiError::Unavailable("检测繁忙，请稍后重试".into()))?;
+    let drive = crate::cloud_drive::Drive::load(&state, provider).await?;
+    let policy = delivery::load_provider(&state, provider).await?;
+    if !worker::allow_check(&state, provider, &policy, true).await? {
+        return Err(ApiError::Unavailable("检测频率或额度受限，请稍后重试".into()));
+    }
+    let result = tokio::time::timeout(Duration::from_secs(20), drive.check(&reference)).await
+        .unwrap_or_else(|_| json!({"status":"unknown","message":"检测超时，请稍后重试"}));
+    let link_id = register(&state, &link).await?;
+    worker::record(&state, link_id, &result, &policy).await?;
+    let mut observation = fact(&state, link_id).await?.public();
+    observation["linkKey"] = json!(input.link_key);
+    observation["message"] = result["message"].clone();
+    Ok(Json(json!({"code":0,"data":observation})))
+}
 async fn fact(state: &AppState, id: Uuid) -> Result<Fact, ApiError> {
     Ok(sqlx::query_as(&format!(
         "SELECT {FACT_COLUMNS} FROM link_catalog WHERE id=$1"
@@ -408,8 +487,12 @@ pub async fn resolve(
     headers: HeaderMap,
     Json(input): Json<ResolveInput>,
 ) -> Result<Response, ApiError> {
-    let end = tokio::time::Instant::now() + RESOLVE_TIMEOUT;
-    let deadline = Utc::now() + chrono::Duration::seconds(RESOLVE_TIMEOUT.as_secs() as i64);
+    let end = tokio::time::Instant::now() + RESPONSE_WAIT;
+    #[cfg(not(test))]
+    let work_timeout = RESOLVE_TIMEOUT;
+    #[cfg(test)]
+    let work_timeout = Duration::from_secs(state.resolve_test_timeout_seconds.load(std::sync::atomic::Ordering::SeqCst).min(RESOLVE_TIMEOUT.as_secs()));
+    let deadline = Utc::now() + chrono::Duration::seconds(work_timeout.as_secs() as i64);
     let session = state.auth().session(&headers).await?;
     let snap = snapshot(&state, &session, &input.result_ref).await?;
     let link = snap
@@ -462,12 +545,17 @@ pub async fn resolve(
         });
     }
     loop {
-        let out = operation(&state, &session, input.request_key, tokio::time::Instant::now() >= end).await?;
-        if out.0 != StatusCode::ACCEPTED {
+        let out = operation(&state, &session, input.request_key).await?;
+        if out.0 != StatusCode::ACCEPTED || tokio::time::Instant::now() >= end {
             return Ok(response(out.0, out.1));
         }
         tokio::time::sleep_until(end.min(tokio::time::Instant::now() + Duration::from_millis(250))).await;
     }
+}
+async fn progress(state: &AppState, session: &Session, key: Uuid, stage: &str) -> Result<(), ApiError> {
+    sqlx::query("UPDATE link_resolve_requests SET progress_stage=$3,updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status IN('queued','running') AND response_json IS NULL AND deadline_at>clock_timestamp()")
+        .bind(subject(session)).bind(key).bind(stage).execute(&state.pool).await?;
+    Ok(())
 }
 async fn complete_resolution(
     state: &AppState,
@@ -492,6 +580,7 @@ async fn run_resolution(
     if sqlx::query("UPDATE link_resolve_requests SET status='running',updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status='queued' AND deadline_at>clock_timestamp()").bind(subject(session)).bind(key).execute(&state.pool).await?.rows_affected() == 0 {
         return Ok(());
     }
+    progress(state, session, key, "checking").await?;
     let current = fact(state, id).await?;
     // Delivery owns the decision: check our exact owned-share mapping before the source.
     let result = if crate::cloud_drive::Provider::from_name(&link.r#type).is_ok() {
@@ -514,7 +603,7 @@ async fn run_resolution(
             },
         )
     };
-    // A late upstream response must never replace the original-link timeout result.
+    // An expired operation must never be overwritten by a late upstream response.
     if complete_resolution(state, &subject(session), key, &result, true).await?.is_none() {
         delivery::retire_timed_out_artifacts(state, session, key).await?;
     }
@@ -542,7 +631,6 @@ async fn operation(
     state: &AppState,
     session: &Session,
     key: Uuid,
-    force_timeout: bool,
 ) -> Result<(StatusCode, Value), ApiError> {
     let row =
         sqlx::query("SELECT * FROM link_resolve_requests WHERE subject_key=$1 AND request_key=$2")
@@ -563,7 +651,7 @@ async fn operation(
         .get(auth["linkRef"].as_str().unwrap_or(""))
         .ok_or_else(|| ApiError::NotFound("链接不存在".into()))?;
     let mut result: Option<Value> = row.get("response_json");
-    if result.is_none() && (force_timeout || row.get::<DateTime<Utc>, _>("deadline_at") <= Utc::now()) {
+    if result.is_none() && row.get::<DateTime<Utc>, _>("deadline_at") <= Utc::now() {
         let value = fallback(
             key,
             link,
@@ -600,7 +688,7 @@ async fn operation(
     }
     Ok((
         StatusCode::ACCEPTED,
-        json!({"status":"processing","requestKey":key,"pollAfterMs":1500}),
+        json!({"status":"processing","requestKey":key,"stage":row.get::<String,_>("progress_stage"),"pollAfterMs":750,"deadlineAt":row.get::<DateTime<Utc>,_>("deadline_at")}),
     ))
 }
 pub async fn poll(
@@ -609,7 +697,7 @@ pub async fn poll(
     Path(key): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let session = state.auth().session(&headers).await?;
-    let (status, value) = operation(&state, &session, key, false).await?;
+    let (status, value) = operation(&state, &session, key).await?;
     Ok(response(status, value))
 }
 #[derive(Deserialize)]

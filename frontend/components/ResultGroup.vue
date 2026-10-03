@@ -31,6 +31,10 @@
               <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在打开…' : '打开链接' }}</button>
               <button class="copy-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'copy'" title="获取并复制链接及提取码" @click="act('copy', resource, link)">{{ loading[link.linkRef] === 'copy' ? '正在复制…' : copiedKey === link.linkRef ? '已复制' : '复制链接' }}</button>
             </div>
+            <div v-if="loading[link.linkRef] && progress[link.linkRef]" class="link-progress" role="status" aria-live="polite">
+              <div class="progress-caption"><span class="progress-spinner" aria-hidden="true"></span><span>{{ stageLabel(progress[link.linkRef]!.stage) }}</span><span class="progress-elapsed" aria-hidden="true">{{ Math.floor((now - progress[link.linkRef]!.startedAt) / 1000) }} 秒</span></div>
+              <div class="progress-track" aria-hidden="true"><span></span></div>
+            </div>
           </div>
         </div>
       </li>
@@ -79,12 +83,18 @@ const emit = defineEmits<{
 const copiedKey = ref("");
 const resolved = reactive<Record<string, ResolvedLink>>({});
 const loading = reactive<Record<string, LinkAction | undefined>>({});
+const progress = reactive<Record<string, { stage: string; startedAt: number }>>({});
+const now = ref(Date.now());
+function stageLabel(stage: string) {
+  return ({ queued: '排队中', checking: '读取分享', transferring: '正在转存', sharing: '生成分享', reusing: '验证已有分享' } as Record<string, string>)[stage] || '正在获取链接';
+}
 const keys = reactive<Record<string, string>>({});
 const controllers = new Set<AbortController>();
 const showToast = inject<ShowToast>('showToast', () => () => {});
 let gone = false;
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const timer = setInterval(() => {
+  now.value = Date.now();
   for (const [ref, value] of Object.entries(resolved)) {
     if ([value.deliveryExpiresAt, value.shareExpiresAt].some(t => t && Date.parse(t) <= Date.now())) { delete resolved[ref]; delete keys[ref]; }
   }
@@ -98,11 +108,15 @@ function prepareOpen() {
   if (popup) {
     popup.opener = null;
     popup.document.title = '正在打开链接';
-    popup.document.body.textContent = '正在获取链接，请稍候…';
+    popup.document.body.innerHTML = `<style>body{margin:0;display:grid;place-items:center;min-height:100vh;font:14px system-ui;color:#18181b;background:#fafafa}.card{padding:32px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.spinner{margin:0 auto 16px;width:24px;height:24px;border:2px solid #e4e4e7;border-top-color:#18181b;border-radius:50%;animation:spin 1s linear infinite}p{color:#71717a;font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}</style><main class="card"><div class="spinner" aria-hidden="true"></div><div role="status" id="stage">正在获取链接</div><p>准备好后自动打开</p></main>`;
   }
   return {
     navigate(url: string) { if (popup && !popup.closed) popup.location.replace(url); else window.location.assign(url); },
     close() { if (popup && !popup.closed) popup.close(); },
+    update(stage: string) {
+      try { const label = popup && !popup.closed ? popup.document.getElementById?.('stage') : null; if (label) label.textContent = stageLabel(stage); }
+      catch { /* The user may navigate the reserved tab while this operation waits. */ }
+    },
   };
 }
 async function copyDeferred(text: Promise<string>) {
@@ -124,21 +138,28 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
   const ref = link.linkRef;
   if (loading[ref]) return;
   loading[ref] = action;
+  now.value = Date.now();
+  progress[ref] = { stage: 'queued', startedAt: now.value };
   if (copiedKey.value === ref) copiedKey.value = '';
   const dismissProgress = showToast(action === 'copy' ? '正在获取并复制链接，请稍候…' : '正在获取链接，即将打开，请稍候…', 'info', { duration: 0, loading: true });
   const resume = !!keys[ref];
   const controller = new AbortController(); controllers.add(controller);
+  let destination: ReturnType<typeof prepareOpen> | undefined;
   try {
     keys[ref] ||= crypto.randomUUID();
     const completed = await executeLinkAction(action, async () => {
-      const value = await resolveLink(resource.resultRef, ref, keys[ref]!, controller.signal, resume);
+      const value = await resolveLink(resource.resultRef, ref, keys[ref]!, controller.signal, resume, value => {
+        if (gone || controller.signal.aborted) return;
+        progress[ref]!.stage = value.stage || 'checking';
+        destination?.update(progress[ref]!.stage);
+      });
       if (gone || controller.signal.aborted) throw new Error('操作已取消');
       resolved[ref] = value;
       // A fresh click revalidates the owned share; only unresolved operations retain their key.
       delete keys[ref];
       return value;
     }, {
-      prepareOpen,
+      prepareOpen: () => { destination = prepareOpen(); return destination; },
       copy: copyDeferred,
       invalid: value => { if (!gone && !controller.signal.aborted) showToast(value.reasonCode === 'resource_missing' ? '分享中的资源已不存在，请尝试其他资源' : '原分享链接已失效，请尝试其他资源', 'error'); },
       failed: message => { if (!gone && !controller.signal.aborted) showToast(message, 'error'); },
@@ -155,7 +176,7 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
     }
   } catch {
     if (!gone && !controller.signal.aborted) showToast('操作未能开始，请刷新页面后重试', 'error');
-  } finally { dismissProgress(); loading[ref] = undefined; controllers.delete(controller); }
+  } finally { dismissProgress(); loading[ref] = undefined; delete progress[ref]; controllers.delete(controller); }
 }
 const visibleItems = computed(() => props.expanded ? props.items : props.items.slice(0, props.initialVisible));
 
@@ -224,7 +245,16 @@ const visibleItems = computed(() => props.expanded ? props.items : props.items.s
 .resource-date { flex-shrink: 0; padding-top: 3px; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
 
 .resource-links { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; max-width: 100%; min-width: 0; margin-top: 14px; }
-.link-row { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); overflow: hidden; }
+.link-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; width: 100%; max-width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-secondary); overflow: hidden; }
+.link-progress { flex-basis: 100%; grid-column: 1 / -1; min-width: 0; }
+.progress-caption { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; }
+.progress-elapsed { margin-left: auto; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.progress-spinner { width: 13px; height: 13px; border: 1.5px solid var(--border-light); border-top-color: var(--text-primary); border-radius: 50%; animation: link-spin .8s linear infinite; }
+.progress-track { height: 3px; margin-top: 9px; border-radius: 999px; overflow: hidden; background: var(--border-light); }
+.progress-track span { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--text-secondary); animation: link-sweep 1.6s ease-in-out infinite; }
+@keyframes link-spin { to { transform: rotate(360deg); } }
+@keyframes link-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { .progress-spinner, .progress-track span { animation: none; } }
 .link-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; flex-wrap: wrap; }
 .link-provider { line-height: 20px; min-width: 0; max-width: 100%; color: var(--text-primary); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
 .password-badge { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 4px; color: var(--text-tertiary); font-size: 11px; overflow-wrap: anywhere; word-break: break-word; }

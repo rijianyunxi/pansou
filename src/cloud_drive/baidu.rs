@@ -166,6 +166,16 @@ impl Baidu {
                 self.wire
                     .error(ErrorKind::Upstream, "未能解析百度分享者身份")
             })?;
+        self.resolve_identity(r, sekey, share_id, owner).await
+    }
+    /// Cached share identity skips HTML parsing, but membership is always read live.
+    pub async fn resolve_identity(
+        &self,
+        r: &Reference,
+        sekey: String,
+        share_id: String,
+        owner: String,
+    ) -> Result<Context, DriveError> {
         let mut files = vec![];
         for page in 1..=50 {
             let mut params = self.params();

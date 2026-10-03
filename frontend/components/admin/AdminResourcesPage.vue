@@ -9,238 +9,62 @@
       >
         {{ notice }}
       </p>
-      <Card class="query-panel" aria-label="资源查询与操作">
-        <form class="query-toolbar" @submit.prevent="loadResources">
-          <label class="query-input">
-            <ConsoleIcon name="search" :size="16" /><Input
-              v-model.trim="query"
-              type="search"
-              placeholder="仅按资源名称查询"
-            /> </label
-          ><AdminSelect
-            v-model="cloudType"
-            class="query-select"
-            aria-label="网盘类型"
-          >
-            <option value="">全部网盘</option>
-            <option v-for="item in cloudTypes" :key="item" :value="item">
-              {{ cloudLabel(item) }}
-            </option>
-          </AdminSelect>
-          <div class="query-actions">
-            <Button variant="default" class="button primary" type="submit">
-              <ConsoleIcon name="search" :size="14" />查询 </Button
-            ><Button
-              variant="outline"
-              class="button secondary"
-              type="button"
-              @click="resetQuery"
-              >重置</Button
-            ><Button
-              variant="destructive"
-              class="button danger-button"
-              type="button"
-              :disabled="!selected.length || busy"
-              @click="deleteSelected"
-              ><ConsoleIcon name="trash" :size="14" />批量删除<span
-                v-if="selected.length"
-                class="action-count"
-                >{{ selected.length }}</span
-              ></Button
-            ><Button
-              variant="outline"
-              class="button secondary"
-              type="button"
-              :disabled="!canEnable || busy"
-              @click="setEnabled(selected, true)"
-              >批量启用</Button
-            ><Button
-              variant="destructive"
-              class="button danger-button"
-              type="button"
-              :disabled="!canDisable || busy"
-              @click="setEnabled(selected, false)"
-              ><ConsoleIcon name="stop" :size="14" />批量停用</Button
-            ><Button
-              variant="default"
-              class="button primary"
-              type="button"
-              @click="openCreate"
-            >
-              <ConsoleIcon name="plus" :size="14" />新增资源
-            </Button>
-          </div>
+      <div class="resource-toolbar">
+        <form class="resource-filters" @submit.prevent="page=1;loadResources()">
+          <label class="resource-search"><ConsoleIcon name="search" :size="16" /><Input v-model.trim="query" type="search" class="tw:pl-9" aria-label="资源名称" placeholder="仅按资源名称查询" /></label>
+          <AdminSelect v-model="cloudType" aria-label="网盘类型"><option value="">全部网盘</option><option v-for="type in cloudTypes" :key="type" :value="type">{{ cloudLabel(type) }}</option></AdminSelect>
+          <Button variant="outline" type="submit" :disabled="loading">查询</Button>
+          <Button v-if="query||cloudType" variant="ghost" type="button" @click="resetQuery">重置</Button>
         </form>
-
-        <div class="query-meta">
-          已选 {{ selected.length }} 项 · 共 {{ total }} 条
+        <Button type="button" @click="openCreate"><ConsoleIcon name="plus" :size="16" />新增资源</Button>
+      </div>
+      <div class="resource-list-meta" :class="{'has-selection':selected.length}">
+        <div v-if="selected.length" class="resource-batch" role="group" aria-label="批量操作">
+          <span class="selection-count" aria-live="polite">已选 {{ selected.length }} 项</span>
+          <div class="resource-batch-actions">
+            <Button variant="outline" size="sm" :disabled="!canEnable||busy" @click="setEnabled(selected,true)"><CircleCheck aria-hidden="true" />启用</Button>
+            <Button variant="outline" size="sm" :disabled="!canDisable||busy" @click="setEnabled(selected,false)"><Pause aria-hidden="true" />停用</Button>
+            <Button variant="outline" size="sm" class="batch-delete" :disabled="busy" @click="deleteSelected"><Trash2 aria-hidden="true" />删除</Button>
+            <Button variant="ghost" size="sm" class="batch-cancel" :disabled="busy" @click="selected=[]"><X aria-hidden="true" />取消选择</Button>
+          </div>
         </div>
-      </Card>
-      <Card
-        class="sources-panel directory-panel table-panel"
-        aria-label="资源列表"
-      >
-        <div class="table-scroll">
-          <Table class="source-table resource-table admin-data-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead class="checkbox-column"
-                  ><AdminCheckbox
-                    :checked="allSelected"
-                    :indeterminate="someSelected"
-                    aria-label="选择当前页全部资源"
-                    @change="toggleAll"
-                /></TableHead>
-                <TableHead class="serial-column">序号</TableHead>
-                <TableHead>名称</TableHead>
-                <TableHead>网盘类型</TableHead>
-                <TableHead>标签</TableHead>
-                <TableHead>链接</TableHead>
-                <TableHead>资源时间</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>检测状态</TableHead>
-                <TableHead class="action-column">操作</TableHead>
-              </TableRow>
-            </TableHeader>
+        <span class="resource-total">共 {{ total.toLocaleString('zh-CN') }} 条资源</span>
+      </div>
+      <Card class="table-panel resource-list-panel" aria-label="资源列表">
+          <Table class="resource-list-table">
+            <TableHeader><TableRow>
+              <TableHead class="selection-col"><AdminCheckbox :checked="allSelected" :indeterminate="someSelected" aria-label="选择当前页全部资源" @change="toggleAll" /></TableHead>
+              <TableHead class="name-col">资源</TableHead>
+              <TableHead class="links-col">网盘链接</TableHead>
+              <TableHead class="date-col">资源时间</TableHead>
+              <TableHead class="state-col">状态</TableHead>
+              <TableHead class="actions-col"><span class="tw:sr-only">操作</span></TableHead>
+            </TableRow></TableHeader>
             <TableBody>
-              <TableRow
-                v-for="(item, index) in resources"
-                :key="item.id"
-                :class="{ 'selected-row': selected.includes(item.id) }"
-              >
-                <TableCell class="checkbox-column"
-                  ><AdminCheckbox
-                    :checked="selected.includes(item.id)"
-                    :aria-label="`选择 ${item.name}`"
-                    @change="toggle(item.id)"
-                /></TableCell>
-                <TableCell class="serial-column">{{
-                  (page - 1) * pageSize + index + 1
-                }}</TableCell>
-                <TableCell
-                  ><strong :title="item.name">{{ item.name }}</strong
-                  ><ResourceDescription
-                    variant="admin"
-                    :text="item.description || '无描述'"
-                /></TableCell>
-                <TableCell
-                  ><span
-                    v-for="type in item.cloud_types"
-                    :key="type"
-                    class="resource-chip"
-                    >{{ cloudLabel(type) }}</span
-                  ></TableCell
-                >
-                <TableCell
-                  ><span
-                    v-for="tag in (item.tags || []).slice(0, 3)"
-                    :key="tag"
-                    class="resource-chip muted"
-                    >{{ tag }}</span
-                  ><span v-if="(item.tags || []).length > 3" class="table-muted"
-                    >+{{ item.tags!.length - 3 }}</span
-                  ></TableCell
-                >
-                <TableCell class="resource-links-cell">
-                  <div
-                    v-for="(link, linkIndex) in item.links"
-                    :key="`${link.url}-${linkIndex}`"
-                    class="resource-link-item"
-                  >
-                    <a
-                      class="resource-link"
-                      :href="link.url"
-                      target="_blank"
-                      rel="noopener noreferrer nofollow"
-                      :title="link.url"
-                    >
-                      <span class="resource-link-type">{{
-                        cloudLabel(link.type)
-                      }}</span>
-                      <span class="resource-link-url">{{ link.url }}</span>
-                    </a>
-                    <div class="resource-link-meta">
-                      <span v-if="link.password" class="resource-link-password"
-                        >提取码 {{ link.password }}</span
-                      >
-                    </div>
-                  </div>
+              <TableRow v-for="item in resources" :key="item.id" :class="{'selected-row':selected.includes(item.id)}">
+                <TableCell class="tw:whitespace-normal"><AdminCheckbox :checked="selected.includes(item.id)" :aria-label="`选择 ${item.name}`" @change="toggle(item.id)" /></TableCell>
+                <TableCell class="resource-name-cell tw:whitespace-normal">
+                  <strong :title="item.name">{{ item.name }}</strong>
+                  <ResourceDescription v-if="item.description" variant="admin" :text="item.description" />
+                  <div v-if="item.tags?.length" class="resource-tags"><Badge v-for="tag in item.tags.slice(0,2)" :key="tag" variant="secondary" class="tw:rounded-md tw:font-normal" :title="tag">{{ tag }}</Badge><span v-if="item.tags.length>2" :title="item.tags.slice(2).join('、')">+{{item.tags.length-2}}</span></div>
                 </TableCell>
-                <TableCell>{{ item.datetime || "—" }}</TableCell>
-                <TableCell
-                  ><span
-                    class="resource-status"
-                    :class="{ off: item.enabled === false }"
-                    >{{ item.enabled === false ? "已停用" : "已启用" }}</span
-                  ></TableCell
-                >
-                <TableCell
-                  ><span
-                    class="resource-check-status"
-                    :class="`check-${item.linkValidity === 1 ? 'valid' : item.linkValidity === 0 ? 'invalid' : 'unchecked'}`"
-                    title="至少一条有效则资源有效；全部明确失效才标记失效"
-                    >{{ item.linkValidity === 1 ? '有效' : item.linkValidity === 0 ? '失效' : '未检测 / 待确认' }}</span
-                  ><small v-if="item.linkValidityUpdatedAt">{{ new Date(item.linkValidityUpdatedAt).toLocaleString() }}</small></TableCell
-                >
-                <TableCell class="action-column">
-                  <AdminRowActions
-                    ><Button
-                      variant="ghost"
-                      size="sm"
-                      class="row-action-button"
-                      type="button"
-                      :aria-label="`编辑 ${item.name}`"
-                      title="编辑"
-                      @click="openEdit(item)"
-                    >
-                      编辑</Button
-                    ><Button
-                      variant="ghost"
-                      size="sm"
-                      class="row-action-button"
-                      :class="{ 'danger-action': item.enabled !== false }"
-                      type="button"
-                      :disabled="busy"
-                      :title="
-                        item.enabled === false
-                          ? '重新出现在搜索结果里'
-                          : '从搜索结果里隐藏，数据保留'
-                      "
-                      :aria-label="`${item.enabled === false ? '启用' : '停用'} ${item.name}`"
-                      @click="setEnabled([item.id], item.enabled === false)"
-                    >
-                      {{ item.enabled === false ? "启用" : "停用" }} </Button
-                    ><Button
-                      variant="destructive"
-                      size="sm"
-                      class="row-action-button danger-action"
-                      type="button"
-                      :aria-label="`删除 ${item.name}`"
-                      title="删除"
-                      @click="remove(item)"
-                    >
-                      删除
-                    </Button></AdminRowActions
-                  >
+                <TableCell class="tw:whitespace-normal">
+                  <div class="resource-link-preview"><ResourceLinkTag v-for="(link,i) in item.links.slice(0,3)" :key="link.linkKey||i" :link="link" :checking="checkingLinks.has(link.linkKey||'')" :error="checkErrors[link.linkKey||'']" @open="openLinks(item,link.linkKey)" @check="checkLink(item,link)" /></div>
+                  <Button v-if="item.links.length>3" variant="ghost" size="sm" class="all-links-button" :aria-label="`查看 ${item.name} 的全部 ${item.links.length} 条链接`" @click="openLinks(item)">查看全部 {{item.links.length}} 条链接<ChevronRight :size="14" /></Button>
+                  <span v-if="!item.links.length" class="tw:text-muted-foreground">暂无链接</span>
                 </TableCell>
+                <TableCell class="resource-date tw:whitespace-normal">{{ item.datetime||'—' }}</TableCell>
+                <TableCell class="tw:whitespace-normal"><Badge variant="outline" class="resource-status" :data-tone="item.enabled===false?'muted':'valid'"><span class="enabled-dot" aria-hidden="true" />{{item.enabled===false?'已停用':'已启用'}}</Badge></TableCell>
+                <TableCell class="actions-col"><AdminRowActions :label="`${item.name}的操作`">
+                  <Button variant="ghost" size="sm" class="row-action-button" :disabled="busy" @click="openEdit(item)">编辑</Button>
+                  <Button variant="ghost" size="sm" class="row-action-button" :disabled="busy" @click="setEnabled([item.id],item.enabled===false)">{{item.enabled===false?'启用':'停用'}}</Button>
+                  <Button variant="ghost" size="sm" class="row-action-button danger-action" :disabled="busy" @click="remove(item)">删除</Button>
+                </AdminRowActions></TableCell>
               </TableRow>
-              <TableRow v-if="!loading && !resources.length">
-                <TableCell colspan="10" class="empty-cell"
-                  >{{
-                    query || cloudType
-                      ? "没有名称匹配的资源。只匹配资源名称，不搜索描述或标签。"
-                      : emptyLabel
-                  }}
-                </TableCell>
-              </TableRow>
-              <TableRow v-if="loading">
-                <TableCell colspan="10" class="empty-cell"
-                  >正在加载资源…</TableCell
-                >
-              </TableRow>
+              <TableRow v-if="!loading&&!resources.length"><TableCell colspan="6" class="empty-cell">{{query||cloudType?'没有匹配的资源':emptyLabel}}</TableCell></TableRow>
+              <TableRow v-if="loading"><TableCell colspan="6" class="empty-cell">正在加载资源…</TableCell></TableRow>
             </TableBody>
           </Table>
-        </div>
         <AdminPagination
           :page="page"
           :total-pages="pageCount"
@@ -252,6 +76,7 @@
       </Card>
     </section>
 
+    <ResourceLinksDrawer v-if="linkResource" :resource="linkResource" :initial-key="focusedLink" :checking="checkingLinks" :errors="checkErrors" @check="checkLink(linkResource,$event)" @close="linkResource=null" />
     <AdminDialog
       :title="editing ? '编辑资源' : '新增资源'"
       description="维护资源信息与分享链接。带链接的资源才能被检索。"
@@ -356,6 +181,11 @@
   </div>
 </template>
 <script setup lang="ts">
+import {ChevronRight,CircleCheck,Pause,Trash2,X} from "@lucide/vue";
+import {Badge} from "@/components/admin/ui/badge";
+import ResourceLinkTag from "./ResourceLinkTag.vue";
+import ResourceLinksDrawer from "./ResourceLinksDrawer.vue";
+import type {AdminResourceLinkData} from "@/lib/adminResourceLinks";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Card } from "@/components/admin/ui/card";
 import { Button } from "@/components/admin/ui/button";
@@ -378,7 +208,7 @@ import { useAdminSession } from "@/composables/admin/useAdminSession";
 const { locked } = useAdminSession();
 
 import { apiFetch } from "../../src/appRuntime";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
 import ResourceDescription from "../ResourceDescription.vue";
@@ -386,16 +216,30 @@ import AdminPagination from "./AdminPagination.vue";
 import ConsoleIcon from "../sources/ConsoleIcon.vue";
 import type { CloudType, Link, ManagedResource } from "../../shared/apiModels";
 
-type AdminResource = ManagedResource & {
-  createdAt?: number;
-  updatedAt?: number;
+type AdminResource = Omit<ManagedResource, "links"> & {
+  links: AdminResourceLinkData[];
   enabled?: boolean;
-  checkStatus?: "unchecked" | "checking" | "valid" | "invalid" | "unknown";
-  checkMessage?: string | null;
-  checkedAt?: string | null;
-  linkValidity?: -1 | 0 | 1;
-  linkValidityUpdatedAt?: string | null;
 };
+const linkResource=ref<AdminResource|null>(null);
+const focusedLink=ref<string>();
+const checkingLinks=ref(new Set<string>());
+const checkErrors=ref<Record<string,string>>({});
+const checkControllers=new Map<string,AbortController>();
+onBeforeUnmount(()=>{for(const controller of checkControllers.values())controller.abort();});
+function openLinks(item:AdminResource,key?:string){focusedLink.value=key;linkResource.value=item;}
+async function checkLink(item:AdminResource,link:AdminResourceLinkData){
+ const key=link.linkKey;
+ if(!key||!link.checkSupported||checkingLinks.value.has(key))return;
+ checkingLinks.value.add(key);checkErrors.value[key]='';
+ const controller=new AbortController();checkControllers.set(key,controller);
+ const timeout=setTimeout(()=>controller.abort(),25000);
+ try{
+  const response=await apiFetch<{data:Partial<AdminResourceLinkData>&{message?:string}}>(`/api/admin/resources/${encodeURIComponent(item.id)}/links/check`,{method:'POST',body:{linkKey:key},signal:controller.signal});
+  for(const resource of resources.value)for(const candidate of resource.links)if(candidate.linkKey===key)Object.assign(candidate,response.data);
+  if(response.data.validity===-1)checkErrors.value[key]=response.data.message||'暂时无法确认，请稍后重试';
+ }catch(error){checkErrors.value[key]=controller.signal.aborted?'检测超时，请重试':apiError(error);}
+ finally{clearTimeout(timeout);checkControllers.delete(key);checkingLinks.value.delete(key);}
+}
 const cloudTypes = ref<CloudType[]>([]);
 const resources = ref<AdminResource[]>([]);
 const query = ref("");
@@ -413,8 +257,6 @@ const editing = ref(false);
 const formError = ref("");
 const tagText = ref("");
 const imageText = ref("");
-const cloudDeleteBusyKey = ref("");
-const deleteRequests = new Map<string, {resourceId:string;linkIndex:number;confirmationToken:string;requestKey:string}>();
 const form = ref<{
   id?: string;
   name: string;
@@ -455,17 +297,6 @@ const canDisable = computed(() =>
 );
 function cloudLabel(type: string) {
   return CLOUD_TYPE_SHORT_LABELS[type as CloudType] || type;
-}
-function checkStatusLabel(status?: AdminResource["checkStatus"]) {
-  return status === "valid"
-    ? "正常"
-    : status === "invalid"
-      ? "已失效"
-      : status === "unknown"
-        ? "待确认"
-        : status === "checking"
-          ? "检测中"
-          : "未检测";
 }
 function statusOf(error: any) {
   return error?.statusCode || error?.response?.status || error?.status;
@@ -709,256 +540,23 @@ onMounted(loadResources);
 </script>
 <style scoped>
 @layer components {
-  .resource-view-hint {
-    display: flex;
-    align-items: flex-start;
-    gap: 7px;
-    padding: 10px 16px;
-    color: #64748b;
-    background: #fbfcfe;
-    font-size: 11px;
-    line-height: 1.5;
-  }
 
-  .resource-view-hint :deep(svg) {
-    flex: 0 0 auto;
-    margin-top: 1px;
-    color: #2563eb;
-  }
-
-  .action-count {
-    min-width: 17px;
-    padding: 1px 5px;
-    border-radius: 99px;
-    color: currentColor;
-    background: rgba(255, 255, 255, 0.35);
-    font-size: 10px;
-    text-align: center;
-  }
-
-  .resource-chip {
-    display: inline-block;
-    margin: 2px 4px 2px 0;
-    padding: 2px 6px;
-    border-radius: 4px;
-    color: #2563eb;
-    background: #eff6ff;
-    font-size: 10px;
-  }
-
-  .resource-chip.muted {
-    color: #64748b;
-    background: #f1f5f9;
-  }
-
-  .resource-links-cell {
-    min-width: 230px;
-    max-width: 340px;
-    white-space: normal !important;
-  }
-
-  .resource-link-item + .resource-link-item {
-    margin-top: 7px;
-  }
-
-  .resource-link {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    gap: 6px;
-    color: #2563eb;
-    text-decoration: none;
-  }
-
-  .resource-link:hover {
-    color: #1d4ed8;
-    text-decoration: underline;
-  }
-
-  .resource-link-type {
-    flex: 0 0 auto;
-    padding: 2px 5px;
-    border-radius: 4px;
-    color: #2563eb;
-    background: #eff6ff;
-    font-size: 10px;
-  }
-
-  .resource-link-url {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .resource-link-meta {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 16px;
-    margin-top: 3px;
-  }
-
-  .resource-link-password {
-    margin-top: 0;
-    color: #64748b;
-    font-size: 10px;
-  }
-
-  .resource-link-delete {
-    padding: 0;
-    border: 0;
-    color: #b91c1c;
-    background: transparent;
-    font-size: 10px;
-    cursor: pointer;
-  }
-
-  .resource-link-delete:hover {
-    color: #7f1d1d;
-    text-decoration: underline;
-  }
-
-  .resource-link-delete:disabled {
-    color: #cbd5e1;
-    cursor: not-allowed;
-  }
-
-  .table-muted {
-    color: #94a3b8;
-    font-size: 11px;
-  }
-
-  .resource-status {
-    display: inline-block;
-    padding: 2px 7px;
-    border-radius: 4px;
-    color: #0f6e56;
-    background: #e1f5ee;
-    font-size: 10px;
-    white-space: nowrap;
-  }
-
-  .resource-status.off {
-    color: #64748b;
-    background: #f1f5f9;
-  }
-
-  .resource-check-status {
-    display: inline-block;
-    padding: 2px 7px;
-    border-radius: 4px;
-    color: #64748b;
-    background: #f1f5f9;
-    font-size: 10px;
-    white-space: nowrap;
-  }
-
-  .resource-check-status.check-valid {
-    color: #0f6e56;
-    background: #e1f5ee;
-  }
-
-  .resource-check-status.check-invalid {
-    color: #b42318;
-    background: #fee4e2;
-  }
-
-  .resource-check-status.check-unknown,
-  .resource-check-status.check-checking {
-    color: #9a6700;
-    background: #fff4ce;
-  }
-
-  .check-message {
-    display: block;
-    max-width: 160px;
-    margin-top: 4px;
-    overflow: hidden;
-    color: #94a3b8;
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* The shared `.row-actions` rule is a wrapping flex row, which stacked the three
-   row buttons on top of each other once this table gained more columns. Match
-   the source directory instead: one compact row, left aligned, never wrapping. */
-
-  .resource-table td.action-column {
-    padding: 8px 9px;
-  }
-
-  .resource-drawer {
-    width: min(680px, calc(100vw - 32px));
-    max-height: calc(100vh - 32px);
-    overflow: auto;
-  }
-
-  .eyebrow {
-    display: block;
-    margin: 0 0 7px;
-    color: #2563eb;
-    font:
-      700 10px ui-monospace,
-      SFMono-Regular,
-      Consolas,
-      monospace;
-    letter-spacing: 1.6px;
-  }
-
-  .resource-form {
-    display: grid;
-    gap: 14px;
-  }
-
-  .resource-form label {
-    display: grid;
-    gap: 6px;
-    color: #475569;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .resource-form input,
-  .resource-form textarea,
-  .resource-form select {
-    width: 100%;
-    padding: 9px 10px;
-    border: 1px solid #dbe1ea;
-    border-radius: 7px;
-    background: #fff;
-    color: #111827;
-    font-weight: 400;
-  }
-
-  .resource-links-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .link-editor {
-    display: grid;
-    grid-template-columns: 110px 1fr 120px 32px;
-    gap: 7px;
-  }
-
-  @media (max-width: 700px) {
-    .link-editor {
-      grid-template-columns: 1fr;
-    }
-
-    .resource-drawer {
-      width: calc(100vw - 20px);
-    }
-  }
-
-  .resource-table td:nth-child(3) > strong {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+.resource-toolbar,.resource-filters,.resource-list-meta,.resource-batch,.resource-batch-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.resource-toolbar,.resource-list-meta{justify-content:space-between}
+.resource-filters{flex:1;min-width:0}.resource-filters>:deep(button[role=combobox]){width:140px}
+.resource-search{position:relative;flex:1;min-width:180px;max-width:420px}.resource-search svg{position:absolute;left:12px;top:12px;color:var(--muted-foreground)}.resource-search input{padding-left:36px}
+.resource-list-meta{min-height:44px;font-size:13px;color:var(--muted-foreground);margin:8px 0}.resource-list-meta.has-selection{padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb,var(--muted) 40%,var(--background))}.resource-batch{gap:16px}.selection-count{color:var(--foreground);font-weight:500;white-space:nowrap}.resource-batch-actions{padding-left:16px;border-left:1px solid var(--border)}.resource-total{white-space:nowrap}.has-selection .resource-total{margin-left:auto}
+.resource-list-panel :deep(.resource-list-table){width:100%;table-layout:fixed;min-width:800px;font-size:13px}
+.resource-list-panel :deep(.resource-list-table th){height:44px;background:var(--muted);font-weight:500}.resource-list-panel :deep(.resource-list-table td){padding:16px 12px;vertical-align:top;white-space:normal}
+.selection-col{width:44px}.name-col{width:auto}.links-col{width:36%}.date-col{width:140px}.state-col{width:96px}.actions-col{width:56px}
+.resource-name-cell strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.resource-name-cell :deep(.resource-description-toggle){color:var(--muted-foreground)}
+.resource-tags{display:flex;gap:6px;align-items:center;margin-top:8px;min-width:0;font-size:12px;color:var(--muted-foreground)}.resource-tags :deep([data-slot=badge]){max-width:130px;display:block;overflow:hidden;text-overflow:ellipsis;border-radius:5px;font-weight:400}
+.resource-link-preview{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;min-width:0;max-width:100%}.all-links-button{margin-top:6px;color:var(--muted-foreground);font-size:12px;padding:0 4px;height:28px}
+.resource-date{font-variant-numeric:tabular-nums;color:var(--muted-foreground);font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.enabled-dot{width:5px;height:5px;border-radius:50%;background:currentColor}.resource-list-panel{overflow:hidden}
+.resource-form{display:grid;gap:16px}.resource-form label{display:grid;gap:6px;font-size:13px;font-weight:500}
+.resource-links-title{display:flex;align-items:center;justify-content:space-between}.link-editor{display:grid;grid-template-columns:100px 1fr 110px 32px;gap:8px}
+@media(max-width:700px){.resource-toolbar{align-items:stretch}.resource-filters{flex-basis:100%}.resource-search{max-width:none}.link-editor{grid-template-columns:1fr}.resource-batch{width:100%;gap:8px}.resource-batch-actions{border-left:0;padding-left:0}.selection-count{flex-basis:100%}.has-selection .resource-total{margin-left:0}}
 }
 </style>

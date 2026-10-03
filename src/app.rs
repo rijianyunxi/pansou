@@ -29,6 +29,8 @@ pub struct AppState {
     pub cloud_test_bases: Option<crate::cloud_drive::TestBases>,
     #[cfg(test)]
     pub cloud_auth_test_base: Option<String>,
+    #[cfg(test)]
+    pub resolve_test_timeout_seconds: Arc<std::sync::atomic::AtomicU64>,
     pub cloud_slots: Arc<tokio::sync::Semaphore>,
     // Expensive DB searches have a separate budget from outbound HTTP requests.
     pub local_search_slots: Arc<tokio::sync::Semaphore>,
@@ -66,6 +68,8 @@ impl AppState {
             cloud_test_bases: None,
             #[cfg(test)]
             cloud_auth_test_base: None,
+            #[cfg(test)]
+            resolve_test_timeout_seconds: Arc::new(std::sync::atomic::AtomicU64::new(120)),
             cloud_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             local_search_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             local_search_locks: Arc::new(crate::local_index::SearchLocks::default()),
@@ -286,6 +290,10 @@ fn api_router() -> Router<Arc<AppState>> {
             get(handlers::admin_resource_get)
                 .put(handlers::admin_resource_update)
                 .delete(handlers::admin_resource_delete),
+        )
+        .route(
+            "/admin/resources/{id}/links/check",
+            post(crate::link_resolution::admin_resource_link_check),
         )
         .route(
             "/admin/hot-searches",

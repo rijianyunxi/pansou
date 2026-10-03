@@ -32,7 +32,7 @@ const labels: Record<string,string> = {
 };
 export function taskLabel(key?: string) { return key ? labels[key] || key : '未记录'; }
 const reasons: Record<string,string> = {
-  deadline_exceeded:'取链超过 5 秒，已回退原链接；若有晚到产物，会另行清理。',
+  deadline_exceeded:'取链超时，已回退原链接；若有晚到产物，会另行清理。',
   delivery_failed:'转存或分享未能确认，已安全回退；请检查账号、策略及清理记录。',
   share_failed:'转存后的分享未成功，请检查网盘账号与清理记录。',
   transfer_failed:'转存未成功，请检查网盘账号与清理记录。',

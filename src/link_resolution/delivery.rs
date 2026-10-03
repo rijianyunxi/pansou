@@ -150,7 +150,16 @@ fn directory_key(provider: Provider, file: &File) -> String {
     }
 }
 /// Read every descendant, refusing truncated or excessively deep manifests.
-async fn manifest(drive: &Drive, root: &str) -> Result<Value, ApiError> {
+pub(super) async fn manifest(drive: &Drive, root: &str) -> Result<Value, ApiError> {
+    manifest_from_listing(drive, root, None).await
+}
+/// A just-confirmed top-level listing is also the root of the ownership tree.
+/// Reuse it within the same write lock; descendants and later cleanup stay live.
+pub(super) async fn manifest_from_listing(
+    drive: &Drive,
+    root: &str,
+    mut root_files: Option<Vec<File>>,
+) -> Result<Value, ApiError> {
     let mut pending = vec![(root.to_string(), 0)];
     let mut entries = vec![];
     let mut seen = std::collections::HashSet::new();
@@ -160,7 +169,18 @@ async fn manifest(drive: &Drive, root: &str) -> Result<Value, ApiError> {
                 "文件树过大或结构异常，需人工核实".into(),
             ));
         }
-        for file in drive.list(&parent).await.map_err(|e| e.api())? {
+        let files = if parent == root {
+            match root_files.take() {
+                Some(files) => files,
+                None => drive.list(&parent).await.map_err(|e| e.api())?,
+            }
+        } else {
+            drive.list(&parent).await.map_err(|e| e.api())?
+        };
+        for file in files {
+            if entries.len() >= 5000 {
+                return Err(ApiError::Conflict("文件树过大或结构异常，需人工核实".into()));
+            }
             if file.is_dir {
                 pending.push((directory_key(drive.wire.provider, &file), depth + 1));
             }
@@ -191,6 +211,7 @@ async fn share_saved(
     expires: DateTime<Utc>,
 ) -> Result<Value, ApiError> {
     authorize_write(state, session, key).await?;
+    super::progress(state, session, key, "sharing").await?;
     let row = sqlx::query(
         "SELECT ownership_manifest_json,upstream_share_ids_json FROM link_share_cache WHERE id=$1",
     )
@@ -284,16 +305,13 @@ pub(super) async fn original_context(
     super::record_check(state, link, &value).await?;
     match result {
         Ok(Ok(ctx)) if !ctx.files.is_empty() => {
-            // Remember the share identity so a follow-up delivery of the same
-            // link skips the slow page parse: the first attempt often misses
-            // the response window on slow providers, and this is what makes
-            // the retry fit. Metadata only: ids and public file entries, no
-            // session tokens.
+            // Cache only the public share identity to skip the HTML page parse.
+            // Retries still read current membership; no file lists or tokens persist.
             if drive.wire.provider == Provider::Baidu {
                 stash_share_context(
                     state,
                     &reference,
-                    &json!({"shareId":ctx.share_id,"owner":ctx.owner,"files":ctx.files}),
+                    &json!({"shareId":ctx.share_id,"owner":ctx.owner}),
                 )
                 .await;
             }
@@ -366,6 +384,7 @@ pub(super) async fn deliver(
         ));
     }
     p.validate(provider)?;
+    super::progress(state, session, key, "queued").await?;
     let _lock = loop {
         match lock(state, &drive).await {
             Ok(tx) => break tx,
@@ -376,6 +395,7 @@ pub(super) async fn deliver(
             Err(_) => return Ok(fallback(key, link, fact, "account_unavailable")),
         }
     };
+    super::progress(state, session, key, "checking").await?;
     // Admin policy saves share this lock. Requests that waited must honor the latest switch.
     let p = load_provider(state, provider).await?;
     p.validate(provider)?;
@@ -402,6 +422,7 @@ pub(super) async fn deliver(
                         + chrono::Duration::seconds(p.delivery_min_remaining_seconds as i64)
                 })
         {
+            super::progress(state, session, key, "reusing").await?;
             let share = json!({"url":row.get::<Option<String>,_>("share_url"),"password":row.get::<Option<String>,_>("share_password"),"shareExpiresAt":row.get::<Option<DateTime<Utc>>,_>("share_expires_at")});
             let input = ShareInput {
                 url: share["url"].as_str().unwrap_or("").into(),
@@ -494,6 +515,7 @@ pub(super) async fn deliver(
             "delivery_disabled",
         ));
     }
+    super::progress(state, session, key, "checking").await?;
     let context = match original_context(state, &drive, link, deadline).await {
         Ok(context) => context,
         _ => {
@@ -547,8 +569,9 @@ pub(super) async fn deliver(
         authorize_write(state, session, key).await?;
         sqlx::query("UPDATE link_share_cache SET ownership_manifest_json=jsonb_set(ownership_manifest_json,'{stage}','\"transfer_intent\"') WHERE id=$1")
             .bind(id).execute(&state.pool).await?;
-        let ids = match drive.transfer(&context, &target).await {
-            Ok(ids) => ids,
+        super::progress(state, session, key, "transferring").await?;
+        let (ids, listing) = match drive.transfer_with_listing(&context, &target).await {
+            Ok(receipt) => receipt,
             Err(error) => {
                 // Multi-file copies may stop at the deadline after earlier files
                 // were acknowledged. Preserve those exact IDs for safe cleanup.
@@ -556,7 +579,7 @@ pub(super) async fn deliver(
                 if !confirmed.is_empty() {
                     let files = drive.list(&target).await.map_err(|e| e.api())?;
                     if files.len() == confirmed.len() && files.iter().all(|f| confirmed.contains(&f.id)) {
-                        let tree = manifest(&drive, &target).await?;
+                        let tree = manifest_from_listing(&drive, &target, Some(files.clone())).await?;
                         sqlx::query("UPDATE link_share_cache SET state='saved',target_files_json=$2,ownership_manifest_json=ownership_manifest_json || $3,updated_at=now() WHERE id=$1")
                             .bind(id).bind(json!(files)).bind(json!({"tree":tree,"stage":"saved"})).execute(&state.pool).await?;
                     }
@@ -564,11 +587,14 @@ pub(super) async fn deliver(
                 return Err(error.api());
             }
         };
-        let files = drive.list(&target).await.map_err(|e| e.api())?;
+        let files = match listing {
+            Some(files) => files,
+            None => drive.list(&target).await.map_err(|e| e.api())?,
+        };
         if files.len() != context.files.len() || files.iter().any(|f| !ids.contains(&f.id)) {
             return Err(ApiError::Conflict("转存结果身份不确定".into()));
         }
-        let tree = manifest(&drive, &target).await?;
+        let tree = manifest_from_listing(&drive, &target, Some(files.clone())).await?;
         sqlx::query("UPDATE link_share_cache SET state='saved',target_files_json=$2,ownership_manifest_json=ownership_manifest_json || $3,updated_at=now() WHERE id=$1").bind(id).bind(json!(files)).bind(json!({"tree":tree,"stage":"saved"})).execute(&state.pool).await?;
         let share = share_saved(state, session, key, &drive, id, &files, &p, expires).await?;
         Ok::<_, ApiError>(share)
