@@ -12,6 +12,9 @@ import { Separator } from "./ui/separator";
 import { provideAdminSession } from "@/composables/admin/useAdminSession";
 import { adminNavigation } from "./navigation";
 import "../../assets/admin.css";
+// 后台控制台样式只随 admin chunk 加载：不能放 main.ts，否则 94KB 的
+// 控制台样式会打进公共首页的 CSS（曾占首页 CSS 的 48%）。
+import "../../assets/source-console.css";
 const session = provideAdminSession();
 const confirmation = provideAdminConfirm();
 const { checking, locked, authenticated, error } = session;

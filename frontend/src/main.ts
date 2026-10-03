@@ -3,7 +3,6 @@ import { createRouter, createWebHistory } from "vue-router";
 import App from "../app.vue";
 import HomePage from "../pages/index/index.vue";
 import CopyrightPage from "../pages/copyright.vue";
-import "../assets/source-console.css";
 
 const router = createRouter({
   history: createWebHistory(),

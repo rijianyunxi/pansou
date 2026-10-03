@@ -18,6 +18,11 @@ export interface AuthUser {
 type SessionResponse = { authenticated: boolean; user: AuthUser | null; sessionId: string; anonymousCustomChannels?: boolean; showHotSearch?: boolean; showAuthButtons?: boolean; homeSearchPlaceholder?: string };
 type ApiError = { statusCode?: number; statusMessage?: string; message?: string; data?: { statusMessage?: string; message?: string } };
 
+// 会话初始化的去重 promise 必须放在模块级：useAuth() 会被 app.vue、首页、
+// 头部账号面板等多个组件各自实例化，实例内的局部变量无法跨组件去重，
+// 导致首页加载时 /api/account/session 被并发请求两次。
+let initializePromise: Promise<boolean> | undefined;
+
 function errorStatus(error: ApiError | undefined): number | undefined {
   return error?.statusCode || (error as any)?.status || (error as any)?.response?.status;
 }
@@ -44,7 +49,6 @@ export function useAuth() {
   const homeSearchPlaceholder = useSharedState<string>("auth-home-search-placeholder", () => DEFAULT_HOME_SEARCH_PLACEHOLDER);
   const sessionError = useSharedState("auth-session-error", () => "");
   const initialized = useSharedState("auth-session-initialized", () => false);
-  let initializePromise: Promise<boolean> | undefined;
 
   async function initializeSession(force = false): Promise<boolean> {
     if (initializePromise && !force) return initializePromise;
