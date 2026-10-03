@@ -41,6 +41,44 @@ fn search_grams(keyword: &str) -> Vec<String> {
         .collect()
 }
 
+/// Pick the entry gram by index rarity. Entry choice never changes the result
+/// (every candidate gram is still required), but a rare entry keeps the plan on
+/// index scans while a common one (e.g. a frequent bigram) degrades to hashing
+/// over the whole occurrences table.
+fn rarest_gram(grams: &[String], counts: &HashMap<String, i64>) -> String {
+    grams
+        .iter()
+        .min_by_key(|g| counts.get(*g).copied().unwrap_or(0))
+        .expect("grams is non-empty")
+        .clone()
+}
+
+/// Counts come from an index-only scan, cheap next to a mis-planned join. A
+/// gram missing from the table counts as zero: entering through it returns an
+/// empty result, which is the correct answer and the fastest one. On query
+/// error fall back to the caller-supplied default (the previous byte-order
+/// choice).
+async fn pick_entry_gram(
+    tx: &mut sqlx::PgConnection,
+    grams: &[String],
+    fallback: String,
+) -> String {
+    let counts: HashMap<String, i64> = match sqlx::query(
+        "SELECT gram, count(*) AS n FROM resource_grams WHERE gram = ANY($1) GROUP BY gram",
+    )
+    .bind(grams)
+    .fetch_all(tx)
+    .await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("gram"), row.get::<i64, _>("n")))
+            .collect(),
+        Err(_) => return fallback,
+    };
+    rarest_gram(grams, &counts)
+}
+
 fn cache_key(keyword: &str, channels: &[String], revision: i64) -> String {
     let identity = json!({"match":"name-only-v3-projection","kw":keyword,"channels":channels,"revision":revision,"limit":200});
     format!(
@@ -129,19 +167,22 @@ pub async fn query(
             .fetch_one(&mut *tx)
             .await?;
     let grams = search_grams(&keyword);
-    let rows = if let Some(gram) = grams.first() {
-        sqlx::query(include_str!("queries/telegram_search_gram.sql"))
-            .bind(&keyword)
-            .bind(gram)
-            .bind(&scope)
-            .bind(&grams[1..])
-            .fetch_all(&mut *tx)
-            .await?
-    } else {
+    let rows = if grams.is_empty() {
         sqlx::query(include_str!("queries/telegram_search.sql"))
             .bind(&keyword)
             .bind(None::<&str>)
             .bind(&scope)
+            .fetch_all(&mut *tx)
+            .await?
+    } else {
+        let entry = pick_entry_gram(&mut *tx, &grams, grams[0].clone()).await;
+        let required: Vec<String> =
+            grams.iter().filter(|g| *g != &entry).cloned().collect();
+        sqlx::query(include_str!("queries/telegram_search_gram.sql"))
+            .bind(&keyword)
+            .bind(&entry)
+            .bind(&scope)
+            .bind(&required)
             .fetch_all(&mut *tx)
             .await?
     };
@@ -182,6 +223,28 @@ mod tests {
                 .all(|g| g.chars().count() == 2)
         );
         assert!(search_grams("abcdefghijklmnopqrstuvwxyz").len() <= 8);
+    }
+
+    #[test]
+    fn entry_gram_is_the_rarest_and_ties_keep_order() {
+        let grams = vec!["地球".to_string(), "流浪".to_string(), "浪地".to_string()];
+        let counts = HashMap::from([
+            ("地球".to_string(), 60_000),
+            ("流浪".to_string(), 900),
+            ("浪地".to_string(), 12),
+        ]);
+        assert_eq!(rarest_gram(&grams, &counts), "浪地");
+
+        // A gram absent from the index matches nothing: fastest correct entry.
+        let counts = HashMap::from([("地球".to_string(), 60_000)]);
+        assert_eq!(rarest_gram(&grams, &counts), "流浪");
+
+        let counts = HashMap::from([
+            ("地球".to_string(), 60_000),
+            ("流浪".to_string(), 900),
+            ("浪地".to_string(), 900),
+        ]);
+        assert_eq!(rarest_gram(&grams, &counts), "流浪");
     }
 
     #[tokio::test]
