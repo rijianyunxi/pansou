@@ -1,6 +1,6 @@
 <template>
   <div v-if="isAdminConsole" class="source-console-layout"><RouterView /></div>
-  <div v-else class="layout">
+  <div v-else class="layout" :class="{ 'discovery-layout': route.path === '/' }">
     <!-- 顶部导航：左侧 Logo，右侧公共操作与账号入口 -->
     <header class="topnav" :inert="openSettings">
       <RouterLink v-if="canOpenAdminFromBrand" to="/admin" class="brand" aria-label="进入管理后台" title="进入管理后台">
@@ -21,6 +21,7 @@
         </span>
         <span class="brand-text">{{ siteName }}</span>
       </span>
+      <span v-if="route.path === '/'" class="brand-tagline">让好资源，更好找。</span>
       <nav class="topnav-actions" aria-label="主导航">
         <UserAccountPanel variant="wechat" />
       </nav>
@@ -631,4 +632,17 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+</style>
+
+<style scoped>
+.discovery-layout { --primary: #f65b1b; --primary-dark: #db4510; --primary-soft: #fff0e6; --ink: #f65b1b; --ink-hover: #dc4710; --bg-primary: #fff; --bg-secondary: #fff8ef; --text-primary: #24231f; --text-secondary: #77756f; --text-tertiary: #929089; --border-light: #ece9e2; --border-medium: #d9d4cb; background: #fffdf7; color: var(--text-primary); color-scheme: light; }
+.discovery-layout .topnav { height: 80px; padding: 0 max(24px, calc((100vw - 1120px) / 2)); background: #fffdf7f5; border-bottom-color: #f0ede6; backdrop-filter: blur(12px); }
+.discovery-layout .brand { flex-shrink: 0; }
+.discovery-layout .brand-mark { width: 40px; height: 40px; background: #ff5b18; border-radius: 11px; box-shadow: inset 0 0 0 1px #ffffff30; }
+.discovery-layout .brand-mark svg { width: 26px; height: 26px; stroke: #fff; }
+.discovery-layout .brand-text { font-size: 25px; font-weight: 850; }
+.brand-tagline { margin-left: 7px; padding-left: 18px; border-left: 1px solid #dedbd3; font-size: 12px; color: #77756f; white-space: nowrap; }
+.discovery-layout .main { max-width: 1168px; padding: 24px 24px 40px; }
+.discovery-layout .site-footer { border-top: 1px solid #eeebe4; padding: 22px 24px; font-size: 11px; }
+@media (max-width: 640px) { .discovery-layout .topnav { height: 66px; padding: 0 20px; } .brand-tagline { display: none; } .discovery-layout .main { padding: 16px 16px 32px; } .discovery-layout .brand-text { font-size: 22px; } }
 </style>

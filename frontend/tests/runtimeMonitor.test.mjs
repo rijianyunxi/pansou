@@ -1,7 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { workerLabel, sourceLabel, sourceTone, sourceSuccessRate, monitorAlerts, lastSourceRequest, monitorQueueRows, deliveryTotal } from '../components/monitor/monitorView.ts';
+import { MONITOR_WORKERS, workerSchedulingEnabled, workerLabel, sourceLabel, sourceTone, sourceSuccessRate, monitorAlerts, lastSourceRequest, monitorQueueRows, deliveryTotal } from '../components/monitor/monitorView.ts';
+
+test('worker cards target the appropriate scheduler and management page', () => {
+  assert.equal(MONITOR_WORKERS.crawl.endpoint, 'crawl');
+  assert.equal(MONITOR_WORKERS.crawl.path, '/admin/crawl');
+  assert.equal(MONITOR_WORKERS.links.endpoint, 'link-schedule');
+  assert.equal(MONITOR_WORKERS.links.path, '/admin/tasks');
+  const worker = { state: 'online', count: 1, enabled: false, scheduleEnabled: true };
+  assert.equal(workerSchedulingEnabled('crawl', worker), false);
+  assert.equal(workerSchedulingEnabled('links', worker), true, 'cleanup pause must not become global scheduling pause');
+  assert.equal(workerSchedulingEnabled('links', { ...worker, enabled: true, scheduleEnabled: false }), false);
+  assert.equal(workerSchedulingEnabled('links', { ...worker, scheduleEnabled: undefined }), undefined);
+  assert.equal(workerSchedulingEnabled('crawl'), undefined);
+});
 
 test('worker presence and scheduling switch are distinct states', () => {
   assert.equal(workerLabel({ state: 'online', count: 1, enabled: false }), '已暂停调度');
@@ -58,7 +71,7 @@ test('local link sync never borrows click-delivery queue statistics', () => {
   };
   const rows = monitorQueueRows(data);
   assert.equal(rows.length, 5);
-  assert.deepEqual(rows.find(row => row.key === 'sync'), { key: 'sync', label: '链接关联同步', queued: 7, running: null, failed: null, blocked: 0 });
+  assert.deepEqual(rows.find(row => row.key === 'sync'), { key: 'sync', label: '资源链接同步', queued: 7, running: null, failed: null, blocked: 0 });
   assert.equal(rows.find(row => row.key === 'resolve').running, 9);
   assert.equal(rows.find(row => row.key === 'cleanup').blocked, 5);
 });

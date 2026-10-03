@@ -3,13 +3,15 @@ use std::{
     collections::HashMap,
     future::Future,
     hash::Hash,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 
-/// Coalesce concurrent refreshes and bound cached page/filter combinations.
+/// Coalesce each key independently; the registry lock never covers database I/O.
+type CachedValue<V> = Arc<Mutex<Option<(Instant, V)>>>;
 struct StatsCache<K, V> {
-    entries: Mutex<HashMap<K, (Instant, V)>>,
+    entries: Mutex<HashMap<K, CachedValue<V>>>,
 }
 
 impl<K, V> Default for StatsCache<K, V> {
@@ -26,28 +28,43 @@ impl<K: Eq + Hash + Clone, V: Clone> StatsCache<K, V> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
     {
-        let mut entries = self.entries.lock().await;
-        entries.retain(|_, (expires, _)| *expires > Instant::now());
-        if let Some((_, value)) = entries.get(&key) {
-            return Ok(value.clone());
-        }
-        // Hold the lock through loading: polling tabs must not stampede PostgreSQL.
-        // Failed/cancelled loads never insert a cache entry.
-        let value = loader().await?;
-        if entries.len() >= 64 {
-            if let Some(oldest) = entries
-                .iter()
-                .min_by_key(|(_, (expires, _))| *expires)
-                .map(|(key, _)| key.clone())
-            {
-                entries.remove(&oldest);
+        let entry = {
+            let mut entries = self.entries.lock().await;
+            if let Some(entry) = entries.get(&key) {
+                entry.clone()
+            } else {
+                // Keep in-flight keys so waiters still share their refresh.
+                if entries.len() >= 64 {
+                    let idle = entries
+                        .iter()
+                        .find(|(_, entry)| Arc::strong_count(entry) == 1)
+                        .map(|(key, _)| key.clone());
+                    if let Some(idle) = idle {
+                        entries.remove(&idle);
+                    }
+                }
+                let entry = Arc::new(Mutex::new(None));
+                // Above the bound, an unmatched key loads without being retained.
+                if entries.len() < 64 {
+                    entries.insert(key, entry.clone());
+                }
+                entry
+            }
+        };
+        let mut cached = entry.lock().await;
+        if let Some((expires, value)) = cached.as_ref() {
+            if *expires > Instant::now() {
+                return Ok(value.clone());
             }
         }
-        entries.insert(key, (Instant::now() + ttl, value.clone()));
+        // Cancellation/errors leave this key retryable and release its lock.
+        let value = loader().await?;
+        *cached = Some((Instant::now() + ttl, value.clone()));
         Ok(value)
     }
 
     async fn clear(&self) {
+        // Detach old in-flight loads: they cannot repopulate the new registry.
         self.entries.lock().await.clear();
     }
 }
@@ -90,7 +107,9 @@ pub(crate) fn resource_filters<'a>(
             .push_bind(format!("%{needle}%"));
     }
     if !cloud_type.is_empty() {
-        query.push(" AND cloud_types_json ? ").push_bind(cloud_type);
+        query
+            .push(" AND resource_cloud_types(links_json) ? ")
+            .push_bind(cloud_type);
     }
 }
 
@@ -262,6 +281,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slow_key_does_not_block_other_keys_or_cached_hits() {
+        let cache = Arc::new(StatsCache::<usize, usize>::default());
+        cache
+            .load(1, Duration::from_secs(30), || async { Ok::<_, ()>(10) })
+            .await
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let slow_cache = cache.clone();
+        let slow = tokio::spawn(async move {
+            slow_cache
+                .load(2, Duration::from_secs(30), || async {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok::<_, ()>(20)
+                })
+                .await
+                .unwrap()
+        });
+        started_rx.await.unwrap();
+        let fast = tokio::time::timeout(Duration::from_secs(1), async {
+            assert_eq!(
+                cache
+                    .load(1, Duration::from_secs(30), || async {
+                        panic!("cached value must be reused");
+                        #[allow(unreachable_code)]
+                        Ok::<_, ()>(0)
+                    })
+                    .await
+                    .unwrap(),
+                10
+            );
+            assert_eq!(
+                cache
+                    .load(3, Duration::from_secs(30), || async { Ok::<_, ()>(30) })
+                    .await
+                    .unwrap(),
+                30
+            );
+        })
+        .await;
+        release_tx.send(()).unwrap();
+        assert_eq!(slow.await.unwrap(), 20);
+        fast.expect("an unrelated slow query must not block cache access");
+    }
+
+    #[tokio::test]
+    async fn invalidation_during_load_cannot_restore_old_value() {
+        let cache = Arc::new(StatsCache::<(), usize>::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let old_cache = cache.clone();
+        let old = tokio::spawn(async move {
+            old_cache
+                .load((), Duration::from_secs(30), || async {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok::<_, ()>(1)
+                })
+                .await
+                .unwrap()
+        });
+        started_rx.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), cache.clear())
+            .await
+            .unwrap();
+        assert_eq!(
+            cache
+                .load((), Duration::from_secs(30), || async { Ok::<_, ()>(2) })
+                .await
+                .unwrap(),
+            2
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(old.await.unwrap(), 1);
+        assert_eq!(
+            cache
+                .load((), Duration::from_secs(30), || async { Ok::<_, ()>(3) })
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_load_leaves_the_key_retryable() {
+        let cache = Arc::new(StatsCache::<(), usize>::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let old_cache = cache.clone();
+        let old = tokio::spawn(async move {
+            old_cache
+                .load((), Duration::from_secs(30), || async {
+                    started_tx.send(()).unwrap();
+                    std::future::pending::<Result<usize, ()>>().await
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        old.abort();
+        let _ = old.await;
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                cache.load((), Duration::from_secs(30), || async { Ok::<_, ()>(7) })
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+            7
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
     async fn concurrent_channel_statistics_updates_do_not_lose_counts() {
         let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
@@ -393,11 +525,13 @@ mod tests {
                 .bind(&channel).bind(id).bind(status).execute(&pool).await.unwrap();
         }
         assert_eq!(counts().await, (4, 2, 1, 1));
-        sqlx::query("UPDATE source_messages SET parse_status='failed' WHERE channel_id=$1 AND message_id=1")
-            .bind(&channel)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE source_messages SET parse_status='failed' WHERE channel_id=$1 AND message_id=1",
+        )
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
         assert_eq!(counts().await, (4, 1, 1, 2));
         sqlx::query("DELETE FROM source_messages WHERE channel_id=$1 AND message_id=2")
             .bind(&channel)

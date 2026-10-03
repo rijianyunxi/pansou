@@ -6,9 +6,9 @@ import { adminNavigation } from '../components/admin/navigation.ts';
 import { cleanupFilters, cleanupLabel, cleanupError, retryUnavailable } from '../lib/cleanupTasks.ts';
 
 test('cleanup filters restore safe URL state and reject malformed query values', () => {
-  assert.deepEqual(cleanupFilters({status:'blocked',provider:'aliyun',page:'3'}),{status:'blocked',provider:'aliyun',page:3});
+  assert.deepEqual(cleanupFilters({status:'blocked',provider:'aliyun',page:'3'}),{status:'blocked',provider:'aliyun',page:3,pageSize:20});
   for(const page of ['0','-1','2.5','Infinity',['2']]) assert.equal(cleanupFilters({status:['all'],provider:'fake',page}).page,1);
-  assert.deepEqual(cleanupFilters({status:'fake',provider:['aliyun'],page:'999999'}),{status:'attention',provider:'',page:100000});
+  assert.deepEqual(cleanupFilters({status:'fake',provider:['aliyun'],page:'999999'}),{status:'all',provider:'',page:100000,pageSize:20});
 });
 test('cleanup explanations distinguish retry exhaustion, active work and retention', () => {
   assert.match(cleanupError('cleanup_credentials_or_permissions','blocked'),/登录凭据.*自动重试已停止/);
@@ -31,7 +31,7 @@ test('all five delivery providers have independent forms and safe ID directories
   assert.equal(providerRoot('aliyun'),'root'); assert.equal(providerRoot('xunlei'),'0'); assert.equal(selectableDirectory(' root '),false);
 });
 test('cleanup attention has a management menu and a direct task route', async () => {
-  assert.ok(adminNavigation.some(p => p.path === '/admin/tasks' && p.title === '链接后台处理'));
+  assert.ok(adminNavigation.some(p => p.path === '/admin/tasks' && p.title === '链接任务'));
   const monitor = await readFile(new URL('../components/monitor/MonitorPanel.vue',import.meta.url),'utf8');
   assert.match(monitor,/path: '\/admin\/tasks\?kind=cleanup&status=attention', action: '管理清理任务'/);
   const route = await readFile(new URL('../src/main.ts',import.meta.url),'utf8');

@@ -38,13 +38,14 @@
               <option value="disabled">已禁用</option>
             </AdminSelect>
             <div class="query-actions">
-              <Button variant="default" class="button primary" type="submit"
+              <Button variant="default" class="button primary" type="submit" :disabled="loading || busy"
                 ><ConsoleIcon name="search" :size="14" />查询</Button
               >
               <Button
                 variant="outline"
                 class="button secondary"
                 type="button"
+                :disabled="loading || busy"
                 @click="resetQuery"
                 >重置</Button
               >
@@ -200,6 +201,7 @@
             :total-pages="pageCount"
             :total="displayTotal"
             :page-size="pageSize"
+            :disabled="loading || busy"
             @change="goToPage"
             @update:page-size="changePageSize"
           />
@@ -332,12 +334,13 @@
                 placeholder="关键词 / 用户 / IP"
             /></label>
             <div class="query-actions">
-              <Button variant="default" class="button primary" type="submit"
+              <Button variant="default" class="button primary" type="submit" :disabled="loading || busy"
                 ><ConsoleIcon name="search" :size="14" />查询</Button
               ><Button
                 variant="outline"
                 class="button secondary"
                 type="button"
+                :disabled="loading || busy"
                 @click="resetQuery"
                 >重置</Button
               ><Button
@@ -450,6 +453,7 @@
             :total-pages="pageCount"
             :total="displayTotal"
             :page-size="pageSize"
+            :disabled="loading || busy"
             @change="goToPage"
             @update:page-size="changePageSize"
           />
@@ -554,7 +558,7 @@
                 class="refresh-button"
                 type="button"
                 :disabled="loading"
-                @click="loadData"
+                @click="loadData()"
               >
                 <ConsoleIcon name="refresh" :size="14" />{{
                   loading ? "读取中…" : "刷新数据"
@@ -1033,6 +1037,7 @@
 </template>
 
 <script setup lang="ts">
+import { AdminPageCursors } from "../../lib/adminPageCursors";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Switch } from "@/components/admin/ui/switch";
 import { Card } from "@/components/admin/ui/card";
@@ -1374,8 +1379,10 @@ function clearSelection() {
   selectedKeys.value = [];
 }
 
-async function loadData() {
+const logPageCursors = new AdminPageCursors();
+async function loadData(continuePage = false) {
   if (locked.value || loading.value) return;
+  if (!continuePage) logPageCursors.clear();
   loading.value = true;
   show("");
   try {
@@ -1401,14 +1408,14 @@ async function loadData() {
         apiFetch<any>("/api/admin/search-logs", {
           query: {
             q: logQuery.value || undefined,
-            page: page.value,
-            pageSize: pageSize.value,
+            ...logPageCursors.query(page.value, pageSize.value, [logQuery.value]),
           },
           cache: "no-store",
         }),
         apiFetch<any>("/api/admin/search-analytics", { cache: "no-store" }),
       ]);
       const data = result?.data ?? result;
+      logPageCursors.remember(page.value, data.nextCursor);
       logs.value = data.logs || data.items || [];
       total.value = Number(data.total || logs.value.length);
       page.value = Number(data.page || page.value);
@@ -1463,24 +1470,28 @@ async function loadData() {
   }
 }
 function runQuery() {
+  if (loading.value || busy.value) return;
   page.value = 1;
   clearSelection();
   void loadData();
 }
 function resetQuery() {
+  if (loading.value || busy.value) return;
   userQuery.value = "";
   userStatus.value = "";
   logQuery.value = "";
   runQuery();
 }
 function goToPage(nextPage: number) {
+  if (loading.value || busy.value) return;
   if (nextPage < 1 || nextPage > pageCount.value || nextPage === page.value)
     return;
   page.value = nextPage;
   clearSelection();
-  void loadData();
+  void loadData(true);
 }
 function changePageSize(size: number) {
+  if (loading.value || busy.value) return;
   pageSize.value = size;
   page.value = 1;
   clearSelection();

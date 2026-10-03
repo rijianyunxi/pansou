@@ -7,6 +7,9 @@ export type AdminResourceLinkData = Link & {
   lastAttemptAt?: string | null;
   stale?: boolean;
   reasonCode?: string | null;
+  createdAt?: string | null;
+  checkStatus?: 'unchecked' | 'unknown' | 'valid' | 'invalid';
+  checkMessage?: string | null;
 };
 export function linkObservation(link: AdminResourceLinkData) {
   if(link.stale)return {label:'待复检',tone:'pending'};

@@ -492,30 +492,8 @@ async fn refresh_resource(tx: &mut Transaction<'_, Postgres>, id: &str) -> Resul
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let published = row.get::<Option<DateTime<Utc>>, _>("published_at");
     let search_text = item.name.clone();
-    sqlx::query("UPDATE managed_resources SET name=$2,description=$3,datetime=$4,published_at=$5,cloud_types_json=$6,links_json=$7,tags_json=$8,images_json=$9,search_text=$10,updated_at=now() WHERE id=$1 AND NOT manual_override AND (name,description,datetime,published_at,cloud_types_json,links_json,tags_json,images_json,search_text) IS DISTINCT FROM ($2,$3,$4,$5,$6,$7,$8,$9,$10)")
- .bind(id).bind(&item.name).bind(&item.description).bind(&item.datetime).bind(published).bind(json!(item.cloud_types)).bind(json!(item.links)).bind(json!(item.tags.clone().unwrap_or_default())).bind(json!(item.images.clone().unwrap_or_default())).bind(&search_text).execute(&mut **tx).await?;
-    let identities = item
-        .links
-        .iter()
-        .map(|l| resource_clean::link_identity(&l.url))
-        .collect::<Vec<_>>();
-    sqlx::query("DELETE FROM resource_links WHERE resource_id=$1 AND NOT(identity=ANY($2))")
-        .bind(id)
-        .bind(&identities)
-        .execute(&mut **tx)
-        .await?;
-    let urls = item.links.iter().map(|l| l.url.clone()).collect::<Vec<_>>();
-    let types = item
-        .links
-        .iter()
-        .map(|l| l.r#type.clone())
-        .collect::<Vec<_>>();
-    let passwords = item
-        .links
-        .iter()
-        .map(|l| l.password.clone())
-        .collect::<Vec<_>>();
-    sqlx::query("INSERT INTO resource_links(resource_id,identity,url,cloud_type,password) SELECT $1,identity,url,cloud_type,password FROM unnest($2::text[],$3::text[],$4::text[],$5::text[]) x(identity,url,cloud_type,password) ON CONFLICT(resource_id,identity) DO UPDATE SET url=excluded.url,cloud_type=excluded.cloud_type,password=excluded.password WHERE (resource_links.url,resource_links.cloud_type,resource_links.password) IS DISTINCT FROM (excluded.url,excluded.cloud_type,excluded.password)").bind(id).bind(identities).bind(urls).bind(types).bind(passwords).execute(&mut **tx).await?;
+    sqlx::query("UPDATE managed_resources SET name=$2,description=$3,datetime=$4,published_at=$5,links_json=$6,tags_json=$7,images_json=$8,search_text=$9,updated_at=now() WHERE id=$1 AND NOT manual_override AND (name,description,datetime,published_at,links_json,tags_json,images_json,search_text) IS DISTINCT FROM ($2,$3,$4,$5,$6,$7,$8,$9)")
+ .bind(id).bind(&item.name).bind(&item.description).bind(&item.datetime).bind(published).bind(json!(item.links)).bind(json!(item.tags.clone().unwrap_or_default())).bind(json!(item.images.clone().unwrap_or_default())).bind(&search_text).execute(&mut **tx).await?;
     let mut texts=sqlx::query_scalar::<_,Value>("SELECT o.result_json FROM resource_occurrences o JOIN source_messages m USING(channel_id,message_id) WHERE o.resource_id=$1 AND m.parse_status='parsed'").bind(id).fetch_all(&mut **tx).await?.into_iter().map(|v|v["name"].as_str().unwrap_or_default().to_owned()).collect::<Vec<_>>();
     texts.push(search_text);
     let grams = resource_clean::grams(&texts.join(" "));
@@ -781,7 +759,10 @@ mod tests {
         // Every configured node failed / none was eligible: park the page
         // immediately instead of backing off against the same dead nodes.
         assert!(is_terminal_failure("选中的节点均不可用，未选择直连", 1));
-        assert!(is_terminal_failure("采集连接失败：error sending request", 1));
+        assert!(is_terminal_failure(
+            "采集连接失败：error sending request",
+            1
+        ));
     }
 
     #[test]

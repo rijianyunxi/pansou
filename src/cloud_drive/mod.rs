@@ -85,7 +85,8 @@ impl DriveError {
     }
     pub fn from_code(provider: Provider, code: i64) -> Self {
         let (kind, message) = match (provider, code) {
-            (Provider::Quark, 41008) => (ErrorKind::InvalidLink, "夸克分享已失效或被取消"),
+            // 41012 arrives on HTTP 404 with a JSON body ("好友已取消了分享").
+            (Provider::Quark, 41008 | 41012) => (ErrorKind::InvalidLink, "夸克分享已失效或被取消"),
             (Provider::Quark, 41002 | 41003) => (ErrorKind::Password, "夸克提取码错误或缺失"),
             (Provider::Quark, 31001) => (ErrorKind::Login, "夸克 Cookie 已失效，请重新配置"),
             (Provider::Quark, 31024) => (ErrorKind::RateLimit, "夸克操作过于频繁，请稍后再试"),
@@ -146,6 +147,20 @@ pub struct Reference {
     pub key: String,
     pub password: String,
     pub url: String,
+}
+impl Reference {
+    /// Guangya's web client reads the extraction code from the query string.
+    pub fn browser_url(&self) -> String {
+        if self.provider != Provider::Guangya {
+            return self.url.clone();
+        }
+        let mut url = Url::parse(&self.url).expect("validated share URL");
+        if !self.password.is_empty() {
+            url.query_pairs_mut().append_pair("code", &self.password);
+        }
+        url.set_fragment(Some("/share"));
+        url.to_string()
+    }
 }
 impl ShareInput {
     pub fn parse(&self) -> Result<Reference, ApiError> {

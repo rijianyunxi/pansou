@@ -1,9 +1,13 @@
 <template>
-  <div class="home">
-    <!-- 简洁大标题 -->
-    <header class="hero">
-      <h1 class="hero-title">{{ homeTitle }}</h1>
-      <p class="hero-description">{{ homeDescription }}</p>
+  <div class="home" :class="{ 'home--searched': searched }">
+    <header v-if="!searched" class="hero">
+      <div class="hero-copy">
+        <span class="hero-eyebrow">你的资源发现入口 <span aria-hidden="true">—</span></span>
+        <h1 v-if="homeTitle === '网盘资源聚合搜索'" class="hero-title">想找的，<br><em>都在这里。</em></h1>
+        <h1 v-else class="hero-title hero-title--custom">{{ homeTitle }}</h1>
+        <p class="hero-description">{{ homeDescription }}</p>
+      </div>
+      <img class="hero-art" src="/images/discovery-hero.svg" alt="" width="720" height="480" fetchpriority="high" />
     </header>
 
     <HomeSearchWorkspace
@@ -37,8 +41,11 @@
       <HotSearchSection ref="hotSearchRef" :on-search="quickSearch" />
     </div>
 
+    <p v-if="!searched" class="discovery-note">每一次搜索，都有新发现。</p>
+
     <HomeResultsPanel
       :searched="searched"
+      :keyword="submittedKeyword"
       :total="displayResults.length"
       :elapsed-ms="searchState.elapsedMs"
       :paused="searchState.paused"
@@ -149,6 +156,7 @@ setDocumentHead({
 
 // 搜索相关状态
 const kw = ref("");
+const submittedKeyword = ref("");
 // Search scope is per visit, never a persisted channel preference.
 const onlyUserChannels = ref(false);
 const placeholder = computed(() => auth.homeSearchPlaceholder.value || DEFAULT_HOME_SEARCH_PLACEHOLDER);
@@ -205,6 +213,7 @@ function getSearchOptions() {
 async function doSearch() {
   if (!settingsReady.value || !auth.sessionReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
+  submittedKeyword.value = keyword;
   // 新搜索从全量结果视图开始，避免沿用上一次平台筛选状态。
   filterPlatform.value = "all";
   await performSearch({
@@ -304,51 +313,20 @@ function sortItems<T extends SearchResult>(items: T[]): T[] {
 </script>
 
 <style scoped>
-.home {
-  width: 100%;
-  max-width: 760px;
-  min-width: 0;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
 
-.hero {
-  position: relative;
-  text-align: center;
-  padding: 56px 16px 8px;
-}
+.home { width: 100%; max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+.hero { display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; position: relative; min-height: 310px; }
+.hero-copy { position: relative; z-index: 1; padding: 20px 0 24px 16px; }
+.hero-eyebrow { color: var(--primary); font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 12px; }
+.hero-title { font-size: clamp(42px, 4.7vw, 68px); font-weight: 900; line-height: 1.18; letter-spacing: -.055em; margin: 16px 0; color: #191916; }
+.hero-title em { font-style: normal; color: #ff5b18; }
+.hero-title--custom { font-size: clamp(32px, 4vw, 52px); }
+.hero-description { color: #77756f; font-size: 16px; line-height: 1.8; margin: 0; }
+.hero-art { width: 100%; height: 330px; object-fit: contain; }
+.home:not(.home--searched) > :deep(.search-workspace) { margin: -38px 12px 0; position: relative; z-index: 2; box-shadow: 3px 4px 0 #ff814c, 0 10px 25px #67401a06; }
+.home--searched { gap: 24px; }
+.home--searched > :deep(.search-workspace) { padding: 0; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.discovery-note { text-align: center; margin: 0; color: var(--text-tertiary); font-size: 12px; letter-spacing: 2px; }
+@media(max-width:640px) { .home { gap: 24px; } .hero { min-height: 240px; grid-template-columns: 1fr; overflow: hidden; } .hero-copy { padding: 14px 8px 40px; } .hero-title { font-size: 44px; } .hero-description { max-width: 250px; font-size: 13px; } .hero-art { position: absolute; right: -65px; bottom: 0; width: 235px; height: 235px; opacity: .28; } .home:not(.home--searched) > :deep(.search-workspace) { margin: -25px 0 0; } }
 
-.hero-title {
-  font-size: clamp(28px, 5vw, 42px);
-  font-weight: 800;
-  margin: 0 0 12px;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-
-.hero-description {
-  font-size: 14px;
-  color: var(--text-tertiary);
-  margin: 0;
-  line-height: 1.65;
-}
-
-.hot-search-section {
-  animation: fadeIn 0.5s ease;
-}
-
-@media (max-width: 640px) {
-  .hero {
-    padding: 32px 8px 4px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hot-search-section {
-    animation: none;
-  }
-}
 </style>

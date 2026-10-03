@@ -7,6 +7,7 @@ pub struct CleanupQuery {
     status: Option<String>,
     provider: Option<String>,
     page: Option<i64>,
+    page_size: Option<i64>,
 }
 
 fn retry_unavailable_reason(
@@ -40,14 +41,18 @@ pub async fn cleanup_jobs(
         return Err(ApiError::BadRequest("无效的清理任务状态".into()));
     }
     let page = query.page.unwrap_or(1).clamp(1, 100000);
+    let page_size = query.page_size.unwrap_or(30);
+    if ![10, 20, 30, 50].contains(&page_size) {
+        return Err(ApiError::BadRequest("无效的每页条数".into()));
+    }
     let provider = query.provider.as_deref().filter(|p| !p.is_empty());
     if let Some(provider) = provider {
         crate::cloud_drive::Provider::from_name(provider)?;
     }
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN link_catalog c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2)")
         .bind(status).bind(provider).fetch_one(&state.pool).await?;
-    let rows = sqlx::query("SELECT j.*,s.cleanup_after,s.target_account_key,s.target_dir,s.owned_dir_id,s.owned_dir_path,s.ownership_manifest_json,s.upstream_share_ids_json,s.state artifact_state,c.provider,c.original_url FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN link_catalog c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2) ORDER BY j.updated_at DESC,j.id DESC LIMIT 30 OFFSET $3")
-        .bind(status).bind(provider).bind((page-1)*30).fetch_all(&state.pool).await?;
+    let rows = sqlx::query("SELECT j.*,s.cleanup_after,s.target_account_key,s.target_dir,s.owned_dir_id,s.owned_dir_path,s.ownership_manifest_json,s.upstream_share_ids_json,s.state artifact_state,c.provider,c.original_url FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN link_catalog c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2) ORDER BY j.updated_at DESC,j.id DESC LIMIT $3 OFFSET $4")
+        .bind(status).bind(provider).bind(page_size).bind((page-1)*page_size).fetch_all(&state.pool).await?;
     let items: Vec<Value> = rows.into_iter().map(|r| {
         let manifest: Value = r.get("ownership_manifest_json");
         let retry_reason = if r.get::<Option<String>,_>("last_error_code").as_deref()==Some("waiting_auth"){Some("waiting_auth")}else{retry_unavailable_reason(&r.get::<String,_>("status"), r.get("cleanup_after"), r.get("lease_until"), Utc::now())};
@@ -70,7 +75,7 @@ pub async fn cleanup_jobs(
     }).collect();
     Ok(response(
         StatusCode::OK,
-        json!({"items":items,"total":total,"page":page,"pageSize":30}),
+        json!({"items":items,"total":total,"page":page,"pageSize":page_size}),
     ))
 }
 

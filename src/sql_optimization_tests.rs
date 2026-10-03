@@ -179,7 +179,7 @@ async fn compare_search(tx: &mut Transaction<'_, Postgres>, scope: &[String], ke
 
 async fn compare_cloud_types(tx: &mut Transaction<'_, Postgres>) {
     let expected: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT cloud_type,count(*) FROM (SELECT DISTINCT r.id,t.cloud_type FROM managed_resources r CROSS JOIN LATERAL jsonb_array_elements_text(r.cloud_types_json) t(cloud_type) WHERE r.deleted_at IS NULL) types GROUP BY cloud_type ORDER BY cloud_type",
+        "SELECT cloud_type,count(*) FROM (SELECT DISTINCT r.id,t.cloud_type FROM managed_resources r CROSS JOIN LATERAL jsonb_array_elements_text(resource_cloud_types(r.links_json)) t(cloud_type) WHERE r.deleted_at IS NULL) types GROUP BY cloud_type ORDER BY cloud_type",
     ).fetch_all(&mut **tx).await.unwrap();
     let actual: Vec<(String, i64)> = sqlx::query_as(
         "SELECT cloud_type,resource_count FROM resource_cloud_type_counts ORDER BY cloud_type",
@@ -199,7 +199,7 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
     db::init_db(&pool).await.unwrap();
     let stats = crate::admin_stats::AdminStats::default();
     for cloud_type in ["mobile", "quark", "missing-provider-fixture"] {
-        let expected: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_resources WHERE deleted_at IS NULL AND cloud_types_json ? $1")
+        let expected: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_resources WHERE deleted_at IS NULL AND resource_cloud_types(links_json) ? $1")
             .bind(cloud_type).fetch_one(&pool).await.unwrap();
         assert_eq!(
             stats.resource_total(&pool, "", cloud_type).await.unwrap(),
@@ -228,8 +228,8 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
             6 => "a !!! b".to_owned(),
             _ => format!("电影资料 {i:03}"),
         };
-        sqlx::query("INSERT INTO managed_resources(id,name,origin,cloud_types_json,search_text) VALUES($1,$2,'telegram',$3,$2)")
-            .bind(&id).bind(&title).bind(json!(["quark","quark","baidu"]))
+        sqlx::query("INSERT INTO managed_resources(id,name,origin,links_json,search_text) VALUES($1,$2,'telegram',$3,$2)")
+            .bind(&id).bind(&title).bind(json!([{"type":"quark","url":"https://pan.quark.cn/s/first"},{"type":"quark","url":"https://pan.quark.cn/s/second"},{"type":"baidu","url":"https://pan.baidu.com/s/third"}]))
             .execute(&mut *tx).await.unwrap();
         for (channel, name) in [
             (&public, title.clone()),
@@ -344,7 +344,7 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
     compare_cloud_types(&mut tx).await;
     sqlx::query("UPDATE source_messages SET parse_status='parsed',published_at=now() WHERE channel_id=$1 AND message_id=3")
         .bind(&public).execute(&mut *tx).await.unwrap();
-    sqlx::query("UPDATE managed_resources SET deleted_at=NULL,cloud_types_json='[\"custom-provider\",\"custom-provider\"]' WHERE id=$1")
+    sqlx::query("UPDATE managed_resources SET deleted_at=NULL,links_json='[{\"type\":\"custom-provider\",\"url\":\"custom:first\"},{\"type\":\"custom-provider\",\"url\":\"custom:second\"}]' WHERE id=$1")
         .bind(&ids[4]).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,6,'test','test','parsed')")
         .bind(&moved).execute(&mut *tx).await.unwrap();

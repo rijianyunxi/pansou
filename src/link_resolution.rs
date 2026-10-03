@@ -2,9 +2,7 @@
 mod delivery;
 mod management;
 mod worker;
-pub use delivery::{
-    clear_cloud_provider_delivery, get_cloud_providers, put_cloud_provider,
-};
+pub use delivery::{clear_cloud_provider_delivery, get_cloud_providers, put_cloud_provider};
 pub use management::{cleanup_jobs, retry_cleanup};
 pub use worker::run as worker;
 
@@ -91,6 +89,7 @@ pub(super) struct Fact {
     valid_until: Option<DateTime<Utc>>,
     last_attempt_at: Option<DateTime<Utc>>,
     last_error_code: Option<String>,
+    created_at: DateTime<Utc>,
 }
 impl Fact {
     fn stale(&self) -> bool {
@@ -100,7 +99,33 @@ impl Fact {
         if self.stale() { -1 } else { self.validity }
     }
     fn public(&self) -> Value {
-        json!({"validity":self.current(),"checkedAt":self.checked_at,"lastAttemptAt":self.last_attempt_at,"stale":self.stale(),"reasonCode":self.last_error_code})
+        let validity = self.current();
+        let status = match validity {
+            1 => "valid",
+            0 => "invalid",
+            _ if self.last_attempt_at.is_some() || self.checked_at.is_some() => "unknown",
+            _ => "unchecked",
+        };
+        // Only expose fixed diagnostics. Never persist/echo upstream error
+        // strings that could contain account credentials or share tokens.
+        let newer_failed_attempt = self.validity == -1
+            && self
+                .last_attempt_at
+                .is_some_and(|attempt| self.checked_at.is_none_or(|checked| attempt > checked));
+        let message = if self.stale() && !newer_failed_attempt {
+            Some("检测结果已过期")
+        } else {
+            match self.last_error_code.as_deref() {
+                Some("account_unavailable") => Some("网盘账号暂不可用"),
+                Some("password_invalid") => Some("提取码无效"),
+                Some("rate_limited") => Some("网盘检测频率受限"),
+                Some("resource_missing") => Some("分享资源不存在"),
+                Some("original_invalid") => Some("分享链接已失效"),
+                Some(_) => Some("检测未完成，请稍后重试"),
+                None => None,
+            }
+        };
+        json!({"validity":validity,"checkedAt":self.checked_at,"lastAttemptAt":self.last_attempt_at,"stale":self.stale(),"reasonCode":self.last_error_code,"createdAt":self.created_at,"checkStatus":status,"checkMessage":message})
     }
 }
 fn aggregate(values: impl IntoIterator<Item = i16>) -> i16 {
@@ -119,42 +144,80 @@ pub(crate) async fn record_check(
     value: &Value,
 ) -> Result<(), ApiError> {
     let id = register(state, link).await?;
-    let policy =
-        delivery::load_provider(state, crate::cloud_drive::Provider::from_name(&link.r#type)?).await?;
+    let policy = delivery::load_provider(
+        state,
+        crate::cloud_drive::Provider::from_name(&link.r#type)?,
+    )
+    .await?;
     worker::record(state, id, value, &policy).await
 }
-const FACT_COLUMNS: &str = "id,validity,checked_at,valid_until,last_attempt_at,last_error_code";
+const FACT_COLUMNS: &str =
+    "id,validity,checked_at,valid_until,last_attempt_at,last_error_code,created_at";
 /// Read existing per-link observations in one batch. Listing admin resources
 /// must not register links or enqueue checks, and must match the password too.
 pub(crate) async fn admin_resource_observations(
     state: &AppState,
     resources: &mut [Value],
 ) -> Result<(), ApiError> {
-    let fingerprints: Vec<String> = resources.iter()
+    let fingerprints: Vec<String> = resources
+        .iter()
         .filter_map(|r| r["links"].as_array())
         .flatten()
         .filter_map(|l| serde_json::from_value::<Link>(l.clone()).ok())
-        .map(|l| fingerprint(&l)).collect();
-    if fingerprints.is_empty() { return Ok(()); }
-    let rows = sqlx::query(&format!(
+        .map(|l| fingerprint(&l))
+        .collect();
+    let rows = if fingerprints.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query(&format!(
         "SELECT input_fingerprint,{FACT_COLUMNS} FROM link_catalog WHERE input_fingerprint=ANY($1)"
-    )).bind(&fingerprints).fetch_all(&state.pool).await?;
-    let facts: HashMap<String, Fact> = rows.iter()
+    )).bind(&fingerprints).fetch_all(&state.pool).await?
+    };
+    let facts: HashMap<String, Fact> = rows
+        .iter()
         .map(|r| Ok((r.try_get("input_fingerprint")?, sqlx::FromRow::from_row(r)?)))
         .collect::<Result<_, sqlx::Error>>()?;
     for resource in resources {
+        let mut validities = Vec::new();
+        let mut checked_at: Option<DateTime<Utc>> = None;
         if let Some(links) = resource["links"].as_array_mut() {
             for value in links {
-                let Ok(link) = serde_json::from_value::<Link>(value.clone()) else { continue };
+                let Ok(link) = serde_json::from_value::<Link>(value.clone()) else {
+                    validities.push(-1);
+                    continue;
+                };
                 let observation = facts.get(&fingerprint(&link)).map(Fact::public)
-                    .unwrap_or_else(|| json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null}));
-                if let (Some(link), Some(fields)) = (value.as_object_mut(), observation.as_object()) {
+                    .unwrap_or_else(|| json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null,"createdAt":null,"checkStatus":"unchecked","checkMessage":null}));
+                validities.push(observation["validity"].as_i64().unwrap_or(-1) as i16);
+                if let Some(fact) = facts.get(&fingerprint(&link)) {
+                    checked_at = checked_at.max(fact.checked_at);
+                }
+                if let (Some(link), Some(fields)) = (value.as_object_mut(), observation.as_object())
+                {
                     link.extend(fields.clone());
                 }
                 value["linkKey"] = json!(fingerprint(&link));
-                value["checkSupported"] = json!(crate::cloud_drive::Provider::from_name(&link.r#type).is_ok());
+                value["checkSupported"] =
+                    json!(crate::cloud_drive::Provider::from_name(&link.r#type).is_ok());
             }
         }
+        // Read current link facts even if the worker is paused or bindings have
+        // not been synchronized yet. An expired catalog value cannot appear
+        // as a still-valid resource summary on the admin page.
+        let validity = aggregate(validities);
+        resource["linkValidity"] = json!(validity);
+        resource["checkStatus"] = json!(match validity {
+            1 => "valid",
+            0 => "invalid",
+            _ => "unchecked",
+        });
+        resource["checkedAt"] = json!(checked_at);
+        resource["linkValidityUpdatedAt"] = json!(checked_at);
+        resource["checkMessage"] = json!(match validity {
+            1 => Some("至少一个链接有效"),
+            0 => Some("所有链接均已失效"),
+            _ => None,
+        });
     }
     Ok(())
 }
@@ -174,25 +237,41 @@ pub async fn admin_resource_link_check(
     Json(input): Json<AdminLinkCheck>,
 ) -> Result<Json<Value>, ApiError> {
     admin(&state, &headers).await?;
-    let stored: Value = sqlx::query_scalar("SELECT links_json FROM managed_resources WHERE id=$1 AND deleted_at IS NULL")
-        .bind(&id).fetch_optional(&state.pool).await?
-        .ok_or_else(|| ApiError::NotFound("资源不存在".into()))?;
-    let link = stored.as_array().into_iter().flatten()
+    let stored: Value = sqlx::query_scalar(
+        "SELECT links_json FROM managed_resources WHERE id=$1 AND deleted_at IS NULL",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("资源不存在".into()))?;
+    let link = stored
+        .as_array()
+        .into_iter()
+        .flatten()
         .filter_map(|v| serde_json::from_value::<Link>(v.clone()).ok())
         .find(|link| fingerprint(link) == input.link_key)
         .ok_or_else(|| ApiError::Conflict("链接已变更，请刷新后重试".into()))?;
     let provider = crate::cloud_drive::Provider::from_name(&link.r#type)?;
     let reference = crate::cloud_drive::ShareInput {
-        url: link.url.clone(), provider: Some(provider), password: link.password.clone(),
-    }.parse()?;
-    let _slot = state.cloud_slots.clone().try_acquire_owned()
+        url: link.url.clone(),
+        provider: Some(provider),
+        password: link.password.clone(),
+    }
+    .parse()?;
+    let _slot = state
+        .cloud_slots
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| ApiError::Unavailable("检测繁忙，请稍后重试".into()))?;
     let drive = crate::cloud_drive::Drive::load(&state, provider).await?;
     let policy = delivery::load_provider(&state, provider).await?;
     if !worker::allow_check(&state, provider, &policy, true).await? {
-        return Err(ApiError::Unavailable("检测频率或额度受限，请稍后重试".into()));
+        return Err(ApiError::Unavailable(
+            "检测频率或额度受限，请稍后重试".into(),
+        ));
     }
-    let result = tokio::time::timeout(Duration::from_secs(20), drive.check(&reference)).await
+    let result = tokio::time::timeout(Duration::from_secs(20), drive.check(&reference))
+        .await
         .unwrap_or_else(|_| json!({"status":"unknown","message":"检测超时，请稍后重试"}));
     let link_id = register(&state, &link).await?;
     worker::record(&state, link_id, &result, &policy).await?;
@@ -491,7 +570,12 @@ pub async fn resolve(
     #[cfg(not(test))]
     let work_timeout = RESOLVE_TIMEOUT;
     #[cfg(test)]
-    let work_timeout = Duration::from_secs(state.resolve_test_timeout_seconds.load(std::sync::atomic::Ordering::SeqCst).min(RESOLVE_TIMEOUT.as_secs()));
+    let work_timeout = Duration::from_secs(
+        state
+            .resolve_test_timeout_seconds
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .min(RESOLVE_TIMEOUT.as_secs()),
+    );
     let deadline = Utc::now() + chrono::Duration::seconds(work_timeout.as_secs() as i64);
     let session = state.auth().session(&headers).await?;
     let snap = snapshot(&state, &session, &input.result_ref).await?;
@@ -549,10 +633,16 @@ pub async fn resolve(
         if out.0 != StatusCode::ACCEPTED || tokio::time::Instant::now() >= end {
             return Ok(response(out.0, out.1));
         }
-        tokio::time::sleep_until(end.min(tokio::time::Instant::now() + Duration::from_millis(250))).await;
+        tokio::time::sleep_until(end.min(tokio::time::Instant::now() + Duration::from_millis(250)))
+            .await;
     }
 }
-async fn progress(state: &AppState, session: &Session, key: Uuid, stage: &str) -> Result<(), ApiError> {
+async fn progress(
+    state: &AppState,
+    session: &Session,
+    key: Uuid,
+    stage: &str,
+) -> Result<(), ApiError> {
     sqlx::query("UPDATE link_resolve_requests SET progress_stage=$3,updated_at=now() WHERE subject_key=$1 AND request_key=$2 AND status IN('queued','running') AND response_json IS NULL AND deadline_at>clock_timestamp()")
         .bind(subject(session)).bind(key).bind(stage).execute(&state.pool).await?;
     Ok(())
@@ -564,11 +654,22 @@ async fn complete_resolution(
     result: &Value,
     require_live_deadline: bool,
 ) -> Result<Option<Value>, ApiError> {
-    Ok(sqlx::query_scalar(include_str!("link_resolution/complete_resolve.sql"))
-        .bind(subject_key).bind(key).bind(result)
-        .bind(result["delivery"].as_str()).bind(result["reasonCode"].as_str())
-        .bind(if result["status"] == "unavailable" { "unavailable" } else { "available" })
-        .bind(require_live_deadline).fetch_optional(&state.pool).await?)
+    Ok(
+        sqlx::query_scalar(include_str!("link_resolution/complete_resolve.sql"))
+            .bind(subject_key)
+            .bind(key)
+            .bind(result)
+            .bind(result["delivery"].as_str())
+            .bind(result["reasonCode"].as_str())
+            .bind(if result["status"] == "unavailable" {
+                "unavailable"
+            } else {
+                "available"
+            })
+            .bind(require_live_deadline)
+            .fetch_optional(&state.pool)
+            .await?,
+    )
 }
 async fn run_resolution(
     state: &AppState,
@@ -604,7 +705,10 @@ async fn run_resolution(
         )
     };
     // An expired operation must never be overwritten by a late upstream response.
-    if complete_resolution(state, &subject(session), key, &result, true).await?.is_none() {
+    if complete_resolution(state, &subject(session), key, &result, true)
+        .await?
+        .is_none()
+    {
         delivery::retire_timed_out_artifacts(state, session, key).await?;
     }
     Ok(())
@@ -673,9 +777,22 @@ async fn operation(
         if value["delivery"] == "reshared" {
             let share=sqlx::query("SELECT s.target_account_key,c.provider,a.credential,a.account_key,a.auth_status FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id JOIN cloud_account_settings a ON a.provider=c.provider WHERE s.id=$1 AND s.state='ready' AND s.share_validity=1 AND s.cleanup_after>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)) AND (s.share_expires_at IS NULL OR s.share_expires_at>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)))").bind(row.get::<Option<Uuid>,_>("share_cache_id")).fetch_optional(&state.pool).await?;
             let ready = share.is_some_and(|r| {
-                let Ok(provider) = crate::cloud_drive::Provider::from_name(&r.get::<String, _>("provider")) else { return false; };
-                if r.get::<String,_>("auth_status")=="reauthorization_required" {return false;}
-                r.get::<Option<String>,_>("account_key").unwrap_or_else(||crate::cloud_drive::credential_fingerprint(provider,&r.get::<String,_>("credential"))) == r.get::<String,_>("target_account_key")
+                let Ok(provider) =
+                    crate::cloud_drive::Provider::from_name(&r.get::<String, _>("provider"))
+                else {
+                    return false;
+                };
+                if r.get::<String, _>("auth_status") == "reauthorization_required" {
+                    return false;
+                }
+                r.get::<Option<String>, _>("account_key")
+                    .unwrap_or_else(|| {
+                        crate::cloud_drive::credential_fingerprint(
+                            provider,
+                            &r.get::<String, _>("credential"),
+                        )
+                    })
+                    == r.get::<String, _>("target_account_key")
             });
             if !ready {
                 value = fallback(key, link, &current, "delivery_expired");
@@ -721,7 +838,7 @@ async fn link_status(
     .bind(fingerprint(link))
     .fetch_optional(&state.pool)
     .await?;
-    let mut result=fact.map(|f|f.public()).unwrap_or_else(||json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null}));
+    let mut result=fact.map(|f|f.public()).unwrap_or_else(||json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null,"createdAt":null,"checkStatus":"unchecked","checkMessage":null}));
     result["linkRef"] = json!(item.link_ref);
     result["type"] = json!(link.r#type);
     Ok(result)
@@ -788,6 +905,25 @@ pub async fn resource_statuses(
 mod unit_tests {
     use super::*;
     #[test]
+    fn latest_failure_diagnostic_is_not_replaced_by_old_check_expiry() {
+        let checked = Utc::now() - chrono::Duration::hours(2);
+        let mut fact = Fact {
+            id: Uuid::new_v4(),
+            validity: -1,
+            checked_at: Some(checked),
+            valid_until: None,
+            last_attempt_at: Some(Utc::now()),
+            last_error_code: Some("account_unavailable".into()),
+            created_at: checked,
+        };
+        assert_eq!(fact.public()["checkStatus"], "unknown");
+        assert_eq!(fact.public()["checkMessage"], "网盘账号暂不可用");
+        fact.last_error_code = Some("upstream cookie=SECRET".into());
+        assert_eq!(fact.public()["checkMessage"], "检测未完成，请稍后重试");
+        fact.last_attempt_at = Some(checked);
+        assert_eq!(fact.public()["checkMessage"], "检测结果已过期");
+    }
+    #[test]
     fn aggregates_only_definitive_facts() {
         assert_eq!(aggregate([]), -1);
         assert_eq!(aggregate([0, -1]), -1);
@@ -808,6 +944,7 @@ mod unit_tests {
             valid_until: Some(Utc::now() + chrono::Duration::hours(1)),
             last_attempt_at: None,
             last_error_code: None,
+            created_at: Utc::now(),
         };
         let out = fallback(Uuid::new_v4(), &link, &f, "transfer_failed");
         assert!(out.get("url").is_none());

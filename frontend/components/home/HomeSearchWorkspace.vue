@@ -34,6 +34,8 @@
       @pause="emit('pause')"
       @continue="emit('continue')" />
 
+    <p v-if="!searched" class="search-caption">从一个关键词，发现更多可能</p>
+
     <div class="channel-configuration-status" role="status" aria-live="polite">
       <div v-if="needsChannelConfiguration && !loading" class="channel-configuration-notice">
         <div id="channel-configuration-hint">
@@ -93,7 +95,7 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
-.search-workspace { display: flex; flex-direction: column; gap: 18px; padding: 20px; border: 1px solid var(--border-light); border-radius: 24px; background: var(--bg-primary); box-shadow: var(--shadow-sm); }
+.search-workspace { display: flex; flex-direction: column; gap: 18px; padding: 20px 28px; border: 1px solid var(--border-light); border-radius: 16px; background: var(--bg-primary); box-shadow: var(--shadow-sm); }
 .search-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .manage-channels { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; border: 0; border-radius: 8px; padding: 0 10px; background: transparent; color: var(--primary); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .manage-channels span { font-size: 20px; font-weight: 400; }
@@ -115,7 +117,7 @@ const emit = defineEmits<{
 .channel-chip { max-width: 100%; overflow-wrap: anywhere; padding: 3px 9px; background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); }
 .channel-preview button { border: 0; color: var(--primary); background: transparent; cursor: pointer; }
 .search-notice { margin: 0; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: var(--text-secondary); background: var(--bg-secondary); border-radius: 10px; }
-.search-workspace :deep(.search-box) { box-shadow: none; background: var(--bg-secondary); border-radius: 14px; }
+.search-workspace :deep(.search-box) { box-shadow: none; background: var(--bg-primary); border-radius: 12px; }
 .search-workspace :deep(.search-box.focused) { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 @media (max-width: 480px) {
   .search-workspace { padding: 14px; gap: 14px; border-radius: 18px; }
@@ -123,4 +125,5 @@ const emit = defineEmits<{
   .search-toolbar :deep(.scope-control) { flex: 1; }
   .manage-channels { margin-left: auto; }
 }
+.search-caption { text-align: center; font-size: 11px; color: var(--text-tertiary); margin: -4px 0 0; }
 </style>

@@ -1,3 +1,4 @@
+use super::admin_paging::PageCursor;
 use super::common::{admin_only, ok};
 use crate::{app::AppState, auth::hash_password, error::ApiError};
 use axum::{
@@ -70,7 +71,7 @@ pub async fn admin_resources_get(
         .get("page")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(1)
-        .max(1);
+        .clamp(1, 1_000_000);
     let limit = q
         .get("pageSize")
         .or_else(|| q.get("limit"))
@@ -80,32 +81,69 @@ pub async fn admin_resources_get(
     let offset = (page - 1) * limit;
     let needle = q.get("q").cloned().unwrap_or_default();
     let cloud_type = q.get("cloudType").cloned().unwrap_or_default();
-    // OFFSET traverses only narrow index keys, not thousands of discarded JSON rows.
+    let cursor_filters = vec![needle.clone(), cloud_type.clone()];
+    let cursor = PageCursor::parse(
+        q.get("before").map(String::as_str),
+        "resources",
+        &cursor_filters,
+        limit,
+    )?;
+    // OFFSET traverses only narrow index keys for direct page jumps.
     // The ID tie-breaker keeps page order deterministic without changing the API.
     let mut query = sqlx::QueryBuilder::new(
         "WITH page AS MATERIALIZED (SELECT id,updated_at FROM managed_resources",
     );
     crate::admin_stats::resource_filters(&mut query, &needle, &cloud_type);
-    query.push(" ORDER BY updated_at DESC,id DESC LIMIT ").push_bind(limit)
-        .push(" OFFSET ").push_bind(offset)
-        .push(") SELECT r.id,r.name,r.description,r.datetime,r.cloud_types_json,r.links_json,r.tags_json,r.images_json,r.enabled,r.check_status,r.check_message,r.checked_at,r.link_validity,r.link_validity_updated_at FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
-    let rows = query.build().fetch_all(&state.pool).await?;
-    let total = state.admin_stats.resource_total(&state.pool, &needle, &cloud_type).await?;
+    if let Some(cursor) = &cursor {
+        query
+            .push(" AND (updated_at,id)<(")
+            .push_bind(cursor.at)
+            .push(",")
+            .push_bind(&cursor.id)
+            .push(")");
+    }
+    query
+        .push(" ORDER BY updated_at DESC,id DESC LIMIT ")
+        .push_bind(limit + 1);
+    if cursor.is_none() {
+        query.push(" OFFSET ").push_bind(offset);
+    }
+    query.push(") SELECT p.updated_at,r.id,r.name,r.description,r.datetime,resource_cloud_types(r.links_json) AS cloud_types_json,r.links_json,r.tags_json,r.images_json,r.enabled FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
+    let mut rows = query.build().fetch_all(&state.pool).await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = if has_more {
+        rows.last()
+            .map(|row| {
+                PageCursor::next(
+                    "resources",
+                    cursor_filters,
+                    limit,
+                    row.get("updated_at"),
+                    row.get("id"),
+                )
+            })
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let total = state
+        .admin_stats
+        .resource_total(&state.pool, &needle, &cloud_type)
+        .await?;
     let mut resources = rows.into_iter().map(|r| json!({
         "id": r.get::<String,_>("id"), "name": r.get::<String,_>("name"),
         "description": r.get::<Option<String>,_>("description"), "datetime": r.get::<Option<String>,_>("datetime"),
         "cloud_types": r.get::<Value,_>("cloud_types_json"), "links": r.get::<Value,_>("links_json"),
         "tags": r.get::<Value,_>("tags_json"), "images": r.get::<Value,_>("images_json"),
-        "enabled": r.get::<bool,_>("enabled"), "checkStatus": r.get::<String,_>("check_status"),
-        "linkValidity":r.get::<i16,_>("link_validity"), "linkValidityUpdatedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("link_validity_updated_at"),
-        "checkMessage": r.get::<Option<String>,_>("check_message"), "checkedAt": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("checked_at")
+        "enabled": r.get::<bool,_>("enabled")
     })).collect::<Vec<_>>();
     crate::link_resolution::admin_resource_observations(&state, &mut resources).await?;
     let cloud_types: Vec<String> = sqlx::query_scalar(
         "SELECT cloud_type FROM resource_cloud_type_counts WHERE resource_count>0 ORDER BY cloud_type",
     ).fetch_all(&state.pool).await?;
     Ok(ok(
-        json!({"items":resources,"resources":resources,"cloudTypes":cloud_types,"page":page,"pageSize":limit,"limit":limit,"total":total}),
+        json!({"items":resources,"resources":resources,"cloudTypes":cloud_types,"page":page,"pageSize":limit,"limit":limit,"total":total,"hasMore":has_more,"nextCursor":next_cursor}),
     ))
 }
 
@@ -129,35 +167,43 @@ pub async fn admin_resources_post(
     if name.is_empty() {
         return Err(ApiError::BadRequest("resource name is required".into()));
     }
-    let links = body.get("links").cloned().unwrap_or_else(|| json!([]));
-    let cloud_types = body
-        .get("cloud_types")
-        .cloned()
-        .or_else(|| {
-            links.as_array().map(|items| {
-                json!(
-                    items
-                        .iter()
-                        .filter_map(|x| x.get("type").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                )
-            })
-        })
-        .unwrap_or_else(|| json!([]));
-    if !cloud_types
-        .as_array()
-        .is_some_and(|types| types.iter().all(Value::is_string))
-    {
-        return Err(ApiError::BadRequest("cloud_types 必须是字符串数组".into()));
+    // Accept the legacy declaration for input compatibility, but never store
+    // it independently: provider types are determined by the actual links.
+    if let Some(types) = body.get("cloud_types") {
+        if !types
+            .as_array()
+            .is_some_and(|types| types.iter().all(Value::is_string))
+        {
+            return Err(ApiError::BadRequest("cloud_types 必须是字符串数组".into()));
+        }
     }
+    let raw_links = body.get("links").cloned().unwrap_or_else(|| json!([]));
+    let links: Vec<crate::models::Link> = serde_json::from_value(raw_links).map_err(|_| {
+        ApiError::BadRequest("links 必须是包含 type、url 和可选 password 的数组".into())
+    })?;
+    let cloud_types = json!(
+        links
+            .iter()
+            .map(|link| link.r#type.as_str())
+            .filter(|provider| !provider.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    // Strip presentation observations supplied by the admin list. They must
+    // never become a second persisted copy of catalog check facts.
+    let links = json!(links);
     let description = body.get("description").and_then(Value::as_str);
     let tags = body.get("tags").cloned().unwrap_or_else(|| json!([]));
     let images = body.get("images").cloned().unwrap_or_else(|| json!([]));
     let datetime = body.get("datetime").and_then(Value::as_str);
-    sqlx::query("INSERT INTO managed_resources(id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,search_text,enabled,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,datetime=excluded.datetime,cloud_types_json=excluded.cloud_types_json,links_json=excluded.links_json,tags_json=excluded.tags_json,images_json=excluded.images_json,search_text=excluded.search_text,manual_override=true,updated_at=now()")
-        .bind(&id).bind(&name).bind(description).bind(datetime).bind(&cloud_types).bind(&links).bind(&tags).bind(&images).bind(name.to_owned()).execute(&state.pool).await?;
+    sqlx::query("INSERT INTO managed_resources(id,name,description,datetime,links_json,tags_json,images_json,search_text,enabled,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,datetime=excluded.datetime,links_json=excluded.links_json,tags_json=excluded.tags_json,images_json=excluded.images_json,search_text=excluded.search_text,manual_override=true,updated_at=now()")
+        .bind(&id).bind(&name).bind(description).bind(datetime).bind(&links).bind(&tags).bind(&images).bind(name.to_owned()).execute(&state.pool).await?;
     state.admin_stats.invalidate().await;
-    let resource = json!({"id":id,"name":name,"description":description,"datetime":datetime,"cloud_types":cloud_types,"links":links,"tags":tags,"images":images,"enabled":true,"checkStatus":"unchecked"});
+    let mut resource = json!({"id":id,"name":name,"description":description,"datetime":datetime,"cloud_types":cloud_types,"links":links,"tags":tags,"images":images,"enabled":true});
+    crate::link_resolution::admin_resource_observations(
+        &state,
+        std::slice::from_mut(&mut resource),
+    )
+    .await?;
     Ok(ok(json!({"resource":resource})))
 }
 
@@ -379,6 +425,67 @@ fn admin_log_json(row: PgRow) -> Value {
     })
 }
 
+const LOG_IP: &str = "COALESCE(NULLIF(NULLIF(l.ip, 'unknown'), ''), u.last_login_ip, 'unknown')";
+
+struct SearchLogFilters<'a> {
+    keyword: &'a str,
+    user_id: Option<i64>,
+    session_id: Option<&'a str>,
+    ip: &'a str,
+    scope: &'a str,
+    from: Option<i64>,
+    to: Option<i64>,
+}
+impl<'a> SearchLogFilters<'a> {
+    fn push(&self, sql: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>) {
+        // User metadata participates only in text/IP filters. Unfiltered counts
+        // and pagination use the log indexes without joining the user table.
+        if !self.keyword.is_empty() || !self.ip.is_empty() {
+            sql.push(" LEFT JOIN users u ON u.id=l.user_id");
+        }
+        sql.push(" WHERE true");
+        if !self.keyword.is_empty() {
+            let pattern = format!("%{}%", self.keyword);
+            sql.push(" AND (l.keyword ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR u.username ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR u.nickname ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR ")
+                .push(LOG_IP)
+                .push(" ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+        }
+        if let Some(user) = self.user_id {
+            sql.push(" AND l.user_id=").push_bind(user);
+        }
+        if let Some(session) = self.session_id {
+            sql.push(" AND l.session_id=").push_bind(session);
+        }
+        if !self.ip.is_empty() {
+            sql.push(" AND ")
+                .push(LOG_IP)
+                .push(" ILIKE ")
+                .push_bind(format!("%{}%", self.ip));
+        }
+        if !self.scope.is_empty() {
+            sql.push(" AND l.search_scope=").push_bind(self.scope);
+        }
+        if let Some(from) = self.from {
+            sql.push(" AND l.created_at>=to_timestamp(")
+                .push_bind(from)
+                .push("::double precision/1000.0)");
+        }
+        if let Some(to) = self.to {
+            sql.push(" AND l.created_at<=to_timestamp(")
+                .push_bind(to)
+                .push("::double precision/1000.0)");
+        }
+    }
+}
+
 pub async fn admin_search_logs_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -429,7 +536,7 @@ pub async fn admin_search_logs_get(
         .or_else(|| query.get("startTime"))
         .and_then(|value| value.parse::<i64>().ok())
         .map(|value| {
-            if value.abs() < 1_000_000_000_000 {
+            if value.unsigned_abs() < 1_000_000_000_000 {
                 value * 1000
             } else {
                 value
@@ -440,7 +547,7 @@ pub async fn admin_search_logs_get(
         .or_else(|| query.get("endTime"))
         .and_then(|value| value.parse::<i64>().ok())
         .map(|value| {
-            if value.abs() < 1_000_000_000_000 {
+            if value.unsigned_abs() < 1_000_000_000_000 {
                 value * 1000
             } else {
                 value
@@ -452,44 +559,78 @@ pub async fn admin_search_logs_get(
         return Err(ApiError::BadRequest("invalid time range".into()));
     }
     let offset = (page - 1) * page_size;
-    let ip_expression = "COALESCE(NULLIF(NULLIF(l.ip, 'unknown'), ''), u.last_login_ip, 'unknown')";
-    let filters = format!(
-        "WHERE ($1::text = '' OR l.keyword ILIKE '%' || $1::text || '%' OR COALESCE(u.username, '') ILIKE '%' || $1::text || '%' OR COALESCE(u.nickname, '') ILIKE '%' || $1::text || '%' OR {ip_expression} ILIKE '%' || $1::text || '%')\n          AND ($2::bigint IS NULL OR l.user_id = $2::bigint)\n          AND ($3::text IS NULL OR l.session_id = $3::text)\n          AND ($4::text = '' OR {ip_expression} ILIKE '%' || $4::text || '%')\n          AND ($5::text = '' OR l.search_scope = $5::text)\n          AND ($6::bigint IS NULL OR l.created_at >= to_timestamp($6::double precision / 1000.0))\n          AND ($7::bigint IS NULL OR l.created_at <= to_timestamp($7::double precision / 1000.0))"
+    let cursor_filters = vec![
+        keyword.clone(),
+        user_id.map(|v| v.to_string()).unwrap_or_default(),
+        session_id.clone().unwrap_or_default(),
+        ip.clone(),
+        search_scope.clone(),
+        from.map(|v| v.to_string()).unwrap_or_default(),
+        to.map(|v| v.to_string()).unwrap_or_default(),
+    ];
+    let cursor = PageCursor::parse(
+        query.get("before").map(String::as_str),
+        "search-logs",
+        &cursor_filters,
+        page_size,
+    )?;
+    let cursor_id = cursor
+        .as_ref()
+        .map(|c| {
+            c.id.parse::<i64>()
+                .map_err(|_| ApiError::BadRequest("分页游标无效".into()))
+        })
+        .transpose()?;
+    let filters = SearchLogFilters {
+        keyword: &keyword,
+        user_id,
+        session_id: session_id.as_deref(),
+        ip: &ip,
+        scope: &search_scope,
+        from,
+        to,
+    };
+    let mut count = sqlx::QueryBuilder::new("SELECT count(*) FROM search_logs l");
+    filters.push(&mut count);
+    let total: i64 = count.build_query_scalar().fetch_one(&state.pool).await?;
+    let mut rows_sql = sqlx::QueryBuilder::new(
+        "WITH page AS MATERIALIZED (SELECT l.id,l.created_at FROM search_logs l",
     );
-    let from_sql = format!(" FROM search_logs l LEFT JOIN users u ON u.id = l.user_id {filters}");
-    let total_sql = format!("SELECT COUNT(*)::bigint AS total{from_sql}");
-    let total_row = sqlx::query(&total_sql)
-        .bind(&keyword)
-        .bind(user_id)
-        .bind(session_id.as_deref())
-        .bind(&ip)
-        .bind(&search_scope)
-        .bind(from)
-        .bind(to)
-        .fetch_one(&state.pool)
-        .await?;
-    let total = total_row.get::<i64, _>("total").max(0);
-
-    let rows_sql = format!(
-        "SELECT l.id,l.session_id,l.user_id,u.username,u.nickname,{ip_expression} AS ip,
-                l.keyword,l.search_scope,l.channels_json,l.source_ids_json,l.status,l.result_count,
-                l.has_results,l.outcome_recorded,l.source_result_counts_json,l.completed_at,l.created_at
-         {from_sql}
-         ORDER BY l.created_at DESC,l.id DESC
-         LIMIT $8 OFFSET $9"
-    );
-    let rows = sqlx::query(&rows_sql)
-        .bind(&keyword)
-        .bind(user_id)
-        .bind(session_id.as_deref())
-        .bind(&ip)
-        .bind(&search_scope)
-        .bind(from)
-        .bind(to)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await?;
+    filters.push(&mut rows_sql);
+    if let Some(cursor) = &cursor {
+        rows_sql
+            .push(" AND (l.created_at,l.id)<(")
+            .push_bind(cursor.at)
+            .push(",")
+            .push_bind(cursor_id.unwrap())
+            .push(")");
+    }
+    rows_sql
+        .push(" ORDER BY l.created_at DESC,l.id DESC LIMIT ")
+        .push_bind(page_size + 1);
+    if cursor.is_none() {
+        rows_sql.push(" OFFSET ").push_bind(offset);
+    }
+    rows_sql.push(") SELECT l.id,l.session_id,l.user_id,u.username,u.nickname,").push(LOG_IP)
+        .push(" AS ip,l.keyword,l.search_scope,l.channels_json,l.source_ids_json,l.status,l.result_count,l.has_results,l.outcome_recorded,l.source_result_counts_json,l.completed_at,l.created_at FROM page p JOIN search_logs l ON l.id=p.id LEFT JOIN users u ON u.id=l.user_id ORDER BY p.created_at DESC,p.id DESC");
+    let mut rows = rows_sql.build().fetch_all(&state.pool).await?;
+    let has_more = rows.len() > page_size as usize;
+    rows.truncate(page_size as usize);
+    let next_cursor = if has_more {
+        rows.last()
+            .map(|row| {
+                PageCursor::next(
+                    "search-logs",
+                    cursor_filters,
+                    page_size,
+                    row.get("created_at"),
+                    row.get::<i64, _>("id").to_string(),
+                )
+            })
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     let logs = rows.into_iter().map(admin_log_json).collect::<Vec<_>>();
     Ok(ok(json!({
         "logs": logs,
@@ -498,6 +639,7 @@ pub async fn admin_search_logs_get(
         "page": page,
         "pageSize": page_size,
         "totalPages": (total + page_size - 1) / page_size,
+        "hasMore": has_more, "nextCursor": next_cursor,
     })))
 }
 pub async fn admin_search_logs_delete(
@@ -702,17 +844,21 @@ pub async fn admin_resource_get(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    let row = sqlx::query("SELECT id,name,description,datetime,cloud_types_json,links_json,tags_json,images_json,enabled,check_status FROM managed_resources WHERE id=$1 AND deleted_at IS NULL")
+    let row = sqlx::query("SELECT id,name,description,datetime,resource_cloud_types(links_json) AS cloud_types_json,links_json,tags_json,images_json,enabled FROM managed_resources WHERE id=$1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(&state.pool)
         .await?;
-    let resource = row.map(|row| json!({
+    let mut resource = row.map(|row| json!({
         "id":row.get::<String,_>("id"),"name":row.get::<String,_>("name"),
         "description":row.get::<Option<String>,_>("description"),"datetime":row.get::<Option<String>,_>("datetime"),
         "cloud_types":row.get::<Value,_>("cloud_types_json"),"links":row.get::<Value,_>("links_json"),
         "tags":row.get::<Value,_>("tags_json"),"images":row.get::<Value,_>("images_json"),
-        "enabled":row.get::<bool,_>("enabled"),"checkStatus":row.get::<String,_>("check_status")
+        "enabled":row.get::<bool,_>("enabled")
     }));
+    if let Some(resource) = resource.as_mut() {
+        crate::link_resolution::admin_resource_observations(&state, std::slice::from_mut(resource))
+            .await?;
+    }
     Ok(Json(
         json!({"code":0,"message":"success","data":{"resource":resource}}),
     ))

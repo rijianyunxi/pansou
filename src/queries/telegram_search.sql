@@ -27,7 +27,7 @@ WITH matches AS (
 )
 SELECT CASE WHEN p.manual_override THEN
  jsonb_build_object('id',r.id,'name',r.name,'description',r.description,'datetime',r.datetime,
- 'cloud_types',r.cloud_types_json,'links',r.links_json,'tags',r.tags_json,'images',r.images_json)
+ 'cloud_types',resource_cloud_types(r.links_json),'links',r.links_json,'tags',r.tags_json,'images',r.images_json)
  ELSE o.result_json || jsonb_build_object('id',p.resource_id) END AS item
 FROM ranked p
 JOIN managed_resources r ON r.id=p.resource_id

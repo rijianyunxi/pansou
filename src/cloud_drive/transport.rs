@@ -223,6 +223,23 @@ impl Wire {
             // the caller sees a generic upstream failure with no way to tell a
             // rejected request from a provider-side outage.
             tracing::warn!(provider=%self.provider.name(), http_status=status.as_u16(), "cloud drive rejected the request");
+            // Some rejections (a cancelled Quark share, for example) arrive as a
+            // normal business-error body with a non-2xx status. Map the business
+            // code when one is present instead of discarding the body, or a dead
+            // share would be misread as a provider outage and stay "unknown".
+            let field = if self.provider == Provider::Quark { "code" } else { "errno" };
+            if let Ok(payload) = serde_json::from_slice::<Value>(&bytes)
+                && let Some(code) = payload.get(field).and_then(|v| {
+                    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
+                && code != 0
+            {
+                let error = DriveError::from_code(self.provider, code);
+                if error.kind == ErrorKind::Login {
+                    self.auth_rejected(true).await;
+                }
+                return Err(error);
+            }
             return Err(self.error(
                 ErrorKind::Upstream,
                 &format!("网盘上游服务异常（HTTP {}）", status.as_u16()),

@@ -1,5 +1,17 @@
 use super::*;
 #[test]
+fn guangya_browser_url_uses_code_query_and_rejects_pasted_labels() {
+    let base = "https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m";
+    for (suffix, expected) in [("", format!("{base}#/share")), ("?code=ewcc", format!("{base}?code=ewcc#/share"))] {
+        let parsed = ShareInput { url: format!("{base}{suffix}"), provider: Some(Provider::Guangya), password: None }.parse().unwrap();
+        assert_eq!(parsed.url, base);
+        assert_eq!(parsed.browser_url(), expected);
+    }
+    for suffix in ["提取码：ewcc", "%E6%8F%90%E5%8F%96%E7%A0%81%EF%BC%9Aewcc#/share"] {
+        assert!(ShareInput { url: format!("{base}{suffix}"), provider: Some(Provider::Guangya), password: None }.parse().is_err());
+    }
+}
+#[test]
 fn extended_share_hosts_and_account_credentials_are_strict() {
     for (provider, host) in [(Provider::Aliyun,"www.alipan.com"),(Provider::Xunlei,"pan.xunlei.com"),(Provider::Guangya,"www.guangyapan.com")] {
         let reference=ShareInput{url:format!("https://{host}/s/share-123?pwd=p123"),provider:Some(provider),password:None}.parse().unwrap();
@@ -110,6 +122,10 @@ fn errors_do_not_mark_login_or_network_as_invalid() {
         DriveError::from_code(Provider::Quark, 41008).kind,
         ErrorKind::InvalidLink
     );
+    assert_eq!(
+        DriveError::from_code(Provider::Quark, 41012).kind,
+        ErrorKind::InvalidLink
+    );
 }
 
 use axum::{
@@ -132,6 +148,8 @@ struct MockData {
     async_task: bool,
     failed_task: bool,
     business_error: bool,
+    // 0 = live share, 1 = cancelled share (HTTP 404 + business code), 2 = plain 404.
+    dead_share: u8,
     changed: bool,
     paginated: bool,
     polls: usize,
@@ -251,7 +269,16 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
     let payload = match (path.as_str(), method.as_str()) {
         ("/pan.quark.cn/account/info",_)=>json!({"success":true,"code":"OK","data":{"uid":if cookie.contains("fixture-switched"){"fixture-two"}else{"fixture-one"},"nickname":"fixture"}}),
         ("/pan.baidu.com/api/gettemplatevariable",_)=>json!({"errno":0,"result":{"uk":if mock.own_share{2}else{3},"bdstoken":"fixture-bdstoken"}}),
-        ("/qshare/share/sharepage/token", _) => json!({"code":0,"data":{"stoken":"fixture-token"}}),
+        ("/qshare/share/sharepage/token", _) => match mock.dead_share {
+            // Quark answers a cancelled share with HTTP 404 and a normal business body.
+            1 => return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({"status":404,"code":41012,"message":"好友已取消了分享"})),
+            )
+                .into_response(),
+            2 => return (StatusCode::NOT_FOUND, "gone").into_response(),
+            _ => json!({"code":0,"data":{"stoken":"fixture-token"}}),
+        },
         ("/qshare/share/sharepage/detail", _) => {
             let page = query.get("_page").map(|s| s.as_ref()).unwrap_or("1");
             let list = if mock.paginated {
@@ -619,6 +646,19 @@ async fn transport_does_not_follow_redirects_or_hang_on_response_bodies() {
             .any(|(_, p, _, _)| p == "/steal")
     );
 }
+#[tokio::test]
+async fn cancelled_quark_share_on_http_404_is_invalid_not_unknown() {
+    let mock = Mock::start().await;
+    let reference = share_input(Provider::Quark).parse().unwrap();
+    mock.data.lock().await.dead_share = 1;
+    let result = mock.drive(Provider::Quark).check(&reference).await;
+    assert_eq!(result["status"], "invalid", "{result}");
+    assert_eq!(result["code"], 41012);
+    // A 404 without a business body is a provider-side signal we cannot trust.
+    mock.data.lock().await.dead_share = 2;
+    let result = mock.drive(Provider::Quark).check(&reference).await;
+    assert_eq!(result["status"], "unknown", "{result}");
+}
 
 async fn api(
     router: &Router,
@@ -941,7 +981,7 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let id = format!("cloud_resource_{unique}");
     let resource_link =
         json!([{"type":"quark","url":"https://pan.quark.cn/s/abc","password":"a1b2"}]);
-    sqlx::query("INSERT INTO managed_resources(id,name,links_json,cloud_types_json) VALUES($1,'原生网盘测试',$2,'[\"quark\"]'::jsonb)").bind(&id).bind(&resource_link).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,'原生网盘测试',$2)").bind(&id).bind(&resource_link).execute(&pool).await.unwrap();
     let checked = api(
         &router,
         "POST",
@@ -952,13 +992,13 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     .await;
     assert_eq!(checked.0, StatusCode::OK);
     assert_eq!(checked.1["data"]["valid"], 1, "{}", checked.1);
-    let status: String =
-        sqlx::query_scalar("SELECT check_status FROM managed_resources WHERE id=$1")
+    let status: i16 =
+        sqlx::query_scalar("SELECT link_validity FROM managed_resources WHERE id=$1")
             .bind(&id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(status, "valid");
+    assert_eq!(status, 1);
     let target = json!({"resourceId":id,"linkIndex":0});
     assert_eq!(
         api(

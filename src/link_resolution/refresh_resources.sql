@@ -10,12 +10,8 @@ WITH facts AS (
  GROUP BY ids.resource_id
 )
 UPDATE managed_resources r SET
- link_validity=f.validity, link_validity_updated_at=f.checked,
- check_status=CASE f.validity WHEN 1 THEN 'valid' WHEN 0 THEN 'invalid' ELSE 'unchecked' END,
- checked_at=f.checked
+ link_validity=f.validity, link_validity_updated_at=f.checked
 FROM facts f WHERE r.id=f.resource_id AND (
  r.link_validity IS DISTINCT FROM f.validity OR
- r.link_validity_updated_at IS DISTINCT FROM f.checked OR
- r.checked_at IS DISTINCT FROM f.checked OR
- r.check_status IS DISTINCT FROM CASE f.validity WHEN 1 THEN 'valid' WHEN 0 THEN 'invalid' ELSE 'unchecked' END
+ r.link_validity_updated_at IS DISTINCT FROM f.checked
 )

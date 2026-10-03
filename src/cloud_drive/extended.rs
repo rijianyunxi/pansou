@@ -785,7 +785,9 @@ impl Extended {
         let value=match self.wire.provider {
             Provider::Aliyun=>self.post("adrive/v2/share_link/create",json!({"drive_id":self.drive_id,"file_id_list":ids,"expiration":expires.to_rfc3339(),"share_pwd":"","share_name":"pansou 分享"}),None,true).await?,
             Provider::Xunlei=>self.post("drive/v1/share/batch",json!({"file_ids":ids,"need_password":true,"expiration_days":days}),None,true).await?,
-            Provider::Guangya=>self.post("nd.bizuserres.s/v1/share_file",json!({"fileIds":ids,"title":"pansou 分享","validateDuration":days*24*3600,"shareType":1,"code":"","autoFillCode":true,"downloadType":1,"trafficLimit":"0","maxRestoreCount":0}),None,true).await?,
+            // shareType=0 disables extraction codes; autoFillCode only controls
+            // whether a generated code is included in the platform's URL.
+            Provider::Guangya=>self.post("nd.bizuserres.s/v1/share_file",json!({"fileIds":ids,"title":"pansou 分享","validateDuration":days*24*3600,"shareType":0,"code":"","autoFillCode":false,"downloadType":1,"trafficLimit":"0","maxRestoreCount":0}),None,true).await?,
             _=>unreachable!(),
         };
         let data = self.data(&value);
@@ -824,6 +826,14 @@ impl Extended {
                 .wire
                 .error(ErrorKind::Upstream, "分享 ID 缺失，产物需核实"));
         }
+        let canonical = ShareInput {
+            url: canonical,
+            provider: Some(self.wire.provider),
+            password: Some(password.clone()),
+        }
+            .parse()
+            .map_err(|_| self.wire.error(ErrorKind::Upstream, "平台返回非法分享 URL"))?
+            .browser_url();
         Ok(json!({"shareId":id,"url":canonical,"password":password,"shareExpiresAt":expires}))
     }
     pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
@@ -916,6 +926,33 @@ mod tests {
             Wire::new(reqwest::Client::new(), provider, raw.clone()),
             &raw,
         )
+    }
+
+    #[tokio::test]
+    async fn guangya_share_requests_no_code_and_preserves_returned_codes_in_url() {
+        async fn create(State(data): State<Value>, Json(input): Json<Value>) -> Json<Value> {
+            assert_eq!(input["shareType"], 0, "random codes use shareType=1");
+            assert_eq!(input["autoFillCode"], false);
+            assert_eq!(input["code"], "");
+            assert_eq!(input["validateDuration"], 7 * 24 * 3600);
+            assert_eq!(input["fileIds"], json!(["fixture-file"]));
+            Json(json!({"data":data,"msg":"success"}))
+        }
+        let base = "https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m";
+        for (suffix, code) in [("", ""), ("?code=ewcc", "ewcc")] {
+            let data = json!({"shareId":"1953404474227400751","shareUrl":format!("{base}{suffix}")});
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut drive = provider(Provider::Guangya);
+            drive.base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let app = Router::new().fallback(any(create)).with_state(data);
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let file = drive.file(&json!({"id":"fixture-file","name":"movie.mp4","type":"file","size":42})).unwrap();
+            let share = drive.share(&[file], 7).await.unwrap();
+            assert_eq!(share["shareId"], "1953404474227400751");
+            assert_eq!(share["password"], code);
+            assert_eq!(share["url"], if code.is_empty() { format!("{base}#/share") } else { format!("{base}?code={code}#/share") });
+            server.abort();
+        }
     }
 
     #[test]

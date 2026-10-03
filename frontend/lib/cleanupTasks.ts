@@ -1,13 +1,14 @@
 import { DELIVERY_PROVIDERS } from './linkPolicy.ts';
+import { adminPaginationFilters } from './adminPagination.ts';
 
 const CLEANUP_STATUSES = ['attention', 'all', 'queued', 'running', 'blocked', 'failed', 'completed'] as const;
 export function cleanupFilters(query: Record<string, unknown>) {
   const scalar = (value: unknown) => typeof value === 'string' ? value : '';
-  const status = scalar(query.status), provider = scalar(query.provider), page = Number(scalar(query.page));
+  const status = scalar(query.status), provider = scalar(query.provider);
   return {
-    status: CLEANUP_STATUSES.includes(status as typeof CLEANUP_STATUSES[number]) ? status : 'attention',
+    status: CLEANUP_STATUSES.includes(status as typeof CLEANUP_STATUSES[number]) ? status : 'all',
     provider: DELIVERY_PROVIDERS.some(p => p.key === provider) ? provider : '',
-    page: Number.isSafeInteger(page) && page > 0 ? Math.min(page, 100000) : 1,
+    ...adminPaginationFilters(query),
   };
 }
 const labels: Record<string, string> = {

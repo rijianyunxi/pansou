@@ -16,7 +16,7 @@ const label=computed(()=>(CLOUD_TYPE_SHORT_LABELS as Record<string,string>)[prop
    <ArrowUpRight v-if="details" :size="14" aria-hidden="true" class="tw:shrink-0 tw:text-muted-foreground" />
    <Badge variant="outline" class="link-observation resource-status tw:rounded-md tw:font-normal tw:text-xs" :data-tone="checking?'checking':observation.tone" :title="link.checkedAt?`最近检测：${linkCheckTime(link.checkedAt)}`:observation.label">{{checking?'检测中':observation.label}}</Badge>
   </div>
-  <div v-if="details" class="link-details"><span v-if="link.password">提取码 <code>{{link.password}}</code></span><span>{{link.checkedAt?'检测于 '+linkCheckTime(link.checkedAt):link.lastAttemptAt?'尝试于 '+linkCheckTime(link.lastAttemptAt):'尚未检测'}}</span></div>
+  <div v-if="details" class="link-details"><span v-if="link.password">提取码 <code>{{link.password}}</code></span><span v-if="link.createdAt">入库于 {{linkCheckTime(link.createdAt)}}</span><span>{{link.checkedAt?'检测于 '+linkCheckTime(link.checkedAt):link.lastAttemptAt?'尝试于 '+linkCheckTime(link.lastAttemptAt):'尚未检测'}}</span><span v-if="link.checkMessage">{{link.checkMessage}}</span></div>
  </div>
 </template>
 <style scoped>

@@ -1,4 +1,4 @@
-WITH scoped AS (SELECT r.id,r.manual_override,r.name,r.description,r.datetime,r.cloud_types_json,r.links_json,r.tags_json,r.images_json,r.published_at,r.search_text,o.channel_id,o.message_id,o.result_json,m.published_at AS occurrence_date
+WITH scoped AS (SELECT r.id,r.manual_override,r.name,r.description,r.datetime,resource_cloud_types(r.links_json) AS cloud_types_json,r.links_json,r.tags_json,r.images_json,r.published_at,r.search_text,o.channel_id,o.message_id,o.result_json,m.published_at AS occurrence_date
 FROM managed_resources r
 JOIN resource_occurrences o ON o.resource_id=r.id
 JOIN source_messages m USING(channel_id,message_id)

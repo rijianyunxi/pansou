@@ -42,15 +42,15 @@ function onCustomClick() {
 }
 </script>
 <style scoped>
-.scope-control { display: inline-flex; gap: 4px; padding: 4px; border-radius: 13px; background: var(--bg-secondary); border: 1px solid var(--border-light); }
-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 0 14px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .15s, color .15s; white-space: nowrap; }
-button[aria-pressed="true"] { background: var(--bg-primary); color: var(--primary); border-color: var(--border-light); box-shadow: var(--shadow-sm); }
+
+.scope-control { display: inline-flex; align-items: center; gap: 22px; }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 0 4px 10px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--text-secondary); font: inherit; font-size: 14px; font-weight: 550; cursor: pointer; white-space: nowrap; }
+button[aria-pressed="true"] { color: var(--text-primary); border-bottom-color: var(--primary); font-weight: 750; }
 button:hover:not(:disabled):not(.custom-disabled) { color: var(--primary); }
-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-button:disabled, button.custom-disabled { opacity: .55; cursor: not-allowed; }
-button.custom-disabled[aria-pressed="true"] { background: var(--bg-secondary); color: var(--text-secondary); border-color: transparent; box-shadow: none; }
-svg { width: 16px; height: 16px; flex-shrink: 0; }
-.count { padding: 1px 6px; border-radius: 5px; background: var(--primary-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
-@media (max-width: 480px) { .scope-control { display: flex; } button { flex: 1; padding: 0 10px; } }
-@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+button:disabled, button.custom-disabled { opacity: .5; cursor: not-allowed; }
+svg { display: none; }
+.count { padding: 1px 6px; border-radius: 6px; background: #f1f0ed; color: #77756f; font-size: 11px; }
+@media(max-width:480px) { .scope-control { gap: 16px; } button { font-size: 13px; } }
+
 </style>

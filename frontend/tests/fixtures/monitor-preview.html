@@ -28,6 +28,15 @@
       ],
     };
     const scenario = new URLSearchParams(location.search).get('scenario');
+    const settings = { crawlEnabled: true, linkScheduleEnabled: true, linkEnabled: false, linkSyncEnabled: false, linkCheckEnabled: true, linkMaintenanceEnabled: true };
+    Object.assign(fixture.workers.links, { enabled: settings.linkEnabled, syncEnabled: settings.linkSyncEnabled, checkEnabled: settings.linkCheckEnabled, maintenanceEnabled: settings.linkMaintenanceEnabled });
+    if (scenario === 'unknown') delete fixture.workers.links.scheduleEnabled;
+    if (scenario === 'large-queue') {
+      Object.assign(fixture.crawl, { queued: 0, running: 0, failed: 0 });
+      for (const queue of Object.values(fixture.links.queues)) Object.assign(queue, { queued: 0, running: 0, failed: 0, blocked: 0 });
+      fixture.links.queues.checks.queued = 246994;
+      fixture.links.queues.cleanup.queued = 3;
+    }
     if (scenario === 'empty') {
       for (const key of Object.keys(fixture.crawl)) if (typeof fixture.crawl[key] === 'number') fixture.crawl[key] = 0;
       for (const key of ['syncPending', 'catalog', 'valid', 'invalid', 'errors', 'cleanupDue']) fixture.links[key] = 0;
@@ -49,10 +58,16 @@
         if (scenario === 'error') return Response.json({ message: '模拟状态读取失败' }, { status: 503 });
         return Response.json({ data: fixture });
       }
-      if (path === '/api/admin/runtime/workers/crawl' || path === '/api/admin/runtime/workers/cleanup') {
-        const kind = path.endsWith('/crawl') ? 'crawl' : 'links';
-        fixture.workers[kind].enabled = JSON.parse(options.body).enabled;
-        return Response.json({ data: {} });
+      if (['/api/admin/runtime/workers/crawl', '/api/admin/runtime/workers/link-schedule'].includes(path) && options.method === 'PUT') {
+        if (scenario === 'slow') await new Promise(resolve => setTimeout(resolve, 1500));
+        if (scenario === 'failure') return Response.json({ message: '模拟保存失败' }, { status: 503 });
+        const enabled = JSON.parse(options.body).enabled;
+        if (path.endsWith('/crawl')) {
+          settings.crawlEnabled = fixture.workers.crawl.enabled = enabled;
+        } else {
+          settings.linkScheduleEnabled = fixture.workers.links.scheduleEnabled = enabled;
+        }
+        return Response.json({ data: { settings: { ...settings } } });
       }
       if (path === '/api/admin/monitor/reset') {
         fixture.sources.forEach(source => source.health = null);
@@ -60,7 +75,8 @@
       }
       throw new Error('验收页禁止真实网络请求：' + path);
     };
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin', component: AdminLayout, children: [{path: 'monitor', component: MonitorPanel}, {path: ':pathMatch(.*)*', component: {render: () => h('p', '仅预览运行监控')}}] }] });
+    const management = name => ({ render: () => h('div', [h('h1', name), h('a', { href: '#', onClick: event => { event.preventDefault(); router.push('/admin/monitor'); } }, '返回运行监控')]) });
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin', component: AdminLayout, children: [{path: 'monitor', component: MonitorPanel}, {path: 'crawl', component: management('TG 采集任务管理')}, {path: 'tasks', component: management('链接任务管理')}, {path: ':pathMatch(.*)*', component: {render: () => h('p', '仅预览运行监控')}}] }] });
     await router.push('/admin/monitor');
     createApp({ render: () => h(RouterView) }).use(router).mount('#monitor-test-root');
   </script>

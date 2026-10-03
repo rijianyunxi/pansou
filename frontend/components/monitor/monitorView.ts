@@ -1,5 +1,13 @@
 export type RuntimeState = 'online' | 'offline' | 'unknown' | 'unavailable';
 export interface WorkerStatus { state: RuntimeState; count: number | null; enabled: boolean; scheduleEnabled?: boolean; syncEnabled?: boolean; checkEnabled?: boolean; maintenanceEnabled?: boolean }
+export const MONITOR_WORKERS = {
+  crawl: { name: 'TG 采集', endpoint: 'crawl', path: '/admin/crawl' },
+  links: { name: '链接任务', endpoint: 'link-schedule', path: '/admin/tasks' },
+} as const;
+export type MonitorWorkerKind = keyof typeof MONITOR_WORKERS;
+export function workerSchedulingEnabled(kind: MonitorWorkerKind, worker?: WorkerStatus): boolean | undefined {
+  return kind === 'crawl' ? worker?.enabled : worker?.scheduleEnabled;
+}
 interface QueueCounts { queued: number; running: number; failed: number; completed: number; blocked?: number }
 export interface LiveSource {
   id: string; name: string; enabled: boolean;
@@ -66,7 +74,7 @@ export function monitorQueueRows(data: MonitorData) {
   return [
     { key: 'crawl', label: 'TG 采集', queued: data.crawl.queued, running: data.crawl.running, failed: data.crawl.failed, blocked: 0 },
     // The sync queue exposes only its backlog. Resolve counts belong to click delivery, not local sync.
-    { key: 'sync', label: '链接关联同步', queued: data.links.syncPending, running: null, failed: null, blocked: 0 },
+    { key: 'sync', label: '资源链接同步', queued: data.links.syncPending, running: null, failed: null, blocked: 0 },
     { key: 'checks', label: '有效性检测', ...data.links.queues.checks, blocked: 0 },
     { key: 'cleanup', label: '到期清理', ...data.links.queues.cleanup, blocked: data.links.queues.cleanup.blocked ?? 0 },
     { key: 'resolve', label: '按需取链', ...data.links.queues.resolve, blocked: 0 },

@@ -44,7 +44,7 @@ async function toggle(kind: LinkControlKind) {
   const activateChecks = kind==='link-check' && !current && checkPolicy.value===false;
   if (activateChecks && !await confirm.confirm('启用后台有效性检测？当前检测功能已关闭，此操作将启用检测功能及其独立调度。后台会按现有账号、频率、额度和熔断策略核验排队链接，不触发转存。')) return;
   if (current && !await confirm.confirm(kind==='link-schedule'
-    ? '暂停链接后台调度？关联同步、后台检测、清理和维护将在当前批次完成后暂停，队列保留。用户按需取链仍可使用；暂停期间到期和晚到产物的清理会延后。'
+    ? '暂停链接后台调度？资源链接同步、定期检测、到期清理和过期与超时处理将在当前批次完成后暂停，队列保留。用户按需取链仍可使用，复制或打开链接仍可能按网盘配置触发检测、转存和分享；暂停期间到期和晚到产物的清理会延后。'
     : `暂停${name}？${selected?.hint} 当前批次完成后暂停，其他任务的独立开关不受影响。`)) return;
   if (!alive) return;
   busy.value = kind; error.value = ''; actionError.value = ''; notice.value = ''; controller?.abort();
@@ -75,13 +75,13 @@ onBeforeUnmount(()=>{alive=false;controller?.abort();clearInterval(timer);docume
     </div>
     <div class="lane-controls">
       <div v-for="lane in lanes" :key="lane.key" class="lane-control-row">
-        <div class="lane-heading"><strong>{{lane.name}}</strong><Switch :model-value="lane.enabled === true" :aria-label="(lane.enabled?'暂停':'启用')+lane.name" :disabled="loading||!!busy||!!error||suspended||worker?.scheduleEnabled==null||lane.enabled==null" @update:model-value="toggle(lane.endpoint)" /></div>
+        <div class="lane-heading"><strong :title="lane.hint">{{lane.name}}</strong><Switch :model-value="lane.enabled === true" :aria-label="(lane.enabled?'暂停':'启用')+lane.name" :disabled="loading||!!busy||!!error||suspended||worker?.scheduleEnabled==null||lane.enabled==null" @update:model-value="toggle(lane.endpoint)" /></div>
         <TaskStatusBadge :state="lane.view.state" :label="lane.view.label" />
       </div>
     </div>
-    <div class="control-footnote"><Info :size="13" aria-hidden="true" /><span>开关仅控制调度，暂停后当前批次仍会完成。</span></div>
+    <div class="control-footnote"><Info :size="13" aria-hidden="true" /><span>暂停仅影响后台自动任务，当前批次仍会完成。搜索、复制和打开链接仍可用，按需转存仍按网盘配置执行。</span></div>
     <p v-if="checkPolicy!==false && readyAccounts===0" class="control-error" role="status">检测无可用账号，请先连接网盘。</p>
-    <p v-if="worker?.scheduleEnabled===false" class="control-hint" role="status">调度已暂停，队列和清理任务等待恢复。</p>
+    <p v-if="worker?.scheduleEnabled===false" class="control-hint" role="status">后台自动任务已暂停，队列保留；到期和晚到产物的清理等待恢复。用户复制、打开和按需转存仍可执行。</p>
     <p v-else-if="worker?.state==='offline'" class="control-error" role="status">Worker 离线，请启动服务。</p>
     <p v-if="worker&&worker.scheduleEnabled==null" class="control-error" role="status">后端暂不支持调度开关。</p>
     <p v-if="error" class="control-error" role="alert">{{error}}</p>

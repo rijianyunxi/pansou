@@ -8,6 +8,7 @@ const props = defineProps<{
   totalPages: number;
   total: number;
   pageSize: number;
+  disabled?: boolean;
 }>();
 const emit = defineEmits<{
   change: [page: number];
@@ -27,6 +28,7 @@ watch(
 );
 
 function submitJump() {
+  if (props.disabled) return;
   const value = Number(String(jumpPage.value).trim());
   if (!Number.isInteger(value) || value < 1 || value > props.totalPages) {
     jumpError.value = `请输入 1-${props.totalPages} 之间的页码`;
@@ -44,6 +46,7 @@ function submitJump() {
       <span>每页</span
       ><AdminSelect
         :model-value="pageSize"
+        :disabled="disabled"
         aria-label="每页条数"
         @update:model-value="(value) => emit('update:page-size', Number(value))"
         ><option :value="10">10 条</option>
@@ -58,6 +61,7 @@ function submitJump() {
           type="number"
           min="1"
           :max="totalPages"
+          :disabled="disabled"
           inputmode="numeric"
           aria-label="跳转页码"
           :aria-invalid="jumpError ? 'true' : undefined"
@@ -70,6 +74,7 @@ function submitJump() {
           type="button"
           variant="outline"
           size="sm"
+          :disabled="disabled"
           @click="submitJump"
           >跳转</Button
         >
@@ -86,7 +91,7 @@ function submitJump() {
         type="button"
         variant="outline"
         size="icon-sm"
-        :disabled="page <= 1"
+        :disabled="disabled || page <= 1"
         aria-label="上一页"
         @click="emit('change', page - 1)"
         ><ChevronLeft :size="15" /></Button
@@ -94,7 +99,7 @@ function submitJump() {
         type="button"
         variant="outline"
         size="icon-sm"
-        :disabled="page >= totalPages"
+        :disabled="disabled || page >= totalPages"
         aria-label="下一页"
         @click="emit('change', page + 1)"
         ><ChevronRight :size="15"

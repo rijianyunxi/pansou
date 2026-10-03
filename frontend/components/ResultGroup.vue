@@ -13,22 +13,23 @@
 
     <ul class="resource-list">
       <li v-for="resource in visibleItems" :key="resource.id" class="resource-item">
+        <div class="resource-art" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Z"/></svg></div>
         <div class="resource-heading">
           <div class="resource-heading-main">
-            <h3 class="resource-title">{{ resource.name }}</h3>
+            <h3 class="resource-title"><template v-for="(part, index) in titleParts(resource.name)" :key="index"><mark v-if="part.match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></h3>
             <ResourceDescription :text="resource.description" />
           </div>
-          <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
         </div>
 
         <div class="resource-links" aria-label="资源链接">
           <div v-for="link in resource.links" :key="link.linkRef" class="link-row">
             <div class="link-main" aria-live="polite">
-              <span class="link-provider">{{ platformLabel(link.type) }}</span>
+              <span class="link-provider" :data-provider="link.type">{{ platformLabel(link.type) }}</span>
+              <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
               <span v-if="resolved[link.linkRef]?.password" class="password-badge">提取码 {{ resolved[link.linkRef]?.password }}</span>
             </div>
             <div class="link-actions">
-              <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在打开…' : '打开链接' }}</button>
+              <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在打开…' : '打开资源 ↗' }}</button>
               <button class="copy-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'copy'" title="获取并复制链接及提取码" @click="act('copy', resource, link)">{{ loading[link.linkRef] === 'copy' ? '正在复制…' : copiedKey === link.linkRef ? '已复制' : '复制链接' }}</button>
             </div>
             <div v-if="loading[link.linkRef] && progress[link.linkRef]" class="link-progress" role="status" aria-live="polite">
@@ -62,6 +63,7 @@ import type { ShowToast } from "~/composables/useToast";
 
 const props = withDefaults(defineProps<{
   title: string;
+  keyword?: string;
   color: string;
   icon: string;
   items: DisplaySearchResult[];
@@ -71,6 +73,7 @@ const props = withDefaults(defineProps<{
   showHeader?: boolean;
   platformLabel?: (type: string) => string;
 }>(), {
+  keyword: "",
   canToggleCollapse: false,
   showHeader: true,
   platformLabel: (type: string) => type || "其他",
@@ -79,6 +82,22 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: "toggle"): void;
 }>();
+
+function titleParts(title: string) {
+  const keyword = props.keyword.trim();
+  if (!keyword) return [{ text: title, match: false }];
+  const parts: { text: string; match: boolean }[] = [];
+  let cursor = 0;
+  let index = title.toLowerCase().indexOf(keyword.toLowerCase());
+  while (index !== -1) {
+    if (index > cursor) parts.push({ text: title.slice(cursor, index), match: false });
+    parts.push({ text: title.slice(index, index + keyword.length), match: true });
+    cursor = index + keyword.length;
+    index = title.toLowerCase().indexOf(keyword.toLowerCase(), cursor);
+  }
+  if (cursor < title.length) parts.push({ text: title.slice(cursor), match: false });
+  return parts;
+}
 
 const copiedKey = ref("");
 const resolved = reactive<Record<string, ResolvedLink>>({});
@@ -108,7 +127,33 @@ function prepareOpen() {
   if (popup) {
     popup.opener = null;
     popup.document.title = '正在打开链接';
-    popup.document.body.innerHTML = `<style>body{margin:0;display:grid;place-items:center;min-height:100vh;font:14px system-ui;color:#18181b;background:#fafafa}.card{padding:32px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.spinner{margin:0 auto 16px;width:24px;height:24px;border:2px solid #e4e4e7;border-top-color:#18181b;border-radius:50%;animation:spin 1s linear infinite}p{color:#71717a;font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}</style><main class="card"><div class="spinner" aria-hidden="true"></div><div role="status" id="stage">正在获取链接</div><p>准备好后自动打开</p></main>`;
+    popup.document.body.innerHTML = `<style>body{margin:0;display:grid;place-items:center;min-height:100vh;font:14px system-ui;color:#18181b;background:#fafafa}.card{padding:32px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.spinner{margin:0 auto 16px;width:24px;height:24px;border:2px solid #e4e4e7;border-top-color:#18181b;border-radius:50%;animation:spin 1s linear infinite}p{color:#71717a;font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+.result-card, .result-card--flat { border-radius: 12px; box-shadow: none; }
+.resource-list { padding: 0 18px; gap: 0; background: var(--bg-primary); }
+.resource-item { position: relative; display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 20px; padding: 22px 6px; border-bottom: 1px solid var(--border-light); }
+.resource-item:last-child { border-bottom: 0; }
+.resource-item:hover { background: #fffdf9; }
+.resource-art { display: grid; place-items: center; grid-column: 1; grid-row: 1 / 3; align-self: start; margin-top: 2px; width: 56px; height: 62px; border-radius: 12px; background: #fff3e5; color: #ff8a32; }
+.resource-heading { grid-column: 2; padding-right: 245px; }
+.resource-title { font-size: 17px; line-height: 1.5; }
+.resource-title mark { background: transparent; color: var(--primary); }
+.resource-links { grid-column: 2; margin-top: 7px; }
+.link-row { padding: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; min-height: 24px; }
+.link-main { padding-right: 245px; }
+.link-provider { display: inline-flex; align-items: center; padding: 1px 9px; border-radius: 999px; color: #fff; background: #8d8172; font-size: 10px; font-weight: 550; }
+.link-provider[data-provider="quark"] { background: #7450ff; }
+.link-provider[data-provider="baidu"] { background: #2981f5; }
+.link-provider[data-provider="aliyun"] { background: #ff8a1c; }
+.link-provider[data-provider="uc"] { background: #ec6c21; }
+.resource-date { padding: 0; font-size: 11px; color: var(--text-tertiary); }
+.link-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); gap: 10px; }
+.open-btn, .copy-btn { min-height: 40px; padding: 8px 14px; font-size: 12px; }
+.open-btn { border-color: var(--primary); color: var(--primary); }
+.copy-btn { color: var(--text-secondary); }
+.link-progress { padding-right: 245px; }
+.progress-track span { background: var(--primary); }
+@media(max-width:760px) { .resource-list { padding: 0 12px; } .resource-item { grid-template-columns: 40px minmax(0,1fr); gap: 0 12px; padding: 18px 0; } .resource-art { width: 40px; height: 46px; border-radius: 9px; } .resource-art svg { width: 24px; } .resource-heading, .link-main, .link-progress { padding-right: 0; } .resource-title { font-size: 15px; } .link-actions { position: static; transform: none; display: flex; width: auto; margin-top: 6px; } .link-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; } .link-main { min-height: 0; gap: 6px; } .resource-date { margin: 0; } .open-btn, .copy-btn { width: auto; min-width: 90px; } .link-progress { width: 100%; } }
+</style><main class="card"><div class="spinner" aria-hidden="true"></div><div role="status" id="stage">正在获取链接</div><p>准备好后自动打开</p></main>`;
   }
   return {
     navigate(url: string) { if (popup && !popup.closed) popup.location.replace(url); else window.location.assign(url); },
@@ -301,4 +346,30 @@ const visibleItems = computed(() => props.expanded ? props.items : props.items.s
     justify-content: center;
   }
 }
+
+.result-card, .result-card--flat { border-radius: 12px; box-shadow: none; }
+.resource-list { padding: 0 18px; gap: 0; background: var(--bg-primary); }
+.resource-item { position: relative; display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 20px; padding: 22px 6px; border-bottom: 1px solid var(--border-light); }
+.resource-item:last-child { border-bottom: 0; }
+.resource-item:hover { background: #fffdf9; }
+.resource-art { display: grid; place-items: center; grid-column: 1; grid-row: 1 / 3; align-self: start; margin-top: 2px; width: 56px; height: 62px; border-radius: 12px; background: #fff3e5; color: #ff8a32; }
+.resource-heading { grid-column: 2; padding-right: 245px; }
+.resource-title { font-size: 17px; line-height: 1.5; }
+.resource-title mark { background: transparent; color: var(--primary); }
+.resource-links { grid-column: 2; margin-top: 7px; }
+.link-row { padding: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; min-height: 24px; }
+.link-main { padding-right: 245px; }
+.link-provider { display: inline-flex; align-items: center; padding: 1px 9px; border-radius: 999px; color: #fff; background: #8d8172; font-size: 10px; font-weight: 550; }
+.link-provider[data-provider="quark"] { background: #7450ff; }
+.link-provider[data-provider="baidu"] { background: #2981f5; }
+.link-provider[data-provider="aliyun"] { background: #ff8a1c; }
+.link-provider[data-provider="uc"] { background: #ec6c21; }
+.resource-date { padding: 0; font-size: 11px; color: var(--text-tertiary); }
+.link-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); gap: 10px; }
+.open-btn, .copy-btn { min-height: 40px; padding: 8px 14px; font-size: 12px; }
+.open-btn { border-color: var(--primary); color: var(--primary); }
+.copy-btn { color: var(--text-secondary); }
+.link-progress { padding-right: 245px; }
+.progress-track span { background: var(--primary); }
+@media(max-width:760px) { .resource-list { padding: 0 12px; } .resource-item { grid-template-columns: 40px minmax(0,1fr); gap: 0 12px; padding: 18px 0; } .resource-art { width: 40px; height: 46px; border-radius: 9px; } .resource-art svg { width: 24px; } .resource-heading, .link-main, .link-progress { padding-right: 0; } .resource-title { font-size: 15px; } .link-actions { position: static; transform: none; display: flex; width: auto; margin-top: 6px; } .link-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; } .link-main { min-height: 0; gap: 6px; } .resource-date { margin: 0; } .open-btn, .copy-btn { width: auto; min-width: 90px; } .link-progress { width: 100%; } }
 </style>

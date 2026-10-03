@@ -683,9 +683,10 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<(), ApiError> {
     Ok(())
 }
 async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result<(), ApiError> {
-    let row=sqlx::query("SELECT s.*,c.provider FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
+    let row=sqlx::query("SELECT s.*,c.provider,s.cleanup_after>clock_timestamp() AS cleanup_not_due FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
     let cleanup_after: DateTime<Utc> = row.get("cleanup_after");
-    if cleanup_after > Utc::now() {
+    // Scheduling and expiry use the same database clock as the queue claim.
+    if row.get::<bool, _>("cleanup_not_due") {
         sqlx::query("UPDATE link_cleanup_jobs SET status='queued',run_after=$3,lease_until=NULL,attempts=GREATEST(attempts-1,0),updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='running'")
             .bind(job_id).bind(token).bind(cleanup_after).execute(&state.pool).await?;
         return Ok(());

@@ -171,8 +171,12 @@ pub async fn cloud_ping(
     let root = cloud_drive::validate_dir(input.provider, None)?;
     if input.provider.token_auth() {
         let mut connection = state.pool.acquire().await?;
-        tokio::time::timeout(Duration::from_secs(45), drive.ensure_current_account(&mut connection))
-            .await.map_err(|_| ApiError::Upstream("账号身份检测超时".into()))??;
+        tokio::time::timeout(
+            Duration::from_secs(45),
+            drive.ensure_current_account(&mut connection),
+        )
+        .await
+        .map_err(|_| ApiError::Upstream("账号身份检测超时".into()))??;
     }
     let files = tokio::time::timeout(Duration::from_secs(45), drive.list(&root))
         .await
@@ -476,10 +480,12 @@ pub async fn resources_check(
         .filter(|id| !found.contains(*id))
         .map(|id| json!({"id":id,"status":"invalid","message":"资源不存在"}))
         .collect::<Vec<_>>();
-    let mut credentials=std::collections::HashMap::new();
+    let mut credentials = std::collections::HashMap::new();
     for p in Provider::ALL {
-        if let Ok(Some(account))=crate::cloud_auth::credentials(&state,p).await {
-            if let Ok(raw)=account.raw(p){credentials.insert(p.name().to_owned(),raw);}
+        if let Ok(Some(account)) = crate::cloud_auth::credentials(&state, p).await {
+            if let Ok(raw) = account.raw(p) {
+                credentials.insert(p.name().to_owned(), raw);
+            }
         }
     }
     let credentials = Arc::new(credentials);
@@ -587,8 +593,8 @@ async fn check_resource(
             vec![],
         ),
     };
-    let changed = sqlx::query("UPDATE managed_resources SET check_status=$2,check_message=$3,checked_at=now(),link_validity=CASE $2 WHEN 'valid' THEN 1 WHEN 'invalid' THEN 0 ELSE -1 END,link_validity_updated_at=now() WHERE id=$1 AND deleted_at IS NULL AND links_json=$4")
-        .bind(&id).bind(&status).bind(&message).bind(&links).execute(&state.pool).await?;
+    let changed = sqlx::query("UPDATE managed_resources SET link_validity=CASE $2 WHEN 'valid' THEN 1 WHEN 'invalid' THEN 0 ELSE -1 END,link_validity_updated_at=now() WHERE id=$1 AND deleted_at IS NULL AND links_json=$3")
+        .bind(&id).bind(&status).bind(&links).execute(&state.pool).await?;
     Ok(
         json!({"id":id,"status":if changed.rows_affected()==1{status.as_str()}else{"unknown"},"message":if changed.rows_affected()==1{message.as_str()}else{"资源链接已改变，请重新检测"},"links":links_result}),
     )

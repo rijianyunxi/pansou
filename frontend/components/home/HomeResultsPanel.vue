@@ -1,19 +1,10 @@
 <template>
     <div v-if="searched" class="stats-bar">
       <div class="stats-content">
-        <div class="stats-main">
-          <span class="stat-item">
-            <span class="stat-label">资源</span>
-            <span class="stat-value">{{ total }}</span>
-          </span>
-          <span class="stat-item">
-            <span class="stat-label">用时</span>
-            <span class="stat-value">{{ elapsedMs }}ms</span>
-          </span>
-          <span v-if="paused" class="paused-indicator-bar">
-            <span class="pause-icon">⏸</span>
-            <span class="paused-text">搜索已暂停</span>
-          </span>
+        <div class="stats-main" aria-live="polite">
+          <h2>{{ keyword }}</h2>
+          <span class="result-summary">找到 <strong>{{ total }}</strong> 条资源 · 用时 {{ (elapsedMs / 1000).toFixed(1) }} 秒</span>
+          <span class="search-status" :class="{ 'is-loading': loading, 'is-paused': paused, 'is-error': error }"><i></i>{{ error ? '搜索异常' : paused ? '搜索已暂停' : loading ? '正在搜索…' : '搜索完成' }}</span>
         </div>
 
         <div class="platform-filters" v-if="hasResults">
@@ -31,7 +22,6 @@
             @click="emit('update:filterPlatform', platform)">
             <span>{{ platformLabel(platform) }}</span><span class="platform-count">{{ platformCounts[platform] || 0 }}</span>
           </button>
-          <span class="platform-count-hint">每条结果对应一个分享链接</span>
         </div>
 
         <label v-if="hasResults" class="time-sort-select" title="按时间排序">
@@ -56,12 +46,14 @@
           color="#9ca3af"
           icon="📦"
           :items="filteredResults"
+          :keyword="keyword"
           :expanded="true"
           :initial-visible="0"
           :show-header="false"
           :platform-label="platformLabel"
           />
       </div>
+      <p class="results-footer">已展示 {{ filteredResults.length }} 条资源</p>
     </section>
 
     <section v-else-if="searched && !error && !loading && !paused" class="empty-state">
@@ -71,6 +63,10 @@
         <p>试试其他关键词，或检查设置中的搜索来源是否已开启</p>
       </div>
     </section>
+
+    <section v-if="searched && loading && !hasResults" class="search-loading" role="status"><span class="search-loading-dot"></span><h3>正在寻找相关资源</h3><p>结果会陆续出现在这里，你可以随时暂停搜索。</p></section>
+    <section v-if="searched && paused && !hasResults" class="search-loading" role="status"><h3>搜索已暂停</h3><p>点击搜索框中的继续按钮，接着寻找资源。</p></section>
+    <section v-if="hasResults && filteredResults.length === 0" class="search-loading" role="status"><h3>当前网盘暂无结果</h3><p>选择其他网盘，或查看全部资源。</p></section>
 
     <section v-if="error" class="error-alert">
       <span class="error-icon">⚠️</span>
@@ -113,6 +109,7 @@ type SortType = "default" | "date-desc" | "date-asc";
 
 interface Props {
   searched: boolean;
+  keyword: string;
   total: number;
   elapsedMs: number;
   paused: boolean;
@@ -204,4 +201,32 @@ function onSortChange(event: Event) {
 @media (prefers-reduced-motion: reduce) {
   .stats-bar, .results-section, .empty-state, .error-alert { animation: none; }
 }
+
+.stats-bar { background: transparent; padding: 0; border: 0; box-shadow: none; }
+.stats-content { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px 16px; align-items: center; }
+.stats-main { grid-column: 1 / -1; gap: 14px; }
+.stats-main h2 { margin: 0; font-size: 24px; font-weight: 800; overflow-wrap: anywhere; }
+.result-summary { color: var(--text-secondary); font-size: 12px; }
+.result-summary strong { font-weight: 500; }
+.search-status { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font-size: 12px; color: var(--text-secondary); }
+.search-status i { width: 7px; height: 7px; background: #21af72; border-radius: 50%; }
+.search-status.is-loading i, .search-status.is-paused i { background: #f5a623; }
+.search-status.is-error i { background: #d94e42; }
+.platform-filters { gap: 8px; }
+.filter-pill { border-radius: 999px; min-height: 36px; padding: 6px 13px; background: #fff; }
+.filter-pill.active { background: var(--primary); color: #fff; }
+.platform-count, .filter-pill.active .platform-count { background: transparent; color: inherit; padding: 0; min-width: 10px; font-weight: 500; }
+.sort-label, .time-sort-select svg { display: none; }
+.time-sort-select { border-radius: 8px; }
+.time-sort-select select { font-weight: 500; }
+.floating-sort-button { display: none; }
+.back-to-top { border-radius: 50%; color: var(--text-secondary); }
+.results-footer { text-align: center; font-size: 12px; color: var(--text-tertiary); margin: 15px 0 0; }
+.search-loading { padding: 54px 24px; text-align: center; border: 1px solid var(--border-light); border-radius: 14px; background: #fff; }
+.search-loading h3 { font-size: 18px; margin: 12px 0; }
+.search-loading p { font-size: 13px; color: var(--text-secondary); }
+.search-loading-dot { display: inline-block; width: 24px; height: 24px; border: 2px solid #ffe0ce; border-top-color: var(--primary); border-radius: 50%; animation: search-spin .8s linear infinite; }
+@keyframes search-spin { to { transform: rotate(360deg); } }
+@media(max-width:640px) { .stats-bar { padding: 0; } .stats-content { grid-template-columns: 1fr; gap: 10px; } .stats-main { gap: 8px; } .stats-main h2 { font-size: 21px; flex-basis: 100%; } .search-status { font-size: 11px; } .time-sort-select { justify-self: end; } }
+@media(prefers-reduced-motion:reduce) { .search-loading-dot { animation: none; } }
 </style>

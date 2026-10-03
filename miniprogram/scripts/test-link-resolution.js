@@ -3,6 +3,19 @@ const assert = require('node:assert/strict');
 const auth = require('../utils/auth');
 const links = require('../utils/linkResolution');
 let stored;
+test('Guangya links carry codes in one directly usable URL', () => {
+  const { guangyaBrowserUrl, clipboardText } = require('../utils/shareLinks');
+  const base = 'https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m';
+  for (const url of [base, base + '#/share', base + '?code=old#/share']) {
+    const value = { url, password: 'ewcc' };
+    assert.equal(guangyaBrowserUrl(value), base + '?code=ewcc#/share');
+    assert.equal(clipboardText(value), base + '?code=ewcc#/share');
+  }
+  assert.equal(clipboardText({ url: base }), base + '#/share');
+  assert.equal(clipboardText({ url: base + '?code=ewcc#/share' }), base + '?code=ewcc#/share');
+  assert.equal(clipboardText({ url: 'https://pan.quark.cn/s/abc', password: 'own1' }), 'https://pan.quark.cn/s/abc\n提取码：own1');
+  assert.equal(guangyaBrowserUrl({ url: 'https://www.guangyapan.com.evil.test/s/abc' }), null);
+});
 global.wx = {
   getStorageSync: () => stored,
   setStorageSync: (_key, value) => { stored = value; },

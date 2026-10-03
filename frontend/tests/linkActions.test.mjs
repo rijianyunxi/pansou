@@ -26,6 +26,26 @@ test('copy uses the same resolution flow and copies the returned password', asyn
   assert.equal(calls, 1);
   assert.deepEqual(e.log, [['copy', available.url + '\n提取码：own1']]);
 });
+test('Guangya copying and opening use one URL with its extraction code before the hash', async () => {
+  const base = 'https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m';
+  for (const url of [base, base + '#/share', base + '?code=old#/share']) {
+    const value = { ...available, type: 'guangya', url, password: 'ewcc' };
+    const expected = base + '?code=ewcc#/share';
+    for (const action of ['copy', 'open']) {
+      const e = effects();
+      await executeLinkAction(action, async () => value, e.api);
+      assert.deepEqual(e.log, action === 'copy' ? [['copy', expected]] : ['reserve', ['navigate', expected]]);
+    }
+  }
+  for (const password of ['', null]) {
+    const e = effects();
+    await executeLinkAction('copy', async () => ({ ...available, url: base, password }), e.api);
+    assert.deepEqual(e.log, [['copy', base + '#/share']]);
+  }
+  const e = effects();
+  await executeLinkAction('copy', async () => ({ ...available, url: base + '?code=ewcc#/share', password: null }), e.api);
+  assert.deepEqual(e.log, [['copy', base + '?code=ewcc#/share']]);
+});
 test('invalid links never navigate or copy, and show the invalid-link notice', async () => {
   for (const action of ['open', 'copy']) {
     const e = effects();

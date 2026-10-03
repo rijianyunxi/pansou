@@ -55,7 +55,7 @@ export const adminNavigation = [
   },
   {
     path: "/admin/tasks",
-    title: "链接后台处理",
+    title: "链接任务",
     icon: "logs",
     group: "系统",
   },

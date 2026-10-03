@@ -53,7 +53,7 @@ function save() {
         </div>
       </section>
       <section class="policy-section" aria-labelledby="policy-check">
-        <div class="policy-check-heading"><h3 id="policy-check">有效性检测参数</h3><p>启停与调度在「链接后台处理」控制。</p></div>
+        <div class="policy-check-heading"><h3 id="policy-check">有效性检测参数</h3><p>启停与调度在「链接任务」控制。</p></div>
         <div class="policy-check-fields">
           <label class="policy-field" :for="`policy-interval-${provider}`"><span>检测间隔（秒）</span><Input :id="`policy-interval-${provider}`" v-model.number="form.checkIntervalSeconds" type="number" min="2" max="3600" step="1" :disabled="busy" required /></label>
           <label class="policy-field" :for="`policy-budget-${provider}`"><span>每个平台每日检测上限</span><Input :id="`policy-budget-${provider}`" v-model.number="form.checkDailyBudget" type="number" min="1" max="100000" step="1" :disabled="busy" required /></label>

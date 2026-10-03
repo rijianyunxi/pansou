@@ -3,6 +3,7 @@
 const { copyLink } = require('../../utils/clipboard');
 const { uuid, usable, resolveLink, stop } = require('../../utils/linkResolution');
 const feedback = require('../../utils/feedback');
+const { guangyaBrowserUrl, clipboardText } = require('../../utils/shareLinks');
 Component({
   properties: {
     theme: { type: String, value: 'classic' },
@@ -79,7 +80,7 @@ Component({
           } else if (action === 'open') {
             this.openResolvedLink(value);
           } else {
-            const text = value.url + (value.password ? '\n提取码：' + value.password : '');
+            const text = clipboardText(value);
             if (await copyLink(text) && !control.stopped && !this._gone && this.data.item.id === item.id) {
               clearTimeout(this._copyTimer);
               this.setData({ copiedKey: key });
@@ -112,7 +113,7 @@ Component({
       }
       wx.navigateTo({
         url: '/pages/link/index',
-        success: result => result.eventChannel.emit('open-link', { url: value.url }),
+        success: result => result.eventChannel.emit('open-link', { url: guangyaBrowserUrl(value) || value.url }),
         fail: () => feedback.showToast({ title: '打开失败，请稍后重试或使用复制链接', icon: 'error' }),
       });
     },

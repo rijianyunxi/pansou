@@ -23,6 +23,8 @@ mod telegram;
 mod telegram_tests;
 #[cfg(test)]
 mod sql_optimization_tests;
+#[cfg(test)]
+mod resource_schema_tests;
 mod transform;
 
 use anyhow::{Context, Result};

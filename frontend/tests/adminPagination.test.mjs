@@ -41,6 +41,10 @@ test('pagination accepts numeric v-model values and rejects out-of-range pages',
     component.submitJump();
     assert.deepEqual(changes[1], ['change', 7]);
     assert.equal(component.jumpError.value, '');
+    props.disabled = true;
+    component.jumpPage.value = 8;
+    component.submitJump();
+    assert.equal(changes.length, 2, 'disabled pagination must not submit a jump');
   } finally {
     scope.stop();
   }

@@ -8,15 +8,18 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
+use sqlx::{PgConnection, Postgres, QueryBuilder, Row};
 use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskQuery {
     status: Option<String>,
     provider: Option<String>,
     before: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
 }
 #[derive(Deserialize)]
 struct Cursor {
@@ -26,6 +29,13 @@ struct Cursor {
 }
 
 fn validate(kind: &str, q: &TaskQuery) -> Result<Option<Cursor>, ApiError> {
+    if q.page.is_some_and(|p| !(1..=100000).contains(&p))
+        || q.page_size
+            .is_some_and(|size| ![10, 20, 30, 50].contains(&size))
+        || q.before.is_some() && q.page.is_some()
+    {
+        return Err(ApiError::BadRequest("分页参数无效".into()));
+    }
     if !matches!(
         kind,
         "crawl" | "sync" | "checks" | "resolve" | "operations" | "maintenance"
@@ -103,6 +113,84 @@ fn validate(kind: &str, q: &TaskQuery) -> Result<Option<Cursor>, ApiError> {
     Ok(cursor)
 }
 
+// Keep catalog.provider as the source of truth: queued-job snapshots do not
+// necessarily follow provider changes for completed/running/reshared jobs.
+fn push_check_candidates<'a>(sql: &mut QueryBuilder<'a, Postgres>, q: &'a TaskQuery) {
+    let provider = q.provider.as_deref().filter(|p| !p.is_empty());
+    let status = q.status.as_deref().unwrap_or("all");
+    let branches: &[(&str, bool)] = if status == "attention" {
+        &[
+            ("j.status='failed'", false),
+            ("j.status='running' AND j.lease_until<=now()", false),
+            ("c.failure_count>0", true),
+        ]
+    } else {
+        &[("true", false)]
+    };
+    for (i, (predicate, needs_catalog)) in branches.iter().enumerate() {
+        if i > 0 {
+            // A failed/expired task may also reference a failed link. UNION
+            // preserves the old OR predicate's one-row-per-task semantics.
+            sql.push(" UNION ");
+        }
+        sql.push("SELECT j.id,j.created_at FROM link_check_jobs j");
+        if provider.is_some() || *needs_catalog {
+            sql.push(" JOIN link_catalog c ON c.id=j.link_id");
+        }
+        sql.push(" WHERE ").push(*predicate);
+        if let Some(provider) = provider {
+            sql.push(" AND c.provider=").push_bind(provider);
+        }
+        if status != "all" && status != "attention" {
+            sql.push(" AND j.status=").push_bind(status);
+        }
+    }
+}
+
+async fn check_task_page(
+    connection: &mut PgConnection,
+    q: &TaskQuery,
+    cursor: Option<&Cursor>,
+    projection: &str,
+) -> Result<(i64, Vec<Value>), ApiError> {
+    let mut count = QueryBuilder::<Postgres>::new("SELECT count(*) FROM (");
+    push_check_candidates(&mut count, q);
+    count.push(") candidates");
+    let total = count
+        .build_query_scalar::<i64>()
+        .fetch_one(&mut *connection)
+        .await?;
+
+    let mut sql = QueryBuilder::<Postgres>::new("WITH candidates AS (");
+    push_check_candidates(&mut sql, q);
+    sql.push("), page AS MATERIALIZED (SELECT id,created_at FROM candidates");
+    if let Some(cursor) = cursor {
+        sql.push(" WHERE (created_at,id)<(")
+            .push_bind(cursor.at)
+            .push(",")
+            .push_bind(
+                cursor
+                    .id
+                    .parse::<i64>()
+                    .map_err(|_| ApiError::BadRequest("分页游标无效".into()))?,
+            )
+            .push(")");
+    }
+    let page_size = q.page_size.unwrap_or(30);
+    sql.push(" ORDER BY created_at DESC,id DESC LIMIT ")
+        .push_bind(page_size + 1)
+        .push(" OFFSET ")
+        .push_bind((q.page.unwrap_or(1) - 1) * page_size)
+        .push(") SELECT jsonb_build_object(")
+        .push(projection)
+        .push(") item FROM page p JOIN link_check_jobs j ON j.id=p.id JOIN link_catalog c ON c.id=j.link_id ORDER BY p.created_at DESC,p.id DESC");
+    let items = sql
+        .build_query_scalar::<Value>()
+        .fetch_all(&mut *connection)
+        .await?;
+    Ok((total, items))
+}
+
 pub async fn background_tasks(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
@@ -111,6 +199,9 @@ pub async fn background_tasks(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
     let cursor = validate(&kind, &q)?;
+    let page = q.page.unwrap_or(1);
+    // Keep the legacy cursor API's default batch size for existing clients.
+    let page_size = q.page_size.unwrap_or(30);
     // Explicit field allowlists: never return request snapshots, account keys,
     // passwords, credentials, response bodies or file-access tokens.
     let (projection, source, condition, order, id_cast) = match kind.as_str() {
@@ -162,18 +253,32 @@ pub async fn background_tasks(
         "operations" => "j.request_key",
         _ => "j.id",
     };
-    let sql = format!(
-        "SELECT jsonb_build_object({projection}) item FROM {source} WHERE ({condition}) AND ($3::timestamptz IS NULL OR ({order},{id})<($3,$4::text::{id_cast})) ORDER BY {order} DESC,{id} DESC LIMIT 31"
-    );
-    let mut items: Vec<Value> = sqlx::query_scalar(&sql)
-        .bind(q.provider.as_deref().unwrap_or(""))
-        .bind(q.status.as_deref().unwrap_or("all"))
-        .bind(cursor.as_ref().map(|c| c.at))
-        .bind(cursor.as_ref().map(|c| c.id.as_str()))
-        .fetch_all(&s.pool)
-        .await?;
-    let more = items.len() > 30;
-    items.truncate(30);
+    let (total, mut items) = if kind == "checks" {
+        let mut connection = s.pool.acquire().await?;
+        check_task_page(&mut connection, &q, cursor.as_ref(), projection).await?
+    } else {
+        let count_sql = format!("SELECT count(*) FROM {source} WHERE ({condition})");
+        let total: i64 = sqlx::query_scalar(&count_sql)
+            .bind(q.provider.as_deref().unwrap_or(""))
+            .bind(q.status.as_deref().unwrap_or("all"))
+            .fetch_one(&s.pool)
+            .await?;
+        let sql = format!(
+            "SELECT jsonb_build_object({projection}) item FROM {source} WHERE ({condition}) AND ($3::timestamptz IS NULL OR ({order},{id})<($3,$4::text::{id_cast})) ORDER BY {order} DESC,{id} DESC LIMIT $5 OFFSET $6"
+        );
+        let items: Vec<Value> = sqlx::query_scalar(&sql)
+            .bind(q.provider.as_deref().unwrap_or(""))
+            .bind(q.status.as_deref().unwrap_or("all"))
+            .bind(cursor.as_ref().map(|c| c.at))
+            .bind(cursor.as_ref().map(|c| c.id.as_str()))
+            .bind(page_size + 1)
+            .bind((page - 1) * page_size)
+            .fetch_all(&s.pool)
+            .await?;
+        (total, items)
+    };
+    let more = items.len() > page_size as usize;
+    items.truncate(page_size as usize);
     let next = if more {
         items
             .last()
@@ -200,7 +305,7 @@ pub async fn background_tasks(
         _ => Value::Null,
     };
     Ok(ok(
-        json!({"items":items,"hasMore":more,"nextCursor":next,"enabled":enabled,"workerState":worker_state}),
+        json!({"items":items,"total":total,"page":page,"pageSize":page_size,"hasMore":more,"nextCursor":next,"enabled":enabled,"workerState":worker_state}),
     ))
 }
 
@@ -295,6 +400,164 @@ mod tests {
         );
         assert!(validate("unknown", &TaskQuery::default()).is_err());
         assert!(validate("resolve", &TaskQuery::default()).is_ok());
+        for page in [0, -1, 100001] {
+            assert!(
+                validate(
+                    "checks",
+                    &TaskQuery {
+                        page: Some(page),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+        for page_size in [0, -1, 11, 51] {
+            assert!(
+                validate(
+                    "checks",
+                    &TaskQuery {
+                        page_size: Some(page_size),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+        for page_size in [10, 20, 30, 50] {
+            assert!(
+                validate(
+                    "checks",
+                    &TaskQuery {
+                        page: Some(2),
+                        page_size: Some(page_size),
+                        ..Default::default()
+                    }
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() {
+        let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(
+            url::Url::parse(&database)
+                .unwrap()
+                .path()
+                .ends_with("_test")
+        );
+        let pool = crate::db::connect(&database).await.unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        // Distinct links permit every combination without violating active-job
+        // uniqueness. Overlapping attention reasons and equal timestamps are
+        // intentional; neither may duplicate rows or destabilize pagination.
+        for provider in ["quark", "baidu"] {
+            for status in ["queued", "running", "completed", "failed"] {
+                for kind in ["original", "reshared"] {
+                    for lease in [None, Some(-60_i64), Some(0), Some(3600)] {
+                        let link = Uuid::new_v4();
+                        let failed = kind == "original" && lease != Some(3600);
+                        sqlx::query("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,failure_count) VALUES($1,$2,$3,'https://example.invalid/test',$3,$4)")
+                            .bind(link).bind(provider).bind(link.to_string()).bind(i32::from(failed))
+                            .execute(&mut *tx).await.unwrap();
+                        let cache = if kind == "reshared" {
+                            let id = Uuid::new_v4();
+                            sqlx::query("INSERT INTO link_share_cache(id,link_id,input_version,target_account_key,account_revision,policy_revision,target_dir,state,retention_seconds,cleanup_after) VALUES($1,$2,1,'test',1,1,'test','deleted',60,now())")
+                                .bind(id).bind(link).execute(&mut *tx).await.unwrap();
+                            Some(id)
+                        } else {
+                            None
+                        };
+                        sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,share_cache_id,status,lease_until,created_at) VALUES($1,1,$2,$3,$4,now()+$5::bigint*interval '1 second','2026-01-01'::timestamptz)")
+                            .bind(link).bind(kind).bind(cache).bind(status).bind(lease)
+                            .execute(&mut *tx).await.unwrap();
+                        // Provider edits legitimately leave historical/running
+                        // queue snapshots stale. Filtering must still use c.
+                        sqlx::query("UPDATE link_catalog SET provider=$2 WHERE id=$1")
+                            .bind(link)
+                            .bind(if provider == "quark" {
+                                "baidu"
+                            } else {
+                                "quark"
+                            })
+                            .execute(&mut *tx)
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+        }
+        let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE j.provider<>c.provider")
+            .fetch_one(&mut *tx).await.unwrap();
+        assert!(stale > 0);
+        let projection = "'id',j.id::text,'createdAt',j.created_at,'provider',c.provider,'status',j.status,'kind',j.kind";
+        for mode in ["force_custom_plan", "force_generic_plan"] {
+            sqlx::query(&format!("SET LOCAL plan_cache_mode='{mode}'"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            for provider in ["", "quark", "baidu", "uc"] {
+                for status in [
+                    "all",
+                    "attention",
+                    "queued",
+                    "running",
+                    "completed",
+                    "failed",
+                ] {
+                    let reference: Vec<Value> = sqlx::query_scalar(&format!(
+                        "SELECT jsonb_build_object({projection}) FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE ($1='' OR c.provider=$1) AND ($2='all' OR $2='attention' AND (j.status='failed' OR c.failure_count>0 OR j.status='running' AND j.lease_until<=now()) OR j.status=$2) ORDER BY j.created_at DESC,j.id DESC"))
+                        .bind(provider).bind(status).fetch_all(&mut *tx).await.unwrap();
+                    let mut q = TaskQuery {
+                        provider: Some(provider.into()),
+                        status: Some(status.into()),
+                        page_size: Some(10),
+                        ..Default::default()
+                    };
+                    for page in [1, 2, 100] {
+                        q.page = Some(page);
+                        let (total, actual) = check_task_page(&mut tx, &q, None, projection)
+                            .await
+                            .unwrap();
+                        let expected: Vec<Value> = reference
+                            .iter()
+                            .skip(((page - 1) * 10) as usize)
+                            .take(11)
+                            .cloned()
+                            .collect();
+                        assert_eq!(total, reference.len() as i64, "{mode}/{provider}/{status}");
+                        assert_eq!(actual, expected, "{mode}/{provider}/{status}/page={page}");
+                    }
+                    if let Some(last) = reference.get(9) {
+                        q.page = None;
+                        let cursor = Cursor {
+                            kind: "checks".into(),
+                            at: serde_json::from_value(last["createdAt"].clone()).unwrap(),
+                            id: last["id"].as_str().unwrap().into(),
+                        };
+                        let (total, actual) =
+                            check_task_page(&mut tx, &q, Some(&cursor), projection)
+                                .await
+                                .unwrap();
+                        assert_eq!(total, reference.len() as i64);
+                        assert_eq!(
+                            actual,
+                            reference
+                                .iter()
+                                .skip(10)
+                                .take(11)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
+            }
+        }
+        tx.rollback().await.unwrap();
     }
 
     #[tokio::test]
@@ -571,6 +834,56 @@ mod tests {
         .await;
         assert_eq!(page["data"]["items"].as_array().unwrap().len(), 30);
         assert_eq!(page["data"]["hasMore"], true);
+        let total = page["data"]["total"].as_i64().unwrap();
+        assert!(total > 30);
+        let cache = Uuid::new_v4();
+        sqlx::query("INSERT INTO link_share_cache(id,link_id,input_version,target_account_key,account_revision,policy_revision,target_dir,state,retention_seconds,cleanup_after) VALUES($1,$2,1,'fixture-account',1,1,'fixture-dir','deleted',60,now())")
+            .bind(cache).bind(link).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO link_cleanup_jobs(share_cache_id,status,run_after) SELECT $1,'completed',now() FROM generate_series(1,65)")
+            .bind(cache).execute(&pool).await.unwrap();
+        for (endpoint, total) in [("tasks/checks", total), ("link-cleanup", 65)] {
+            for page_size in [10, 20, 50] {
+                let mut ids = Vec::new();
+                for number in 1..=(total + page_size - 1) / page_size {
+                    let (code, numbered) = call(&router, "GET", &format!("/api/admin/{endpoint}?status=all&provider=quark&page={number}&pageSize={page_size}"), token).await;
+                    assert_eq!(code, StatusCode::OK);
+                    assert_eq!(numbered["data"]["total"], total);
+                    assert_eq!(numbered["data"]["page"], number);
+                    assert_eq!(numbered["data"]["pageSize"], page_size);
+                    let rows = numbered["data"]["items"].as_array().unwrap();
+                    assert_eq!(
+                        rows.len() as i64,
+                        page_size.min(total - (number - 1) * page_size)
+                    );
+                    for row in rows {
+                        let id = row["id"].to_string();
+                        assert!(!ids.contains(&id));
+                        ids.push(id);
+                    }
+                }
+                assert_eq!(ids.len() as i64, total);
+            }
+            let (code, empty) = call(
+                &router,
+                "GET",
+                &format!("/api/admin/{endpoint}?status=all&provider=quark&page=100&pageSize=10"),
+                token,
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK);
+            assert_eq!(empty["data"]["total"], total);
+            assert!(empty["data"]["items"].as_array().unwrap().is_empty());
+            let (code, filtered) = call(
+                &router,
+                "GET",
+                &format!("/api/admin/{endpoint}?status=all&provider=baidu&page=1&pageSize=10"),
+                token,
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK);
+            assert_eq!(filtered["data"]["total"], 0);
+            assert!(filtered["data"]["items"].as_array().unwrap().is_empty());
+        }
         let before = page["data"]["nextCursor"].as_str().unwrap();
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("before", before)

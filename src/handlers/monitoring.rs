@@ -833,6 +833,14 @@ mod tests {
             !runtime::settings(&state).await.unwrap().link_enabled,
             "activation must not change cleanup pause"
         );
+        // Activation above resumed this lane. Establish an independent pause
+        // before asserting that a provider-policy save preserves it.
+        let (status, paused) = call(
+            &router, "PUT", "/api/admin/runtime/workers/link-check",
+            Some(&admin.token), json!({"enabled":false}),
+        ).await;
+        assert_eq!(status, StatusCode::OK, "{paused}");
+        assert!(!runtime::settings(&state).await.unwrap().link_check_enabled);
         // Per-provider policy lives in its own row and must never touch worker switches.
         let provider_policy = json!({
             "enabled": false,

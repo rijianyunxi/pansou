@@ -1442,7 +1442,7 @@ async fn deleting_crawl_channel_preserves_resources_and_discards_inflight_page()
     let resource_ids: Vec<String> = sqlx::query_scalar("SELECT resource_id FROM resource_occurrences WHERE channel_id=$1 ORDER BY resource_id").bind(&channel).fetch_all(&pool).await.unwrap();
     assert_eq!(resource_ids.len(), 2);
     let resources_before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap();
-    let links_before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(l) FROM resource_links l WHERE resource_id=ANY($1) ORDER BY resource_id,identity").bind(&resource_ids).fetch_all(&pool).await.unwrap();
+    let links_before: Vec<Value> = sqlx::query_scalar("SELECT links_json FROM managed_resources WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap();
     let job: i64 = sqlx::query_scalar("INSERT INTO crawl_jobs(channel_id,kind) VALUES($1,'sync') RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
     let failure: i64 = sqlx::query_scalar("INSERT INTO crawl_page_failures(channel_id,job_id,retry_job_id,kind,last_error) VALUES($1,$2,$2,'sync','fixture') RETURNING id").bind(&channel).bind(job).fetch_one(&pool).await.unwrap();
     sqlx::query("UPDATE crawl_jobs SET failure_id=$2 WHERE id=$1").bind(job).bind(failure).execute(&pool).await.unwrap();
@@ -1480,7 +1480,7 @@ async fn deleting_crawl_channel_preserves_resources_and_discards_inflight_page()
     }
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM source_messages WHERE channel_id=$1").bind(&other).fetch_one(&pool).await.unwrap(), 1);
     assert_eq!(sqlx::query_scalar::<_, Value>("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap(), resources_before);
-    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT to_jsonb(l) FROM resource_links l WHERE resource_id=ANY($1) ORDER BY resource_id,identity").bind(&resource_ids).fetch_all(&pool).await.unwrap(), links_before);
+    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT links_json FROM managed_resources WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap(), links_before);
     assert_eq!(call(&router, "DELETE", &path, Some(&session.token), json!({})).await.0, StatusCode::NOT_FOUND);
     state.auth().revoke_session(&session).await.unwrap();
     server.abort();

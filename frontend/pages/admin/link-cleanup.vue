@@ -6,6 +6,7 @@ import { apiFetch, apiErrorMessage, setDocumentHead } from '../../src/appRuntime
 import { CLOUD_TYPE_LABELS } from '../../shared/cloudTypes';
 import { Button } from '../../components/admin/ui/button';
 import AdminSelect from '../../components/admin/AdminSelect.vue';
+import AdminPagination from '../../components/admin/AdminPagination.vue';
 import AdminDialog from '../../components/admin/AdminDialog.vue';
 import AdminRowActions from '../../components/admin/AdminRowActions.vue';
 import LinkTaskTable from '../../components/admin/LinkTaskTable.vue';
@@ -21,6 +22,7 @@ const route = useRoute(), router = useRouter();
 const filters = computed(() => cleanupFilters(route.query));
 const page = computed(() => filters.value.page), status = computed(() => filters.value.status);
 const tasks = ref<Task[]>([]), total = ref(0);
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.value.pageSize)));
 const loading = ref(false), busy = ref<number | null>(null), error = ref(''), notice = ref('');
 const detail = ref<Task | null>(null), paused = ref<boolean | null>(null), loaded = ref(false), updatedAt = ref('');
 const fileLimit = ref(50);
@@ -28,19 +30,20 @@ const visibleFiles = computed(() => detail.value?.files?.slice(0, fileLimit.valu
 const confirm = useAdminConfirm();
 let controller: AbortController | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
-function filter(key: 'status' | 'provider', value: string) { void router.replace({ query: { ...route.query, [key]: value || undefined, page: undefined } }); }
-function changePage(value: number) { void router.replace({ query: { ...route.query, page: value > 1 ? String(value) : undefined } }); }
+function filter(key: 'status' | 'provider', value: string) { void router.replace({ query: { ...route.query, [key]: value || undefined, before: undefined, page: undefined } }); }
+function changePage(value: number) { void router.replace({ query: { ...route.query, before: undefined, page: value > 1 ? String(value) : undefined } }); }
+function changePageSize(value: number) { if (loading.value || busy.value != null) return; void router.replace({ query: { ...route.query, before: undefined, page: undefined, pageSize: String(value) } }); }
 async function load(quiet = false) {
   if (quiet && loading.value) return;
   controller?.abort(); controller = new AbortController(); const active = controller;
   loading.value = true; error.value = '';
   try {
-    const query = new URLSearchParams({ status: status.value, page: String(page.value), provider: filters.value.provider });
+    const query = new URLSearchParams({ status: status.value, page: String(page.value), pageSize: String(filters.value.pageSize), provider: filters.value.provider });
     const result = await apiFetch<{ data: { items: Task[]; total: number } }>(`/api/admin/link-cleanup?${query}`, { signal: active.signal, cache: 'no-store', silentError: true });
     if (controller !== active || active.signal.aborted) return;
     tasks.value = result.data.items; total.value = result.data.total;
     loaded.value = true; updatedAt.value = new Date().toISOString();
-    if (page.value > Math.max(1, Math.ceil(total.value / 30))) changePage(Math.max(1, Math.ceil(total.value / 30)));
+    if (page.value > totalPages.value) changePage(totalPages.value);
     if (detail.value) detail.value = tasks.value.find(t => t.id === detail.value?.id) || null;
   } catch (e) { if (!active.signal.aborted) error.value = apiErrorMessage(e, '读取清理任务失败，请重试。'); }
   finally { if (controller === active) loading.value = false; }
@@ -89,7 +92,7 @@ onBeforeUnmount(() => { controller?.abort(); clearInterval(timer); document.remo
           <td class="action-cell"><AdminRowActions :label="`清理任务 ${task.id} 操作`"><Button variant="ghost" :disabled="busy != null" @click="detail=task">查看产物与详情</Button><Button v-if="task.canRetry" variant="ghost" :disabled="busy != null || loading || !!error" @click="retry(task)">{{busy===task.id?'提交中…':'核实后重试'}}</Button></AdminRowActions></td>
         </tr>
       </tbody>
-      <template #footer><footer class="cleanup-pagination"><span>共 {{total}} 条 · 第 {{page}} / {{Math.max(1,Math.ceil(total/30))}} 页</span><Button variant="outline" :disabled="loading || busy != null || page <= 1" @click="changePage(page - 1)">上一页</Button><Button variant="outline" :disabled="loading || busy != null || page * 30 >= total" @click="changePage(page + 1)">下一页</Button></footer></template>
+      <template #footer><AdminPagination :page="page" :total-pages="totalPages" :total="total" :page-size="filters.pageSize" :disabled="loading || busy != null" @change="changePage" @update:page-size="changePageSize" /></template>
     </LinkTaskTable>
     <AdminDialog v-if="detail" drawer wide :busy="busy != null" :title="`清理任务 #${detail.id}`" description="核实账号、目录和文件清单后再重试。没有强制删除入口。" @close="detail = null">
       <div class="cleanup-detail"><p v-if="detail.lastErrorCode" class="cleanup-error">{{ cleanupError(detail.lastErrorCode,detail.status) }}</p><dl><dt>原始分享</dt><dd>{{ detail.originalUrl }}</dd><dt>项目目录</dt><dd>{{ detail.targetDir }}</dd><dt>本流程子目录</dt><dd>{{ detail.ownedDirPath || detail.ownedDirId || '未确认' }}</dd><dt>产物状态 / 写入阶段</dt><dd>{{ cleanupLabel(detail.artifactState) }} / {{ cleanupLabel(detail.writeStage) }}</dd><dt>清理到期时间</dt><dd>{{ date(detail.cleanupAfter) }}</dd><dt>计划尝试时间</dt><dd>{{ date(detail.runAfter) }}</dd><dt>已创建分享 ID</dt><dd>{{ detail.shares.join('、') || '无已确认分享' }}</dd></dl><h3>已确认的文件清单（{{ detail.files?.length || 0 }}）</h3><ul v-if="visibleFiles.length"><li v-for="entry in visibleFiles" :key="entry.file.id">{{ entry.file.name }} · {{ entry.file.id }}</li></ul><p v-else>未记录文件清单；产物不确定时仍需核实，重试不会跳过此检查。</p><Button v-if="(detail.files?.length || 0) > fileLimit" variant="outline" @click="fileLimit += 50">显示更多文件</Button><p v-if="!detail.canRetry" class="task-meta">{{ retryUnavailable(detail.retryUnavailableReason) }}</p><Button v-else :disabled="busy != null || loading || !!error" @click="retry(detail)">{{ busy === detail.id ? '提交中…' : '核实后重试' }}</Button></div>
@@ -99,9 +102,9 @@ onBeforeUnmount(() => { controller?.abort(); clearInterval(timer); document.remo
 <style scoped>
 @layer components {
 .cleanup-page { display:grid; gap:16px; min-width:0; color:var(--foreground); font-size:14px; line-height:1.6; }
-.cleanup-heading,.cleanup-toolbar,.task-heading,.task-actions,.cleanup-pagination { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.cleanup-heading,.cleanup-toolbar,.task-heading,.task-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .cleanup-heading,.task-heading { justify-content:space-between; }.cleanup-heading h1 { display:flex; align-items:center; gap:10px; font-size:24px; margin:0; }.cleanup-heading p,.task-meta { color:var(--muted-foreground); }.cleanup-toolbar span { margin-right:auto; }.cleanup-toolbar a,.cleanup-warning a { text-decoration:underline; text-underline-offset:3px; }
-.cleanup-page button { min-height:44px; }.cleanup-error { color:var(--destructive); }.cleanup-warning { padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--muted); }.cleanup-empty { text-align:center; padding:32px!important; color:var(--muted-foreground); }.cleanup-pagination { justify-content:flex-end; padding:14px; border-top:1px solid var(--border); }.cleanup-pagination>span { margin-right:auto; color:var(--muted-foreground); font-size:12px; }.cleanup-detail { padding:24px; overflow-wrap:anywhere; }.cleanup-detail dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:12px; }.cleanup-detail dd { margin:0; }.cleanup-detail dt { color:var(--muted-foreground); }
+.cleanup-page button { min-height:44px; }.cleanup-error { color:var(--destructive); }.cleanup-warning { padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--muted); }.cleanup-empty { text-align:center; padding:32px!important; color:var(--muted-foreground); }.cleanup-detail { padding:24px; overflow-wrap:anywhere; }.cleanup-detail dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:12px; }.cleanup-detail dd { margin:0; }.cleanup-detail dt { color:var(--muted-foreground); }
 .cleanup-toolbar :deep(.admin-select-trigger) { min-height:44px; }
 @media(max-width:600px) { .cleanup-page { font-size:16px; }.cleanup-heading { align-items:flex-start; }.cleanup-detail dl { grid-template-columns:1fr; gap:6px; }.cleanup-toolbar { align-items:flex-start; } }
 }

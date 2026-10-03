@@ -70,6 +70,7 @@
           :total-pages="pageCount"
           :page-size="pageSize"
           :total="total"
+          :disabled="loading || busy"
           @change="goPage"
           @update:page-size="changePageSize"
         />
@@ -213,6 +214,7 @@ import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
 import ResourceDescription from "../ResourceDescription.vue";
 import AdminPagination from "./AdminPagination.vue";
+import { AdminPageCursors } from "../../lib/adminPageCursors";
 import ConsoleIcon from "../sources/ConsoleIcon.vue";
 import type { CloudType, Link, ManagedResource } from "../../shared/apiModels";
 
@@ -314,19 +316,29 @@ function show(message: string, error = false) {
   noticeError.value = error;
 }
 
-async function loadResources() {
+const pageCursors = new AdminPageCursors();
+let listController: AbortController | undefined;
+onBeforeUnmount(() => listController?.abort());
+async function loadResources(reset = true) {
+  listController?.abort();
+  const controller = new AbortController();
+  listController = controller;
+  const requestedPage = page.value;
+  if (reset) pageCursors.clear();
   loading.value = true;
   try {
     const result = await apiFetch<any>("/api/admin/resources", {
       query: {
         q: query.value || undefined,
         cloudType: cloudType.value || undefined,
-        page: page.value,
-        pageSize: pageSize.value,
+        ...pageCursors.query(page.value, pageSize.value, [query.value, cloudType.value]),
       },
       cache: "no-store",
+      signal: controller.signal,
     });
+    if (controller.signal.aborted) return;
     const data = result?.data ?? result;
+    pageCursors.remember(requestedPage, data.nextCursor);
     resources.value = data.items || [];
     total.value = Number(data.total || 0);
     cloudTypes.value = data.cloudTypes || cloudTypes.value;
@@ -334,10 +346,11 @@ async function loadResources() {
       currentKeys.value.includes(id),
     );
   } catch (e: any) {
+    if (controller.signal.aborted) return;
     show(apiError(e), true);
     if (statusOf(e) === 401) locked.value = true;
   } finally {
-    loading.value = false;
+    if (listController === controller) loading.value = false;
   }
 }
 function resetQuery() {
@@ -347,12 +360,14 @@ function resetQuery() {
   void loadResources();
 }
 function goPage(next: number) {
+  if (loading.value || busy.value) return;
   if (next >= 1 && next <= pageCount.value && next !== page.value) {
     page.value = next;
-    void loadResources();
+    void loadResources(false);
   }
 }
 function changePageSize(size: number) {
+  if (loading.value || busy.value) return;
   pageSize.value = size;
   page.value = 1;
   void loadResources();
@@ -536,7 +551,7 @@ async function setEnabled(ids: string[], enabled: boolean) {
     busy.value = false;
   }
 }
-onMounted(loadResources);
+onMounted(() => loadResources());
 </script>
 <style scoped>
 @layer components {

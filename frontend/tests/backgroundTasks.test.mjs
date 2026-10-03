@@ -8,12 +8,13 @@ test('link task workbench covers link worker lanes without duplicating TG or man
   for(const c of TASK_KINDS)assert.ok(c.statuses.includes('all'));
 });
 test('task filters reject malformed URL state and inapplicable filters',()=>{
-  assert.deepEqual(taskFilters({kind:'checks',provider:'aliyun',status:'attention'}),{kind:'checks',provider:'aliyun',status:'attention',before:''});
-  assert.deepEqual(taskFilters({kind:['sync'],status:['all'],provider:'fake',before:['fake']}),{kind:'sync',status:'all',provider:'',before:''});
+  assert.deepEqual(taskFilters({kind:'checks',provider:'aliyun',status:'attention'}),{kind:'checks',provider:'aliyun',status:'attention',page:1,pageSize:20});
+  assert.deepEqual(taskFilters({kind:['sync'],status:['all'],provider:'fake',before:['fake']}),{kind:'sync',status:'all',provider:'',page:1,pageSize:20});
   for(const kind of ['crawl','operations'])assert.equal(taskFilters({kind}).kind,'sync');
   assert.equal(taskFilters({kind:'sync',status:'failed',provider:'quark'}).status,'all');
   assert.equal(taskFilters({kind:'maintenance',provider:'quark'}).provider,'');
-  assert.equal(taskFilters({before:'a'.repeat(2049)}).before,'');
+  assert.equal(taskFilters({before:'legacy-cursor'}).page,1);
+  assert.equal(taskFilters({page:'3',pageSize:'50'}).pageSize,50);
 });
 test('link workbench uses TG-style table actions and drawers for every category',async()=>{
   const page=await readFile(new URL('../pages/admin/tasks.vue',import.meta.url),'utf8');
@@ -90,7 +91,7 @@ test('configured state is separate from global scheduling, check policy and work
   assert.equal(laneView('sync',{...worker,syncEnabled:undefined},true).label,'状态未知');
   assert.equal(laneView('sync',null,true).label,'状态未知');
 });
-test('link worker controls have one UI entry, with no settings or monitor power switches',async()=>{
+test('link task controls keep lane switches while monitor cards offer global scheduling and navigation',async()=>{
   const controls=await readFile(new URL('../components/admin/LinkWorkerControls.vue',import.meta.url),'utf8');
   const cleanup=await readFile(new URL('../pages/admin/link-cleanup.vue',import.meta.url),'utf8');
   const monitor=await readFile(new URL('../components/monitor/MonitorPanel.vue',import.meta.url),'utf8');
@@ -100,8 +101,9 @@ test('link worker controls have one UI entry, with no settings or monitor power 
   assert.match(controls,/activateChecks:true/);
   assert.match(controls,/当前检测功能已关闭.*按现有账号、频率、额度和熔断策略/);
   assert.doesNotMatch(cleanup,/LinkWorkerControls/);
-  assert.doesNotMatch(monitor,/toggle\('links'\)|saveWorker\('links'|暂停清理|恢复清理/);
-  assert.match(monitor,/v-if="service.kind==='crawl'"/);
+  assert.match(monitor,/@click="toggle\(service.kind\)"/);
+  assert.match(monitor,/:to="MONITOR_WORKERS\[service.kind\].path"/);
+  assert.doesNotMatch(monitor,/v-if="service.kind==='crawl'"|暂停清理|恢复清理/);
   assert.doesNotMatch(policy,/checkEnabled|activateChecks/);
   assert.match(policy,/providerError\(props\.provider, form\)/);
   assert.match(routes,/path: "link-cleanup", redirect:.*kind: "cleanup"/);

@@ -11,9 +11,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import AdminDialog from '../admin/AdminDialog.vue';
 import ConsoleIcon from '../sources/ConsoleIcon.vue';
 import { apiFetch, apiErrorMessage } from '../../src/appRuntime';
+import { workerSettings, type LinkWorkerSettings } from '../../lib/linkWorkerControls';
 import {
   checkTaskRows, cleanupTaskRows, dateLabel, deliveryTotal, lastSourceRequest, monitorAlerts, monitorQueueRows,
   sourceLabel, sourceSuccessRate, sourceTone, type LinkTaskTone, type LiveSource, type MonitorData, type RuntimeState,
+  MONITOR_WORKERS, workerSchedulingEnabled, type MonitorWorkerKind,
 } from './monitorView';
 
 const emit = defineEmits<{ (event: 'unauthorized'): void }>();
@@ -25,7 +27,6 @@ const autoRefresh = ref(true);
 const search = ref('');
 const busy = ref('');
 const confirm = ref<'reset' | null>(null);
-const workerNames = { crawl: 'TG 采集', links: '链接后台处理' } as const;
 const compactButtonClass = 'tw:h-8 tw:rounded-md tw:px-3 tw:gap-1.5 tw:text-xs';
 const statusBadgeClass = 'state-badge tw:rounded-md tw:border-0 tw:text-[11px] tw:font-medium tw:gap-1 tw:px-1.5 tw:py-0.5';
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -48,12 +49,13 @@ const serviceCards = computed(() => {
     { key: 'api', name: 'API 服务', description: '接口与 Web 服务', icon: Server, state: runtime.services.api.state, kind: null },
     { key: 'postgres', name: 'PostgreSQL', description: '业务数据库', icon: Database, state: runtime.services.postgres.state, kind: null },
     { key: 'redis', name: 'Redis', description: '缓存与会话', icon: Layers, state: runtime.services.redis.state, kind: null },
-    { key: 'crawl', name: workerNames.crawl, description: '后台 Worker', icon: RadioTower, state: runtime.workers.crawl.state, kind: 'crawl' as const },
-    { key: 'links', name: workerNames.links, description: '后台 Worker', icon: Link2, state: runtime.workers.links.state, kind: 'links' as const },
+    { key: 'crawl', name: MONITOR_WORKERS.crawl.name, description: '后台 Worker', icon: RadioTower, state: runtime.workers.crawl.state, kind: 'crawl' as const },
+    { key: 'links', name: MONITOR_WORKERS.links.name, description: '后台 Worker', icon: Link2, state: runtime.workers.links.state, kind: 'links' as const },
   ];
 });
 const onlineItemCount = computed(() => serviceCards.value.filter((service) => service.state === 'online').length);
 const queueRows = computed(() => data.value ? monitorQueueRows(data.value) : []);
+const queueCountWidth = computed(() => Math.max(8, ...queueRows.value.map((row) => formatCount(row.queued).length)) + 'ch');
 const pressureMax = computed(() => Math.max(1, ...queueRows.value.map((row) => row.queued)));
 const queueTotals = computed(() => queueRows.value.reduce((total, row) => ({
   queued: total.queued + row.queued,
@@ -107,19 +109,17 @@ function sourceRatePercent(source: LiveSource) {
 function serviceLabel(state: RuntimeState) {
   return state === 'online' ? '在线' : state === 'offline' ? '离线' : state === 'unavailable' ? '不可用' : '状态未知';
 }
-function workerEnabled(kind: 'crawl' | 'links') {
-  return !!data.value?.workers[kind].enabled;
+function workerEnabled(kind: MonitorWorkerKind) {
+  return workerSchedulingEnabled(kind, data.value?.workers[kind]);
 }
-function scheduleLabel(kind: 'crawl' | 'links') {
-  const worker = data.value?.workers[kind];
-  if (kind === 'links') return worker?.scheduleEnabled == null ? '调度未知' : worker.scheduleEnabled ? '调度已启用' : '调度已暂停';
-  if (!worker) return '调度状态未知';
-  return '调度' + (worker.enabled ? '已启用' : '已暂停');
+function scheduleLabel(kind: MonitorWorkerKind) {
+  const enabled = workerEnabled(kind);
+  return enabled == null ? '调度状态未知' : enabled ? '调度已启用' : '调度已暂停';
 }
-function workerToggleLabel(kind: 'crawl') {
+function workerToggleLabel(kind: MonitorWorkerKind) {
   if (busy.value === kind) return '保存中…';
-  const enabled = data.value?.workers[kind].enabled;
-  return enabled ? '暂停调度' : '恢复调度';
+  const enabled = workerEnabled(kind);
+  return enabled == null ? '状态未知' : enabled ? '暂停调度' : '恢复调度';
 }
 function datePart(value: string | null | undefined, part: 'date' | 'time') {
   if (!value) return '暂无记录';
@@ -148,22 +148,28 @@ async function load() {
     loading.value = false;
   }
 }
-async function toggle(kind: 'crawl') {
-  if (!data.value || busy.value) return;
-  await saveWorker(kind, !data.value.workers[kind].enabled);
+async function toggle(kind: MonitorWorkerKind) {
+  const enabled = workerEnabled(kind);
+  if (!data.value || busy.value || loading.value || error.value || enabled == null) return;
+  await saveWorker(kind, !enabled);
 }
-async function saveWorker(kind: 'crawl', enabled: boolean) {
+async function saveWorker(kind: MonitorWorkerKind, enabled: boolean) {
   busy.value = kind;
   error.value = '';
   notice.value = '';
   try {
-    await apiFetch('/api/admin/runtime/workers/' + kind, { method: 'PUT', body: { enabled } });
-    if (data.value) data.value.workers[kind].enabled = enabled;
-    confirm.value = null;
-    notice.value = workerNames[kind] + (enabled ? '已恢复调度' : '已暂停调度') + '。当前批次完成后生效。';
+    const result = await apiFetch<{ data: { settings: LinkWorkerSettings & { crawlEnabled: boolean } } }>(
+      '/api/admin/runtime/workers/' + MONITOR_WORKERS[kind].endpoint, { method: 'PUT', body: { enabled } },
+    );
+    if (disposed) return;
+    if (data.value) {
+      data.value.workers.crawl.enabled = result.data.settings.crawlEnabled;
+      Object.assign(data.value.workers.links, workerSettings(result.data.settings));
+    }
+    notice.value = MONITOR_WORKERS[kind].name + (workerEnabled(kind) ? '已恢复调度。' : '已暂停调度，当前批次会继续完成。');
     await load();
   } catch (e) {
-    handleError(e);
+    if (!disposed) handleError(e);
   } finally {
     busy.value = '';
   }
@@ -203,7 +209,7 @@ onBeforeUnmount(() => {
       <div class="toolbar-actions">
         <span v-if="data" class="updated-time" :title="dateLabel(data.generatedAt)">{{ datePart(data.generatedAt, 'time') }} 更新</span>
         <label class="refresh-switch"><Switch v-model="autoRefresh" aria-label="每 30 秒自动刷新" />30 秒自动刷新</label>
-        <Button variant="outline" :class="compactButtonClass" size="sm" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spinning: loading }" />{{ loading ? '刷新中…' : '刷新' }}</Button>
+        <Button variant="outline" :class="compactButtonClass" size="sm" :disabled="loading || !!busy" @click="load"><RefreshCw :size="14" :class="{ spinning: loading }" />{{ loading ? '刷新中…' : '刷新' }}</Button>
       </div>
     </header>
     <p v-if="error" class="runtime-error error-notice" role="alert"><span class="notice-copy"><AlertTriangle :size="14" class="notice-icon" /><span class="notice-text">{{ error }}<span v-if="data"> · 当前显示上次成功读取的数据</span></span></span><Button v-if="!data" size="sm" variant="outline" :disabled="loading" @click="load">重试</Button></p>
@@ -221,8 +227,8 @@ onBeforeUnmount(() => {
             <div v-else-if="service.key === 'redis'" class="service-info"><span>缓存 · 会话 · 心跳</span></div>
             <div v-else-if="service.kind" class="service-info"><span><b>{{ formatCount(data.workers[service.kind].count) }}</b> 个 Worker</span><span>{{ scheduleLabel(service.kind) }}</span></div>
             <footer v-if="service.kind" class="service-actions">
-              <Button v-if="service.kind==='crawl'" variant="ghost" size="sm" :class="['schedule-button', compactButtonClass]" :disabled="!!busy || loading" :aria-label="workerNames.crawl + '：' + workerToggleLabel('crawl')" @click="toggle('crawl')"><i class="schedule-dot" :class="workerEnabled('crawl') ? 'is-on' : 'is-paused'" aria-hidden="true"></i>{{ workerToggleLabel('crawl') }}</Button>
-              <RouterLink v-else to="/admin/tasks" class="panel-link">管理任务<ArrowUpRight :size="13" aria-hidden="true" /></RouterLink>
+              <Button variant="ghost" size="sm" :class="['schedule-button', compactButtonClass, 'tw:px-1']" :disabled="!!busy || loading || !!error || workerEnabled(service.kind) == null" :aria-busy="busy === service.kind" :aria-label="service.name + '：' + workerToggleLabel(service.kind)" @click="toggle(service.kind)"><i class="schedule-dot" :class="{ 'is-on': workerEnabled(service.kind) === true, 'is-paused': workerEnabled(service.kind) === false }" aria-hidden="true"></i>{{ workerToggleLabel(service.kind) }}</Button>
+              <RouterLink :to="MONITOR_WORKERS[service.kind].path" class="panel-link worker-manage-link" :aria-label="service.name + '：管理任务'">管理任务<ArrowUpRight :size="13" aria-hidden="true" /></RouterLink>
             </footer>
           </Card>
         </div>
@@ -243,7 +249,7 @@ onBeforeUnmount(() => {
         <Card class="monitor-panel queue-panel tw:gap-0 tw:py-0">
           <header class="panel-heading"><h2>任务队列</h2><span class="muted-label">当前快照</span></header>
           <div class="queue-summary"><span>待处理 <strong>{{ formatCount(queueTotals.queued) }}</strong></span><span>执行中 <strong>{{ formatCount(queueTotals.running) }}</strong></span><span :class="{ 'runtime-error': queueTotals.failed > 0 }">失败 / 阻塞 <strong>{{ formatCount(queueTotals.failed) }}</strong></span></div>
-          <Table class="queue-table tw:text-[11px]"><TableHeader><TableRow><TableHead>任务</TableHead><TableHead>排队量</TableHead><TableHead class="tw:text-right">执行</TableHead><TableHead class="tw:text-right">失败 / 阻塞</TableHead></TableRow></TableHeader><TableBody>
+          <Table class="queue-table tw:text-[11px]" :style="{ '--queue-count-width': queueCountWidth }"><TableHeader><TableRow><TableHead scope="col">任务</TableHead><TableHead scope="col">排队量</TableHead><TableHead scope="col">执行</TableHead><TableHead scope="col">失败 / 阻塞</TableHead></TableRow></TableHeader><TableBody>
             <TableRow v-for="queue in queueRows" :key="queue.key"><TableCell><RouterLink :to="queue.key==='crawl'?'/admin/crawl':{path:'/admin/tasks',query:{kind:queue.key}}" class="panel-link">{{ queue.label }} <ConsoleIcon name="arrow" :size="12" /></RouterLink></TableCell><TableCell><div class="queue-bar"><div class="queue-track" aria-hidden="true"><span :style="{ width: chartWidth(queue.queued) }"></span></div><b>{{ formatCount(queue.queued) }}</b></div></TableCell><TableCell class="tw:text-right">{{ formatCount(queue.running) }}</TableCell><TableCell class="tw:text-right" :class="{ 'runtime-error': (queue.failed ?? 0) + queue.blocked > 0 }">{{ queue.failed == null ? '—' : formatCount(queue.failed + queue.blocked) }}</TableCell></TableRow>
           </TableBody></Table>
 
@@ -364,7 +370,9 @@ onBeforeUnmount(() => {
   .state-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; white-space: normal; border: 0; border-radius: 5px; font-size: 11px; font-weight: 400; line-height: 1.5; }
   .service-name { margin: 10px 0 8px; font-size: 13px; font-weight: 600; }
   .service-info { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 11px; color: var(--muted-foreground); }.service-info b { color: var(--foreground); font-weight: 500; }.service-info time { font-variant-numeric: tabular-nums; }
-  .service-actions { display: flex; align-items: center; margin-top: auto; padding-top: 10px; }.service-actions .schedule-button { padding: 0; height: 22px; color: var(--muted-foreground); font-size: 11px; min-height: 22px; }
+  .service-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 10px; }
+  .service-actions .schedule-button { height: 32px; min-height: 32px; color: var(--muted-foreground); }
+  .service-actions .worker-manage-link { min-height: 32px; padding: 0 4px; }
   .section-note, .panel-note { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--monitor-muted); font-size: 11px; }
   .monitor-panel { min-width: 0; border-color: var(--monitor-card-border); color: var(--monitor-ink); }
   .panel-heading { padding: 15px 16px; }
@@ -412,15 +420,19 @@ onBeforeUnmount(() => {
   .queue-summary strong { margin-left: 0; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--monitor-ink); }
   .queue-summary span.runtime-error { background: var(--monitor-error-bg); }
   .queue-summary span.runtime-error strong { color: var(--monitor-error); }
-  .queue-table { font-size: 11px; }
+  .queue-panel :deep(.queue-table) { min-width: 520px; font-size: 11px; }
+  .queue-panel :deep([data-slot="table-head"]:first-child) { width: 28%; }
+  .queue-panel :deep([data-slot="table-head"]:nth-child(2)) { width: 40%; }
+  .queue-panel :deep([data-slot="table-head"]:nth-child(3)) { width: 12%; }
+  .queue-panel :deep([data-slot="table-head"]:last-child) { width: 20%; }
   .queue-panel :deep([data-slot="table-head"]), .queue-panel :deep([data-slot="table-cell"]) { padding: 10px 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
   .queue-panel :deep([data-slot="table-head"]) { height: auto; background: var(--monitor-head-bg); color: var(--monitor-muted); font-weight: 400; }
   .queue-panel :deep([data-slot="table-row"]) { border-color: var(--monitor-line); }
   .queue-panel :deep([data-slot="table-cell"]:first-child), .queue-panel :deep([data-slot="table-head"]:first-child) { padding-left: 16px; }
   .queue-panel :deep([data-slot="table-cell"]:last-child), .queue-panel :deep([data-slot="table-head"]:last-child) { padding-right: 16px; }
-  .queue-bar { display: flex; align-items: center; gap: 10px; min-width: 115px; }
-  .queue-bar b { min-width: 30px; font-weight: 500; text-align: right; }
-  .queue-track { flex: 1; min-width: 50px; height: 6px; overflow: hidden; border-radius: 5px; background: var(--muted); }
+  .queue-bar { display: grid; grid-template-columns: minmax(50px, 1fr) var(--queue-count-width); align-items: center; gap: 10px; min-width: calc(60px + var(--queue-count-width)); }
+  .queue-bar b { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+  .queue-track { height: 6px; overflow: hidden; border-radius: 5px; background: var(--muted); }
   .queue-track span { display: block; height: 100%; border-radius: 5px; background: var(--monitor-bar); }
   .attention-panel > .panel-heading { border-bottom: 1px solid var(--monitor-line); }
   .attention-item { display: flex; align-items: flex-start; gap: 8px; margin: 0 10px; padding: 11px 6px; border-bottom: 1px solid var(--monitor-line); border-radius: 8px; transition: background .15s; }
@@ -463,9 +475,6 @@ onBeforeUnmount(() => {
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .spinning { animation: monitor-spin 1s linear infinite; }
   @keyframes monitor-spin { to { transform: rotate(360deg); } }
-  @media (max-width: 1100px) {
-    .service-actions { gap: 4px; }
-  }
   @media (max-width: 1150px) {
     .service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .result-grid, .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
@@ -485,7 +494,8 @@ onBeforeUnmount(() => {
     .service-card-top :deep(.state-badge) { grid-column: 3; grid-row: 1; justify-self: end; }
     .service-name { grid-column: 2; grid-row: 1; margin: 0; }
     .service-info { grid-column: 2; grid-row: 2; }
-    .service-actions { grid-column: 3; grid-row: 2; padding: 0; margin: 0; }
+    .service-actions { grid-column: 2 / -1; grid-row: 3; justify-content: flex-start; padding: 0; margin: 0; }
+    .service-actions .schedule-button, .service-actions .worker-manage-link { height: 44px; min-height: 44px; }
     .result-item p { gap: 4px; }
     .monitor-source-search { max-width: none; flex: 1; min-width: 170px; }
   }
@@ -497,5 +507,11 @@ onBeforeUnmount(() => {
     .service-card, .attention-item, .panel-link, .panel-link svg, .source-rate-track span { transition: none; }
     .spinning { animation: none; }
   }
+}
+/* Keep numeric headers and cells aligned over the unlayered admin table defaults. */
+.queue-panel :deep([data-slot="table-head"]:nth-child(n + 2)),
+.queue-panel :deep([data-slot="table-cell"]:nth-child(n + 2)) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 </style>
