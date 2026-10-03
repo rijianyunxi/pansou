@@ -771,7 +771,7 @@ impl Extended {
         let value=match self.wire.provider {
             Provider::Aliyun=>self.post("adrive/v2/share_link/create",json!({"drive_id":self.drive_id,"file_id_list":ids,"expiration":expires.to_rfc3339(),"share_pwd":"","share_name":"pansou 分享"}),None,true).await?,
             Provider::Xunlei=>self.post("drive/v1/share/batch",json!({"file_ids":ids,"need_password":true,"expiration_days":days}),None,true).await?,
-            Provider::Guangya=>self.post("nd.bizuserres.s/v1/share_file",json!({"fileIds":ids,"title":"pansou 分享","validateDuration":days,"shareType":1,"code":"","autoFillCode":true,"downloadType":1,"trafficLimit":"0","maxRestoreCount":0}),None,true).await?,
+            Provider::Guangya=>self.post("nd.bizuserres.s/v1/share_file",json!({"fileIds":ids,"title":"pansou 分享","validateDuration":days*24*3600,"shareType":1,"code":"","autoFillCode":true,"downloadType":1,"trafficLimit":"0","maxRestoreCount":0}),None,true).await?,
             _=>unreachable!(),
         };
         let data = self.data(&value);
@@ -791,7 +791,7 @@ impl Extended {
             }
             if id.is_empty() {
                 id = parsed.key;
-            } else if id != parsed.key {
+            } else if !share_id_matches(self.wire.provider, &id, &parsed.key) {
                 return Err(self
                     .wire
                     .error(ErrorKind::Upstream, "分享 ID 与链接不一致，保留记录待核实"));
@@ -902,6 +902,35 @@ mod tests {
             Wire::new(reqwest::Client::new(), provider, raw.clone()),
             &raw,
         )
+    }
+
+    #[test]
+    fn guangya_share_id_prefix_belongs_to_the_link_key() {
+        // Captured live: shareId "1953326881503436886" with the share URL
+        // .../s/1953326881503436886_aeXCPJwocgzRgD8m?code=bmwv.
+        assert!(share_id_matches(
+            Provider::Guangya,
+            "1953326881503436886",
+            "1953326881503436886_aeXCPJwocgzRgD8m"
+        ));
+        assert!(!share_id_matches(
+            Provider::Guangya,
+            "1953326881503436887",
+            "1953326881503436886_aeXCPJwocgzRgD8m"
+        ));
+        // A bare prefix without the id/suffix separator is still a mismatch,
+        // and other providers stay strict.
+        assert!(!share_id_matches(
+            Provider::Guangya,
+            "1953326881503436886",
+            "19533268815034368865_extra"
+        ));
+        assert!(!share_id_matches(
+            Provider::Aliyun,
+            "1953326881503436886",
+            "1953326881503436886_aeXCPJwocgzRgD8m"
+        ));
+        assert!(share_id_matches(Provider::Aliyun, "abc", "abc"));
     }
 
     #[test]
@@ -1079,4 +1108,19 @@ mod tests {
             server.abort();
         }
     }
+}
+
+/// Does the share id the platform reported belong to the share link it came
+/// with? Aliyun and Xunlei echo the link key verbatim. The live guangya
+/// `share_file` response (2026-10-03) reports the numeric id while the URL key
+/// is `<numeric id>_<suffix>`, so a guangya link key with that prefix belongs
+/// to the reported id; anything else is a mismatch worth pausing on.
+fn share_id_matches(provider: Provider, id: &str, link_key: &str) -> bool {
+    if id == link_key {
+        return true;
+    }
+    provider == Provider::Guangya
+        && link_key
+            .strip_prefix(id)
+            .is_some_and(|rest| rest.starts_with('_') && rest.len() > 1)
 }

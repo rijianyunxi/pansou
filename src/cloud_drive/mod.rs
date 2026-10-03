@@ -365,6 +365,39 @@ impl Drive {
         }
         Ok(context)
     }
+    /// Resolve with a previously recorded share identity. Baidu's page parse is
+    /// the slowest step of a delivery and the extraction-code round trip is not,
+    /// so a cached `{shareId, owner, files}` turns a retry into one fast call.
+    /// Stale or wrong caches still fail closed: verification runs against the
+    /// live share, and the transferred ids must exactly match the source list.
+    pub async fn resolve_cached(
+        &self,
+        reference: &Reference,
+        cached: Option<&Value>,
+    ) -> Result<Context, DriveError> {
+        if self.wire.provider == Provider::Baidu {
+            if let Some(cached) = cached {
+                let share_id = scalar(&cached["shareId"]);
+                let owner = scalar(&cached["owner"]);
+                let files: Vec<File> = serde_json::from_value(cached["files"].clone())
+                    .map_err(|_| {
+                        self.wire.error(ErrorKind::Upstream, "缓存的分享列表无效")
+                    })?;
+                if !share_id.is_empty() && !owner.is_empty() && !files.is_empty() {
+                    let sekey = self.baidu.verify_share(reference).await?;
+                    return Ok(Context {
+                        reference: reference.clone(),
+                        title: String::new(),
+                        files,
+                        token: sekey,
+                        owner,
+                        share_id,
+                    });
+                }
+            }
+        }
+        self.resolve(reference).await
+    }
     pub async fn list(&self, dir: &str) -> Result<Vec<File>, DriveError> {
         match self.wire.provider {
             Provider::Baidu => self.baidu.list(dir).await,

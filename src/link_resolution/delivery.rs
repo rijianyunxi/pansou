@@ -1,5 +1,6 @@
 use super::*;
-use crate::cloud_drive::{Drive, File, Provider, ShareInput};
+use crate::cloud_drive::{Drive, File, Provider, Reference, ShareInput};
+use sha2::{Digest, Sha256};
 
 /// One row of `cloud_provider_policies`: the delivery switch/parameters plus the
 /// background detection parameters for a single provider. This struct is both the
@@ -264,9 +265,10 @@ pub(super) async fn original_context(
     .parse()?;
     // Bound the read itself, not the whole observation future: cancellation must not skip -1.
     let remaining = (deadline - Utc::now()).num_milliseconds().clamp(1, 45000);
+    let cached = share_context(state, &reference).await;
     let result = tokio::time::timeout(
         Duration::from_millis(remaining as u64),
-        drive.resolve(&reference),
+        drive.resolve_cached(&reference, cached.as_ref()),
     )
     .await;
     let value = match &result {
@@ -281,8 +283,58 @@ pub(super) async fn original_context(
     };
     super::record_check(state, link, &value).await?;
     match result {
-        Ok(Ok(ctx)) if !ctx.files.is_empty() => Ok(ctx),
+        Ok(Ok(ctx)) if !ctx.files.is_empty() => {
+            // Remember the share identity so a follow-up delivery of the same
+            // link skips the slow page parse: the first attempt often misses
+            // the response window on slow providers, and this is what makes
+            // the retry fit. Metadata only: ids and public file entries, no
+            // session tokens.
+            if drive.wire.provider == Provider::Baidu {
+                stash_share_context(
+                    state,
+                    &reference,
+                    &json!({"shareId":ctx.share_id,"owner":ctx.owner,"files":ctx.files}),
+                )
+                .await;
+            }
+            Ok(ctx)
+        }
         _ => Err(ApiError::Unavailable("原分享暂不可取用".into())),
+    }
+}
+
+/// Redis cache of a resolved share's public identity, keyed by the normalized
+/// link. Failures degrade to the full resolve and are never surfaced.
+async fn share_context(state: &AppState, reference: &Reference) -> Option<Value> {
+    let key = format!(
+        "pansou:share-context:{}:{:x}",
+        reference.provider.name(),
+        Sha256::digest(format!("{}|{}", reference.key, reference.password))
+    );
+    let mut conn = state.redis.connection().ok()?;
+    let raw: Option<String> = redis::cmd("GET")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+        .ok();
+    raw.and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+async fn stash_share_context(state: &AppState, reference: &Reference, value: &Value) {
+    let key = format!(
+        "pansou:share-context:{}:{:x}",
+        reference.provider.name(),
+        Sha256::digest(format!("{}|{}", reference.key, reference.password))
+    );
+    if let Ok(mut conn) = state.redis.connection() {
+        let _: Option<()> = redis::cmd("SET")
+            .arg(&key)
+            .arg(value.to_string())
+            .arg("EX")
+            .arg(1800)
+            .query_async(&mut conn)
+            .await
+            .ok();
     }
 }
 pub(super) async fn deliver(
@@ -473,10 +525,9 @@ pub(super) async fn deliver(
     sqlx::query("UPDATE link_resolve_requests SET share_cache_id=$3 WHERE subject_key=$1 AND request_key=$2").bind(subject(session)).bind(key).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     let workflow = async {
-        let before = drive.list(dir).await.map_err(|e| e.api())?;
-        if before.iter().any(|f| f.name == format!("pansou-{id}")) {
-            return Err(ApiError::Conflict("目录已存在".into()));
-        }
+        // The per-link directory name carries a fresh UUID, so a same-name
+        // leftover cannot occur; the empty check after creation plus the
+        // recorded tree remain the ownership evidence.
         authorize_write(state, session, key).await?;
         let owned = drive
             .create_directory(dir, &format!("pansou-{id}"))

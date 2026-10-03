@@ -101,7 +101,10 @@ impl Baidu {
         *token = Some(result.clone());
         Ok(result)
     }
-    pub async fn resolve(&self, r: &Reference) -> Result<Context, DriveError> {
+    /// Exchange the extraction code for the share session token (`sekey`).
+    /// Split out of `resolve` so a delivery that already knows the share's
+    /// identity and file list only pays this one fast round trip.
+    pub async fn verify_share(&self, r: &Reference) -> Result<String, DriveError> {
         let mut params = self.params();
         params.extend([
             ("surl", r.key.clone()),
@@ -128,10 +131,13 @@ impl Baidu {
                 .error(ErrorKind::Password, "百度未返回分享授权，请检查提取码"));
         }
         let encoded = format!("key={}", randsk.replace('+', "%2B"));
-        let sekey = url::form_urlencoded::parse(encoded.as_bytes())
+        Ok(url::form_urlencoded::parse(encoded.as_bytes())
             .next()
             .map(|(_, v)| v.into_owned())
-            .unwrap_or_default();
+            .unwrap_or_default())
+    }
+    pub async fn resolve(&self, r: &Reference) -> Result<Context, DriveError> {
+        let sekey = self.verify_share(r).await?;
         let html = self
             .wire
             .request(
