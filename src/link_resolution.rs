@@ -3,7 +3,7 @@ mod delivery;
 mod management;
 mod worker;
 pub use delivery::{clear_cloud_provider_delivery, get_cloud_providers, put_cloud_provider};
-pub use management::{cleanup_jobs, retry_cleanup};
+pub use management::{cleanup_jobs, ignore_cleanup, retry_cleanup};
 pub use worker::run as worker;
 
 use crate::{

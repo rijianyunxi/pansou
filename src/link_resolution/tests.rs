@@ -318,6 +318,14 @@ async fn extended_providers_transfer_reuse_timeout_cleanup_and_admin_retry() {
         let attention=call(&router,&admin,&format!("/api/admin/link-cleanup?status=attention&provider={provider}"),Value::Null,
         ).await;assert_eq!(attention.0,StatusCode::OK);assert!(!attention.1.to_string().contains("fixture-access"));let job=attention.1["data"]["items"][0]["id"].as_i64().unwrap();assert_eq!(attention.1["data"]["items"][0]["status"],"blocked");
         assert_eq!(call(&router,&anon,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::FORBIDDEN);
+        assert_eq!(call(&router,&anon,&format!("/api/admin/link-cleanup/{job}/ignore"),json!({})).await.0,StatusCode::FORBIDDEN);
+        // Ignoring a blocked job removes it from the attention list and stops
+        // every automatic path; only a manual retry brings it back.
+        assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/ignore"),json!({})).await.0,StatusCode::OK);
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM link_cleanup_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap(),"ignored");
+        assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/ignore"),json!({})).await.0,StatusCode::CONFLICT);
+        assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup?status=ignored&provider={provider}"),Value::Null).await.1["data"]["total"],1);
+        assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup?status=attention&provider={provider}"),Value::Null).await.1["data"]["total"],0);
         upstream.lock().await.wrong_account=false;assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::OK);delivery::cleanup_tick(&state).await.unwrap();assert_eq!(upstream.lock().await.deleted,before+1);assert_eq!(call(&router,&admin,&format!("/api/admin/link-cleanup/{job}/retry"),json!({})).await.0,StatusCode::CONFLICT);
         upstream.lock().await.late=true;upstream.lock().await.multi_file=provider=="aliyun";let key=Uuid::new_v4();let start=tokio::time::Instant::now();let pending=call_once(&router,&anon,"/api/links/resolve",request(&out,key)).await;assert_eq!(pending.0,StatusCode::ACCEPTED);assert!(start.elapsed()<Duration::from_secs(2));
         tokio::time::sleep_until(start+Duration::from_millis(5100)).await;

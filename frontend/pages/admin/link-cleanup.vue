@@ -25,6 +25,7 @@ const tasks = ref<Task[]>([]), total = ref(0);
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.value.pageSize)));
 const loading = ref(false), busy = ref<number | null>(null), error = ref(''), notice = ref('');
 const detail = ref<Task | null>(null), paused = ref<boolean | null>(null), loaded = ref(false), updatedAt = ref('');
+const noticeAction = ref<'' | 'retry' | 'ignore'>('');
 const fileLimit = ref(50);
 const visibleFiles = computed(() => detail.value?.files?.slice(0, fileLimit.value) || []);
 const confirm = useAdminConfirm();
@@ -56,12 +57,23 @@ async function refreshWorker() {
 async function retry(task: Task) {
   if (busy.value != null || loading.value || error.value || !task.canRetry) return;
   if (!await confirm.confirm(`重新核实并清理任务 #${task.id}？将重新校验当前账号、目录身份和文件清单。校验不通过仍会阻塞；不会强制删除或清空回收站。`)) return;
-  busy.value = task.id; error.value = ''; notice.value = '';
+  busy.value = task.id; error.value = ''; notice.value = ''; noticeAction.value = 'retry';
   try {
     await apiFetch(`/api/admin/link-cleanup/${task.id}/retry`, { method: 'POST', silentError: true });
     notice.value = paused.value === true ? '已加入队列，但到期清理处于暂停状态，请在本页上方控制区恢复清理调度。' : paused.value === null ? '已加入队列；暂无法确认清理服务状态，可前往运行监控核实。' : '已加入清理队列，后台会重新核实并清理。';
     detail.value = null; await load();
   } catch (e) { error.value = apiErrorMessage(e, '重试失败，请刷新任务状态。'); }
+  finally { busy.value = null; }
+}
+async function ignore(task: Task) {
+  if (busy.value != null || loading.value || error.value) return;
+  if (!await confirm.confirm(`忽略任务 #${task.id}？忽略后不再自动重试或清理，云端产物保持现状（不撤销分享、不删除文件）；之后可在“已忽略”筛选中重试恢复。`)) return;
+  busy.value = task.id; error.value = ''; notice.value = ''; noticeAction.value = 'ignore';
+  try {
+    await apiFetch(`/api/admin/link-cleanup/${task.id}/ignore`, { method: 'POST', silentError: true });
+    notice.value = '已忽略该任务，云端产物保持现状，不再自动清理。';
+    detail.value = null; await load();
+  } catch (e) { error.value = apiErrorMessage(e, '忽略失败，请刷新任务状态。'); }
   finally { busy.value = null; }
 }
 function date(value: string) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN') : '未记录'; }
@@ -75,9 +87,9 @@ onBeforeUnmount(() => { controller?.abort(); clearInterval(timer); document.remo
 <template>
   <component :is="embedded?'section':'main'" class="cleanup-page" :aria-busy="loading" aria-label="链接清理">
     <header class="cleanup-heading"><div><h1 v-if="!embedded"><ListChecks :size="24" aria-hidden="true" />清理任务</h1><p>管理到期或取链超时的转存产物。重试仍严格检查账号、目录和文件归属。</p></div><Button variant="outline" :disabled="loading" @click="load(); refreshWorker()"><RefreshCw :size="16" />{{ loading ? '更新中…' : '刷新' }}</Button></header>
-    <div class="cleanup-toolbar"><label for="cleanup-status">任务状态</label><AdminSelect id="cleanup-status" :model-value="status" @update:model-value="filter('status', String($event))"><option value="attention">需要关注</option><option value="all">全部任务</option><option value="queued">等待清理</option><option value="running">清理中</option><option value="blocked">已阻塞</option><option value="failed">已失败</option><option value="completed">已完成</option></AdminSelect><label for="cleanup-provider">网盘</label><AdminSelect id="cleanup-provider" :model-value="filters.provider" @update:model-value="filter('provider', String($event))"><option value="">全部网盘</option><option v-for="p in DELIVERY_PROVIDERS" :key="p.key" :value="p.key">{{ p.name }}</option></AdminSelect><span>共 {{ total }} 条</span><RouterLink to="/admin/cloud-accounts">配置网盘账号与策略</RouterLink></div>
+    <div class="cleanup-toolbar"><label for="cleanup-status">任务状态</label><AdminSelect id="cleanup-status" :model-value="status" @update:model-value="filter('status', String($event))"><option value="attention">需要关注</option><option value="all">全部任务</option><option value="queued">等待清理</option><option value="running">清理中</option><option value="blocked">已阻塞</option><option value="failed">已失败</option><option value="completed">已完成</option><option value="ignored">已忽略</option></AdminSelect><label for="cleanup-provider">网盘</label><AdminSelect id="cleanup-provider" :model-value="filters.provider" @update:model-value="filter('provider', String($event))"><option value="">全部网盘</option><option v-for="p in DELIVERY_PROVIDERS" :key="p.key" :value="p.key">{{ p.name }}</option></AdminSelect><span>共 {{ total }} 条</span><RouterLink to="/admin/cloud-accounts">配置网盘账号与策略</RouterLink></div>
     <p v-if="updatedAt" class="task-meta">每 10 秒更新（详情或确认框打开时暂停）· 最近更新 {{ date(updatedAt) }}</p>
-    <p v-if="error" role="alert" class="cleanup-error">{{ error }} {{ loaded ? '当前显示上次读取的结果，重试已暂时禁用。' : '' }} <Button variant="outline" :disabled="loading" @click="load(); refreshWorker()">重新加载</Button></p><p v-if="notice" role="status">{{ notice }} <Button v-if="status !== 'queued'" variant="outline" @click="filter('status','queued')">查看等待清理</Button></p>
+    <p v-if="error" role="alert" class="cleanup-error">{{ error }} {{ loaded ? '当前显示上次读取的结果，重试已暂时禁用。' : '' }} <Button variant="outline" :disabled="loading" @click="load(); refreshWorker()">重新加载</Button></p><p v-if="notice" role="status">{{ notice }} <Button v-if="noticeAction==='retry' && status !== 'queued'" variant="outline" @click="filter('status','queued')">查看等待清理</Button><Button v-else-if="noticeAction==='ignore' && status !== 'ignored'" variant="outline" @click="filter('status','ignored')">查看已忽略</Button></p>
     <LinkTaskTable label="清理任务列表">
       <thead><tr><th scope="col">任务 / 云端产物</th><th scope="col">网盘</th><th scope="col">任务状态</th><th scope="col">处理阶段 / 原因</th><th scope="col">尝试</th><th scope="col">更新时间 / 计划执行</th><th scope="col" class="action-cell">操作</th></tr></thead>
       <tbody>
@@ -89,13 +101,13 @@ onBeforeUnmount(() => { controller?.abort(); clearInterval(timer); document.remo
           <td class="result-cell">{{cleanupLabel(task.stage)}}<small v-if="task.lastErrorCode" :title="cleanupError(task.lastErrorCode,task.status)">{{cleanupError(task.lastErrorCode,task.status)}}</small><small v-else-if="!task.canRetry" :title="retryUnavailable(task.retryUnavailableReason)">{{retryUnavailable(task.retryUnavailableReason)}}</small></td>
           <td>{{task.attempts}} 次</td>
           <td class="time-cell">{{date(task.updatedAt)}}<small>计划 {{date(task.runAfter)}}</small></td>
-          <td class="action-cell"><AdminRowActions :label="`清理任务 ${task.id} 操作`"><Button variant="ghost" :disabled="busy != null" @click="detail=task">查看产物与详情</Button><Button v-if="task.canRetry" variant="ghost" :disabled="busy != null || loading || !!error" @click="retry(task)">{{busy===task.id?'提交中…':'核实后重试'}}</Button></AdminRowActions></td>
+          <td class="action-cell"><AdminRowActions :label="`清理任务 ${task.id} 操作`"><Button variant="ghost" :disabled="busy != null" @click="detail=task">查看产物与详情</Button><Button v-if="task.canRetry" variant="ghost" :disabled="busy != null || loading || !!error" @click="retry(task)">{{busy===task.id?'提交中…':'核实后重试'}}</Button><Button v-if="task.status==='blocked'" variant="ghost" :disabled="busy != null || loading || !!error" @click="ignore(task)">{{busy===task.id?'提交中…':'忽略'}}</Button></AdminRowActions></td>
         </tr>
       </tbody>
       <template #footer><AdminPagination :page="page" :total-pages="totalPages" :total="total" :page-size="filters.pageSize" :disabled="loading || busy != null" @change="changePage" @update:page-size="changePageSize" /></template>
     </LinkTaskTable>
     <AdminDialog v-if="detail" drawer wide :busy="busy != null" :title="`清理任务 #${detail.id}`" description="核实账号、目录和文件清单后再重试。没有强制删除入口。" @close="detail = null">
-      <div class="cleanup-detail"><p v-if="detail.lastErrorCode" class="cleanup-error">{{ cleanupError(detail.lastErrorCode,detail.status) }}</p><dl><dt>原始分享</dt><dd>{{ detail.originalUrl }}</dd><dt>项目目录</dt><dd>{{ detail.targetDir }}</dd><dt>本流程子目录</dt><dd>{{ detail.ownedDirPath || detail.ownedDirId || '未确认' }}</dd><dt>产物状态 / 写入阶段</dt><dd>{{ cleanupLabel(detail.artifactState) }} / {{ cleanupLabel(detail.writeStage) }}</dd><dt>清理到期时间</dt><dd>{{ date(detail.cleanupAfter) }}</dd><dt>计划尝试时间</dt><dd>{{ date(detail.runAfter) }}</dd><dt>已创建分享 ID</dt><dd>{{ detail.shares.join('、') || '无已确认分享' }}</dd></dl><h3>已确认的文件清单（{{ detail.files?.length || 0 }}）</h3><ul v-if="visibleFiles.length"><li v-for="entry in visibleFiles" :key="entry.file.id">{{ entry.file.name }} · {{ entry.file.id }}</li></ul><p v-else>未记录文件清单；产物不确定时仍需核实，重试不会跳过此检查。</p><Button v-if="(detail.files?.length || 0) > fileLimit" variant="outline" @click="fileLimit += 50">显示更多文件</Button><p v-if="!detail.canRetry" class="task-meta">{{ retryUnavailable(detail.retryUnavailableReason) }}</p><Button v-else :disabled="busy != null || loading || !!error" @click="retry(detail)">{{ busy === detail.id ? '提交中…' : '核实后重试' }}</Button></div>
+      <div class="cleanup-detail"><p v-if="detail.lastErrorCode" class="cleanup-error">{{ cleanupError(detail.lastErrorCode,detail.status) }}</p><dl><dt>原始分享</dt><dd>{{ detail.originalUrl }}</dd><dt>项目目录</dt><dd>{{ detail.targetDir }}</dd><dt>本流程子目录</dt><dd>{{ detail.ownedDirPath || detail.ownedDirId || '未确认' }}</dd><dt>产物状态 / 写入阶段</dt><dd>{{ cleanupLabel(detail.artifactState) }} / {{ cleanupLabel(detail.writeStage) }}</dd><dt>清理到期时间</dt><dd>{{ date(detail.cleanupAfter) }}</dd><dt>计划尝试时间</dt><dd>{{ date(detail.runAfter) }}</dd><dt>已创建分享 ID</dt><dd>{{ detail.shares.join('、') || '无已确认分享' }}</dd></dl><h3>已确认的文件清单（{{ detail.files?.length || 0 }}）</h3><ul v-if="visibleFiles.length"><li v-for="entry in visibleFiles" :key="entry.file.id">{{ entry.file.name }} · {{ entry.file.id }}</li></ul><p v-else>未记录文件清单；产物不确定时仍需核实，重试不会跳过此检查。</p><Button v-if="(detail.files?.length || 0) > fileLimit" variant="outline" @click="fileLimit += 50">显示更多文件</Button><div class="cleanup-detail-actions"><p v-if="!detail.canRetry" class="task-meta">{{ retryUnavailable(detail.retryUnavailableReason) }}</p><Button v-else :disabled="busy != null || loading || !!error" @click="retry(detail)">{{ busy === detail.id ? '提交中…' : '核实后重试' }}</Button><Button v-if="detail.status==='blocked'" variant="outline" :disabled="busy != null || loading || !!error" @click="ignore(detail)">{{ busy === detail.id ? '提交中…' : '忽略' }}</Button></div></div>
     </AdminDialog>
   </component>
 </template>
@@ -104,7 +116,7 @@ onBeforeUnmount(() => { controller?.abort(); clearInterval(timer); document.remo
 .cleanup-page { display:grid; gap:16px; min-width:0; color:var(--foreground); font-size:14px; line-height:1.6; }
 .cleanup-heading,.cleanup-toolbar,.task-heading,.task-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .cleanup-heading,.task-heading { justify-content:space-between; }.cleanup-heading h1 { display:flex; align-items:center; gap:10px; font-size:24px; margin:0; }.cleanup-heading p,.task-meta { color:var(--muted-foreground); }.cleanup-toolbar span { margin-right:auto; }.cleanup-toolbar a,.cleanup-warning a { text-decoration:underline; text-underline-offset:3px; }
-.cleanup-page button { min-height:44px; }.cleanup-error { color:var(--destructive); }.cleanup-warning { padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--muted); }.cleanup-empty { text-align:center; padding:32px!important; color:var(--muted-foreground); }.cleanup-detail { padding:24px; overflow-wrap:anywhere; }.cleanup-detail dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:12px; }.cleanup-detail dd { margin:0; }.cleanup-detail dt { color:var(--muted-foreground); }
+.cleanup-page button { min-height:44px; }.cleanup-error { color:var(--destructive); }.cleanup-warning { padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--muted); }.cleanup-empty { text-align:center; padding:32px!important; color:var(--muted-foreground); }.cleanup-detail { padding:24px; overflow-wrap:anywhere; }.cleanup-detail dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:12px; }.cleanup-detail dd { margin:0; }.cleanup-detail dt { color:var(--muted-foreground); }.cleanup-detail-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }.cleanup-detail-actions p { margin:0; }
 .cleanup-toolbar :deep(.admin-select-trigger) { min-height:44px; }
 @media(max-width:600px) { .cleanup-page { font-size:16px; }.cleanup-heading { align-items:flex-start; }.cleanup-detail dl { grid-template-columns:1fr; gap:6px; }.cleanup-toolbar { align-items:flex-start; } }
 }

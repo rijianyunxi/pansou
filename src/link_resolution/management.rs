@@ -36,7 +36,7 @@ pub async fn cleanup_jobs(
     let status = query.status.as_deref().unwrap_or("attention");
     if !matches!(
         status,
-        "all" | "attention" | "queued" | "running" | "completed" | "failed" | "blocked"
+        "all" | "attention" | "queued" | "running" | "completed" | "failed" | "blocked" | "ignored"
     ) {
         return Err(ApiError::BadRequest("无效的清理任务状态".into()));
     }
@@ -55,7 +55,11 @@ pub async fn cleanup_jobs(
         .bind(status).bind(provider).bind(page_size).bind((page-1)*page_size).fetch_all(&state.pool).await?;
     let items: Vec<Value> = rows.into_iter().map(|r| {
         let manifest: Value = r.get("ownership_manifest_json");
-        let retry_reason = if r.get::<Option<String>,_>("last_error_code").as_deref()==Some("waiting_auth"){Some("waiting_auth")}else{retry_unavailable_reason(&r.get::<String,_>("status"), r.get("cleanup_after"), r.get("lease_until"), Utc::now())};
+        // waiting_auth still has an automatic recovery path (re-authorize the
+        // original account); only a blocked job relies on it, an ignored one
+        // comes back exclusively through manual retry.
+        let job_status: String = r.get("status");
+        let retry_reason = if job_status=="blocked" && r.get::<Option<String>,_>("last_error_code").as_deref()==Some("waiting_auth"){Some("waiting_auth")}else{retry_unavailable_reason(&job_status, r.get("cleanup_after"), r.get("lease_until"), Utc::now())};
         let can_retry = retry_reason.is_none();
         let files: Vec<Value> = manifest["tree"].as_array().into_iter().flatten().map(|entry| json!({
             "parent":entry["parent"], "file":{"id":entry["file"]["id"],"name":entry["file"]["name"],"size":entry["file"]["size"],"isDir":entry["file"]["isDir"]}
@@ -86,8 +90,11 @@ pub async fn retry_cleanup(
 ) -> Result<Response, ApiError> {
     admin(&state, &headers).await?;
     // Preserve deletion/revocation progress. Retrying never bypasses account,
-    // directory identity or manifest checks in the cleanup worker.
-    let retried: Option<i64> = sqlx::query_scalar("UPDATE link_cleanup_jobs j SET status='queued',run_after=now(),attempts=0,last_error_code=NULL,lease_token=NULL,lease_until=NULL,completed_at=NULL,updated_at=now() WHERE j.id=$1 AND status<>'completed' AND last_error_code IS DISTINCT FROM 'waiting_auth' AND (status<>'running' OR lease_until<=now()) AND EXISTS(SELECT 1 FROM link_share_cache s WHERE s.id=j.share_cache_id AND s.cleanup_after<=now()) RETURNING j.id")
+    // directory identity or manifest checks in the cleanup worker. A blocked
+    // job waiting for re-authorization recovers automatically, so a manual
+    // retry is refused; an ignored job has no automatic path left, so retry is
+    // always its way back into the queue.
+    let retried: Option<i64> = sqlx::query_scalar("UPDATE link_cleanup_jobs j SET status='queued',run_after=now(),attempts=0,last_error_code=NULL,lease_token=NULL,lease_until=NULL,completed_at=NULL,updated_at=now() WHERE j.id=$1 AND j.status<>'completed' AND (j.status='ignored' OR j.last_error_code IS DISTINCT FROM 'waiting_auth') AND (j.status<>'running' OR j.lease_until<=now()) AND EXISTS(SELECT 1 FROM link_share_cache s WHERE s.id=j.share_cache_id AND s.cleanup_after<=now()) RETURNING j.id")
         .bind(id).fetch_optional(&state.pool).await?;
     if retried.is_none() {
         return Err(ApiError::Conflict(
@@ -95,6 +102,25 @@ pub async fn retry_cleanup(
         ));
     }
     Ok(response(StatusCode::OK, json!({"id":id,"status":"queued"})))
+}
+
+pub async fn ignore_cleanup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    admin(&state, &headers).await?;
+    // Ignoring only takes a blocked task out of rotation: the cloud artifacts
+    // stay exactly as they are, the worker never claims the job again, and the
+    // attention list stops counting it. Retry remains the only way back.
+    let ignored: Option<i64> = sqlx::query_scalar("UPDATE link_cleanup_jobs SET status='ignored',lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND status='blocked' RETURNING id")
+        .bind(id).fetch_optional(&state.pool).await?;
+    if ignored.is_none() {
+        return Err(ApiError::Conflict(
+            "任务不存在或未处于阻塞状态，不能忽略".into(),
+        ));
+    }
+    Ok(response(StatusCode::OK, json!({"id":id,"status":"ignored"})))
 }
 
 #[cfg(test)]

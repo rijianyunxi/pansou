@@ -100,6 +100,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/links/resolve", post(crate::link_resolution::resolve))
         .route("/admin/link-cleanup", get(crate::link_resolution::cleanup_jobs))
         .route("/admin/link-cleanup/{id}/retry", post(crate::link_resolution::retry_cleanup))
+        .route("/admin/link-cleanup/{id}/ignore", post(crate::link_resolution::ignore_cleanup))
         .route(
             "/settings/cloud-providers",
             get(crate::link_resolution::get_cloud_providers),

@@ -1,7 +1,7 @@
 import { DELIVERY_PROVIDERS } from './linkPolicy.ts';
 import { adminPaginationFilters } from './adminPagination.ts';
 
-const CLEANUP_STATUSES = ['attention', 'all', 'queued', 'running', 'blocked', 'failed', 'completed'] as const;
+const CLEANUP_STATUSES = ['attention', 'all', 'queued', 'running', 'blocked', 'failed', 'completed', 'ignored'] as const;
 export function cleanupFilters(query: Record<string, unknown>) {
   const scalar = (value: unknown) => typeof value === 'string' ? value : '';
   const status = scalar(query.status), provider = scalar(query.provider);
@@ -12,7 +12,7 @@ export function cleanupFilters(query: Record<string, unknown>) {
   };
 }
 const labels: Record<string, string> = {
-  queued: '等待清理', running: '清理中', completed: '已完成', blocked: '已阻塞', failed: '已失败',
+  queued: '等待清理', running: '清理中', completed: '已完成', blocked: '已阻塞', failed: '已失败', ignored: '已忽略',
   verify: '核实归属', revoke_shares: '撤销分享', delete_files: '删除文件', verify_deleted: '确认删除',
   ready: '可交付', saved: '已转存', share_created: '已创建分享', expiring: '等待清理', cleaning: '清理中', deleted: '已清理', uncertain: '结果待核实',
   directory_intent: '目录创建待确认', directory_created: '目录已创建', transfer_intent: '转存结果待确认', share_intent: '分享创建待确认',
@@ -30,6 +30,7 @@ export function cleanupError(code: string | null, status: string) {
   };
   if (!code) return '';
   const reason = reasons[code] || `未识别的失败原因（${code}），请查看运行诊断。`;
+  if (status === 'ignored') return `${reason} 已忽略：不再自动清理，云端产物保持现状，重试可恢复。`;
   return status === 'blocked' && !['ownership_verification_required','waiting_auth'].includes(code) ? `${reason} 自动重试已停止，核实后可手动重试。` : reason;
 }
 export function retryUnavailable(reason: string | null | undefined) {
