@@ -1,99 +1,12 @@
-.page {
-  padding: 96rpx 48rpx 64rpx;
-}
-
-.hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20rpx;
-  margin-bottom: 56rpx;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 152rpx;
-  height: 152rpx;
-  border-radius: 40rpx;
-  background: var(--primary-soft);
-  color: var(--primary);
-  font-size: 56rpx;
-  font-weight: 800;
-}
-
-.title {
-  color: var(--text-primary);
-  font-size: 40rpx;
-  font-weight: 700;
-}
-
-.hint {
-  margin: 28rpx 0;
-  color: var(--text-secondary);
-  font-size: 28rpx;
-  line-height: 1.7;
-}
-
-.hint.success {
-  color: #15803d;
-  font-weight: 600;
-  text-align: center;
-}
-
-.primary-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 32rpx;
-  min-height: 92rpx;
-  border-radius: 24rpx;
-  background: var(--primary);
-  color: #ffffff;
-  font-size: 30rpx;
-  font-weight: 600;
-}
-
-.primary-btn[disabled] {
-  background: var(--primary);
-  color: #ffffff;
-  opacity: 0.6;
-}
-
-.plain-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 32rpx;
-  min-height: 92rpx;
-  border: 1rpx solid var(--border-light);
-  border-radius: 24rpx;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: 30rpx;
-  font-weight: 600;
-}
-
-.state-card {
-  padding: 36rpx 32rpx;
-  text-align: center;
-}
-
-.state-title {
-  color: var(--text-tertiary);
-  font-size: 24rpx;
-}
-
-.state-value {
-  margin-top: 12rpx;
-  color: var(--text-primary);
-  font-size: 32rpx;
-  font-weight: 700;
-}
-
-.error {
-  margin-top: 28rpx;
-  color: #b42318;
-  font-size: 28rpx;
-}
+.login-page { min-height: 100vh; box-sizing: border-box; padding: 100rpx 36rpx 64rpx; background: #fffdf7; }
+.login-card { padding: 48rpx 36rpx 40rpx; border: 1rpx solid #f5d9c5; border-radius: 24rpx; background: #fff; box-shadow: 3rpx 4rpx 0 #ffbb91; }
+.brand { display: flex; align-items: center; gap: 20rpx; color: #24231f; font-size: 34rpx; font-weight: 700; }
+.brand-mark { position: relative; flex: 0 0 40rpx; width: 40rpx; height: 40rpx; margin-right: 8rpx; border: 7rpx solid #ff5b18; border-radius: 50%; box-sizing: border-box; }
+.brand-mark::after { content: ''; position: absolute; width: 22rpx; height: 7rpx; right: -18rpx; bottom: -7rpx; background: #ff5b18; border-radius: 4rpx; transform: rotate(45deg); }
+.login-title { margin-top: 52rpx; color: #24231f; font-size: 42rpx; line-height: 1.3; font-weight: 700; }
+.status-text { display: block; margin-top: 18rpx; color: #706c65; font-size: 26rpx; line-height: 1.5; overflow-wrap: anywhere; }
+.login-page button.login-button { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; height: 92rpx; min-height: 92rpx; margin: 40rpx 0 0; padding: 0 24rpx; box-sizing: border-box; border: 0; border-radius: 16rpx; background: #f65b1b; color: #fff; font-family: inherit; font-size: 28rpx; font-weight: 600; line-height: 1; }
+.login-page button.login-button::after { border: 0; }
+.login-page button.login-button.secondary { background: #f6f1e9; color: #706c65; }
+.login-page button.login-button[disabled] { opacity: .55; }
+.error { margin-top: 24rpx; color: #b42318; font-size: 24rpx; line-height: 1.6; overflow-wrap: anywhere; }

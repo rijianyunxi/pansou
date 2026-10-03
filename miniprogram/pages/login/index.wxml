@@ -1,34 +1,17 @@
-<view class="page themed-page theme-{{theme}}">
-  <view class="hero">
-    <view class="logo">盘搜</view>
-    <view class="title">盘搜账号</view>
+<view class="login-page themed-page theme-{{theme}}">
+  <view class="login-card">
+    <view class="brand"><view class="brand-mark" aria-hidden="true"></view><text>盘搜</text></view>
+    <view class="login-title">{{scene ? (confirmed ? '登录成功' : '确认网页登录') : (user ? '已登录' : '登录盘搜')}}</view>
+    <block wx:if="{{scene}}">
+      <text wx:if="{{confirmed}}" class="status-text">请返回网页继续</text>
+      <button wx:else size="mini" class="login-button" bindtap="onConfirmQr" disabled="{{busy}}" loading="{{busy}}">确认登录</button>
+    </block>
+    <block wx:elif="{{user}}">
+      <text class="status-text">{{user.nickname || user.username}}</text>
+      <button size="mini" class="login-button secondary" bindtap="onLogout" disabled="{{busy}}">退出登录</button>
+    </block>
+    <button wx:else size="mini" class="login-button" bindtap="onLogin" disabled="{{busy}}" loading="{{busy}}">微信登录</button>
+    <view wx:if="{{error}}" class="error" role="alert">{{error}}</view>
   </view>
-
-  <block wx:if="{{scene}}">
-    <block wx:if="{{confirmed}}">
-      <view class="hint success">登录成功，请回到网页继续。</view>
-    </block>
-    <block wx:else>
-      <view class="hint">确认在网页端登录盘搜账号。</view>
-      <button class="primary-btn" type="primary" bindtap="onConfirmQr" disabled="{{busy}}">确认登录</button>
-      <view class="hint">首次确认会自动创建账号，无需注册，也不需要设置密码。</view>
-    </block>
-  </block>
-
-  <block wx:elif="{{user}}">
-    <view class="state-card card">
-      <view class="state-title">已登录</view>
-      <view class="state-value">{{user.nickname || user.username}}</view>
-    </view>
-    <button class="plain-btn" bindtap="onLogout" disabled="{{busy}}">退出登录</button>
-  </block>
-
-  <block wx:else>
-    <view class="hint">使用微信身份登录盘搜，管理自己的频道与搜索记录。</view>
-    <button class="primary-btn" type="primary" bindtap="onLogin" disabled="{{busy}}">微信登录</button>
-    <view class="hint">首次微信登录会自动创建账号，无需注册，也不需要设置密码。</view>
-  </block>
-
-  <view wx:if="{{error}}" class="error" role="alert">{{error}}</view>
-  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
+  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

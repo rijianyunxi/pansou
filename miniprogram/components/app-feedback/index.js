@@ -1,7 +1,7 @@
 Component({
   properties: {
     top: { type: Number, value: 0 },
-    theme: { type: String, value: 'geometric' },
+    theme: { type: String, value: 'orange' },
     toast: { type: Object, value: null },
     modal: { type: Object, value: null },
     loading: { type: Boolean, value: false },

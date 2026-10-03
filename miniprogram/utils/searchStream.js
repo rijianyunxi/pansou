@@ -179,6 +179,7 @@ function searchStream(options) {
 
     const decoder = createTextDecoder();
     const parser = createSseParser((event) => {
+      if (aborted || settled) return;
       const payload = readPayload(event.data);
       if (!payload) return;
       if (event.event === 'result') {
@@ -204,6 +205,7 @@ function searchStream(options) {
       timeout: SEARCH_TIMEOUT,
       enableChunked: true,
       success(response) {
+        if (aborted || settled) return;
         if (response.statusCode >= 200 && response.statusCode < 300) {
           if (settled) return;
           // Stream ended without a complete/error event.
@@ -240,6 +242,7 @@ function searchStream(options) {
     }
 
     task.onChunkReceived((chunk) => {
+      if (aborted || settled) return;
       const bytes = chunk && (chunk.data || chunk.arrayBuffer);
       if (!bytes) return;
       const text = decoder.decode(new Uint8Array(bytes), false);
@@ -254,11 +257,10 @@ function searchStream(options) {
     abort() {
       if (settled) return;
       aborted = true;
+      settled = true;
+      // Update the page immediately: RequestTask.abort may not emit fail.
+      notifyAbort();
       if (task && task.abort) task.abort();
-      if (refreshing) notifyAbort();
-      // The request may still be waiting for the pre-search login; surface the
-      // pause directly instead of relying on a fail callback that never comes.
-      else if (!task) notifyAbort();
     },
   };
 }

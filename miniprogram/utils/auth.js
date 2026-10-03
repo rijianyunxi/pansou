@@ -36,6 +36,11 @@ function request(path, { method = 'GET', data, authenticated = true } = {}) {
       if (response.statusCode === 401 && authenticated) clearSession();
       const detail = response.data && (response.data.statusMessage || response.data.message);
       const messages = {
+        '微信登录凭证已失效，请重新点击登录': '微信登录凭证已失效，请重新点击登录',
+        '微信 AppID 或 Secret 配置错误，请联系管理员': '微信 AppID 或 Secret 配置错误，请联系管理员',
+        '微信小程序登录未配置 AppID/Secret': '微信小程序登录尚未配置，请联系管理员',
+        '无法连接微信登录服务，请稍后重试': '无法连接微信登录服务，请稍后重试',
+        '微信登录过于频繁，请稍后重试': '微信登录过于频繁，请稍后重试',
         'External identity is not linked': '该微信尚未开通账号，请联系管理员。',
         'Account unavailable': '账号已停用，请联系管理员。',
         'Administrator must use the admin password login': '管理员请从管理后台使用账号密码登录。',
@@ -76,6 +81,7 @@ function login() {
   pendingLogin = (async () => {
     const code = await loginCode();
     const { data } = await request('/api/account/wechat/login', { method: 'POST', data: { code }, authenticated: false });
+    if (!data.token || !data.user) throw new Error('微信登录未完成，请重试');
     const session = { token: data.token, expiresAt: data.expiresAt, user: data.user || null };
     wx.setStorageSync(STORAGE_KEY, session);
     return session.user;
@@ -85,7 +91,7 @@ function login() {
 
 /** Resolve with a usable session: reuse the stored token or sign in silently. */
 function ensureLogin() {
-  if (hasValidSession()) return Promise.resolve(getSession().user);
+  if (hasValidSession() && getSession().user) return Promise.resolve(getSession().user);
   return login();
 }
 

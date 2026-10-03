@@ -1,36 +1,30 @@
 <view class="profile themed-page theme-{{theme}} tab-page">
-  <view class="user-card card">
-    <view class="avatar">{{user.nickname ? user.nickname[0] : (authenticated ? '·' : '客')}}</view>
-    <view class="user-info">
-      <view class="user-name">{{authenticated ? (user.nickname || user.username) : '未登录'}}</view>
-      <view class="user-sub">{{authenticated ? user.username : '登录后可管理自定义频道'}}</view>
+  <view class="account-card">
+    <view class="account-orbit" aria-hidden="true"></view>
+    <view class="account-heading"><text>我的账号</text><view class="account-badge">{{authenticated ? '已登录' : '访客'}}</view></view>
+    <view class="user-row">
+      <view class="avatar"><text wx:if="{{authenticated}}">{{user.nickname ? user.nickname[0] : '我'}}</text><view wx:else class="person-icon" aria-hidden="true"></view></view>
+      <view class="user-info">
+        <view class="user-name">{{authenticated ? (user.nickname || user.username) : '未登录'}}</view>
+        <view wx:if="{{authenticated && user.nickname && user.username}}" class="user-sub">{{user.username}}</view>
+      </view>
     </view>
+    <button wx:if="{{!authenticated}}" size="mini" class="login-action" bindtap="onLogin" disabled="{{loading}}" hover-class="action-pressed">微信登录<text class="login-arrow" aria-hidden="true">↗</text></button>
   </view>
 
-  <view class="menu card">
-    <view class="menu-item" hover-class="menu-hover" bindtap="onGoChannels">
-      <text class="menu-text">自定义频道管理</text>
-      <text class="menu-arrow">›</text>
-    </view>
+  <button size="mini" class="channel-entry" bindtap="onGoChannels" hover-class="action-pressed">
+    <view class="channel-symbol" aria-hidden="true"><view></view><view></view><view></view></view>
+    <text class="entry-title">自定义频道</text>
+    <view class="entry-arrow" aria-hidden="true">↗</view>
+  </button>
 
-    <!-- <view class="menu-item" hover-class="menu-hover" bindtap="onAbout">
-      <text class="menu-text">关于盘搜</text>
-      <text class="menu-arrow">›</text>
-    </view> -->
-    <view class="menu-item" hover-class="menu-hover" bindtap="onCopyright">
-      <text class="menu-text">版权与免责声明</text>
-      <text class="menu-arrow">›</text>
-    </view>
-    <view wx:if="{{authenticated}}" class="menu-item" hover-class="menu-hover" bindtap="onLogout">
-      <text class="menu-text danger">退出登录</text>
-      <text class="menu-arrow">›</text>
-    </view>
-    <view wx:else class="menu-item" hover-class="menu-hover" bindtap="onLogin">
-      <text class="menu-text">微信登录</text>
-      <text class="menu-arrow">›</text>
-    </view>
+  <view class="menu">
+    <button size="mini" class="menu-item" bindtap="onCopyright" hover-class="menu-hover">
+      <view class="document-symbol" aria-hidden="true"></view><text class="menu-text">版权与免责声明</text><text class="menu-arrow" aria-hidden="true">›</text>
+    </button>
+    <button wx:if="{{authenticated}}" size="mini" class="menu-item" bindtap="onLogout" disabled="{{loading}}" hover-class="menu-hover">
+      <view class="logout-symbol" aria-hidden="true">↗</view><text class="menu-text">退出登录</text><text class="menu-arrow" aria-hidden="true">›</text>
+    </button>
   </view>
-
-  <view class="footnote">首次微信登录会自动创建账号，无需注册</view>
-  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
+  <app-feedback theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

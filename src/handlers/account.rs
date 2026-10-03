@@ -249,13 +249,115 @@ pub async fn wechat_login(
     if code.is_empty() {
         return Err(ApiError::BadRequest("code is required".into()));
     }
-    let configured:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wechat_mini_settings WHERE id=1 AND app_id<>'' AND secret<>'')").fetch_one(&state.pool).await?;
-    if !configured {
-        return Err(ApiError::Upstream(
-            "微信小程序登录未配置 AppID/Secret".into(),
+    let settings: Option<(String, String)> =
+        sqlx::query_as("SELECT app_id,secret FROM wechat_mini_settings WHERE id=1")
+            .fetch_optional(&state.pool)
+            .await?;
+    let (app_id, secret) = settings
+        .filter(|(id, secret)| !id.trim().is_empty() && !secret.trim().is_empty())
+        .ok_or_else(|| ApiError::Unavailable("微信小程序登录未配置 AppID/Secret".into()))?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|_| ApiError::Internal("无法初始化微信登录服务".into()))?;
+    let response = client
+        .get("https://api.weixin.qq.com/sns/jscode2session")
+        .query(&[
+            ("appid", app_id.trim()),
+            ("secret", secret.trim()),
+            ("js_code", code),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|error| {
+            // Never log the reqwest URL: its query contains the app secret/code.
+            tracing::warn!(
+                timeout = error.is_timeout(),
+                connect = error.is_connect(),
+                "wechat code exchange transport failure"
+            );
+            ApiError::Upstream("无法连接微信登录服务，请稍后重试".into())
+        })?;
+    if !response.status().is_success() {
+        return Err(ApiError::Upstream(format!(
+            "微信登录服务响应异常（HTTP {}）",
+            response.status().as_u16()
+        )));
+    }
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|_| ApiError::Upstream("微信登录服务返回格式异常".into()))?;
+    let openid = wechat_openid(&data)?;
+    let auth = state.auth();
+    let (session, user) = auth.login_wechat(app_id.trim(), openid).await?;
+    let expires_at =
+        chrono::Utc::now().timestamp_millis() + (auth.session_ttl_seconds().await as i64 * 1000);
+    Ok(Json(
+        json!({"token":session.token,"expiresAt":expires_at,"user":user}),
+    ))
+}
+
+fn wechat_openid(data: &Value) -> Result<&str, ApiError> {
+    if let Some(code) = data.get("errcode") {
+        let code = code
+            .as_i64()
+            .ok_or_else(|| ApiError::Upstream("微信登录错误码格式异常".into()))?;
+        if code != 0 {
+            tracing::warn!(code, "wechat code exchange rejected");
+            return Err(match code {
+                40029 | 40163 => ApiError::BadRequest("微信登录凭证已失效，请重新点击登录".into()),
+                40013 | 40125 | 40001 => {
+                    ApiError::Unavailable("微信 AppID 或 Secret 配置错误，请联系管理员".into())
+                }
+                45011 => ApiError::TooManyRequests("微信登录过于频繁，请稍后重试".into()),
+                40226 => ApiError::Forbidden("微信暂不允许此账号登录".into()),
+                _ => ApiError::Upstream(format!("微信登录失败（错误码 {code}），请稍后重试")),
+            });
+        }
+    }
+    data.get("openid")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| ApiError::Upstream("微信登录响应缺少用户标识".into()))
+}
+
+#[cfg(test)]
+mod wechat_tests {
+    use super::*;
+    #[test]
+    fn exchange_requires_verified_identity() {
+        assert_eq!(
+            wechat_openid(&json!({"openid":"verified", "session_key":"private"})).unwrap(),
+            "verified"
+        );
+        for data in [
+            json!({}),
+            json!({"openid":" "}),
+            json!({"openid":123}),
+            json!({"errcode":"invalid", "openid":"bad"}),
+        ] {
+            assert!(wechat_openid(&data).is_err());
+        }
+        assert!(matches!(
+            wechat_openid(&json!({"errcode":40029,"openid":"bad"})),
+            Err(ApiError::BadRequest(_))
+        ));
+        assert!(matches!(
+            wechat_openid(&json!({"errcode":40125})),
+            Err(ApiError::Unavailable(_))
+        ));
+        assert!(matches!(
+            wechat_openid(&json!({"errcode":45011})),
+            Err(ApiError::TooManyRequests(_))
+        ));
+        assert!(matches!(
+            wechat_openid(&json!({"errcode":-1})),
+            Err(ApiError::Upstream(_))
         ));
     }
-    Err(ApiError::Upstream("微信登录交换服务暂不可用".into()))
 }
 
 pub async fn wechat_qr_confirm(

@@ -34,7 +34,6 @@
       @pause="emit('pause')"
       @continue="emit('continue')" />
 
-    <p v-if="!searched" class="search-caption">从一个关键词，发现更多可能</p>
 
     <div class="channel-configuration-status" role="status" aria-live="polite">
       <div v-if="needsChannelConfiguration && !loading" class="channel-configuration-notice">

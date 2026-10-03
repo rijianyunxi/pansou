@@ -4,21 +4,21 @@
  * Tokens mirrored from the public web app's classic theme.
  */
 page {
-  --primary: #2563eb;
-  --primary-dark: #1d4ed8;
-  --primary-soft: #eff6ff;
-  --primary-border: rgba(37, 99, 235, 0.2);
+  --primary: #e85116;
+  --primary-dark: #cc4010;
+  --primary-soft: #fff0e6;
+  --primary-border: rgba(246, 91, 27, 0.2);
   --secondary: #f59e0b;
   --success: #10b981;
-  --ink: #111827;
+  --ink: #f65b1b;
   --ink-hover: #000000;
   --bg-primary: #ffffff;
-  --bg-secondary: #f6f7f9;
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-tertiary: #9ca3af;
-  --border-light: #e5e7eb;
-  --border-medium: #d1d5db;
+  --bg-secondary: #fffdf7;
+  --text-primary: #24231f;
+  --text-secondary: #706c65;
+  --text-tertiary: #827c73;
+  --border-light: #ece7de;
+  --border-medium: #d9d1c5;
   --error: #ef4444;
   --warn: #b45309;
   --warn-soft: rgba(245, 158, 11, 0.1);

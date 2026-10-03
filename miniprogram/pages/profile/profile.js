@@ -33,8 +33,8 @@ require('../../utils/theme').themedPage({
     if (this.data.loading) return;
     this.setData({ loading: true });
     try {
-      await auth.ensureLogin();
-      await this.refreshSession();
+      const user = await auth.login();
+      this.setData({ authenticated: true, user });
       feedback.showToast({ title: '已登录', icon: 'success' });
     } catch (error) {
       feedback.showModal({ title: '登录失败', content: error.message, showCancel: false });

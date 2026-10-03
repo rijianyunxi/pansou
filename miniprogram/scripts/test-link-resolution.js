@@ -224,3 +224,58 @@ test('card progress follows actual stages and hiding clears timers and late upda
     delete global.Component;
   }
 });
+
+test('anonymous search token does not bypass WeChat login', async () => {
+  stored = { token: 'anonymous', user: null };
+  const calls = [];
+  wx.login = ({ success }) => { calls.push('wx.login'); success({ code: 'fresh-code' }); };
+  wx.request = ({ url, method, data, header, success }) => {
+    calls.push(new URL(url).pathname);
+    assert.equal(method, 'POST');
+    assert.equal(data.code, 'fresh-code');
+    assert.equal(header.Authorization, undefined);
+    success({ statusCode: 200, data: { token: 'user-token', user: { id: 7 } } });
+  };
+  try {
+    assert.deepEqual(await auth.ensureLogin(), { id: 7 });
+    assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login']);
+    assert.equal(auth.getSession().token, 'user-token');
+    await auth.ensureLogin();
+    assert.equal(calls.length, 2, 'authenticated sessions can be reused');
+  } finally { delete wx.login; delete wx.request; stored = null; }
+});
+
+test('incomplete WeChat login cannot replace the anonymous token', async () => {
+  stored = { token: 'anonymous', user: null };
+  wx.login = ({ success }) => success({ code: 'code' });
+  wx.request = ({ success }) => success({ statusCode: 200, data: { token: 'bad-token' } });
+  try {
+    await assert.rejects(auth.login(), /微信登录未完成/);
+    assert.equal(auth.getSession().token, 'anonymous');
+  } finally { delete wx.login; delete wx.request; stored = null; }
+});
+
+test('pause immediately notifies without request fail and ignores late stream events', async () => {
+  const originalReady = auth.ensureSession;
+  const originalRequest = wx.request;
+  let chunk, success, aborted = 0, pauses = 0, updates = 0, completes = 0;
+  auth.ensureSession = async () => {};
+  wx.request = options => {
+    success = options.success;
+    return { abort() { aborted++; }, onChunkReceived(fn) { chunk = fn; } };
+  };
+  try {
+    const { searchStream } = require('../utils/searchStream');
+    const stream = searchStream({ keyword: 'test', onAbort() { pauses++; }, onUpdate() { updates++; }, onComplete() { completes++; } });
+    await Promise.resolve();
+    stream.abort();
+    assert.equal(pauses, 1);
+    assert.equal(aborted, 1);
+    chunk({ data: new TextEncoder().encode('event: result\ndata: {"results":[{}]}\n\nevent: complete\ndata: {}\n\n').buffer });
+    success({ statusCode: 200 });
+    stream.abort();
+    assert.equal(pauses, 1);
+    assert.equal(updates, 0);
+    assert.equal(completes, 0);
+  } finally { auth.ensureSession = originalReady; wx.request = originalRequest; }
+});

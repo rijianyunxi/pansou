@@ -36,12 +36,16 @@
       @pause="pauseSearch"
       @continue="handleContinueSearch" />
 
+    <section v-if="!searched && searchHistory.length" class="search-history" aria-label="搜索历史">
+      <header><h2>最近搜过</h2><button type="button" @click="changeHistory('clear')">清空记录</button></header>
+      <div class="history-list"><span v-for="term in searchHistory" :key="term" class="history-chip"><button type="button" @click="quickSearch(term)">{{ term }}</button><button type="button" class="history-remove" :aria-label="`删除搜索记录：${term}`" @click="changeHistory('remove', term)">×</button></span></div>
+    </section>
+
     <!-- 热门搜索：仅未搜索时展示 -->
     <div v-if="auth.sessionReady.value && auth.showHotSearch.value" v-show="!searched" class="hot-search-section">
       <HotSearchSection ref="hotSearchRef" :on-search="quickSearch" />
     </div>
 
-    <p v-if="!searched" class="discovery-note">每一次搜索，都有新发现。</p>
 
     <HomeResultsPanel
       :searched="searched"
@@ -67,6 +71,7 @@
 </template>
 
 <script setup lang="ts">
+import { createHistory } from "../../utils/searchHistory.js";
 import { useRoute } from "vue-router";
 import { appConfig, setDocumentHead } from "../../src/appRuntime";
 import { useAuth } from "../../composables/useAuth";
@@ -115,6 +120,8 @@ function scrollToTop() {
 }
 
 onMounted(async () => {
+  reloadHistory();
+  window.addEventListener("storage", reloadHistory);
   window.addEventListener("scroll", updateScrollState, { passive: true });
   updateScrollState();
   // Support the SearchAction URL emitted below, e.g. /?q=movie.
@@ -134,6 +141,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("storage", reloadHistory);
   window.removeEventListener("scroll", updateScrollState);
   if (scrollFrame !== undefined) {
     window.cancelAnimationFrame(scrollFrame);
@@ -155,6 +163,13 @@ setDocumentHead({
 
 
 // 搜索相关状态
+const searchHistory = ref<string[]>([]);
+const historyStore = createHistory({ getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value), removeItem: key => window.localStorage.removeItem(key) });
+function reloadHistory() { searchHistory.value = historyStore.read(); }
+function changeHistory(action: 'add' | 'remove' | 'clear', term = '') {
+  try { searchHistory.value = action === 'clear' ? historyStore.clear() : historyStore[action](term); }
+  catch { showToast('无法保存搜索历史，请检查本地存储空间或浏览器设置。', 'error'); }
+}
 const kw = ref("");
 const submittedKeyword = ref("");
 // Search scope is per visit, never a persisted channel preference.
@@ -214,6 +229,7 @@ async function doSearch() {
   if (!settingsReady.value || !auth.sessionReady.value || needsChannelConfiguration.value || !kw.value.trim() || searchState.value.loading) return;
   const keyword = kw.value.trim();
   submittedKeyword.value = keyword;
+  changeHistory("add", keyword);
   // 新搜索从全量结果视图开始，避免沿用上一次平台筛选状态。
   filterPlatform.value = "all";
   await performSearch({
@@ -329,4 +345,15 @@ function sortItems<T extends SearchResult>(items: T[]): T[] {
 .discovery-note { text-align: center; margin: 0; color: var(--text-tertiary); font-size: 12px; letter-spacing: 2px; }
 @media(max-width:640px) { .home { gap: 24px; } .hero { min-height: 240px; grid-template-columns: 1fr; overflow: hidden; } .hero-copy { padding: 14px 8px 40px; } .hero-title { font-size: 44px; } .hero-description { max-width: 250px; font-size: 13px; } .hero-art { position: absolute; right: -65px; bottom: 0; width: 235px; height: 235px; opacity: .28; } .home:not(.home--searched) > :deep(.search-workspace) { margin: -25px 0 0; } }
 
+
+.search-history { padding: 0 12px; }
+.search-history header { display: flex; align-items: center; justify-content: space-between; }
+.search-history h2 { font-size: 17px; margin: 0; }
+.search-history button { background: transparent; border: 0; color: var(--text-secondary); cursor: pointer; min-height: 44px; font-size: 12px; }
+.search-history button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.history-list { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.history-chip { display: inline-flex; max-width: 100%; align-items: center; border-radius: 8px; background: #faf2e7; }
+.history-chip button:first-child { padding: 0 4px 0 12px; overflow-wrap: anywhere; text-align: left; }
+.history-chip .history-remove { min-width: 44px; font-size: 18px; }
+.search-history p { margin: 8px 0 0; color: var(--text-tertiary); font-size: 11px; }
 </style>

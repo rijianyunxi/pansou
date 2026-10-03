@@ -9,8 +9,7 @@
 
     <section v-else class="hot-search-panel" aria-label="热门搜索">
       <header class="hot-search-header">
-        <div><h2><span aria-hidden="true">✳</span> 此刻，大家在找</h2><p>热门搜索 / TRENDING</p></div>
-        <span class="hot-search-label">探索热门 <span aria-hidden="true">↗</span></span>
+        <div><h2><span aria-hidden="true">✳</span> 此刻，大家在找</h2></div>
       </header>
 
       <div class="hot-search-grid">
@@ -30,10 +29,7 @@
         </button>
       </div>
 
-      <footer class="hot-search-footer">
-        <span>点击词条，快速开始搜索</span>
-        <span>{{ searches.length }} 个热搜词 · 热度随搜索更新</span>
-      </footer>
+
     </section>
   </div>
 </template>

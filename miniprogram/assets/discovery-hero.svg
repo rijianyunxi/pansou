@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="480" viewBox="0 0 720 480" fill="none">
+  <defs>
+    <linearGradient id="orange" x1="240" y1="90" x2="460" y2="340" gradientUnits="userSpaceOnUse"><stop stop-color="#ff843b"/><stop offset="1" stop-color="#ff571b"/></linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fffdf4"/><stop offset="1" stop-color="#ffedc9"/></linearGradient>
+    <linearGradient id="glass" x1="260" y1="110" x2="420" y2="270" gradientUnits="userSpaceOnUse"><stop stop-color="#fffdf5"/><stop offset="1" stop-color="#ffe5b5"/></linearGradient>
+    <clipPath id="lens"><circle cx="337" cy="201" r="88"/></clipPath>
+    <g id="spark" stroke="#ff6521" stroke-width="7" stroke-linecap="round"><path d="M0-17V17M-15-9 15 9M-15 9 15-9"/></g>
+  </defs>
+  <!-- Quiet paper shapes frame the illustration without a bitmap background. -->
+  <path d="M91 244C48 172 154 141 220 122 295 100 362 26 439 54 530 86 500 144 576 174 661 208 665 312 581 354 479 404 350 370 239 388 112 409 41 319 91 244Z" fill="#fff0cf"/>
+  <path d="M122 315C112 269 162 218 248 240 342 264 420 323 540 294 616 276 654 342 594 369 462 427 324 373 204 398 139 411 96 369 122 315Z" fill="#ffe7d6"/>
+  <ellipse cx="357" cy="385" rx="245" ry="17" fill="#e5bc8c" opacity=".17"/>
+  <ellipse cx="354" cy="241" rx="299" ry="107" transform="rotate(-16 354 241)" stroke="#edc16a" stroke-width="2"/>
+  <!-- Open-edged notebook. -->
+  <g transform="rotate(13 533 216)" stroke="#34352e" stroke-width="3" stroke-linejoin="round">
+    <rect x="466" y="104" width="145" height="219" rx="10" fill="#eacb95"/>
+    <rect x="458" y="98" width="145" height="219" rx="9" fill="#fffaf0"/>
+    <path d="M474 108H590V303H474" stroke="#d2b88b" stroke-width="2"/>
+    <rect x="450" y="91" width="145" height="217" rx="9" fill="url(#paper)"/>
+    <path d="M467 92V307H459A9 9 0 0 1 450 298V100A9 9 0 0 1 459 91Z" fill="#34352e"/>
+    <path d="M489 126H565M489 140H547" stroke="#d9bd8e" stroke-width="3" stroke-linecap="round"/>
+    <path d="M521 174V227M495 187 547 215M495 215 547 187" stroke="#ed9f4e" stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <!-- Stacked sheets and a filmstrip. -->
+  <g stroke="#444339" stroke-width="2.5" stroke-linejoin="round">
+    <path d="m203 159 224 34-35 198-223-34Z" fill="#e8c996"/>
+    <path d="m190 144 226 34-34 197-227-34Z" fill="#fff9e9"/>
+    <path d="m205 123 211 57-52 192-211-57Z" fill="url(#paper)"/>
+  </g>
+  <g transform="rotate(-14 170 243)">
+    <rect x="86" y="165" width="165" height="171" rx="6" fill="#34352e"/>
+    <path d="M111 189H226V306H111Z" fill="#ffdf9b"/>
+    <circle cx="192" cy="219" r="15" fill="#ff9940"/>
+    <path d="m111 276 38-37 35 38 19-20 23 24v25H111Z" fill="#d5b16c"/>
+    <path d="m111 294 34-25 42 22 39-9v24H111Z" fill="#a68b53"/>
+    <g fill="#fff9e8"><path d="M95 175h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zM234 175h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8zm0 23h8v11h-8z"/></g>
+  </g>
+  <!-- Folder with a folded tab. -->
+  <g transform="rotate(9 529 321)" stroke="#373a31" stroke-width="2.5" stroke-linejoin="round">
+    <path d="M457 269a8 8 0 0 1 8-8h45l15 19h70a8 8 0 0 1 8 8v90H457Z" fill="#ffb951"/>
+    <path d="M453 290h151a7 7 0 0 1 7 8l-12 80a8 8 0 0 1-8 7H466a8 8 0 0 1-8-7l-12-80a7 7 0 0 1 7-8Z" fill="#ffca6b"/>
+    <path d="M460 300h138" stroke="#fff0b7" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <!-- The magnifier is the focal point. -->
+  <path d="m402 283 31-28 28 34-31 28Z" fill="#34352e" stroke="#292d29" stroke-width="3"/>
+  <path d="m430 308 27-25a13 13 0 0 1 18 1l76 89a18 18 0 0 1-2 25l-15 13a18 18 0 0 1-25-2l-81-82a13 13 0 0 1 2-19Z" fill="url(#orange)" stroke="#34352e" stroke-width="3"/>
+  <path d="m450 304 72 80" stroke="#ffb075" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="340" cy="207" r="117" fill="#b34b23" stroke="#34352e" stroke-width="3"/>
+  <circle cx="337" cy="201" r="117" fill="url(#orange)" stroke="#34352e" stroke-width="3"/>
+  <circle cx="337" cy="201" r="91" fill="#594a31" stroke="#34352e" stroke-width="3"/>
+  <circle cx="337" cy="201" r="88" fill="url(#glass)"/>
+  <g clip-path="url(#lens)">
+    <circle cx="368" cy="180" r="19" fill="#ffaf52"/>
+    <path d="m234 241 60-60 64 68 27-28 61 50H234Z" fill="#f4d493"/>
+    <path d="m230 271 77-42 65 31 69-15v55H230Z" fill="#dfb775"/>
+    <path d="m237 285 62-15 74 11 67-16v35H237Z" fill="#b99a62"/>
+    <path d="m267 215 50-87" stroke="#fff" stroke-width="17" stroke-linecap="round" opacity=".5"/>
+    <path d="m289 219 52-90" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".6"/>
+  </g>
+  <path d="M266 129a102 102 0 0 1 54-28" stroke="#fff5dc" stroke-width="7" stroke-linecap="round"/>
+  <path d="m335 100 8 1" stroke="#fff5dc" stroke-width="6" stroke-linecap="round"/>
+  <use href="#spark" transform="translate(157 105) rotate(12)"/>
+  <use href="#spark" transform="translate(633 286) scale(.75) rotate(-8)"/>
+  <circle cx="578" cy="74" r="5" fill="#f5bd61"/>
+  <circle cx="96" cy="361" r="4" fill="#ff8840"/>
+</svg>

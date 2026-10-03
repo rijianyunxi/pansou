@@ -7,21 +7,12 @@
           <text class="brand-title">盘搜</text>
         </view>
       </view>
-      <view
-        class="theme-toggle"
-        hover-class="theme-toggle-hover"
-        aria-label="{{theme === 'classic' ? '切换到明快风格' : '切换到原始风格'}}"
-        bindtap="onThemeToggle">
-        <view class="theme-toggle-surface">
-          <view class="theme-icon {{theme}}"></view>
-        </view>
-      </view>
     </view>
   </view>
 
-  <view class="hero">
-    <text class="hero-title">网盘聚合搜索</text>
-    <text class="hero-subtitle">网盘、磁力、公开频道一键搜索。</text>
+  <view wx:if="{{!searched}}" class="hero">
+    <view class="hero-copy"><text class="hero-eyebrow">你的资源发现入口</text><text class="hero-title">想找的，<text class="hero-accent">都在这里。</text></text><text class="hero-subtitle">网盘、磁力、公开频道，一键搜索。</text></view>
+    <image class="hero-art" src="/assets/discovery-hero.svg" mode="aspectFit" aria-hidden="true" />
   </view>
 
   <view class="search-workspace">
@@ -36,6 +27,11 @@
       <view wx:if="{{scope === 'channels'}}" class="manage-channels" hover-class="btn-hover" bindtap="onOpenChannels">
         <text class="manage-plus">＋</text>{{channelsCount ? '管理频道' : '添加频道'}}
       </view>
+    <view wx:if="{{searched && !loading && !paused}}" class="search-actions">
+      <view class="action-left">
+        <button size="mini" wx:if="{{searched && !loading && !paused}}" class="reset-button" hover-class="reset-pressed" bindtap="onReset" aria-label="重置搜索，清空关键词和结果"><image class="reset-symbol" src="/assets/reset-orange.svg" mode="aspectFit" aria-hidden="true" /><text>重置</text></button>
+      </view>
+    </view>
     </view>
 
     <view class="search-card">
@@ -49,21 +45,22 @@
         maxlength="100"
         bindinput="onInput"
         bindconfirm="onSearchTap" />
-      <button wx:if="{{keyword}}" class="clear-btn" catchtap="onClearInput" hover-class="clear-pressed" aria-label="清空搜索关键词"><view class="clear-surface"><view class="clear-symbol" aria-hidden="true"></view></view></button>
+      <button size="mini" wx:if="{{keyword}}" class="clear-btn" catchtap="onClearInput" hover-class="clear-pressed" aria-label="清空搜索关键词"><view class="clear-surface"><view class="clear-symbol" aria-hidden="true"></view></view></button>
     </view>
-    <view class="search-actions">
-      <view class="action-left">
-        <button wx:if="{{searched && !loading}}" class="reset-button" hover-class="reset-pressed" bindtap="onReset" aria-label="重置搜索，清空关键词和结果"><image class="reset-symbol" src="/assets/reset-{{theme}}.svg" mode="aspectFit" aria-hidden="true" /><text>重置</text></button>
-        <button wx:if="{{loading}}" class="search-control pause-control" hover-class="control-pressed" bindtap="onPause"><view class="pause-symbol" aria-hidden="true"></view><text>暂停</text></button>
-        <button wx:if="{{paused}}" class="search-control continue-control" hover-class="control-pressed" bindtap="onContinue"><view class="continue-symbol" aria-hidden="true"></view><text>继续</text></button>
-      </view>
-      <view class="search-btn {{loading ? 'disabled' : ''}}" hover-class="btn-hover" bindtap="onSearchTap"><text>搜索</text><text class="search-btn-arrow">→</text></view>
-    </view>
+      <button wx:if="{{loading}}" size="mini" class="search-btn search-btn-pause" hover-class="btn-hover" bindtap="onPause">暂停</button>
+      <button wx:elif="{{paused}}" size="mini" class="search-btn" hover-class="btn-hover" bindtap="onContinue">继续</button>
+      <button wx:else size="mini" class="search-btn" hover-class="btn-hover" bindtap="onSearchTap">搜索</button>
+
     </view>
   </view>
 
+  <view wx:if="{{!searched && searchHistory.length}}" class="search-history">
+    <view class="history-heading"><text>最近搜过</text><button size="mini" class="history-clear" bindtap="onClearHistory">清空记录</button></view>
+    <view class="history-list"><view wx:for="{{searchHistory}}" wx:key="*this" class="history-chip"><button size="mini" class="history-term" data-term="{{item}}" bindtap="onHotTap">{{item}}</button><button size="mini" class="history-remove" data-term="{{item}}" bindtap="onRemoveHistory" aria-label="删除搜索记录：{{item}}">×</button></view></view>
+  </view>
+
   <view wx:if="{{!searched && showHotSearch && hotSearches.length}}" class="hot-section">
-    <view class="hot-title">热门搜索</view>
+    <view class="hot-title"><text class="hot-star">✳</text> 此刻，大家在找</view>
     <view class="hot-grid">
       <view
         wx:for="{{hotSearches}}"
@@ -108,7 +105,7 @@
       <view wx:if="{{total > 0}}" class="sort-toolbar">
         <view class="sort-heading"><text wx:if="{{loading || paused}}" class="sort-hint">搜索完成后可排序</text></view>
         <view class="sort-options">
-          <button wx:for="{{sortOptions}}" wx:key="*this" class="sort-option {{sortIndex === index ? 'is-selected' : ''}}" data-index="{{index}}" bindtap="onSortTap" disabled="{{loading || paused}}" hover-class="sort-pressed" aria-label="{{item}}{{sortIndex === index ? '，已选中' : ''}}">{{item}}</button>
+          <button size="mini" wx:for="{{sortOptions}}" wx:key="*this" class="sort-option {{sortIndex === index ? 'is-selected' : ''}}" data-index="{{index}}" bindtap="onSortTap" disabled="{{loading || paused}}" hover-class="sort-pressed" aria-label="{{item}}{{sortIndex === index ? '，已选中' : ''}}">{{item}}</button>
         </view>
       </view>
     </view>
@@ -137,6 +134,6 @@
     </view>
   </block>
 
-  <view wx:if="{{showBackTop}}" class="back-top" bindtap="onBackTop">↑</view>
-  <app-feedback top="{{navBarHeight}}" theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{loading || busy}}" loading-text="正在搜索…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
+  <button size="mini" wx:if="{{showBackTop}}" class="back-top" bindtap="onBackTop" aria-label="一键回到顶部">↑</button>
+  <app-feedback top="{{navBarHeight}}" theme="{{theme}}" toast="{{feedbackToast}}" modal="{{feedbackModal}}" loading="{{busy}}" loading-text="正在处理…" bindconfirm="onFeedbackConfirm" bindcancel="onFeedbackCancel" />
 </view>

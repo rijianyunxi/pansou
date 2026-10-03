@@ -1,3 +1,5 @@
+const { createHistory } = require('../../utils/searchHistory');
+const historyStore = createHistory({ getItem: key => wx.getStorageSync(key), setItem: (key, value) => wx.setStorageSync(key, value), removeItem: key => wx.removeStorageSync(key) });
 const feedback = require('../../utils/feedback');
 const api = require('../../utils/api');
 const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('../../utils/config');
@@ -49,7 +51,8 @@ function initialState() {
     navContentHeight: 44,
     navBarHeight: 44,
     capsuleReserve: 0,
-    theme: 'geometric',
+    theme: 'orange',
+    searchHistory: [],
     keyword: '',
     scope: 'site',
     channelsCount: 0,
@@ -121,10 +124,11 @@ require('../../utils/theme').themedPage({
   _flushTimer: null,
 
   onLoad(options) {
-    this.setData(getNavigationMetrics());
+    this.setData(Object.assign(getNavigationMetrics(), { searchHistory: historyStore.read() }));
     this.loadSessionFlags();
     if (options && options.q) {
-      const keyword = decodeURIComponent(options.q);
+      let keyword;
+      try { keyword = decodeURIComponent(options.q); } catch (_) { keyword = options.q; }
       this.setData({ keyword });
       this.startSearch(keyword);
     }
@@ -132,7 +136,7 @@ require('../../utils/theme').themedPage({
 
   onShow() {
     // Re-read in case the device rotates or the page returns from another page.
-    this.setData(getNavigationMetrics());
+    this.setData(Object.assign(getNavigationMetrics(), { searchHistory: historyStore.read() }));
     // Returning from the channels page may have changed the channel list.
     this.refreshChannelsCount();
   },
@@ -186,6 +190,13 @@ require('../../utils/theme').themedPage({
       })
       .catch(() => undefined);
   },
+
+  changeHistory(action, term) {
+    try { this.setData({ searchHistory: action === 'clear' ? historyStore.clear() : historyStore[action](term) }); }
+    catch (_) { feedback.showToast({ title: '搜索历史保存失败，请检查存储空间', icon: 'none' }); }
+  },
+  onRemoveHistory(event) { this.changeHistory('remove', event.currentTarget.dataset.term); },
+  onClearHistory() { this.changeHistory('clear'); },
 
   onInput(event) {
     this.setData({ keyword: event.detail.value });
@@ -247,11 +258,14 @@ require('../../utils/theme').themedPage({
   },
 
   startSearch(keyword) {
+    keyword = typeof keyword === 'string' ? keyword.trim().slice(0, 100) : '';
+    if (!keyword) return;
     const userChannels = this.data.scope === 'channels' ? this._userChannels.slice() : undefined;
     if (this.data.scope === 'channels' && !userChannels.length) {
       feedback.showToast({ title: '请先添加至少一个公开频道，再搜索自定义频道', icon: 'none', duration: 2500 });
       return;
     }
+    this.changeHistory('add', keyword);
     this.cancelActiveSearch();
     this._searchSeq += 1;
     this._merged = [];
@@ -341,6 +355,7 @@ require('../../utils/theme').themedPage({
       navBarHeight: this.data.navBarHeight,
       capsuleReserve: this.data.capsuleReserve,
       theme: this.data.theme,
+      searchHistory: historyStore.read(),
       keyword: '',
       scope: this.data.scope,
       channelsCount: this.data.channelsCount,

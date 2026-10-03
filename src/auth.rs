@@ -154,6 +154,59 @@ impl Auth {
         ))
     }
 
+    /// Only call after verifying the code with WeChat. AppID scopes each OpenID.
+    pub async fn login_wechat(
+        &self,
+        app_id: &str,
+        openid: &str,
+    ) -> Result<(Session, UserView), ApiError> {
+        let mut tx = self.pool.begin().await?;
+        // Serialize first-login provisioning for this identity across processes.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("wechat:{app_id}:{openid}"))
+            .execute(&mut *tx)
+            .await?;
+        let existing: Option<i64> = sqlx::query_scalar("SELECT user_id FROM auth_identities WHERE provider='wechat' AND provider_app_id=$1 AND subject=$2")
+            .bind(app_id).bind(openid).fetch_optional(&mut *tx).await?;
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let username = format!("wx_{}", uuid::Uuid::new_v4().simple());
+            // Empty hash is deliberately not a usable password credential.
+            let id: i64 = sqlx::query_scalar("INSERT INTO users(username,username_normalized,password_hash,nickname,role,status) VALUES($1,$1,'','微信用户','user','active') RETURNING id")
+                .bind(&username).fetch_one(&mut *tx).await?;
+            sqlx::query("INSERT INTO auth_identities(provider,provider_app_id,subject,user_id) VALUES('wechat',$1,$2,$3)")
+                .bind(app_id).bind(openid).bind(id).execute(&mut *tx).await?;
+            id
+        };
+        let row = sqlx::query("SELECT username,nickname,role,status,deleted_at IS NOT NULL AS deleted FROM users WHERE id=$1 FOR UPDATE")
+            .bind(id).fetch_one(&mut *tx).await?;
+        let status: String = row.try_get("status")?;
+        let role: String = row.try_get("role")?;
+        if status != "active" || row.try_get::<bool, _>("deleted")? {
+            return Err(ApiError::Forbidden("账号已停用，请联系管理员".into()));
+        }
+        if role != "user" {
+            return Err(ApiError::Forbidden("管理员请使用后台账号密码登录".into()));
+        }
+        let user = UserView {
+            id,
+            username: row.try_get("username")?,
+            nickname: row.try_get("nickname")?,
+            role,
+            status,
+        };
+        sqlx::query("UPDATE users SET last_login_at=now(),updated_at=now() WHERE id=$1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let mut session = self.issue(false).await?;
+        self.register_user_session(id, &session.token).await?;
+        session.user_id = Some(id);
+        Ok((session, user))
+    }
+
     async fn register_user_session(&self, user_id: i64, token: &str) -> Result<(), ApiError> {
         let ttl_seconds = self.session_ttl_seconds().await;
         let mut connection = self.redis.connection()?;

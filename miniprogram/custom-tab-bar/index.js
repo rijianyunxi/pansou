@@ -2,7 +2,7 @@ const feedback = require('../utils/feedback');
 const { getTheme } = require('../utils/theme');
 Component({
   data: {
-    theme: 'geometric', selected: 0,
+    theme: 'orange', selected: 0,
     tabs: [
       { path: '/pages/index/index', label: '搜索', icon: 'search' },
       { path: '/pages/profile/profile', label: '我的', icon: 'user' },

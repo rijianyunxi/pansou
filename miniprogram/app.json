@@ -11,13 +11,13 @@
     "navigationBarBackgroundColor": "#ffffff",
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "盘搜",
-    "backgroundColor": "#f6f7f9",
+    "backgroundColor": "#fffdf7",
     "backgroundTextStyle": "dark"
   },
   "tabBar": {
     "custom": true,
     "color": "#9ca3af",
-    "selectedColor": "#2563eb",
+    "selectedColor": "#f65b1b",
     "backgroundColor": "#ffffff",
     "borderStyle": "white",
     "list": [

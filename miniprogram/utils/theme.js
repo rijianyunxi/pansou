@@ -1,16 +1,9 @@
 const feedback = require('./feedback');
-let current;
-function getTheme() {
-  if (!current) {
-    try { current = wx.getStorageSync('panhub.theme'); } catch (_) {}
-    current = current === 'classic' ? 'classic' : 'geometric';
-  }
-  return current;
-}
+function getTheme() { return 'orange'; }
 function sync(page) {
   const theme = getTheme();
   page.setData({ theme });
-  const backgroundColor = theme === 'geometric' ? '#fffbed' : '#f6f7f9';
+  const backgroundColor = '#fffdf7';
   wx.setNavigationBarColor({ frontColor: '#000000', backgroundColor });
   wx.setBackgroundColor({ backgroundColor });
   const bar = typeof page.getTabBar === 'function' && page.getTabBar();
@@ -27,11 +20,7 @@ function themedPage(definition) {
     onUnload(...args) { feedback.dispose(this); if (onUnload) return onUnload.apply(this, args); },
     onLoad(...args) { sync(this); if (onLoad) return onLoad.apply(this, args); },
     onShow(...args) { sync(this); if (onShow) return onShow.apply(this, args); },
-    onThemeToggle() {
-      current = getTheme() === 'classic' ? 'geometric' : 'classic';
-      try { wx.setStorageSync('panhub.theme', current); } catch (_) {}
-      sync(this);
-    },
+
   }));
 }
 module.exports = { getTheme, themedPage };
