@@ -272,16 +272,7 @@ impl Baidu {
             )
             .await?;
         self.check_items(&response)?;
-        Ok(response["info"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.get("to_fs_id").or_else(|| item.get("new_fs_id")))
-                    .map(scalar)
-                    .collect()
-            })
-            .unwrap_or_default())
+        Ok(transfer_ids(&response))
     }
     fn ids(&self, files: &[File]) -> Result<Vec<u64>, DriveError> {
         if files.is_empty() || files.len() > 1000 {
@@ -299,8 +290,7 @@ impl Baidu {
         }
         Ok(ids)
     }
-    fn check_items(&self, response: &Value) -> Result<(), DriveError> {
-        if let Some(items) = response["info"].as_array() {
+    fn check_items(&self, response: &Value) -> Result<(), DriveError> {        if let Some(items) = response["info"].as_array() {
             for item in items {
                 if let Some(code) = item["errno"].as_i64().filter(|c| *c != 0) {
                     let mut err = DriveError::from_code(super::Provider::Baidu, code);
@@ -389,7 +379,20 @@ impl Baidu {
                 true,
             )
             .await?;
-        self.file(&value)
+        let mut file = self.file(&value)?;
+        // The create response carries no server_filename; the name must come
+        // from the returned path so ownership evidence records what actually
+        // landed (Baidu may append a suffix when the name already exists).
+        if file.name.is_empty() {
+            file.name = file
+                .path
+                .rsplit('/')
+                .next()
+                .filter(|segment| !segment.is_empty())
+                .unwrap_or(name)
+                .to_owned();
+        }
+        Ok(file)
     }
     pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
         let (token, _) = self.token().await?;
@@ -418,19 +421,90 @@ impl Baidu {
             ("bdstoken", token),
             ("logid", self.logid().await),
         ]);
+        // The live filemanager rejects fs_id-only entries with errno 12; each
+        // entry must carry the absolute path next to the fs_id, exactly like
+        // the web client sends it.
+        let filelist = ids
+            .iter()
+            .zip(files.iter())
+            .map(|(id, file)| {
+                let mut item = json!({"fs_id": id});
+                if !file.path.is_empty() {
+                    item["path"] = json!(file.path);
+                }
+                item
+            })
+            .collect::<Vec<_>>();
         let response = self
             .post(
                 "/api/filemanager",
                 &params,
-                &[(
-                    "filelist".into(),
-                    json!(ids.iter().map(|id| json!({"fs_id":id})).collect::<Vec<_>>()).to_string(),
-                )],
+                &[("filelist".into(), json!(filelist).to_string())],
                 "删除我的文件",
                 true,
             )
             .await?;
         self.check_items(&response)?;
         Ok(())
+    }
+}
+
+/// Extract the identities the transfer created. The live response carries them
+/// in `extra.list[].to_fs_id`; `info[]` only echoes the source fsid. Older
+/// captures exposed to_fs_id/new_fs_id directly on info[], so both shapes stay
+/// supported; an empty result stays an error upstream instead of a silent 0.
+fn transfer_ids(response: &Value) -> Vec<String> {
+    let from_extra: Vec<String> = response["extra"]["list"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("to_fs_id"))
+                .map(scalar)
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !from_extra.is_empty() {
+        return from_extra;
+    }
+    response["info"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("to_fs_id").or_else(|| item.get("new_fs_id")))
+                .map(scalar)
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_ids_come_from_extra_list_and_fall_back_to_info() {
+        // Captured from pan.baidu.com/share/transfer on 2026-10-03: info[] has
+        // no to_fs_id, the identities live under extra.list.
+        let live = json!({
+            "errno": 0,
+            "extra": {"list": [
+                {"from": "/share", "from_fs_id": 35671588331591u64, "to": "/target/share", "to_fs_id": 848731236733481u64},
+                {"from": "/share2", "from_fs_id": 42, "to": "/target/share2", "to_fs_id": 99}
+            ]},
+            "info": [{"errno": 0, "fsid": 35671588331591u64, "path": "/share"}],
+            "task_id": 0
+        });
+        assert_eq!(transfer_ids(&live), vec!["848731236733481", "99"]);
+        // Legacy responses exposed the ids directly on info[].
+        let legacy = json!({"errno":0,"info":[{"errno":0,"to_fs_id":"123"},{"errno":0,"new_fs_id":"456"}]});
+        assert_eq!(transfer_ids(&legacy), vec!["123", "456"]);
+        // A rejected item or an empty envelope yields nothing for the caller
+        // to treat as "everything transferred".
+        assert!(transfer_ids(&json!({"errno":0,"info":[{"errno":12,"path":"/x"}]})).is_empty());
+        assert!(transfer_ids(&json!({"errno":0})).is_empty());
     }
 }

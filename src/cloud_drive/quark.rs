@@ -174,6 +174,39 @@ impl Quark {
             .wire
             .error(ErrorKind::Limit, "目标目录超过 10000 项，无法完整确认"))
     }
+    /// Upstream task failures carry a reason (rate limit, content review,
+    /// account restriction) that is business metadata, not credentials; surface
+    /// it so the operator does not have to guess why a task was rejected.
+    fn task_failure(&self, data: &Value) -> DriveError {
+        tracing::warn!(
+            keys = ?data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            status = data["status"].as_i64(),
+            "quark async task reported failure"
+        );
+        let detail = [
+            "error_message",
+            "errorMessage",
+            "message",
+            "msg",
+            "show_msg",
+            "fail_msg",
+            "failMsg",
+            "reason",
+            "error",
+        ]
+        .iter()
+        .map(|k| scalar(&data[k]))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default();
+        let errno = scalar(&data["errno"]);
+        let mut error = self.wire.error(ErrorKind::Upstream, "夸克异步任务失败");
+        if !detail.is_empty() {
+            error.message = format!("夸克异步任务失败：{detail}");
+        } else if !errno.is_empty() {
+            error.message = format!("夸克异步任务失败（任务错误码 {errno}）");
+        }
+        error
+    }
     async fn task(&self, task_id: &str) -> Result<Value, DriveError> {
         let start = Instant::now();
         let mut retry = 0;
@@ -192,7 +225,7 @@ impl Quark {
             retry += 1;
             match value["data"]["status"].as_i64() {
                 Some(2) => return Ok(value["data"].clone()),
-                Some(3) => return Err(self.wire.error(ErrorKind::Upstream, "夸克异步任务失败")),
+                Some(3) => return Err(self.task_failure(&value["data"])),
                 Some(0 | 1) => {}
                 _ => return Err(self.wire.error(ErrorKind::Upstream, "夸克返回未知任务状态")),
             }
@@ -217,7 +250,7 @@ impl Quark {
             return Ok(inline.clone());
         }
         if inline["status"].as_i64() == Some(3) {
-            return Err(self.wire.error(ErrorKind::Upstream, "夸克任务失败"));
+            return Err(self.task_failure(inline));
         }
         let task_id = scalar(&response["data"]["task_id"]);
         if !task_id.is_empty() {

@@ -526,9 +526,16 @@ pub(super) async fn deliver(
     // must finish here so their exact file/share identities remain available to cleanup.
     match workflow.await {
         Ok(share) => Ok(delivered(key, link, &current, &share, expires, false)),
-        Err(_) => {
+        Err(error) => {
+            // The request itself falls back to the original link, so without
+            // this line the upstream reason (a rejected transfer, a rejected
+            // share) would be invisible: messages are business-level replies,
+            // never credentials or file listings.
+            tracing::warn!(provider=%drive.wire.provider.name(), error=%error, wrote=drive.wrote(), "delivery workflow failed; artifacts stay for reconciliation");
             // An interrupted external write is never treated as safe to repeat.
-            sqlx::query("UPDATE link_share_cache SET state=CASE WHEN ownership_manifest_json->>'stage' IN('saved','share_created') THEN 'saved' ELSE $2 END,last_error_code='uncertain',updated_at=now() WHERE id=$1 AND state<>'ready'").bind(id).bind(if drive.wrote(){"uncertain"}else{"failed"}).execute(&state.pool).await?;
+            // A share rejected by the provider already recorded `share_failed`
+            // on the row; keep that specific code instead of masking it.
+            sqlx::query("UPDATE link_share_cache SET state=CASE WHEN ownership_manifest_json->>'stage' IN('saved','share_created') THEN 'saved' ELSE $2 END,last_error_code=CASE WHEN last_error_code='share_failed' THEN 'share_failed' ELSE 'uncertain' END,updated_at=now() WHERE id=$1 AND state<>'ready'").bind(id).bind(if drive.wrote(){"uncertain"}else{"failed"}).execute(&state.pool).await?;
             if !drive.wrote() {
                 let mut tx = state.pool.begin().await?;
                 sqlx::query("UPDATE link_share_cache SET state='deleted',deleted_at=now(),last_error_code='no_cloud_write' WHERE id=$1").bind(id).execute(&mut *tx).await?;
@@ -570,6 +577,14 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<(), ApiError> {
     let result =
         tokio::time::timeout(Duration::from_secs(120), cleanup(state, id, job_id, token)).await;
     if !matches!(result, Ok(Ok(()))) {
+        // The job row keeps only a fixed reason code; this line keeps the
+        // human-readable cause visible without it being lost between retries.
+        let detail = match &result {
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "cleanup exceeded its 120s budget".into(),
+            Ok(Ok(())) => String::new(),
+        };
+        tracing::warn!(job=job_id, detail=%detail, "cleanup attempt failed");
         let waiting_auth=matches!(&result,Ok(Err(ApiError::CloudAuthRequired(_))));
         let busy = matches!(&result, Ok(Err(ApiError::Unavailable(message))) if message == "网盘正在执行其他写操作，稍后重试清理"||message=="网盘凭证已更新，稍后重试当前任务");
         let blocked = waiting_auth || matches!(result, Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_))))
@@ -620,7 +635,28 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         evidence["stage"].as_str(),
         Some("ready" | "saved" | "share_created")
     ) {
-        return Err(ApiError::Conflict("产物写入状态不确定".into()));
+        // A directory/transfer intent may never have issued an upstream write.
+        // An owned directory that is provably empty means nothing was written,
+        // which is exactly as safe as the tracked empty "saved" stage; any
+        // content still requires human review.
+        let reconcilable = matches!(
+            evidence["stage"].as_str(),
+            Some("directory_created" | "directory_intent" | "transfer_intent")
+        ) && match serde_json::from_value::<File>(evidence["directory"].clone()) {
+            Ok(owned) => drive
+                .list(&directory_key(provider, &owned))
+                .await
+                .map(|files| files.is_empty())
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        if !reconcilable {
+            tracing::warn!(
+                stage=evidence["stage"].as_str().unwrap_or(""),
+                "cleanup refuses an artifact whose write state is not reconcilable"
+            );
+            return Err(ApiError::Conflict("产物写入状态不确定".into()));
+        }
     }
     let owned: File = serde_json::from_value(evidence["directory"].clone())
         .map_err(|_| ApiError::Conflict("目录归属缺失".into()))?;
@@ -633,7 +669,10 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         .into_iter()
         .find(|f| f.id == owned.id);
     if let Some(current) = &present {
-        if current.name != owned.name || !current.is_dir {
+        // A directory created before the create response carried its name has
+        // an empty recorded name; the id match plus the tree comparison below
+        // remain the ownership proof in that case.
+        if (!owned.name.is_empty() && current.name != owned.name) || !current.is_dir {
             return Err(ApiError::Conflict("目录被修改".into()));
         }
     }

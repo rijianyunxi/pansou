@@ -852,8 +852,10 @@ async fn maintenance_worker(state: &AppState) -> Result<(), ApiError> {
         let due=sqlx::query_scalar::<_,String>("SELECT provider FROM cloud_account_settings WHERE credential_cipher IS NOT NULL AND auth_status IN('ready','degraded') AND next_check_at<=now() AND (refresh_lease IS NULL OR refresh_lease_until<now()) ORDER BY next_check_at LIMIT 1").fetch_optional(&state.pool).await?;
         if let Some(provider) = due {
             if let Ok(p) = Provider::from_name(&provider) {
-                if maintain(&state, p).await.is_err() {
-                    tracing::warn!(provider=%p.name(),"cloud credential maintenance failed");
+                if let Err(error) = maintain(&state, p).await {
+                    // The error is an internal classification (stage + fixed
+                    // code), never a credential or upstream payload.
+                    tracing::warn!(provider=%p.name(), error=%error, "cloud credential maintenance failed");
                 }
             }
         }

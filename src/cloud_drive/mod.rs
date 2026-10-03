@@ -93,6 +93,13 @@ impl DriveError {
                 ErrorKind::Input,
                 "这是当前账号自己的分享，不能再次转存；可使用检测已有资源",
             ),
+            // Live-verified 2026-10-03: the share task itself is rejected with
+            // 41026 regardless of expiry settings — Quark's content review
+            // blocked the files, which no retry or parameter change can lift.
+            (Provider::Quark, 41026) => (
+                ErrorKind::InvalidLink,
+                "夸克拒绝分享：文件未通过平台审核或账号分享受限，请换用其他资源或账号",
+            ),
             (Provider::Baidu, -7 | 105) => (ErrorKind::InvalidLink, "百度分享资源已删除或不存在"),
             (Provider::Baidu, -9 | -1) => {
                 (ErrorKind::Password, "百度链接无法验证，请检查链接及提取码")

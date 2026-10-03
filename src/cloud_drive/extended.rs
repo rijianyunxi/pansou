@@ -327,9 +327,11 @@ impl Extended {
             // business replies observed against the live service are
             // `{"data":…,"msg":…}` with no code at all. The reference client
             // never inspects a business code and relies on the HTTP status, so a
-            // missing code cannot by itself mean failure. Accept the reply only
-            // when it actually carries a business payload; a bare `{"msg":…}`
-            // stays a hard failure. Only key names are logged, never values.
+            // missing code cannot by itself mean failure; `msg` is not checked
+            // here either because successful live replies have said both
+            // "success" and "ok". Accept the reply only when it actually
+            // carries a business payload; a bare `{"msg":…}` stays a hard
+            // failure. Only key names are logged, never values.
             let payload = value.get("data").is_some_and(|data| !data.is_null());
             if payload {
                 tracing::debug!(
@@ -426,18 +428,30 @@ impl Extended {
         if value["data"].is_array() {
             return Ok(value["data"].as_array().unwrap());
         }
-        ["items", "files", "list", "fileList", "records", "resList"]
+        if let Some(list) = ["items", "files", "list", "fileList", "records", "resList"]
             .iter()
             .find_map(|name| data[*name].as_array())
-            .ok_or_else(|| {
-                tracing::warn!(
-                    top_keys=?value.as_object().map(|o|o.keys().collect::<Vec<_>>()),
-                    data_keys=?data.as_object().map(|o|o.keys().collect::<Vec<_>>()),
-                    "drive listing response has no known file list field"
-                );
-                self.wire
-                    .error(ErrorKind::Upstream, "目录响应缺少文件列表，拒绝当作空目录")
-            })
+        {
+            return Ok(list);
+        }
+        // The live guangya file list answers an empty directory with
+        // `{"msg":"success","data":{}}` — no list field at all. Refusing that
+        // would turn every empty directory into a hard failure, so a success
+        // envelope without entries is an empty listing. Missing msg or any
+        // other message still fails closed.
+        if self.wire.provider == Provider::Guangya && scalar(&value["msg"]) == "success" {
+            static EMPTY: Vec<Value> = Vec::new();
+            return Ok(&EMPTY);
+        }
+        tracing::warn!(
+            top_keys=?value.as_object().map(|o|o.keys().collect::<Vec<_>>()),
+            data_keys=?data.as_object().map(|o|o.keys().collect::<Vec<_>>()),
+            "drive listing response has no known file list field"
+        );
+        Err(self.wire.error(
+            ErrorKind::Upstream,
+            "目录响应缺少文件列表，拒绝当作空目录",
+        ))
     }
     async fn listing(
         &self,
@@ -888,6 +902,27 @@ mod tests {
             Wire::new(reqwest::Client::new(), provider, raw.clone()),
             &raw,
         )
+    }
+
+    #[test]
+    fn guangya_empty_directory_is_an_empty_listing_not_a_failure() {
+        // Captured from userres/v1/file/get_file_list on 2026-10-03: an empty
+        // directory answers {"msg":"success","data":{}} with no list field.
+        let drive = provider(Provider::Guangya);
+        assert!(drive.array(&json!({"msg":"success","data":{}})).unwrap().is_empty());
+        // A non-empty listing keeps its entries, and the shape that broke the
+        // delivery before stays parseable.
+        let root = json!({"msg":"success","data":{"total":1,"list":[
+            {"fileId":"1953187127336075337","fileName":"__PANSOU__","depth":1,"dirType":1,"resType":2}
+        ]}});
+        assert_eq!(drive.array(&root).unwrap().len(), 1);
+        // Anything else without a list field still fails closed, for guangya
+        // only when the envelope is not a success.
+        assert!(drive.array(&json!({"msg":"出错了","data":{}})).is_err());
+        assert!(drive.array(&json!({"data":{}})).is_err());
+        for other in [Provider::Aliyun, Provider::Xunlei] {
+            assert!(provider(other).array(&json!({"msg":"success","data":{}})).is_err());
+        }
     }
 
     #[tokio::test]
