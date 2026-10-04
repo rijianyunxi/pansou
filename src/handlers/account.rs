@@ -244,7 +244,7 @@ pub async fn wechat_login(
         return Err(ApiError::BadRequest("code is required".into()));
     }
     let settings: Option<(String, String)> =
-        sqlx::query_as("SELECT app_id,secret FROM wechat_mini_settings WHERE id=1")
+        sqlx::query_as("SELECT value_json->>'appId',value_json->>'secret' FROM policy_settings WHERE key='wechat-mini'")
             .fetch_optional(&state.pool)
             .await?;
     let (app_id, secret) = settings
@@ -374,7 +374,7 @@ pub async fn wechat_qr_confirm(
             "ticket/scene and code are required".into(),
         ));
     }
-    let configured:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wechat_mini_settings WHERE id=1 AND app_id<>'' AND secret<>'')").fetch_one(&state.pool).await?;
+    let configured:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM policy_settings WHERE key='wechat-mini' AND value_json->>'appId'<>'' AND value_json->>'secret'<>'')").fetch_one(&state.pool).await?;
     if !configured {
         return Err(ApiError::Upstream(
             "微信小程序登录未配置 AppID/Secret".into(),

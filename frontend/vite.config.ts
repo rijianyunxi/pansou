@@ -1,7 +1,39 @@
 import { fileURLToPath, URL } from "node:url";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+
+const compressGzip = promisify(gzip);
+
+function precompressAssets(): Plugin {
+  let outputDir: string;
+  return {
+    name: "pansou-precompress-gzip",
+    apply: "build",
+    configResolved(config) {
+      outputDir = resolve(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      async function compressDirectory(directory: string): Promise<void> {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) {
+            await compressDirectory(path);
+          } else if (/\.(?:html|js|css|svg|json|txt|xml)$/.test(entry.name)) {
+            const source = await readFile(path);
+            const compressed = await compressGzip(source, { level: 9 });
+            if (compressed.length < source.length) await writeFile(path + ".gz", compressed);
+          }
+        }
+      }
+      await compressDirectory(outputDir);
+    },
+  };
+}
 
 const apiTarget = "http://127.0.0.1:3666";
 
@@ -10,7 +42,7 @@ const apiTarget = "http://127.0.0.1:3666";
 const vueCdnUrl = "https://cdn.jsdelivr.net/npm/vue@3.5.43/dist/vue.runtime.esm-browser.prod.js";
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), precompressAssets()],
   resolve: {
     alias: {
       "~": fileURLToPath(new URL(".", import.meta.url)),
@@ -28,6 +60,13 @@ export default defineConfig({
   },
   build: {
     sourcemap: false,
+    minify: "terser",
+    cssMinify: "esbuild",
+    terserOptions: {
+      compress: { passes: 3, drop_debugger: true },
+      mangle: true,
+      format: { comments: false },
+    },
     rollupOptions: {
       // 仅外置裸导入 "vue"（不影响 vue-router）；所有依赖库的 import 都会被
       // 重写到 CDN 地址，浏览器端仍是同一个模块实例。

@@ -314,7 +314,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .unwrap();
     db::init_db(&pool).await.unwrap();
     // The suffix guard above authorizes disposable fixtures only, never the app database.
-    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,resource_occurrences,source_messages,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
+    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,crawl_message_tasks,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
     // The explicit isolated test database is disposable; disable previous test schedules only.
     sqlx::query("UPDATE resource_sources SET enabled=false")
         .execute(&pool)
@@ -423,11 +423,13 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         "completed"
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM source_messages WHERE channel_id=$1")
-            .bind(&channel)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crawl_message_tasks WHERE channel_id=$1"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
         3
     );
     // Required-proxy routes must not silently fall back to direct requests.
@@ -504,7 +506,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     tx.rollback().await.unwrap();
     assert!(
         !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM source_messages WHERE channel_id=$1 AND message_id=999)"
+            "SELECT EXISTS(SELECT 1 FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=999)"
         )
         .bind(&channel)
         .fetch_one(&pool)
@@ -531,21 +533,45 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     assert!(!resource.name.contains("http"));
     assert!(!resource.description.as_ref().unwrap().contains('<'));
     let same = message(&channel, 101, "兰香如故", "test-a");
-    assert_eq!(ingest(&state, &channel, &source, same).await, (0, false));
-    let occurrence_xmin: String = sqlx::query_scalar("SELECT xmin::text FROM resource_occurrences WHERE channel_id=$1 AND message_id=101")
-        .bind(&channel).fetch_one(&pool).await.unwrap();
-    let revision: i64 = sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
-        .fetch_one(&pool).await.unwrap();
-    sqlx::query("UPDATE source_messages SET parse_version='force-reparse-test' WHERE channel_id=$1 AND message_id=101")
-        .bind(&channel).execute(&pool).await.unwrap();
+    assert_eq!(ingest(&state, &channel, &source, same).await, (1, false));
+    let resource_xmin: String = sqlx::query_scalar(
+        "SELECT xmin::text FROM managed_resources WHERE source_channel_id=$1 AND source_message_id=101",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let revision: i64 =
+        sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let mut unchanged = message(&channel, 101, "兰香如故", "test-a");
-    unchanged.published = sqlx::query_scalar("SELECT published_at FROM source_messages WHERE channel_id=$1 AND message_id=101")
+    unchanged.published = sqlx::query_scalar("SELECT published_at FROM managed_resources WHERE source_channel_id=$1 AND source_message_id=101 LIMIT 1")
         .bind(&channel).fetch_one(&pool).await.unwrap();
-    assert_eq!(ingest(&state, &channel, &source, unchanged).await, (1, false));
-    assert_eq!(sqlx::query_scalar::<_, String>("SELECT xmin::text FROM resource_occurrences WHERE channel_id=$1 AND message_id=101")
-        .bind(&channel).fetch_one(&pool).await.unwrap(), occurrence_xmin);
-    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT revision FROM config_revisions WHERE scope='local-index'")
-        .fetch_one(&pool).await.unwrap(), revision);
+    assert_eq!(
+        ingest(&state, &channel, &source, unchanged).await,
+        (1, false)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT xmin::text FROM managed_resources WHERE source_channel_id=$1 AND source_message_id=101"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        resource_xmin
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM config_revisions WHERE scope='local-index'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        revision
+    );
     assert_eq!(
         ingest(
             &state,
@@ -570,14 +596,28 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         .await,
         (1, false)
     );
-    assert_eq!(
-        local_index::query(&state, std::slice::from_ref(&channel), "更换")
-            .await
-            .unwrap()[0]
-            .id,
-        resource.id
+    let replacement = local_index::query(&state, std::slice::from_ref(&channel), "更换")
+        .await
+        .unwrap()[0]
+        .clone();
+    assert_ne!(
+        replacement.id, resource.id,
+        "changed link sets create independent resources"
     );
-    // Same canonical share, different authorized channel text: never leak private presentation.
+    assert_eq!(
+        local_index::query(&state, std::slice::from_ref(&channel), "新版")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    sqlx::query("UPDATE managed_resources SET enabled=false WHERE id=$1")
+        .bind(&resource.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resource = replacement;
+    // An unrelated channel's resource remains outside the selected source scope.
     sqlx::query("INSERT INTO crawl_channels(id,enabled) VALUES($1,false)")
         .bind(&private)
         .execute(&pool)
@@ -587,7 +627,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         &state,
         &private,
         &source,
-        message(&private, 300, "私有标题不能泄露", "new-share"),
+        message(&private, 300, "私有标题不能泄露", "private-share"),
     )
     .await;
     assert!(
@@ -623,14 +663,18 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     let anon = state.auth().issue(true).await.unwrap();
     let router = build_router(state.clone());
     assert_eq!(
-        call(&router, "POST", "/api/admin/resources", Some(&session.token),
-            json!({"name":"invalid types fixture","cloud_types":{"not":"an array"}})).await.0,
+        call(
+            &router,
+            "POST",
+            "/api/admin/resources",
+            Some(&session.token),
+            json!({"name":"invalid types fixture","cloud_types":{"not":"an array"}})
+        )
+        .await
+        .0,
         StatusCode::BAD_REQUEST,
     );
-    for path in [
-        "/api/admin/crawl/channels",
-        "/api/search/json?kw=x",
-    ] {
+    for path in ["/api/admin/crawl/channels", "/api/search/json?kw=x"] {
         assert_eq!(
             call(&router, "GET", path, Some(&anon.token), Value::Null)
                 .await
@@ -871,18 +915,6 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{list}");
-    let (status, detail) = call(
-        &router,
-        "GET",
-        &format!("/api/admin/crawl/channels/{channel}/messages/101"),
-        Some(&session.token),
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{detail}");
-    let detail: Value = serde_json::from_str(&detail).unwrap();
-    assert_eq!(detail["data"]["messageId"], 101);
-    assert!(!detail["data"]["stored"].as_array().unwrap().is_empty());
     let (status, messages) = call(
         &router,
         "GET",
@@ -893,9 +925,12 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     .await;
     assert_eq!(status, StatusCode::OK, "{messages}");
     let messages: Value = serde_json::from_str(&messages).unwrap();
-    for item in std::iter::once(&detail["data"]).chain(messages["data"]["items"].as_array().unwrap()) {
+    for item in messages["data"]["items"].as_array().unwrap() {
         for removed in ["rawHtml", "rawText", "summary"] {
-            assert!(item.get(removed).is_none(), "removed field {removed}: {item}");
+            assert!(
+                item.get(removed).is_none(),
+                "removed field {removed}: {item}"
+            );
         }
     }
     let (status, preview) = call(
@@ -920,11 +955,11 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         &state,
         &channel,
         &source,
-        message(&channel, 101, "采集不覆盖手动内容", "new-share"),
+        message(&channel, 101, "采集更新资源内容", "new-share"),
     )
     .await;
     assert_eq!(
-        local_index::query(&state, std::slice::from_ref(&channel), "管理员修订")
+        local_index::query(&state, std::slice::from_ref(&channel), "采集更新资源内容")
             .await
             .unwrap()
             .len(),
@@ -947,7 +982,7 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     );
     assert!(
         sqlx::query_scalar::<_, bool>(
-            "SELECT manual_override AND NOT enabled FROM managed_resources WHERE id=$1"
+            "SELECT NOT EXISTS(SELECT 1 FROM managed_resources WHERE id=$1)"
         )
         .bind(&resource.id)
         .fetch_one(&pool)
@@ -1363,59 +1398,190 @@ async fn channel_scheduling_and_page_failures() {
 async fn failed_message_actions_bulk_ignore_and_page_retry() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").expect("test database URL");
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
-    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
     db::init_db(&pool).await.unwrap();
-    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,resource_occurrences,source_messages,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
-    let redis = RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").expect("test Redis URL")).await.unwrap();
+    sqlx::query("TRUNCATE crawl_page_failures,crawl_jobs,crawl_message_tasks,crawl_channels,managed_resources CASCADE").execute(&pool).await.unwrap();
+    let redis =
+        RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").expect("test Redis URL"))
+            .await
+            .unwrap();
     let state = Arc::new(AppState::new(pool.clone(), redis));
     let unique = uuid::Uuid::new_v4().simple().to_string();
     let channel = format!("act_{unique}");
     sqlx::query("INSERT INTO crawl_channels(id,name,transform) VALUES($1,'批量测试',$2)")
-        .bind(&channel).bind(DSL).execute(&pool).await.unwrap();
-    for (id, status) in [(300i64, "failed"), (310, "failed"), (500, "failed"), (600, "parsed")] {
-        sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status,parse_error) VALUES($1,$2,'h','v',$3,'x')")
+        .bind(&channel)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (id, status) in [
+        (300i64, "failed"),
+        (310, "failed"),
+        (500, "failed"),
+        (600, "parsed"),
+    ] {
+        sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,status,error_message) VALUES($1,$2,$3,CASE WHEN $3='failed' THEN 'x' END)")
             .bind(&channel).bind(id).bind(status).execute(&pool).await.unwrap();
     }
     let user = format!("admin_{unique}");
     sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&user).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
     let session = state.auth().login(&user, &unique).await.unwrap().0;
-    let anon = state.auth().issue(true).await.unwrap();
     let router = build_router(state.clone());
     let path = format!("/api/admin/crawl/channels/{channel}/messages/action");
 
     assert_eq!(
-        call(&router, "POST", &path, None, json!({"action":"ignore","ids":[300]})).await.0,
+        call(
+            &router,
+            "POST",
+            &path,
+            None,
+            json!({"action":"ignore","ids":[300]})
+        )
+        .await
+        .0,
         StatusCode::UNAUTHORIZED
     );
     // Retry on a paused channel is refused.
-    sqlx::query("UPDATE crawl_channels SET enabled=false WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(
-        call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[300]})).await.0,
+        call(
+            &router,
+            "POST",
+            &path,
+            Some(&session.token),
+            json!({"action":"retry","ids":[300]})
+        )
+        .await
+        .0,
         StatusCode::CONFLICT
     );
-    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Bulk retry groups 300/310 into one page window and 500 into another.
-    let (code, reply) = call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[300,310,500]})).await;
+    let (code, reply) = call(
+        &router,
+        "POST",
+        &path,
+        Some(&session.token),
+        json!({"action":"retry","ids":[300,310,500]}),
+    )
+    .await;
     assert_eq!(code, StatusCode::OK, "{reply}");
     let reply: Value = serde_json::from_str(&reply).unwrap();
     assert_eq!(reply["data"]["affected"], 3, "{reply}");
     assert_eq!(reply["data"]["jobs"], 2, "{reply}");
     let jobs = sqlx::query("SELECT cursor_before,stop_at FROM crawl_jobs WHERE channel_id=$1 AND kind='retry' AND status='queued' ORDER BY cursor_before").bind(&channel).fetch_all(&pool).await.unwrap();
     assert_eq!(jobs.len(), 2);
-    assert_eq!((jobs[0].get::<i64,_>("cursor_before"), jobs[0].get::<i64,_>("stop_at")), (311, 300));
-    assert_eq!((jobs[1].get::<i64,_>("cursor_before"), jobs[1].get::<i64,_>("stop_at")), (501, 500));
+    assert_eq!(
+        (
+            jobs[0].get::<i64, _>("cursor_before"),
+            jobs[0].get::<i64, _>("stop_at")
+        ),
+        (311, 300)
+    );
+    assert_eq!(
+        (
+            jobs[1].get::<i64, _>("cursor_before"),
+            jobs[1].get::<i64, _>("stop_at")
+        ),
+        (501, 500)
+    );
 
-    // Ignore deletes only failed rows and decrements the maintained counts.
-    let (code, reply) = call(&router, "POST", &path, Some(&session.token), json!({"action":"ignore","ids":[300]})).await;
+    let resource_id = format!("ignore_resource_{unique}");
+    sqlx::query("INSERT INTO managed_resources(id,name,source_channel_ids,source_channel_id,source_message_id) VALUES($1,'保留资源',ARRAY[$2::text],$2,300)")
+        .bind(&resource_id).bind(&channel).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_message_tasks SET resource_ids=ARRAY[$2::text] WHERE channel_id=$1 AND message_id=300")
+        .bind(&channel).bind(&resource_id).execute(&pool).await.unwrap();
+    let resource_before: Value =
+        sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=$1")
+            .bind(&resource_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Ignore deletes the failed row without adding a successful record.
+    let (code, reply) = call(
+        &router,
+        "POST",
+        &path,
+        Some(&session.token),
+        json!({"action":"ignore","ids":[300]}),
+    )
+    .await;
     assert_eq!(code, StatusCode::OK, "{reply}");
-    let left: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM source_messages WHERE channel_id=$1 ORDER BY message_id").bind(&channel).fetch_all(&pool).await.unwrap();
+    let left: Vec<i64> = sqlx::query_scalar(
+        "SELECT message_id FROM crawl_message_tasks WHERE channel_id=$1 ORDER BY message_id",
+    )
+    .bind(&channel)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(left, vec![310, 500, 600]);
-    let counts = sqlx::query("SELECT message_count,parsed_count,failed_count FROM channel_statistics WHERE channel_id=$1").bind(&channel).fetch_one(&pool).await.unwrap();
-    assert_eq!((counts.get::<i64,_>("message_count"), counts.get::<i64,_>("parsed_count"), counts.get::<i64,_>("failed_count")), (3, 1, 2));
+    let resource_after: Value =
+        sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=$1")
+            .bind(&resource_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(resource_before, resource_after);
+    let counts = sqlx::query("SELECT count(*) message_count,count(*) FILTER(WHERE status<>'failed') success_count,count(*) FILTER(WHERE status='failed') failed_count FROM crawl_message_tasks WHERE channel_id=$1").bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        (
+            counts.get::<i64, _>("message_count"),
+            counts.get::<i64, _>("success_count"),
+            counts.get::<i64, _>("failed_count")
+        ),
+        (3, 1, 2)
+    );
+    let (code, reply) = call(
+        &router,
+        "GET",
+        &format!("/api/admin/crawl/channels/{channel}/messages?scope=today"),
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(
+        reply["data"]["counts"],
+        json!({"all":3,"success":1,"failed":2})
+    );
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            &path,
+            Some(&session.token),
+            json!({"action":"ignore","ids":[300]})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
     // Retrying a non-failed selection is rejected wholesale.
     assert_eq!(
-        call(&router, "POST", &path, Some(&session.token), json!({"action":"retry","ids":[600]})).await.0,
+        call(
+            &router,
+            "POST",
+            &path,
+            Some(&session.token),
+            json!({"action":"retry","ids":[600]})
+        )
+        .await
+        .0,
         StatusCode::CONFLICT
     );
     state.auth().revoke_session(&session).await.unwrap();
@@ -1426,65 +1592,221 @@ async fn failed_message_actions_bulk_ignore_and_page_retry() {
 async fn deleting_crawl_channel_preserves_resources_and_discards_inflight_page() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
-    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
     db::init_db(&pool).await.unwrap();
-    sqlx::query("UPDATE crawl_channels SET enabled=false").execute(&pool).await.unwrap();
-    let state = Arc::new(AppState::new(pool.clone(), RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap()).await.unwrap()));
+    sqlx::query("UPDATE crawl_channels SET enabled=false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
+            .await
+            .unwrap(),
+    ));
     let unique = uuid::Uuid::new_v4().simple().to_string();
     let channel = format!("delete_{unique}");
     let other = format!("keep_{unique}");
     for (id, enabled) in [(&channel, true), (&other, false)] {
-        sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,$2,$3)").bind(id).bind(enabled).bind(DSL).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,$2,$3)")
+            .bind(id)
+            .bind(enabled)
+            .bind(DSL)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
     let source = crawl::source_for(&pool, &channel).await.unwrap();
     let mut tx = pool.begin().await.unwrap();
-    crawl::persist_message(&mut tx, &channel, &message(&channel, 10, "独有资源", "exclusive"), &source).await.unwrap();
-    crawl::persist_message(&mut tx, &channel, &message(&channel, 11, "共享资源", "shared"), &source).await.unwrap();
-    crawl::persist_message(&mut tx, &other, &message(&other, 11, "共享资源", "shared"), &source).await.unwrap();
+    crawl::persist_message(
+        &mut tx,
+        &channel,
+        &message(&channel, 10, "独有资源", "exclusive"),
+        &source,
+    )
+    .await
+    .unwrap();
+    crawl::persist_message(
+        &mut tx,
+        &channel,
+        &message(&channel, 11, "共享资源", "shared"),
+        &source,
+    )
+    .await
+    .unwrap();
+    crawl::persist_message(
+        &mut tx,
+        &other,
+        &message(&other, 11, "共享资源", "shared"),
+        &source,
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    let resource_ids: Vec<String> = sqlx::query_scalar("SELECT resource_id FROM resource_occurrences WHERE channel_id=$1 ORDER BY resource_id").bind(&channel).fetch_all(&pool).await.unwrap();
+    let resource_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM managed_resources WHERE source_channel_ids @> ARRAY[$1]::text[] ORDER BY id",
+    )
+    .bind(&channel)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(resource_ids.len(), 2);
-    let resources_before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap();
-    let links_before: Vec<Value> = sqlx::query_scalar("SELECT links_json FROM managed_resources WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap();
-    let job: i64 = sqlx::query_scalar("INSERT INTO crawl_jobs(channel_id,kind) VALUES($1,'sync') RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
+    let resources_before: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(r)-'source_channel_ids' FROM managed_resources r WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(&resource_ids)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let links_before: Vec<Value> = sqlx::query_scalar(
+        "SELECT resource_links_json(id) FROM managed_resources WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(&resource_ids)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let job: i64 = sqlx::query_scalar(
+        "INSERT INTO crawl_jobs(channel_id,kind) VALUES($1,'sync') RETURNING id",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let failure: i64 = sqlx::query_scalar("INSERT INTO crawl_page_failures(channel_id,job_id,retry_job_id,kind,last_error) VALUES($1,$2,$2,'sync','fixture') RETURNING id").bind(&channel).bind(job).fetch_one(&pool).await.unwrap();
-    sqlx::query("UPDATE crawl_jobs SET failure_id=$2 WHERE id=$1").bind(job).bind(failure).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET failure_id=$2 WHERE id=$1")
+        .bind(job)
+        .bind(failure)
+        .execute(&pool)
+        .await
+        .unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(axum::serve(listener, Router::new().fallback({
-        let started = started.clone(); let release = release.clone(); let channel = channel.clone();
-        move || { let started = started.clone(); let release = release.clone(); let channel = channel.clone(); async move {
-            started.notify_one(); release.notified().await;
-            message(&channel, 12, "不应写入的晚到消息", "late").html
-        }}
-    })).into_future());
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback({
+                let started = started.clone();
+                let release = release.clone();
+                let channel = channel.clone();
+                move || {
+                    let started = started.clone();
+                    let release = release.clone();
+                    let channel = channel.clone();
+                    async move {
+                        started.notify_one();
+                        release.notified().await;
+                        message(&channel, 12, "不应写入的晚到消息", "late").html
+                    }
+                }
+            }),
+        )
+        .into_future(),
+    );
     let node = format!("node_{unique}");
-    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)").bind(&node).bind(format!("http://{address}")).execute(&pool).await.unwrap();
-    let policy: i64 = sqlx::query_scalar("INSERT INTO outbound_policies(channel_id) VALUES($1) RETURNING id").bind(&channel).fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO outbound_policy_nodes(policy_id,node_id,weight) VALUES($1,$2,10)").bind(policy).bind(&node).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)")
+        .bind(&node)
+        .bind(format!("http://{address}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let policy: i64 =
+        sqlx::query_scalar("INSERT INTO outbound_policies(channel_id) VALUES($1) RETURNING id")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO outbound_policy_nodes(policy_id,node_id,weight) VALUES($1,$2,10)")
+        .bind(policy)
+        .bind(&node)
+        .execute(&pool)
+        .await
+        .unwrap();
     let username = format!("delete_admin_{unique}");
     sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&username).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
     let session = state.auth().login(&username, &unique).await.unwrap().0;
     let router = build_router(state.clone());
     let path = format!("/api/admin/crawl/channels/{channel}");
-    assert_eq!(call(&router, "DELETE", &path, None, json!({})).await.0, StatusCode::UNAUTHORIZED);
-    let worker = tokio::spawn({let state = state.clone(); async move { crawl::tick(&state).await }});
-    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified()).await.unwrap();
+    assert_eq!(
+        call(&router, "DELETE", &path, None, json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let worker = tokio::spawn({
+        let state = state.clone();
+        async move { crawl::tick(&state).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
     let (status, body) = call(&router, "DELETE", &path, Some(&session.token), json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
-    for table in ["crawl_channels", "crawl_jobs", "crawl_page_failures", "source_messages", "resource_occurrences", "resource_search_occurrences", "channel_statistics", "channel_resource_references", "outbound_policies"] {
-        let key = if table == "crawl_channels" { "id" } else { "channel_id" };
-        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {key}=$1")).bind(&channel).fetch_one(&pool).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    for table in [
+        "crawl_channels",
+        "crawl_jobs",
+        "crawl_page_failures",
+        "crawl_message_tasks",
+        "outbound_policies",
+    ] {
+        let key = if table == "crawl_channels" {
+            "id"
+        } else {
+            "channel_id"
+        };
+        let count: i64 =
+            sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {key}=$1"))
+                .bind(&channel)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, 0, "{table}");
     }
-    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM source_messages WHERE channel_id=$1").bind(&other).fetch_one(&pool).await.unwrap(), 1);
-    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT to_jsonb(r) FROM managed_resources r WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap(), resources_before);
-    assert_eq!(sqlx::query_scalar::<_, Value>("SELECT links_json FROM managed_resources WHERE id=ANY($1) ORDER BY id").bind(&resource_ids).fetch_all(&pool).await.unwrap(), links_before);
-    assert_eq!(call(&router, "DELETE", &path, Some(&session.token), json!({})).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crawl_message_tasks WHERE channel_id=$1"
+        )
+        .bind(&other)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Value>(
+            "SELECT to_jsonb(r)-'source_channel_ids' FROM managed_resources r WHERE id=ANY($1) ORDER BY id"
+        )
+        .bind(&resource_ids)
+        .fetch_all(&pool)
+        .await
+        .unwrap(),
+        resources_before
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Value>(
+            "SELECT resource_links_json(id) FROM managed_resources WHERE id=ANY($1) ORDER BY id"
+        )
+        .bind(&resource_ids)
+        .fetch_all(&pool)
+        .await
+        .unwrap(),
+        links_before
+    );
+    assert_eq!(
+        call(&router, "DELETE", &path, Some(&session.token), json!({}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
     state.auth().revoke_session(&session).await.unwrap();
     server.abort();
     pool.close().await;
@@ -1496,11 +1818,21 @@ async fn cron_defers_daily_pages_but_full_history_and_notifications_work() {
     use chrono::Timelike;
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
-    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
     db::init_db(&pool).await.unwrap();
-    sqlx::query("UPDATE crawl_channels SET enabled=false").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE status IN ('queued','running','paused')").execute(&pool).await.unwrap();
-    let observed: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT now()").fetch_one(&pool).await.unwrap();
+    let observed: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let shanghai_hour = (observed.hour() + 8) % 24;
     let closed_cron = format!("0 */10 {} * * *", (shanghai_hour + 2) % 24);
     sqlx::query("UPDATE crawl_settings SET concurrent_channels=1,page_delay_seconds=0,daily_cron=$1,version=version+1")
@@ -1509,57 +1841,131 @@ async fn cron_defers_daily_pages_but_full_history_and_notifications_work() {
     let requests = Arc::new(AtomicUsize::new(0));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(axum::serve(listener, Router::new().fallback(mock_page).with_state(Mock {
-        channel: channel.clone(), requests: requests.clone(),
-    })).into_future());
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(mock_page).with_state(Mock {
+                channel: channel.clone(),
+                requests: requests.clone(),
+            }),
+        )
+        .into_future(),
+    );
     sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,false,$2)")
-        .bind(&channel).bind(DSL).execute(&pool).await.unwrap();
+        .bind(&channel)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
     let node = format!("node_{channel}");
     sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)")
-        .bind(&node).bind(format!("http://{addr}")).execute(&pool).await.unwrap();
+        .bind(&node)
+        .bind(format!("http://{addr}"))
+        .execute(&pool)
+        .await
+        .unwrap();
     let mut tx = pool.begin().await.unwrap();
-    crate::outbound::save(&mut tx, crate::outbound::Owner::Channel(&channel), &crate::outbound::Policy {
-        nodes: vec![crate::outbound::NodeWeight { node_id: node, weight: 10 }],
-        ..crate::outbound::Policy::direct()
-    }).await.unwrap();
+    crate::outbound::save(
+        &mut tx,
+        crate::outbound::Owner::Channel(&channel),
+        &crate::outbound::Policy {
+            nodes: vec![crate::outbound::NodeWeight {
+                node_id: node,
+                weight: 10,
+            }],
+            ..crate::outbound::Policy::direct()
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     let redis_url = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
-    assert!(!matches!(url::Url::parse(&redis_url).unwrap().path(), "" | "/" | "/0"));
-    let state = Arc::new(AppState::new(pool.clone(), RedisStore::connect(&redis_url).await.unwrap()));
+    assert!(!matches!(
+        url::Url::parse(&redis_url).unwrap().path(),
+        "" | "/" | "/0"
+    ));
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        RedisStore::connect(&redis_url).await.unwrap(),
+    ));
     let worker_state = state.clone();
     let worker = tokio::spawn(async move { crawl::worker(worker_state).await });
     // With every channel disabled, the worker has no deadline before its 60s
     // safety scan. A committed channel update must wake it immediately.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if sqlx::query_scalar::<_,bool>("SELECT history_complete FROM crawl_channels WHERE id=$1")
-                .bind(&channel).fetch_one(&pool).await.unwrap() { break; }
+            if sqlx::query_scalar::<_, bool>(
+                "SELECT history_complete FROM crawl_channels WHERE id=$1",
+            )
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }).await.expect("notification did not wake initial full collection outside cron hours");
-    assert_eq!(requests.load(Ordering::SeqCst), 3, "initial head and history both run outside daily cron");
+    })
+    .await
+    .expect("notification did not wake initial full collection outside cron hours");
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        3,
+        "initial head and history both run outside daily cron"
+    );
     state.shutdown.cancel();
-    tokio::time::timeout(std::time::Duration::from_secs(3), worker).await.unwrap().unwrap().unwrap();
-    let checkpoint: i64 = sqlx::query_scalar("SELECT newest_message FROM crawl_channels WHERE id=$1")
-        .bind(&channel).fetch_one(&pool).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let checkpoint: i64 =
+        sqlx::query_scalar("SELECT newest_message FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let job = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
-    sqlx::query("UPDATE crawl_jobs SET cursor_before=100,head_message=101,pages=1 WHERE id=$1").bind(job).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET cursor_before=100,head_message=101,pages=1 WHERE id=$1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
     crawl::tick(&state).await.unwrap();
-    assert_eq!(requests.load(Ordering::SeqCst), 3, "daily pages cannot run outside cron hours");
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        3,
+        "daily pages cannot run outside cron hours"
+    );
     let deferred = sqlx::query("SELECT status,next_run_at>now() deferred,cursor_before,attempts FROM crawl_jobs WHERE id=$1")
         .bind(job).fetch_one(&pool).await.unwrap();
-    assert_eq!(deferred.get::<String,_>("status"), "queued");
-    assert!(deferred.get::<bool,_>("deferred"));
-    assert_eq!(deferred.get::<i32,_>("attempts"), 0);
-    assert_eq!(deferred.get::<Option<i64>,_>("cursor_before"), Some(100));
-    assert_eq!(checkpoint, sqlx::query_scalar::<_,i64>("SELECT newest_message FROM crawl_channels WHERE id=$1")
-        .bind(&channel).fetch_one(&pool).await.unwrap());
+    assert_eq!(deferred.get::<String, _>("status"), "queued");
+    assert!(deferred.get::<bool, _>("deferred"));
+    assert_eq!(deferred.get::<i32, _>("attempts"), 0);
+    assert_eq!(deferred.get::<Option<i64>, _>("cursor_before"), Some(100));
+    assert_eq!(
+        checkpoint,
+        sqlx::query_scalar::<_, i64>("SELECT newest_message FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
     let task = sqlx::query(include_str!("sql/channel_task_states.sql"))
-        .bind(vec![channel.clone()]).bind(false).fetch_one(&pool).await.unwrap();
-    assert_eq!(task.get::<String,_>("task_state"), "idle");
-    assert_eq!(task.get::<String,_>("task_phase"), "cron_wait");
+        .bind(vec![channel.clone()])
+        .bind(false)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(task.get::<String, _>("task_state"), "idle");
+    assert_eq!(task.get::<String, _>("task_phase"), "cron_wait");
     // Invalid cron cannot alter the stored version or existing checkpoints.
     let username = format!("admin_{channel}");
     sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
@@ -1567,45 +1973,256 @@ async fn cron_defers_daily_pages_but_full_history_and_notifications_work() {
     let session = state.auth().login(&username, &channel).await.unwrap().0;
     let router = build_router(state.clone());
     let stored = crawl::settings(&pool).await.unwrap();
-    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM crawl_jobs").fetch_one(&pool).await.unwrap();
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM crawl_jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let preview_request = json!({"dailyCron":"  30 */10 8-21 * * *  "});
-    assert_eq!(call(&router,"POST","/api/admin/crawl/settings/preview",None,preview_request.clone()).await.0,StatusCode::UNAUTHORIZED);
-    let (status, data) = call(&router,"POST","/api/admin/crawl/settings/preview",Some(&session.token),preview_request).await;
-    assert_eq!(status,StatusCode::OK,"{data}");
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/api/admin/crawl/settings/preview",
+            None,
+            preview_request.clone()
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, data) = call(
+        &router,
+        "POST",
+        "/api/admin/crawl/settings/preview",
+        Some(&session.token),
+        preview_request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{data}");
     let data = serde_json::from_str::<Value>(&data).unwrap()["data"].clone();
-    assert_eq!(data["dailyCron"],"30 */10 8-21 * * *");
-    assert_eq!(data["timeZone"],"Asia/Shanghai");
-    let mut previous = data["observedAt"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
+    assert_eq!(data["dailyCron"], "30 */10 8-21 * * *");
+    assert_eq!(data["timeZone"], "Asia/Shanghai");
+    let mut previous = data["observedAt"]
+        .as_str()
+        .unwrap()
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
     let times = data["nextRuns"].as_array().unwrap();
-    assert_eq!(times.len(),5);
+    assert_eq!(times.len(), 5);
     for time in times {
-        let time = time.as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
+        let time = time
+            .as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
         assert!(time > previous);
-        assert_eq!(time.second(),30);
-        assert_eq!(time.minute()%10,0);
-        assert!((8..=21).contains(&((time.hour()+8)%24)));
+        assert_eq!(time.second(), 30);
+        assert_eq!(time.minute() % 10, 0);
+        assert!((8..=21).contains(&((time.hour() + 8) % 24)));
         previous = time;
     }
-    for expression in ["0 0 8 30 2 *","*/10 8-21 * * *","invalid"] {
-        assert_eq!(call(&router,"POST","/api/admin/crawl/settings/preview",Some(&session.token),json!({"dailyCron":expression})).await.0,StatusCode::BAD_REQUEST);
+    for expression in ["0 0 8 30 2 *", "*/10 8-21 * * *", "invalid"] {
+        assert_eq!(
+            call(
+                &router,
+                "POST",
+                "/api/admin/crawl/settings/preview",
+                Some(&session.token),
+                json!({"dailyCron":expression})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
     }
-    assert_eq!(crawl::settings(&pool).await.unwrap().version,stored.version);
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM crawl_jobs").fetch_one(&pool).await.unwrap(),jobs_before);
+    assert_eq!(
+        crawl::settings(&pool).await.unwrap().version,
+        stored.version
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_jobs")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        jobs_before
+    );
     let mut cfg = serde_json::to_value(&stored).unwrap();
     cfg["dailyCron"] = json!("0 0 8 30 2 *");
-    assert_eq!(call(&router, "PUT", "/api/admin/crawl/settings", Some(&session.token), cfg.clone()).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(crawl::settings(&pool).await.unwrap().version, stored.version);
+    assert_eq!(
+        call(
+            &router,
+            "PUT",
+            "/api/admin/crawl/settings",
+            Some(&session.token),
+            cfg.clone()
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        crawl::settings(&pool).await.unwrap().version,
+        stored.version
+    );
     // Returning to all-day cron resumes the same persisted incremental job.
     cfg["dailyCron"] = json!("0 */10 * * * *");
-    assert_eq!(call(&router, "PUT", "/api/admin/crawl/settings", Some(&session.token), cfg).await.0, StatusCode::OK);
+    assert_eq!(
+        call(
+            &router,
+            "PUT",
+            "/api/admin/crawl/settings",
+            Some(&session.token),
+            cfg
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
     crawl::tick(&state).await.unwrap();
-    let row = sqlx::query("SELECT status FROM crawl_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap();
-    assert_eq!(row.get::<String,_>("status"), "completed");
+    let row = sqlx::query("SELECT status FROM crawl_jobs WHERE id=$1")
+        .bind(job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "completed");
     assert_eq!(requests.load(Ordering::SeqCst), 4);
-    let next: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT next_sync_at FROM crawl_channels WHERE id=$1")
-        .bind(&channel).fetch_one(&pool).await.unwrap();
+    let next: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT next_sync_at FROM crawl_channels WHERE id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(next.minute() % 10, 0);
     assert_eq!(next.second(), 0);
-    sqlx::query("UPDATE crawl_settings SET daily_cron='0 */10 * * * *',page_delay_seconds=0").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_settings SET daily_cron='0 */10 * * * *',page_delay_seconds=0")
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn canonical_resources_keep_latest_content_and_channel_membership_without_message_versions() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = crate::db::connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let prefix = uuid::Uuid::new_v4().simple().to_string();
+    let a = format!("a_{prefix}");
+    let b = format!("b_{prefix}");
+    for channel in [&a, &b] {
+        sqlx::query("INSERT INTO crawl_channels(id,name) VALUES($1,$1)")
+            .bind(channel)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let source = Source {
+        id: prefix.clone(),
+        name: "Test".into(),
+        description: String::new(),
+        url: String::new(),
+        method: "GET".into(),
+        format: "html".into(),
+        priority: 0,
+        enabled: true,
+        request: None,
+        transform: DSL.into(),
+    };
+    let mut newest = message(&a, 1, "最新标题", &prefix);
+    newest.published = Some(Utc::now());
+    crawl::persist_message(&mut tx, &a, &newest, &source)
+        .await
+        .unwrap();
+    let id: String = sqlx::query_scalar(
+        "SELECT id FROM managed_resources WHERE source_channel_ids @> ARRAY[$1]::text[]",
+    )
+    .bind(&a)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let mut older = message(&b, 2, "较老频道标题", &prefix);
+    older.published = Some(newest.published.unwrap() - chrono::Duration::days(10));
+    crawl::persist_message(&mut tx, &b, &older, &source)
+        .await
+        .unwrap();
+    let row = sqlx::query("SELECT name,source_channel_ids FROM managed_resources WHERE id=$1")
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("name"), "最新标题");
+    assert_eq!(
+        row.get::<Vec<String>, _>("source_channel_ids"),
+        vec![a.clone(), b.clone()]
+    );
+    sqlx::query("UPDATE managed_resources SET name='人工标题' WHERE id=$1")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let mut newer = message(&b, 3, "新采集标题", &prefix);
+    newer.published = Some(newest.published.unwrap() + chrono::Duration::days(1));
+    crawl::persist_message(&mut tx, &b, &newer, &source)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT name FROM managed_resources WHERE id=$1")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        "新采集标题"
+    );
+    let changed = message(&a, 1, "新链接独立资源", &format!("new_{prefix}"));
+    crawl::persist_message(&mut tx, &a, &changed, &source)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM managed_resources WHERE source_channel_ids @> ARRAY[$1]::text[]"
+        )
+        .bind(&a)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        2
+    );
+    sqlx::query("DELETE FROM managed_resources WHERE id=$1")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    crawl::persist_message(&mut tx, &a, &newest, &source)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM managed_resources WHERE source_channel_ids @> ARRAY[$1]::text[]"
+        )
+        .bind(&a)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        2,
+        "a deleted link can be collected again"
+    );
+    sqlx::query("DELETE FROM crawl_message_tasks WHERE channel_id=ANY($1)")
+        .bind(vec![a.clone(), b.clone()])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM managed_resources WHERE source_channel_ids @> ARRAY[$1]::text[]"
+        )
+        .bind(&a)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        2
+    );
+    tx.rollback().await.unwrap();
 }

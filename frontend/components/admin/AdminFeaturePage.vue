@@ -125,18 +125,14 @@
                     </div></TableCell
                   >
                   <TableCell
-                    ><span
-                      :class="[
-                        'role-badge',
-                        item.role === 'admin' ? 'admin' : 'user',
-                      ]"
-                      >{{ item.role === "admin" ? "管理员" : "普通用户" }}</span
+                    ><Badge variant="outline" class="tw:rounded-md" :class="item.role === 'admin' ? 'tw:border-violet-200 tw:bg-violet-50 tw:text-violet-700 tw:dark:border-violet-800 tw:dark:bg-violet-950 tw:dark:text-violet-300' : 'tw:bg-muted tw:text-muted-foreground'"
+                      >{{ item.role === "admin" ? "管理员" : "普通用户" }}</Badge
                     ></TableCell
                   >
                   <TableCell
-                    ><span :class="['status-badge', item.status]">{{
+                    ><AdminStatusBadge :state="item.status">{{
                       item.status === "active" ? "正常" : "已禁用"
-                    }}</span></TableCell
+                    }}</AdminStatusBadge></TableCell
                   >
                   <TableCell
                     ><Button
@@ -406,7 +402,7 @@
                   ><TableCell>{{
                     item.username || item.userId || "未登录"
                   }}</TableCell
-                  ><TableCell>{{ logResultCountLabel(item) }}</TableCell
+                  ><TableCell><AdminStatusBadge v-if="['进行中', '失败', '未统计'].includes(logResultCountLabel(item))" :state="logResultCountLabel(item) === '进行中' ? 'running' : logResultCountLabel(item) === '失败' ? 'failed' : 'unknown'">{{ logResultCountLabel(item) }}</AdminStatusBadge><span v-else>{{ logResultCountLabel(item) }}</span></TableCell
                   ><TableCell
                     ><Button
                       variant="ghost"
@@ -1046,6 +1042,7 @@ import { Button } from "@/components/admin/ui/button";
 import { Input } from "@/components/admin/ui/input";
 import { Textarea } from "@/components/admin/ui/textarea";
 import { Badge } from "@/components/admin/ui/badge";
+import AdminStatusBadge from "./AdminStatusBadge.vue";
 import {
   Table,
   TableHeader,

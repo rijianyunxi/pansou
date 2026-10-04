@@ -35,10 +35,18 @@ pub struct Wire {
     pub confirmed_file_ids: Arc<Mutex<Vec<String>>>,
     binding: Arc<std::sync::OnceLock<CookieBinding>>,
 }
-struct CookieBinding { pool:sqlx::PgPool, epoch:i64, revision:AtomicI64 }
+struct CookieBinding {
+    pool: sqlx::PgPool,
+    epoch: i64,
+    revision: AtomicI64,
+}
 impl Wire {
     pub fn new(client: Client, provider: Provider, cookie: String) -> Self {
-        let headers = if provider.token_auth() { super::extended::credential_headers(provider, &cookie).unwrap_or_default() } else { Default::default() };
+        let headers = if provider.token_auth() {
+            super::extended::credential_headers(provider, &cookie).unwrap_or_default()
+        } else {
+            Default::default()
+        };
         Self {
             client,
             provider,
@@ -48,13 +56,21 @@ impl Wire {
             headers,
             write_deadline_ms: Arc::new(AtomicI64::new(0)),
             confirmed_file_ids: Arc::new(Mutex::new(vec![])),
-            binding:Arc::new(std::sync::OnceLock::new()),
+            binding: Arc::new(std::sync::OnceLock::new()),
         }
     }
-    pub fn bind_cookies(&self,pool:sqlx::PgPool,epoch:i64,revision:i64){let _=self.binding.set(CookieBinding{pool,epoch,revision:AtomicI64::new(revision)});}
-    pub async fn snapshot(&self)->String{self.cookie.lock().await.clone()}
-    pub async fn auth_rejected(&self,can_refresh:bool){
-        if let Some(b)=self.binding.get(){
+    pub fn bind_cookies(&self, pool: sqlx::PgPool, epoch: i64, revision: i64) {
+        let _ = self.binding.set(CookieBinding {
+            pool,
+            epoch,
+            revision: AtomicI64::new(revision),
+        });
+    }
+    pub async fn snapshot(&self) -> String {
+        self.cookie.lock().await.clone()
+    }
+    pub async fn auth_rejected(&self, can_refresh: bool) {
+        if let Some(b) = self.binding.get() {
             let _=sqlx::query("UPDATE cloud_account_settings SET auth_status=CASE WHEN refreshable AND $4 THEN 'degraded' ELSE 'reauthorization_required' END,last_error_code=CASE WHEN refreshable AND $4 THEN 'access_rejected' ELSE 'reauthorization_required' END,expires_at=CASE WHEN refreshable AND $4 THEN now() ELSE expires_at END,next_check_at=now() WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND refresh_lease IS NULL").bind(self.provider.name()).bind(b.epoch).bind(b.revision.load(Ordering::SeqCst)).bind(can_refresh).execute(&b.pool).await;
         }
     }
@@ -185,10 +201,30 @@ impl Wire {
         if !self.provider.token_auth() && !values.is_empty() {
             let mut cookie = self.cookie.lock().await;
             *cookie = merge_cookies(&cookie, &values);
-            if let Some(binding)=self.binding.get(){
-                let updates=values.iter().filter(|v|!v.split(';').next().unwrap_or("").trim_start().starts_with("BDCLND=")).cloned().collect::<Vec<_>>();
-                if !updates.is_empty(){
-                    if let Ok(Some(revision))=crate::cloud_auth::persist_cookies(&binding.pool,self.provider,binding.epoch,binding.revision.load(Ordering::SeqCst),&updates).await {binding.revision.store(revision,Ordering::SeqCst);}
+            if let Some(binding) = self.binding.get() {
+                let updates = values
+                    .iter()
+                    .filter(|v| {
+                        !v.split(';')
+                            .next()
+                            .unwrap_or("")
+                            .trim_start()
+                            .starts_with("BDCLND=")
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !updates.is_empty() {
+                    if let Ok(Some(revision)) = crate::cloud_auth::persist_cookies(
+                        &binding.pool,
+                        self.provider,
+                        binding.epoch,
+                        binding.revision.load(Ordering::SeqCst),
+                        &updates,
+                    )
+                    .await
+                    {
+                        binding.revision.store(revision, Ordering::SeqCst);
+                    }
                 }
             }
         }
@@ -215,7 +251,7 @@ impl Wire {
             return Err(self.error(ErrorKind::RateLimit, "网盘限制操作频率，请稍后再试"));
         }
         if status.as_u16() == 401 || status.as_u16() == 403 {
-            self.auth_rejected(status.as_u16()==401).await;
+            self.auth_rejected(status.as_u16() == 401).await;
             return Err(self.error(ErrorKind::Login, "网盘拒绝访问，请检查登录凭据或账号权限"));
         }
         if !status.is_success() {
@@ -227,10 +263,15 @@ impl Wire {
             // normal business-error body with a non-2xx status. Map the business
             // code when one is present instead of discarding the body, or a dead
             // share would be misread as a provider outage and stay "unknown".
-            let field = if self.provider == Provider::Quark { "code" } else { "errno" };
+            let field = if self.provider == Provider::Quark {
+                "code"
+            } else {
+                "errno"
+            };
             if let Ok(payload) = serde_json::from_slice::<Value>(&bytes)
                 && let Some(code) = payload.get(field).and_then(|v| {
-                    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
                 })
                 && code != 0
             {
@@ -284,8 +325,10 @@ impl Wire {
                 .ok_or_else(|| self.error(ErrorKind::Upstream, "网盘返回无法识别的状态码"))?,
         };
         if code != 0 {
-            let error=DriveError::from_code(self.provider,code);
-            if error.kind==ErrorKind::Login{self.auth_rejected(true).await;}
+            let error = DriveError::from_code(self.provider, code);
+            if error.kind == ErrorKind::Login {
+                self.auth_rejected(true).await;
+            }
             return Err(error);
         }
         if payload["status"] == "error" {

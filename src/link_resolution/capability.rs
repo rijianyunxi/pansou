@@ -61,24 +61,16 @@ async fn authorize_with_policy(
             ));
         }
     } else {
-        let rows=sqlx::query("SELECT r.enabled,r.deleted_at,r.manual_override,r.links_json,o.result_json FROM managed_resources r LEFT JOIN resource_occurrences o ON o.resource_id=r.id AND o.channel_id=ANY($2) LEFT JOIN source_messages m ON m.channel_id=o.channel_id AND m.message_id=o.message_id WHERE r.id=$1 AND (r.origin<>'telegram' OR m.parse_status='parsed')")
+        let rows=sqlx::query("SELECT r.enabled,resource_links_json(r.id) AS links_json FROM managed_resources r WHERE r.id=$1 AND (r.origin<>'telegram' OR r.source_channel_ids && $2::text[])")
             .bind(&snapshot.resource_id).bind(&sources.local_channels).fetch_all(&state.pool).await?;
         if rows.is_empty() {
             return Err(ApiError::NotFound("资源不存在或频道权限已改变".into()));
         }
         let allowed = rows.iter().any(|r| {
-            if !r.get::<bool, _>("enabled")
-                || r.get::<Option<DateTime<Utc>>, _>("deleted_at").is_some()
-            {
+            if !r.get::<bool, _>("enabled") {
                 return false;
             }
-            let value = if r.get::<bool, _>("manual_override") {
-                r.get::<Value, _>("links_json")
-            } else {
-                r.get::<Option<Value>, _>("result_json")
-                    .map(|v| v["links"].clone())
-                    .unwrap_or_else(|| r.get("links_json"))
-            };
+            let value = r.get::<Value, _>("links_json");
             let current = serde_json::from_value::<Vec<Link>>(value).unwrap_or_default();
             let mut expected: Vec<_> = snapshot.links.values().map(fingerprint).collect();
             expected.sort();

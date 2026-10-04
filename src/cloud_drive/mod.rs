@@ -1,11 +1,15 @@
 //! Native cloud-drive operations. No Node subprocess or caller-controlled upstream.
 mod baidu;
-mod quark;
 mod extended;
-pub use extended::validate_credential;
+mod quark;
 pub(crate) use extended::guangya_auth_headers;
-pub(crate) fn extended_headers(provider: Provider, raw: &str) -> Result<reqwest::header::HeaderMap, ApiError> {
-    extended::credential_headers(provider, raw).map_err(|_| ApiError::BadRequest("凭证请求头格式不正确".into()))
+pub use extended::validate_credential;
+pub(crate) fn extended_headers(
+    provider: Provider,
+    raw: &str,
+) -> Result<reqwest::header::HeaderMap, ApiError> {
+    extended::credential_headers(provider, raw)
+        .map_err(|_| ApiError::BadRequest("凭证请求头格式不正确".into()))
 }
 #[cfg(test)]
 mod tests;
@@ -43,15 +47,29 @@ impl Provider {
             Self::Guangya => "guangya",
         }
     }
-    pub const ALL: [Self; 5] = [Self::Baidu, Self::Quark, Self::Aliyun, Self::Xunlei, Self::Guangya];
+    pub const ALL: [Self; 5] = [
+        Self::Baidu,
+        Self::Quark,
+        Self::Aliyun,
+        Self::Xunlei,
+        Self::Guangya,
+    ];
     pub fn from_name(name: &str) -> Result<Self, ApiError> {
-        Self::ALL.into_iter().find(|p| p.name() == name)
+        Self::ALL
+            .into_iter()
+            .find(|p| p.name() == name)
             .ok_or_else(|| ApiError::BadRequest("不支持的网盘类型".into()))
     }
     pub fn root(self) -> &'static str {
-        match self { Self::Baidu => "/", Self::Aliyun => "root", _ => "0" }
+        match self {
+            Self::Baidu => "/",
+            Self::Aliyun => "root",
+            _ => "0",
+        }
     }
-    pub fn token_auth(self) -> bool { !matches!(self, Self::Baidu | Self::Quark) }
+    pub fn token_auth(self) -> bool {
+        !matches!(self, Self::Baidu | Self::Quark)
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -181,7 +199,9 @@ impl ShareInput {
         let provider = match url.host_str() {
             Some("pan.baidu.com") => Provider::Baidu,
             Some("pan.quark.cn") => Provider::Quark,
-            Some("alipan.com" | "www.alipan.com" | "aliyundrive.com" | "www.aliyundrive.com") => Provider::Aliyun,
+            Some("alipan.com" | "www.alipan.com" | "aliyundrive.com" | "www.aliyundrive.com") => {
+                Provider::Aliyun
+            }
             Some("pan.xunlei.com") => Provider::Xunlei,
             Some("guangyapan.com" | "www.guangyapan.com") => Provider::Guangya,
             _ => {
@@ -293,12 +313,18 @@ pub struct Drive {
 }
 impl Drive {
     pub async fn load(state: &AppState, provider: Provider) -> Result<Self, ApiError> {
-        let Some(account)=crate::cloud_auth::credentials(state,provider).await? else {return Ok(Self::from_state(state,provider,String::new()))};
-        let mut drive=Self::from_state(state,provider,account.raw(provider)?);
-        if let Some(key)=account.account_key {
-            drive.account=key;
-            drive.managed=Some((state.clone(),account.binding_epoch,account.token_revision));
-            drive.wire.bind_cookies(state.pool.clone(),account.binding_epoch,account.token_revision);
+        let Some(account) = crate::cloud_auth::credentials(state, provider).await? else {
+            return Ok(Self::from_state(state, provider, String::new()));
+        };
+        let mut drive = Self::from_state(state, provider, account.credential.clone());
+        if let Some(key) = account.account_key {
+            drive.account = key;
+            drive.managed = Some((state.clone(), account.binding_epoch, account.token_revision));
+            drive.wire.bind_cookies(
+                state.pool.clone(),
+                account.binding_epoch,
+                account.token_revision,
+            );
         }
         Ok(drive)
     }
@@ -309,24 +335,58 @@ impl Drive {
     ) -> Result<(), ApiError> {
         use sqlx::Row;
         let row=sqlx::query("SELECT credential,account_key,binding_epoch,token_revision,auth_status FROM cloud_account_settings WHERE provider=$1").bind(self.wire.provider.name()).fetch_optional(connection).await?;
-        let current=row.as_ref().map(|r|r.get::<Option<String>,_>("account_key").unwrap_or_else(||credential_fingerprint(self.wire.provider,&r.get::<String,_>("credential"))));
-        if current.as_ref()!=Some(&self.account) || self.managed.as_ref().is_some_and(|(_,epoch,_)|row.as_ref().is_none_or(|r|r.get::<i64,_>("binding_epoch")!=*epoch)) {
+        let current = row.as_ref().map(|r| {
+            r.get::<Option<String>, _>("account_key")
+                .unwrap_or_else(|| {
+                    credential_fingerprint(self.wire.provider, &r.get::<String, _>("credential"))
+                })
+        });
+        if current.as_ref() != Some(&self.account)
+            || self.managed.as_ref().is_some_and(|(_, epoch, _)| {
+                row.as_ref()
+                    .is_none_or(|r| r.get::<i64, _>("binding_epoch") != *epoch)
+            })
+        {
             return Err(ApiError::Conflict(
                 "等待期间网盘登录态已变化，未执行写操作；请重新检测或预检".into(),
             ));
         }
-        if self.managed.as_ref().is_some_and(|(_,_,revision)|self.wire.provider.token_auth()&&row.as_ref().is_some_and(|r|r.get::<i64,_>("token_revision")!=*revision)){
-            return Err(ApiError::Unavailable("网盘凭证已更新，稍后重试当前任务".into()));
+        if self.managed.as_ref().is_some_and(|(_, _, revision)| {
+            self.wire.provider.token_auth()
+                && row
+                    .as_ref()
+                    .is_some_and(|r| r.get::<i64, _>("token_revision") != *revision)
+        }) {
+            return Err(ApiError::Unavailable(
+                "网盘凭证已更新，稍后重试当前任务".into(),
+            ));
         }
-        if row.as_ref().is_some_and(|r|r.get::<String,_>("auth_status")=="reauthorization_required"){return Err(ApiError::CloudAuthRequired("网盘需要重新授权，未执行写操作".into()));}
-        if let Some((state,_,_))=&self.managed {
-            if !self.wire.provider.token_auth(){
-                crate::cloud_auth::verify_binding_identity(state,self.wire.provider,&self.wire.snapshot().await,&self.account).await?;
+        if row
+            .as_ref()
+            .is_some_and(|r| r.get::<String, _>("auth_status") == "reauthorization_required")
+        {
+            return Err(ApiError::CloudAuthRequired(
+                "网盘需要重新授权，未执行写操作".into(),
+            ));
+        }
+        if let Some((state, _, _)) = &self.managed {
+            if !self.wire.provider.token_auth() {
+                crate::cloud_auth::verify_binding_identity(
+                    state,
+                    self.wire.provider,
+                    &self.wire.snapshot().await,
+                    &self.account,
+                )
+                .await?;
             }
         }
         if self.wire.provider.token_auth() {
             self.extended.verify_account().await.map_err(|error| {
-                if error.kind == ErrorKind::Ownership { ApiError::Conflict(error.message) } else { error.api() }
+                if error.kind == ErrorKind::Ownership {
+                    ApiError::Conflict(error.message)
+                } else {
+                    error.api()
+                }
             })?;
         }
         Ok(())
@@ -395,10 +455,14 @@ impl Drive {
             if let Some(cached) = cached {
                 let share_id = scalar(&cached["shareId"]);
                 let owner = scalar(&cached["owner"]);
-                let numeric = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+                let numeric =
+                    |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
                 if numeric(&share_id) && numeric(&owner) {
                     let sekey = self.baidu.verify_share(reference).await?;
-                    let context = self.baidu.resolve_identity(reference, sekey, share_id, owner).await?;
+                    let context = self
+                        .baidu
+                        .resolve_identity(reference, sekey, share_id, owner)
+                        .await?;
                     return self.validate_context(context);
                 }
             }
@@ -432,7 +496,9 @@ impl Drive {
     }
     pub async fn finish_temporary_share(&self, share: &Value) -> Result<Value, DriveError> {
         match self.wire.provider {
-            Provider::Baidu | Provider::Aliyun | Provider::Xunlei | Provider::Guangya => Ok(share.clone()),
+            Provider::Baidu | Provider::Aliyun | Provider::Xunlei | Provider::Guangya => {
+                Ok(share.clone())
+            }
             Provider::Quark => {
                 self.quark
                     .finish_share(share["shareId"].as_str().unwrap_or(""))
@@ -472,9 +538,15 @@ impl Drive {
         }
     }
     /// Reuse the listing already checked by providers that confirm transfers via list.
-    pub async fn transfer_with_listing(&self, context: &Context, dir: &str) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
+    pub async fn transfer_with_listing(
+        &self,
+        context: &Context,
+        dir: &str,
+    ) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
         match self.wire.provider {
-            Provider::Baidu | Provider::Quark => self.transfer(context, dir).await.map(|ids| (ids, None)),
+            Provider::Baidu | Provider::Quark => {
+                self.transfer(context, dir).await.map(|ids| (ids, None))
+            }
             _ => self.extended.transfer_with_listing(context, dir).await,
         }
     }
@@ -482,7 +554,10 @@ impl Drive {
         match self.wire.provider {
             Provider::Baidu => self.baidu.owned(context).await,
             Provider::Quark => self.quark.owned(context).await,
-            _ => Err(self.wire.error(ErrorKind::Ownership, "该平台的公开分享不作为删除归属证明；仅清理本流程创建的产物")),
+            _ => Err(self.wire.error(
+                ErrorKind::Ownership,
+                "该平台的公开分享不作为删除归属证明；仅清理本流程创建的产物",
+            )),
         }
     }
     pub async fn delete_files(&self, files: &[File]) -> Result<(), DriveError> {
@@ -539,9 +614,10 @@ impl Drive {
                 Provider::Baidu => self.baidu.save(&context, &missing, &dir).await?,
                 Provider::Quark => self.quark.save(&context, &missing, &dir).await?,
                 _ => {
-                    let mut partial = context.clone(); partial.files = missing.clone();
+                    let mut partial = context.clone();
+                    partial.files = missing.clone();
                     self.extended.transfer(&partial, &dir).await?
-                },
+                }
             };
         }
         let mut share = Value::Null;
@@ -596,11 +672,25 @@ impl Drive {
 pub fn credential_fingerprint(provider: Provider, cookie: &str) -> String {
     if provider.token_auth()
         && let Ok(value) = serde_json::from_str::<Value>(cookie)
-        && let Some(user) = ["user_id","userId","sub"].iter().map(|key|scalar(&value[*key])).find(|id|valid_id(id,false))
+        && let Some(user) = ["user_id", "userId", "sub"]
+            .iter()
+            .map(|key| scalar(&value[*key]))
+            .find(|id| valid_id(id, false))
     {
-        let drive = if provider == Provider::Aliyun { scalar(&value["drive_id"]) } else { String::new() };
-        let drive = if provider == Provider::Aliyun && drive.is_empty() { scalar(&value["driveId"]) } else { drive };
-        return format!("{:x}", Sha256::digest(format!("{}:account:{user}:drive:{drive}",provider.name())));
+        let drive = if provider == Provider::Aliyun {
+            scalar(&value["drive_id"])
+        } else {
+            String::new()
+        };
+        let drive = if provider == Provider::Aliyun && drive.is_empty() {
+            scalar(&value["driveId"])
+        } else {
+            drive
+        };
+        return format!(
+            "{:x}",
+            Sha256::digest(format!("{}:account:{user}:drive:{drive}", provider.name()))
+        );
     }
     format!(
         "{:x}",
@@ -608,14 +698,10 @@ pub fn credential_fingerprint(provider: Provider, cookie: &str) -> String {
     )
 }
 pub fn validate_dir(provider: Provider, dir: Option<&str>) -> Result<String, ApiError> {
-    let dir = dir
-        .filter(|s| !s.is_empty())
-        .unwrap_or(provider.root());
+    let dir = dir.filter(|s| !s.is_empty()).unwrap_or(provider.root());
     if provider != Provider::Baidu {
         if !valid_id(dir, true) {
-            return Err(ApiError::BadRequest(
-                "目标目录必须是文件夹 ID".into(),
-            ));
+            return Err(ApiError::BadRequest("目标目录必须是文件夹 ID".into()));
         }
     } else if !dir.starts_with('/')
         || dir.len() > 1024

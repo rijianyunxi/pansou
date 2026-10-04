@@ -35,15 +35,6 @@ pub(super) fn apply_html(
                 let mut fields = obj.clone();
                 fields.insert("name".into(), Value::String(name));
                 fields.insert("description".into(), Value::String(desc));
-                static TAGS: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r"#[\p{L}\p{N}_]+").unwrap());
-                let tags = TAGS
-                    .find_iter(&segment)
-                    .map(|m| m.as_str().trim_start_matches('#').to_owned())
-                    .collect::<Vec<_>>();
-                if !tags.is_empty() {
-                    fields.insert("tags".into(), serde_json::to_value(tags).unwrap());
-                }
                 let links = crate::resource_clean::extract_links(&segment);
                 fields.insert("links".into(), serde_json::to_value(links).unwrap());
                 let identities = fields
@@ -84,18 +75,10 @@ pub(super) fn apply_pansearch_html(
     let root: Value = serde_json::from_str(raw)
         .map_err(|e| ApiError::BadRequest(format!("PanSearch 数据无效: {e}")))?;
     let items = select_json_values(&root, "$.props.pageProps.data.data[*]");
-    let identity = [
-        "id",
-        "name",
-        "description",
-        "datetime",
-        "links",
-        "tags",
-        "images",
-    ]
-    .into_iter()
-    .map(|key| (key.to_owned(), Value::String(key.to_owned())))
-    .collect::<serde_json::Map<_, _>>();
+    let identity = ["id", "name", "description", "datetime", "links", "images"]
+        .into_iter()
+        .map(|key| (key.to_owned(), Value::String(key.to_owned())))
+        .collect::<serde_json::Map<_, _>>();
     let mut out = Vec::new();
     for item in items.into_iter().take(limit) {
         let Some(object) = item.as_object() else {
@@ -144,14 +127,6 @@ pub(super) fn apply_pansearch_html(
             object.get("time").cloned().unwrap_or(Value::Null),
         );
         normalized.insert("links".into(), Value::Array(links));
-        normalized.insert(
-            "tags".into(),
-            object
-                .get("pan")
-                .cloned()
-                .map(|v| Value::Array(vec![v]))
-                .unwrap_or(Value::Null),
-        );
         normalized.insert(
             "images".into(),
             object.get("image").cloned().unwrap_or(Value::Null),

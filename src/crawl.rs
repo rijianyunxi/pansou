@@ -383,48 +383,36 @@ pub async fn persist_message(
     source: &Source,
 ) -> Result<(usize, bool), ApiError> {
     let parsed = parse_message(source, channel, message);
-    persist_parsed_message(tx, channel, message, source, parsed).await
+    persist_parsed_message(tx, channel, message, parsed).await
+}
+
+pub(crate) async fn prune_tasks(
+    tx: &mut Transaction<'_, Postgres>,
+    channel: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT prune_crawl_tasks($1)")
+        .bind(channel)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 async fn persist_parsed_message(
     tx: &mut Transaction<'_, Postgres>,
     channel: &str,
     message: &telegram::Message,
-    source: &Source,
     parsed: ParsedMessage,
 ) -> Result<(usize, bool), ApiError> {
     lock_index(tx).await?;
-    let version = format!("{}:{}", telegram::PARSER_VERSION, hash(&source.transform));
-    let raw_hash = hash(&message.html);
-    let previous=sqlx::query("SELECT raw_hash,parse_version,parse_status FROM source_messages WHERE channel_id=$1 AND message_id=$2").bind(channel).bind(message.id).fetch_optional(&mut **tx).await?;
-    if previous.as_ref().is_some_and(|r| {
-        r.get::<String, _>("raw_hash") == raw_hash
-            && r.get::<String, _>("parse_version") == version
-            && matches!(
-                r.get::<String, _>("parse_status").as_str(),
-                "parsed" | "empty"
-            )
-    }) {
-        sqlx::query(
-            "UPDATE source_messages SET last_seen_at=now() WHERE channel_id=$1 AND message_id=$2",
-        )
-        .bind(channel)
-        .bind(message.id)
-        .execute(&mut **tx)
-        .await?;
-        return Ok((0, false));
-    }
     let items = parsed.results;
     let status = parsed.status.as_str();
     let error = parsed.error;
-    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,published_at,parse_version,parse_status,parse_error) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(channel_id,message_id) DO UPDATE SET raw_hash=EXCLUDED.raw_hash,published_at=EXCLUDED.published_at,parse_version=EXCLUDED.parse_version,parse_status=EXCLUDED.parse_status,parse_error=EXCLUDED.parse_error,last_seen_at=now(),updated_at=now()")
-        .bind(channel).bind(message.id).bind(raw_hash).bind(message.published).bind(version).bind(status).bind(error).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,task_at,status,error_message) VALUES($1,$2,now(),$3,$4) ON CONFLICT(channel_id,message_id) DO UPDATE SET task_at=now(),status=EXCLUDED.status,error_message=EXCLUDED.error_message,resource_ids='{}'")
+        .bind(channel).bind(message.id).bind(status).bind(error).execute(&mut **tx).await?;
     if status == "failed" {
         return Ok((0, true));
     }
-    let old=sqlx::query("SELECT resource_id,result_json FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2").bind(channel).bind(message.id).fetch_all(&mut **tx).await?;
-    let mut claimed = std::collections::HashSet::new();
-    let mut changed = Vec::new();
+    let mut resource_ids = Vec::new();
     for mut item in items.iter().cloned() {
         item.datetime = message.published.map(|t| {
             t.with_timezone(&chrono::FixedOffset::east_opt(28800).unwrap())
@@ -434,113 +422,51 @@ async fn persist_parsed_message(
         let mut identities = item
             .links
             .iter()
-            .map(|l| resource_clean::link_identity(&l.url))
+            .map(|link| resource_clean::link_identity(&link.url))
             .collect::<Vec<_>>();
         identities.sort();
         identities.dedup();
         let fingerprint = hash(&identities.join("\0"));
-        let existing = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM managed_resources WHERE origin='telegram' AND fingerprint=$1",
-        )
-        .bind(&fingerprint)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let matching = old
-            .iter()
-            .find(|r| {
-                let id = r.get::<String, _>("resource_id");
-                if claimed.contains(&id) {
-                    return false;
-                }
-                let value = r.get::<Value, _>("result_json");
-                let Ok(previous) = serde_json::from_value::<SearchResult>(value) else {
-                    return false;
-                };
-                (old.len() == 1 && items.len() == 1)
-                    || previous
-                        .links
-                        .iter()
-                        .any(|l| identities.contains(&resource_clean::link_identity(&l.url)))
-            })
-            .map(|r| r.get::<String, _>("resource_id"));
-        let matching = if let Some(id) = matching {
-            let count = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM resource_occurrences WHERE resource_id=$1 AND (channel_id,message_id) IS DISTINCT FROM ($2,$3)",
-            )
-            .bind(&id)
-            .bind(channel)
-            .bind(message.id)
-            .fetch_one(&mut **tx)
-            .await?;
-            if count == 0 { Some(id) } else { None }
-        } else {
-            None
-        };
-        let actual = if let Some(id) = existing {
-            id
-        } else if let Some(id) = matching {
-            sqlx::query("UPDATE managed_resources SET fingerprint=$2 WHERE id=$1")
-                .bind(&id)
-                .bind(&fingerprint)
-                .execute(&mut **tx)
-                .await?;
+        let candidate = Uuid::new_v4().to_string();
+        // The unique link-set identity also makes retries and concurrent workers idempotent.
+        let inserted = sqlx::query_scalar::<_, String>("INSERT INTO managed_resources(id,name,description,datetime,images_json,origin,fingerprint,published_at,source_channel_ids,source_channel_id,source_message_id) VALUES($1,$2,$3,$4,$5,'telegram',$6,$7,ARRAY[$8::text],$8,$9) ON CONFLICT(fingerprint) WHERE origin='telegram' DO NOTHING RETURNING id")
+            .bind(&candidate).bind(&item.name).bind(&item.description).bind(&item.datetime)
+            .bind(json!(item.images.clone().unwrap_or_default()))
+            .bind(&fingerprint).bind(message.published).bind(channel).bind(message.id)
+            .fetch_optional(&mut **tx).await?;
+        let id = if let Some(id) = inserted {
+            crate::resource_links::replace(tx, &id, &item.links).await?;
             id
         } else {
-            let id = Uuid::new_v4().to_string();
-            sqlx::query_scalar::<_,String>("INSERT INTO managed_resources(id,name,origin,fingerprint) VALUES($1,$2,'telegram',$3) ON CONFLICT(fingerprint) WHERE origin='telegram' DO UPDATE SET fingerprint=EXCLUDED.fingerprint RETURNING id")
-                .bind(&id).bind(&item.name).bind(&fingerprint).fetch_one(&mut **tx).await?
+            let id = sqlx::query_scalar::<_, String>("SELECT id FROM managed_resources WHERE origin='telegram' AND fingerprint=$1 FOR UPDATE")
+                .bind(&fingerprint).fetch_one(&mut **tx).await?;
+            // Keep channel membership even when an older repost or a manual edit
+            // prevents replacing the canonical presentation.
+            sqlx::query("UPDATE managed_resources SET source_channel_ids=array_append(source_channel_ids,$2) WHERE id=$1 AND NOT ($2=ANY(source_channel_ids))")
+                .bind(&id).bind(channel).execute(&mut **tx).await?;
+            let writable:bool=sqlx::query_scalar("SELECT enabled AND (published_at IS NULL OR $2::timestamptz>=published_at) FROM managed_resources WHERE id=$1").bind(&id).bind(message.published).fetch_one(&mut **tx).await?;
+            if writable {
+                sqlx::query("UPDATE managed_resources SET name=$2,description=$3,datetime=$4,images_json=$5,published_at=$6,source_channel_id=$7,source_message_id=$8,updated_at=now() WHERE id=$1 AND (name,description,datetime,images_json,published_at) IS DISTINCT FROM ($2,$3,$4,$5,$6)")
+                    .bind(&id).bind(&item.name).bind(&item.description).bind(&item.datetime)
+                    .bind(json!(item.images.clone().unwrap_or_default())).bind(message.published).bind(channel).bind(message.id).execute(&mut **tx).await?;
+                crate::resource_links::replace(tx, &id, &item.links).await?;
+            }
+            id
         };
-        claimed.insert(actual.clone());
-        item.id = actual.clone();
-        sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,$4) ON CONFLICT(channel_id,message_id,resource_id) DO UPDATE SET result_json=EXCLUDED.result_json,updated_at=now() WHERE resource_occurrences.result_json IS DISTINCT FROM EXCLUDED.result_json")
-            .bind(channel).bind(message.id).bind(&actual).bind(serde_json::to_value(&item).unwrap()).execute(&mut **tx).await?;
-        changed.push(actual);
+        resource_ids.push(id);
     }
-    // Retain unchanged references; remove only items absent from this parse.
-    // This avoids delete/reinsert churn in the outbox, FK and statistics triggers.
-    let retained: Vec<String> = claimed.into_iter().collect();
-    sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=$2 AND NOT(resource_id=ANY($3))")
-        .bind(channel).bind(message.id).bind(&retained).execute(&mut **tx).await?;
-    changed.extend(old.iter().map(|r| r.get::<String, _>("resource_id")));
-    changed.sort();
-    changed.dedup();
-    for id in changed {
-        refresh_resource(tx, &id).await?;
-    }
-    Ok((items.len(), false))
-}
-
-async fn refresh_resource(tx: &mut Transaction<'_, Postgres>, id: &str) -> Result<(), ApiError> {
-    // Serialize a resource refresh with admin overrides, and avoid rebuilding their indexes.
-    let manual = sqlx::query_scalar::<_, bool>(
-        "SELECT manual_override FROM managed_resources WHERE id=$1 FOR UPDATE",
+    resource_ids.sort();
+    resource_ids.dedup();
+    sqlx::query(
+        "UPDATE crawl_message_tasks SET resource_ids=$3 WHERE channel_id=$1 AND message_id=$2",
     )
-    .bind(id)
-    .fetch_one(&mut **tx)
+    .bind(channel)
+    .bind(message.id)
+    .bind(&resource_ids)
+    .execute(&mut **tx)
     .await?;
-    if manual {
-        return Ok(());
-    }
-    let row=sqlx::query("SELECT o.result_json,m.published_at FROM resource_occurrences o JOIN source_messages m USING(channel_id,message_id) WHERE o.resource_id=$1 AND m.parse_status='parsed' ORDER BY m.published_at DESC NULLS LAST,o.updated_at DESC LIMIT 1").bind(id).fetch_optional(&mut **tx).await?;
-    let Some(row) = row else {
-        return Ok(());
-    };
-    let item: SearchResult = serde_json::from_value(row.get("result_json"))
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let published = row.get::<Option<DateTime<Utc>>, _>("published_at");
-    let search_text = item.name.clone();
-    sqlx::query("UPDATE managed_resources SET name=$2,description=$3,datetime=$4,published_at=$5,links_json=$6,tags_json=$7,images_json=$8,search_text=$9,updated_at=now() WHERE id=$1 AND NOT manual_override AND (name,description,datetime,published_at,links_json,tags_json,images_json,search_text) IS DISTINCT FROM ($2,$3,$4,$5,$6,$7,$8,$9)")
- .bind(id).bind(&item.name).bind(&item.description).bind(&item.datetime).bind(published).bind(json!(item.links)).bind(json!(item.tags.clone().unwrap_or_default())).bind(json!(item.images.clone().unwrap_or_default())).bind(&search_text).execute(&mut **tx).await?;
-    let mut texts=sqlx::query_scalar::<_,Value>("SELECT o.result_json FROM resource_occurrences o JOIN source_messages m USING(channel_id,message_id) WHERE o.resource_id=$1 AND m.parse_status='parsed'").bind(id).fetch_all(&mut **tx).await?.into_iter().map(|v|v["name"].as_str().unwrap_or_default().to_owned()).collect::<Vec<_>>();
-    texts.push(search_text);
-    let grams = resource_clean::grams(&texts.join(" "));
-    sqlx::query("DELETE FROM resource_grams WHERE resource_id=$1 AND NOT(gram=ANY($2))")
-        .bind(id)
-        .bind(&grams)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("INSERT INTO resource_grams(resource_id,gram) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING").bind(id).bind(grams).execute(&mut **tx).await?;
-    Ok(())
+    prune_tasks(tx, channel).await?;
+    Ok((items.len(), false))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, sqlx::FromRow)]
@@ -567,7 +493,19 @@ pub async fn worker(state: Arc<AppState>) -> Result<(), ApiError> {
     let mut listener: Option<sqlx::postgres::PgListener> = None;
     let mut reconnect_after = tokio::time::Instant::now();
     let mut tasks = tokio::task::JoinSet::new();
+    let mut retention_due = tokio::time::Instant::now();
     while !state.shutdown.is_cancelled() {
+        // Expire yesterday's handled records even for paused channels and
+        // outside collection hours. Failures and resources are untouched.
+        if tokio::time::Instant::now() >= retention_due {
+            if let Err(e) = sqlx::query("SELECT prune_crawl_tasks(NULL)")
+                .execute(&state.pool)
+                .await
+            {
+                tracing::warn!(%e, "crawl message retention failed");
+            }
+            retention_due = tokio::time::Instant::now() + Duration::from_secs(60);
+        }
         while let Some(result) = tasks.try_join_next() {
             if let Err(e) = result {
                 tracing::error!(%e, "crawl page panicked");
@@ -843,22 +781,32 @@ async fn process_job(
     let mut resources = 0;
     let mut failures = 0;
     for (message, parsed) in messages.iter().zip(parsed) {
+        // Older messages on the head/checkpoint page are already ingested.
+        // Explicit retries and backfills continue to process their own windows.
+        if kind == "sync" && message.id <= stop {
+            continue;
+        }
         let mut tx = state.pool.begin().await?;
         lock_index(&mut tx).await?;
         if !lock_page_lease(&mut tx, &channel, id, lease).await? {
             return Ok(());
         }
-        if kind == "retry" {
-            sqlx::query(
-                "UPDATE source_messages SET parse_version='' WHERE channel_id=$1 AND message_id=$2",
+        if kind == "retry" && stop > 0 && job.get::<Option<i64>, _>("failure_id").is_none() {
+            // A message retry can outlive an ignore/recovery and its retained
+            // record. Only the still-unresolved targets need to be processed.
+            let unresolved: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=$2 AND status='failed')",
             )
             .bind(&channel)
             .bind(message.id)
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
+            if !unresolved {
+                tx.commit().await?;
+                continue;
+            }
         }
-        let (n, failed) =
-            persist_parsed_message(&mut tx, &channel, message, &source, parsed).await?;
+        let (n, failed) = persist_parsed_message(&mut tx, &channel, message, parsed).await?;
         resources += n;
         failures += usize::from(failed);
         tx.commit().await?;

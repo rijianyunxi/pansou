@@ -310,6 +310,7 @@ pub(super) async fn original_context(
     drive: &Drive,
     link: &Link,
     deadline: DateTime<Utc>,
+    link_id: Uuid,
 ) -> Result<crate::cloud_drive::Context, ApiError> {
     let policy = load_provider(state, drive.wire.provider).await?;
     let wait_until = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -346,7 +347,7 @@ pub(super) async fn original_context(
         }
         Err(_) => json!({"status":"unknown","errorKind":"network"}),
     };
-    super::record_check(state, link, &value).await?;
+    worker::record(state, link_id, &value, &policy).await?;
     match result {
         Ok(Ok(ctx)) if !ctx.files.is_empty() => {
             // Cache only the public share identity to skip the HTML page parse.
@@ -422,7 +423,7 @@ pub(super) async fn deliver(
         std::sync::atomic::Ordering::SeqCst,
     );
     if !p.enabled && p.target_dir.as_deref().is_none_or(str::is_empty) {
-        let _ = original_context(state, &drive, link, deadline).await;
+        let _ = original_context(state, &drive, link, deadline, link_id).await;
         return Ok(fallback(
             key,
             link,
@@ -510,7 +511,7 @@ pub(super) async fn deliver(
                     sqlx::query("UPDATE link_share_cache SET share_validity=-1,share_checked_at=now(),last_error_code='share_check_failed' WHERE id=$1").bind(id).execute(&state.pool).await?;
                 }
             }
-            let _ = original_context(state, &drive, link, deadline).await;
+            let _ = original_context(state, &drive, link, deadline, link_id).await;
             return Ok(fallback(
                 key,
                 link,
@@ -519,7 +520,7 @@ pub(super) async fn deliver(
             ));
         }
         if !p.enabled {
-            let _ = original_context(state, &drive, link, deadline).await;
+            let _ = original_context(state, &drive, link, deadline, link_id).await;
             return Ok(fallback(
                 key,
                 link,
@@ -566,7 +567,7 @@ pub(super) async fn deliver(
         }
     }
     if !p.enabled {
-        let _ = original_context(state, &drive, link, deadline).await;
+        let _ = original_context(state, &drive, link, deadline, link_id).await;
         return Ok(fallback(
             key,
             link,
@@ -575,7 +576,7 @@ pub(super) async fn deliver(
         ));
     }
     super::progress(state, session, key, "checking").await?;
-    let context = match original_context(state, &drive, link, deadline).await {
+    let context = match original_context(state, &drive, link, deadline, link_id).await {
         Ok(context) => context,
         _ => {
             return Ok(fallback(
@@ -710,6 +711,39 @@ pub(super) async fn retire_timed_out_artifacts(
     Ok(())
 }
 
+/// Bound claims to active execution slots; never preclaim a waiting backlog.
+pub(super) async fn cleanup_batch(state: &AppState) -> Result<usize, ApiError> {
+    use futures::FutureExt;
+    let results = futures::future::join_all((0..4).map(|_| async {
+        std::panic::AssertUnwindSafe(cleanup_tick(state))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err(ApiError::Internal("清理任务 panic，等待租约恢复".into())))
+    }))
+    .await;
+    let mut processed = 0;
+    let mut first_error = None;
+    for result in results {
+        match result {
+            Ok(n) => processed += n,
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    // All claimed jobs finish even when a sibling encounters an infrastructure error.
+    first_error.map_or(Ok(processed), Err)
+}
+
+fn cleanup_retry_seconds(attempts: i32, busy: bool) -> f64 {
+    let base = if busy {
+        10
+    } else {
+        (30i64 * (1i64 << attempts.clamp(0, 6))).min(1800)
+    };
+    (base + (rand::random::<u64>() % (base as u64 / 5 + 1)) as i64) as f64
+}
+
 pub(super) async fn cleanup_tick(state: &AppState) -> Result<usize, ApiError> {
     let token = Uuid::new_v4();
     let row=sqlx::query("UPDATE link_cleanup_jobs SET status='running',lease_token=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1 WHERE id=(SELECT id FROM link_cleanup_jobs WHERE (status='queued' AND run_after<=now()) OR (status='running' AND lease_until<now()) ORDER BY run_after,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *").bind(token).fetch_optional(&state.pool).await?;
@@ -734,7 +768,11 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<usize, ApiError> {
                 result,
                 Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_)))
             )
-            || (!busy && job.get::<i32, _>("attempts") >= 5);
+            || matches!(
+                &result,
+                Ok(Err(ApiError::BadRequest(_) | ApiError::Unauthorized(_)))
+            )
+            || (!busy && job.get::<i32, _>("attempts") >= 12);
         let reason = match &result {
             _ if waiting_auth => "waiting_auth",
             Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_))) => {
@@ -751,12 +789,12 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<usize, ApiError> {
             sqlx::query("UPDATE link_share_cache SET state='uncertain',last_error_code=$4 WHERE id=$1 AND EXISTS(SELECT 1 FROM link_cleanup_jobs WHERE id=$2 AND lease_token=$3 AND status='running' AND lease_until>now())").bind(id).bind(job_id).bind(token).bind(reason).execute(&state.pool).await?;
         }
         sqlx::query("UPDATE link_cleanup_jobs SET status=$3,last_error_code=$4,lease_until=NULL,run_after=now()+make_interval(secs=>$5),attempts=attempts-CASE WHEN $6 THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now()")
-            .bind(job_id).bind(token).bind(if blocked{"blocked"}else{"queued"}).bind(reason).bind(if busy { 10.0f64 } else { 1800.0 }).bind(busy||waiting_auth).execute(&state.pool).await?;
+            .bind(job_id).bind(token).bind(if blocked{"blocked"}else{"queued"}).bind(reason).bind(cleanup_retry_seconds(job.get("attempts"), busy)).bind(busy||waiting_auth).execute(&state.pool).await?;
     }
     Ok(1)
 }
 async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result<(), ApiError> {
-    let row=sqlx::query("SELECT s.*,c.provider,s.cleanup_after>clock_timestamp() AS cleanup_not_due FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
+    let row=sqlx::query("SELECT s.*,c.provider,s.cleanup_after>clock_timestamp() AS cleanup_not_due FROM link_share_cache s JOIN resource_links c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
     let cleanup_after: DateTime<Utc> = row.get("cleanup_after");
     // Scheduling and expiry use the same database clock as the queue claim.
     if row.get::<bool, _>("cleanup_not_due") {
@@ -771,7 +809,7 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         .ok_or_else(|| ApiError::Unavailable("网盘正在执行其他写操作，稍后重试清理".into()))?;
     // Credential migration can rewrite an old Cookie fingerprint before this
     // lock was acquired. Compare the current artifact, not the pre-lock snapshot.
-    let row=sqlx::query("SELECT s.*,c.provider FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
+    let row=sqlx::query("SELECT s.*,c.provider FROM link_share_cache s JOIN resource_links c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
     if drive.account != row.get::<String, _>("target_account_key") {
         return Err(ApiError::Conflict("账号已变化".into()));
     }
@@ -1045,5 +1083,19 @@ mod lock_tests {
                 .await
                 .unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn cleanup_backoff_grows_and_is_bounded_with_jitter() {
+        for _ in 0..100 {
+            assert!((10.0..=12.0).contains(&cleanup_retry_seconds(20, true)));
+            assert!((60.0..=72.0).contains(&cleanup_retry_seconds(1, false)));
+            assert!((240.0..=288.0).contains(&cleanup_retry_seconds(3, false)));
+            assert!((1800.0..=2160.0).contains(&cleanup_retry_seconds(i32::MAX, false)));
+        }
     }
 }

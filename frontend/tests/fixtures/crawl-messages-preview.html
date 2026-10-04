@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>消息详情验收 · 示例数据</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>采集任务验收 · 示例数据</title></head>
 <body style="margin:0">
   <div id="preview-root" class="admin-root"></div>
   <div id="admin-portals" class="admin-root admin-portals"></div>
@@ -9,29 +9,22 @@
     import CrawlMessagesSheet from '/components/admin/crawl/CrawlMessagesSheet.vue';
     import '/assets/admin.css';
     const scenario = new URLSearchParams(location.search).get('scenario');
-    const message = {
-      channelId: 'fixture_channel', messageId: 101, publishedAt: '2026-10-01T10:00:00Z',
-      status: scenario === 'empty' ? 'empty' : 'parsed', parseError: null, parseVersion: 'tg-native-fixture',
-      stored: scenario === 'empty' ? [] : [{
-        result: { id: 'fixture-resource', name: '示例已存资源', description: '这里只显示已解析资源，不保存消息原文。',
-          cloud_types: ['quark'], links: [{ type: 'quark', url: 'https://pan.quark.cn/s/fixture' }], tags: [], images: [] },
-        enabled: true, manualOverride: false, deleted: false,
-      }],
-    };
+    const resource = { id: 'fixture-resource', name: '示例资源', description: '当前入库资源详情', cloud_types: ['quark'], links: [{ type: 'quark', url: 'https://pan.quark.cn/s/fixture' }], images: [], enabled: true };
+    const message = { messageId: 101, taskAt: '2026-10-04T09:00:00Z', status: scenario === 'empty' ? 'empty' : 'parsed', errorMessage: null, resources: scenario === 'empty' ? [] : [{ id: resource.id, name: resource.name }] };
     // Fail closed: this fixture must never forward requests to a real API.
     window.fetch = async (url, options = {}) => {
       if (options.method && options.method !== 'GET') throw new Error('验收页禁止写入');
       const path = new URL(String(url), location.origin).pathname;
-      if (!/^\/api\/admin\/crawl\/channels\/fixture_channel\/messages(?:\/101)?$/.test(path))
-        throw new Error('验收页禁止真实请求：' + path);
-      if (scenario === 'error') return Response.json({ message: '模拟消息读取失败，请重试' }, { status: 503 });
-      return Response.json({ data: path.endsWith('/101') ? message : { items: [message], hasMore: false, nextCursor: null } });
+      if (path === '/api/admin/resources/fixture-resource') return Response.json({ data: { resource } });
+      if (path !== '/api/admin/crawl/channels/fixture_channel/messages') throw new Error('验收页禁止真实请求：' + path);
+      if (scenario === 'error') return Response.json({ message: '模拟任务读取失败' }, { status: 503 });
+      return Response.json({ data: { items: [message], total: 1, page: 1, pageSize: 20, counts: { all: 1, success: 1, failed: 0 } } });
     };
     createApp({
       setup() {
         const open = ref(true);
         return () => open.value ? h(CrawlMessagesSheet, {
-          channel: 'fixture_channel', initialMessage: scenario === 'list' ? undefined : 101,
+          channel: 'fixture_channel',
           onClose: () => { open.value = false; },
         }) : h('button', { onClick: () => { open.value = true; } }, '重新打开消息');
       },

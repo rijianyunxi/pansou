@@ -9,12 +9,12 @@ mod error;
 mod handlers;
 mod link_resolution;
 mod local_index;
-mod migration_preflight;
 mod models;
 mod outbound;
 mod policy;
 mod redis_store;
 mod resource_clean;
+mod resource_links;
 #[cfg(test)]
 mod resource_schema_tests;
 mod runtime;
@@ -82,13 +82,6 @@ async fn main() -> Result<()> {
         .context("缺少 PANSOU_REDIS_URL，请在项目根目录 .env 中配置 Redis")?;
     let pool = db::connect(&database_url).await?;
     let mode = env::args().nth(1).unwrap_or_else(|| "serve".into());
-    if mode == "migration-preflight" {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&migration_preflight::report(&pool).await?)?
-        );
-        return Ok(());
-    }
     init_db(&pool).await?;
     ensure_admin(&pool).await?;
     let redis = RedisStore::connect(&redis_url).await?;
@@ -98,9 +91,7 @@ async fn main() -> Result<()> {
         mode.as_str(),
         "serve" | "worker" | "link-worker" | "auth-worker"
     ) {
-        anyhow::bail!(
-            "运行模式必须是 serve、worker、link-worker、auth-worker 或 migration-preflight"
-        );
+        anyhow::bail!("运行模式必须是 serve、worker、link-worker、auth-worker");
     }
     let mut workers = tokio::task::JoinSet::new();
     // Authentication is not controlled by crawling/link-delivery switches.
@@ -168,7 +159,7 @@ async fn main() -> Result<()> {
     let (result, server_finished) = tokio::select! {
         result = &mut server => (result.map_err(anyhow::Error::from), true),
         _ = runtime::shutdown_signal() => (Ok(()), false),
-        result = workers.join_next() => {
+        result = workers.join_next(), if !workers.is_empty() => {
             (Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")), false)
         }
     };

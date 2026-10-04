@@ -306,7 +306,8 @@ impl Baidu {
         }
         Ok(ids)
     }
-    fn check_items(&self, response: &Value) -> Result<(), DriveError> {        if let Some(items) = response["info"].as_array() {
+    fn check_items(&self, response: &Value) -> Result<(), DriveError> {
+        if let Some(items) = response["info"].as_array() {
             for item in items {
                 if let Some(code) = item["errno"].as_i64().filter(|c| *c != 0) {
                     let mut err = DriveError::from_code(super::Provider::Baidu, code);
@@ -516,7 +517,8 @@ mod tests {
         });
         assert_eq!(transfer_ids(&live), vec!["848731236733481", "99"]);
         // Legacy responses exposed the ids directly on info[].
-        let legacy = json!({"errno":0,"info":[{"errno":0,"to_fs_id":"123"},{"errno":0,"new_fs_id":"456"}]});
+        let legacy =
+            json!({"errno":0,"info":[{"errno":0,"to_fs_id":"123"},{"errno":0,"new_fs_id":"456"}]});
         assert_eq!(transfer_ids(&legacy), vec!["123", "456"]);
         // A rejected item or an empty envelope yields nothing for the caller
         // to treat as "everything transferred".

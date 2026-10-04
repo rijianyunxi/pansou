@@ -16,11 +16,9 @@ pub struct SearchResult {
     pub cloud_types: Vec<String>,
     pub links: Vec<Link>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Source {
     pub id: String,
     pub name: String,
@@ -93,7 +91,6 @@ mod tests {
                 url: "https://pan.quark.cn/s/demo".into(),
                 password: None,
             }],
-            tags: None,
             images: None,
         };
         let value = serde_json::to_value(SearchResponse {
@@ -114,6 +111,9 @@ mod tests {
         .unwrap();
         assert_eq!(value["total"], 1);
         assert!(value["results"].is_array());
+        assert!(value["results"][0].get("tags").is_none());
+        assert_eq!(value["results"][0]["cloud_types"], json!(["quark"]));
+        assert!(value["sources"][0]["results"][0].get("tags").is_none());
         let source = &value["sources"][0];
         for key in [
             "id",

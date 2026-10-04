@@ -14,7 +14,7 @@
           <label class="resource-search"><ConsoleIcon name="search" :size="16" /><Input v-model.trim="query" type="search" class="tw:pl-9" aria-label="资源名称" placeholder="仅按资源名称查询" /></label>
           <AdminSelect v-model="cloudType" aria-label="网盘类型"><option value="">全部网盘</option><option v-for="type in cloudTypes" :key="type" :value="type">{{ cloudLabel(type) }}</option></AdminSelect>
           <Button variant="outline" type="submit" :disabled="loading">查询</Button>
-          <Button v-if="query||cloudType" variant="ghost" type="button" @click="resetQuery">重置</Button>
+          <Button v-if="query||cloudType||channel" variant="ghost" type="button" @click="resetQuery">重置</Button>
         </form>
         <Button type="button" @click="openCreate"><ConsoleIcon name="plus" :size="16" />新增资源</Button>
       </div>
@@ -28,7 +28,7 @@
             <Button variant="ghost" size="sm" class="batch-cancel" :disabled="busy" @click="selected=[]"><X aria-hidden="true" />取消选择</Button>
           </div>
         </div>
-        <span class="resource-total">共 {{ total.toLocaleString('zh-CN') }} 条资源</span>
+        <span class="resource-total"><template v-if="channel">频道 @{{channel}} · </template>共 {{ total.toLocaleString('zh-CN') }} 条资源</span>
       </div>
       <Card class="table-panel resource-list-panel" aria-label="资源列表">
           <Table class="resource-list-table">
@@ -44,9 +44,8 @@
               <TableRow v-for="item in resources" :key="item.id" :class="{'selected-row':selected.includes(item.id)}">
                 <TableCell class="tw:whitespace-normal"><AdminCheckbox :checked="selected.includes(item.id)" :aria-label="`选择 ${item.name}`" @change="toggle(item.id)" /></TableCell>
                 <TableCell class="resource-name-cell tw:whitespace-normal">
-                  <strong :title="item.name">{{ item.name }}</strong>
+                  <button type="button" class="resource-name-button" :title="item.name" @click="openLinks(item)">{{ item.name }}</button>
                   <ResourceDescription v-if="item.description" variant="admin" :text="item.description" />
-                  <div v-if="item.tags?.length" class="resource-tags"><Badge v-for="tag in item.tags.slice(0,2)" :key="tag" variant="secondary" class="tw:rounded-md tw:font-normal" :title="tag">{{ tag }}</Badge><span v-if="item.tags.length>2" :title="item.tags.slice(2).join('、')">+{{item.tags.length-2}}</span></div>
                 </TableCell>
                 <TableCell class="tw:whitespace-normal">
                   <div class="resource-link-preview"><ResourceLinkTag v-for="(link,i) in item.links.slice(0,3)" :key="link.linkKey||i" :link="link" :checking="checkingLinks.has(link.linkKey||'')" :error="checkErrors[link.linkKey||'']" @open="openLinks(item,link.linkKey)" @check="checkLink(item,link)" /></div>
@@ -54,14 +53,14 @@
                   <span v-if="!item.links.length" class="tw:text-muted-foreground">暂无链接</span>
                 </TableCell>
                 <TableCell class="resource-date tw:whitespace-normal">{{ item.datetime||'—' }}</TableCell>
-                <TableCell class="tw:whitespace-normal"><Badge variant="outline" class="resource-status" :data-tone="item.enabled===false?'muted':'valid'"><span class="enabled-dot" aria-hidden="true" />{{item.enabled===false?'已停用':'已启用'}}</Badge></TableCell>
+                <TableCell class="tw:whitespace-normal"><AdminStatusBadge :state="item.enabled===false?'disabled':'enabled'">{{item.enabled===false?'已停用':'已启用'}}</AdminStatusBadge></TableCell>
                 <TableCell class="actions-col"><AdminRowActions :label="`${item.name}的操作`">
                   <Button variant="ghost" size="sm" class="row-action-button" :disabled="busy" @click="openEdit(item)">编辑</Button>
                   <Button variant="ghost" size="sm" class="row-action-button" :disabled="busy" @click="setEnabled([item.id],item.enabled===false)">{{item.enabled===false?'启用':'停用'}}</Button>
                   <Button variant="ghost" size="sm" class="row-action-button danger-action" :disabled="busy" @click="remove(item)">删除</Button>
                 </AdminRowActions></TableCell>
               </TableRow>
-              <TableRow v-if="!loading&&!resources.length"><TableCell colspan="6" class="empty-cell">{{query||cloudType?'没有匹配的资源':emptyLabel}}</TableCell></TableRow>
+              <TableRow v-if="!loading&&!resources.length"><TableCell colspan="6" class="empty-cell">{{query||cloudType||channel?'没有匹配的资源':emptyLabel}}</TableCell></TableRow>
               <TableRow v-if="loading"><TableCell colspan="6" class="empty-cell">正在加载资源…</TableCell></TableRow>
             </TableBody>
           </Table>
@@ -77,7 +76,7 @@
       </Card>
     </section>
 
-    <ResourceLinksDrawer v-if="linkResource" :resource="linkResource" :initial-key="focusedLink" :checking="checkingLinks" :errors="checkErrors" @check="checkLink(linkResource,$event)" @close="linkResource=null" />
+    <ResourceDetailDrawer v-if="linkResource" :key="linkResource.id" :id="linkResource.id" :initial-key="focusedLink" @changed="loadResources(false)" @close="linkResource=null" />
     <AdminDialog
       :title="editing ? '编辑资源' : '新增资源'"
       description="维护资源信息与分享链接。带链接的资源才能被检索。"
@@ -109,9 +108,7 @@
                   v-model.trim="form.datetime"
                   maxlength="80"
                   placeholder="例如：2026-09-17" /></label
-              ><label
-                >标签<Input v-model="tagText" placeholder="多个标签用逗号分隔"
-              /></label>
+              >
             </div>
             <div class="resource-links-title">
               <strong>网盘链接</strong
@@ -183,9 +180,9 @@
 </template>
 <script setup lang="ts">
 import {ChevronRight,CircleCheck,Pause,Trash2,X} from "@lucide/vue";
-import {Badge} from "@/components/admin/ui/badge";
+import AdminStatusBadge from "./AdminStatusBadge.vue";
 import ResourceLinkTag from "./ResourceLinkTag.vue";
-import ResourceLinksDrawer from "./ResourceLinksDrawer.vue";
+import ResourceDetailDrawer from "./ResourceDetailDrawer.vue";
 import type {AdminResourceLinkData} from "@/lib/adminResourceLinks";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Card } from "@/components/admin/ui/card";
@@ -209,7 +206,8 @@ import { useAdminSession } from "@/composables/admin/useAdminSession";
 const { locked } = useAdminSession();
 
 import { apiFetch } from "../../src/appRuntime";
-import { computed, onMounted, onBeforeUnmount, ref } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { CLOUD_TYPE_SHORT_LABELS } from "~/shared/cloudTypes";
 
 import ResourceDescription from "../ResourceDescription.vue";
@@ -246,6 +244,13 @@ const cloudTypes = ref<CloudType[]>([]);
 const resources = ref<AdminResource[]>([]);
 const query = ref("");
 const cloudType = ref("");
+const route = useRoute(), router = useRouter();
+const channel = computed(() => typeof route.query.channel === "string" ? route.query.channel : "");
+watch(channel, () => {
+  page.value = 1;
+  selected.value = [];
+  void loadResources();
+});
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
@@ -257,7 +262,6 @@ const noticeError = ref(false);
 const drawerOpen = ref(false);
 const editing = ref(false);
 const formError = ref("");
-const tagText = ref("");
 const imageText = ref("");
 const form = ref<{
   id?: string;
@@ -331,7 +335,8 @@ async function loadResources(reset = true) {
       query: {
         q: query.value || undefined,
         cloudType: cloudType.value || undefined,
-        ...pageCursors.query(page.value, pageSize.value, [query.value, cloudType.value]),
+        channel: channel.value || undefined,
+        ...pageCursors.query(page.value, pageSize.value, [query.value, cloudType.value, channel.value]),
       },
       cache: "no-store",
       signal: controller.signal,
@@ -357,7 +362,12 @@ function resetQuery() {
   query.value = "";
   cloudType.value = "";
   page.value = 1;
-  void loadResources();
+  if (channel.value) {
+    const { channel: _channel, ...query } = route.query;
+    void router.replace({ query });
+  } else {
+    void loadResources();
+  }
 }
 function goPage(next: number) {
   if (loading.value || busy.value) return;
@@ -401,7 +411,6 @@ function openCreate() {
   editing.value = false;
   formError.value = "";
   form.value = blank();
-  tagText.value = "";
   imageText.value = "";
   drawerOpen.value = true;
 }
@@ -419,7 +428,6 @@ function openEdit(item: AdminResource) {
       password: link.password || "",
     })),
   };
-  tagText.value = (item.tags || []).join(", ");
   imageText.value = (item.images || []).join(", ");
   drawerOpen.value = true;
 }
@@ -446,10 +454,6 @@ async function save() {
     description: form.value.description || null,
     datetime: form.value.datetime || null,
     links: form.value.links,
-    tags: tagText.value
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean),
     images: imageText.value
       .split(",")
       .map((v) => v.trim())
@@ -564,12 +568,10 @@ onMounted(() => loadResources());
 .resource-list-panel :deep(.resource-list-table){width:100%;table-layout:fixed;min-width:800px;font-size:13px}
 .resource-list-panel :deep(.resource-list-table th){height:44px;background:var(--muted);font-weight:500}.resource-list-panel :deep(.resource-list-table td){padding:16px 12px;vertical-align:top;white-space:normal}
 .selection-col{width:44px}.name-col{width:auto}.links-col{width:36%}.date-col{width:140px}.state-col{width:96px}.actions-col{width:56px}
-.resource-name-cell strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;font-size:14px;font-weight:600;overflow-wrap:anywhere}
 .resource-name-cell :deep(.resource-description-toggle){color:var(--muted-foreground)}
-.resource-tags{display:flex;gap:6px;align-items:center;margin-top:8px;min-width:0;font-size:12px;color:var(--muted-foreground)}.resource-tags :deep([data-slot=badge]){max-width:130px;display:block;overflow:hidden;text-overflow:ellipsis;border-radius:5px;font-weight:400}
 .resource-link-preview{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;min-width:0;max-width:100%}.all-links-button{margin-top:6px;color:var(--muted-foreground);font-size:12px;padding:0 4px;height:28px}
 .resource-date{font-variant-numeric:tabular-nums;color:var(--muted-foreground);font-size:12px;line-height:1.7;overflow-wrap:anywhere}
-.enabled-dot{width:5px;height:5px;border-radius:50%;background:currentColor}.resource-list-panel{overflow:hidden}
+.resource-list-panel{overflow:hidden}
 .resource-form{display:grid;gap:16px}.resource-form label{display:grid;gap:6px;font-size:13px;font-weight:500}
 .resource-links-title{display:flex;align-items:center;justify-content:space-between}.link-editor{display:grid;grid-template-columns:100px 1fr 110px 32px;gap:8px}
 @media(max-width:700px){.resource-toolbar{align-items:stretch}.resource-filters{flex-basis:100%}.resource-search{max-width:none}.link-editor{grid-template-columns:1fr}.resource-batch{width:100%;gap:8px}.resource-batch-actions{border-left:0;padding-left:0}.selection-count{flex-basis:100%}.has-selection .resource-total{margin-left:0}}

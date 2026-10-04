@@ -1,5 +1,4 @@
 import type { OutboundPolicy } from "./outbound";
-import type { ManagedResource as SearchResult } from "@/shared/apiModels";
 interface CrawlJob {
   id: number;
   channelId: string;
@@ -37,6 +36,7 @@ export interface CrawlChannel {
   lastError: string | null;
   failedMessageCount: number;
   resourceCount: number;
+  todayResourceCount: number;
   latestJob: CrawlJob | null;
   taskState?: 'running' | 'queued' | 'backoff' | 'idle' | 'paused' | 'failed';
   taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | 'cron_wait' | null;
@@ -45,28 +45,20 @@ export interface CrawlChannel {
   effectiveOutbound: OutboundPolicy | null;
   transform?: string | null;
 }
-export interface CrawlMessage {
-  channelId: string;
+export interface CrawlMessageTask {
   messageId: number;
-  publishedAt: string | null;
+  taskAt: string;
   status: string;
-  parseError: string | null;
-  parseVersion: string;
-  stored?: {
-    result: SearchResult;
-    enabled: boolean;
-    manualOverride: boolean;
-    deleted: boolean;
-  }[];
+  errorMessage: string | null;
+  resources: { id: string; name: string }[];
 }
 interface MessageCounts {
   all: number;
-  parsed: number;
-  empty: number;
+  success: number;
   failed: number;
 }
 export interface MessagePage {
-  items: CrawlMessage[];
+  items: CrawlMessageTask[];
   total: number;
   page: number;
   pageSize: number;
@@ -171,13 +163,6 @@ export function channelTaskState(channel: CrawlChannel, now = Date.now()): { sta
   if (job?.status === "failed") return { state: "failed", text: "采集中断" };
   if (job?.status === "queued") return { state: "waiting", text: job.attempts > 0 ? "退避等待" : Date.parse(job.nextRunAt) > now ? "等待下一页" : "等待执行" };
   return channel.historyComplete ? { state: "idle", text: "等待日常采集" } : { state: "waiting", text: "等待历史补齐" };
-}
-
-/** Filter inputs are local wall-clock dates; API always receives an explicit UTC instant. */
-export function crawlFilterDate(value: string): string | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 export interface CrawlSettingsValue { concurrentChannels: number; pageDelaySeconds: number; dailyCron: string; version: number }

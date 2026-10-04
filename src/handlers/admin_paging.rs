@@ -138,11 +138,27 @@ mod tests {
         let router = crate::app::build_router(state.clone());
         let marker = format!("分页{}", Uuid::new_v4().simple());
         for i in 0..23 {
-            sqlx::query("INSERT INTO managed_resources(id,name,links_json,updated_at,deleted_at) VALUES($1,$2,'[{\"type\":\"quark\",\"url\":\"https://pan.quark.cn/s/fixture\"}]','2026-01-01',CASE WHEN $3 THEN now() END)")
-                .bind(format!("{marker}_{i:02}")).bind(&marker).bind(i == 22).execute(&pool).await.unwrap();
+            let id = format!("{marker}_{i:02}");
+            crate::resource_links::fixture(
+                &pool,
+                &id,
+                &marker,
+                json!([{"type":"quark","url":"https://pan.quark.cn/s/fixture"}]),
+            )
+            .await;
+            sqlx::query("UPDATE managed_resources SET updated_at='2026-01-01' WHERE id=$1")
+                .bind(&id)
+                .execute(&pool)
+                .await
+                .unwrap();
             sqlx::query("INSERT INTO search_logs(user_id,session_id,keyword,ip,search_scope,created_at) VALUES($1,'paging-session',$2,'unknown',$3,'2026-01-01')")
                 .bind(user).bind(&marker).bind(if i % 2 == 0 {"all"} else {"telegram"}).execute(&pool).await.unwrap();
         }
+        sqlx::query("DELETE FROM managed_resources WHERE id=$1")
+            .bind(format!("{marker}_22"))
+            .execute(&pool)
+            .await
+            .unwrap();
         for (path, params, expected) in [
             (
                 "/api/admin/resources",
@@ -211,8 +227,12 @@ mod tests {
             );
             // New rows above the anchor do not shift the next page.
             if path.ends_with("resources") {
-                sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,$2,'[{\"type\":\"quark\",\"url\":\"https://pan.quark.cn/s/new\"}]')")
-                    .bind(format!("{marker}_new")).bind(&marker).execute(&pool).await.unwrap();
+                sqlx::query("INSERT INTO managed_resources(id,name) VALUES($1,$2)")
+                    .bind(format!("{marker}_new"))
+                    .bind(&marker)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             } else {
                 sqlx::query("INSERT INTO search_logs(user_id,keyword,ip,search_scope) VALUES($1,$2,'unknown','all')").bind(user).bind(&marker).execute(&pool).await.unwrap();
             }

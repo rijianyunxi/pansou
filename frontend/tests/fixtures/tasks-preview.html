@@ -16,10 +16,9 @@ const params=new URLSearchParams(location.search), scenario=params.get('scenario
 const now='2026-10-02T08:30:00Z';
 const base={id:'101',createdAt:now,updatedAt:now,canRetry:false,canCancel:false};
 const items={
- sync:[{...base,id:'resource-101',title:'示例资源 · 等待资源链接同步',kind:'link-sync',status:'queued',revision:4}],
  checks:[{...base,title:'示例分享 A · 已完成检测但结果待确认',provider:'aliyun',kind:'original',status:'completed',validity:-1,failureCount:2,attempts:2,errorCode:'check_failed',canRetry:true,runAfter:'2026-10-02T09:00:00Z',originalUrl:'https://www.alipan.com/s/example'}, {...base,id:'102',title:'示例分享 B',provider:'quark',kind:'original',status:'running',validity:1,attempts:1,leaseUntil:'2026-10-02T08:32:00Z'}, {...base,id:'103',title:'示例分享 C · 等待检测',provider:'xunlei',kind:'original',status:'queued',attempts:0,runAfter:'2026-10-02T09:10:00Z'}, {...base,id:'104',title:'示例分享 D · 失效分享',provider:'guangya',kind:'original',status:'failed',attempts:3,validity:0,errorCode:'original_invalid',canRetry:true}],
  resolve:[{...base,id:'resolve-101',title:'示例取链请求',kind:'resolve',provider:'xunlei',status:'completed',delivery:'original',reasonCode:'deadline_exceeded',deadlineAt:now}],
- maintenance:[{...base,title:'link-maintenance',kind:'link-maintenance',status:'completed',durationMs:24},{...base,id:'102',title:'link-sync',kind:'link-sync',status:'failed',durationMs:301,errorCode:'dependency_unavailable'}],
+ maintenance:[{...base,title:'link-maintenance',kind:'link-maintenance',status:'completed',durationMs:24},{...base,id:'102',title:'link-check',kind:'link-check',status:'failed',durationMs:301,errorCode:'dependency_unavailable'}],
 };
 const cleanupBase={id:201,provider:'aliyun',originalUrl:'https://www.alipan.com/s/example',status:'blocked',stage:'verify',lastErrorCode:'cleanup_credentials_or_permissions',attempts:3,runAfter:now,cleanupAfter:now,updatedAt:now,artifactState:'uncertain',targetDir:'project-dir',ownedDirId:'owned-201',ownedDirPath:'/pansou/owned-201',directoryName:'取链超时的转存产物',writeStage:'transfer_intent',files:[{parent:'owned-201',file:{id:'file-201',name:'模拟文件.mp4'}}],shares:['share-201'],progress:null,canRetry:true,retryUnavailableReason:null};
 const cleanupItems=[cleanupBase,{...cleanupBase,id:202,provider:'xunlei',status:'queued',artifactState:'expiring',lastErrorCode:null,directoryName:'等待到期的转存分享',canRetry:false,retryUnavailableReason:'not_due'}, {...cleanupBase,id:203,provider:'guangya',status:'completed',artifactState:'deleted',stage:'verify_deleted',lastErrorCode:null,directoryName:'已清理的晚到产物',canRetry:false,retryUnavailableReason:'completed'}];
@@ -35,7 +34,7 @@ const providers=['quark','baidu','aliyun','xunlei','guangya'];
 const accounts=providers.map((provider,index)=>({provider,configured:index<2,status:index===0?'reauthorization_required':index===1?'unverified':'disconnected',bindingEpoch:1,tokenRevision:1,refreshable:false,qrSupported:true,officialUrl:'https://example.com',lastErrorCode:index===0?'reauthorization_required':undefined}));
 const policies=providers.map(provider=>({...providerForm(),provider,enabled:provider==='quark',retentionSeconds:provider==='quark'?3600:null,targetDir:provider==='quark'?'project-dir':''}));
 let reads=0;
-const worker={state:scenario==='offline'?'offline':'online',count:scenario==='offline'?0:1,enabled:true,scheduleEnabled:true,syncEnabled:true,checkEnabled:true,maintenanceEnabled:true};
+const worker={state:scenario==='offline'?'offline':'online',count:scenario==='offline'?0:1,enabled:true,scheduleEnabled:true,checkEnabled:true,maintenanceEnabled:true};
 let checksEnabled=scenario!=='disabled';
 // Fail closed. Never forward API requests, retries or deletions to real services.
 window.fetch=async(input,options={})=>{
@@ -58,18 +57,17 @@ window.fetch=async(input,options={})=>{
   if(scenario!=='check-unverified')Object.assign(account,{status:'ready',displayName:'模拟账号',subjectId:'fixture-account',lastVerifiedAt:new Date().toISOString(),lastErrorCode:undefined});
   return Response.json({data:{items:accounts}});
  }
- if(path==='/api/monitor')return Response.json({data:{workers:{links:{...worker}},links:{syncPending:0,queues:{cleanup:{queued:0}},checksEnabled,checkHealth:{readyAccounts:scenario==='unconfigured'?0:1}}}});
+ if(path==='/api/monitor')return Response.json({data:{workers:{links:{...worker}},links:{queues:{cleanup:{queued:0}},checksEnabled,checkHealth:{readyAccounts:scenario==='unconfigured'?0:1}}}});
  if(path.startsWith('/api/admin/runtime/workers/')&&options.method==='PUT'){
   if(scenario==='control-error')return Response.json({message:'模拟调度保存失败'},{status:503});
   const body=typeof options.body==='string'?JSON.parse(options.body):options.body;
   if(body.activateChecks===true)checksEnabled=true;
   if(path.endsWith('/link-schedule'))worker.scheduleEnabled=body.enabled;
   else if(path.endsWith('/cleanup'))worker.enabled=body.enabled;
-  else if(path.endsWith('/link-sync'))worker.syncEnabled=body.enabled;
   else if(path.endsWith('/link-check'))worker.checkEnabled=body.enabled;
   else if(path.endsWith('/link-maintenance'))worker.maintenanceEnabled=body.enabled;
   else throw new Error('模拟页不支持该开关');
-  return Response.json({data:{checksEnabled,settings:{linkScheduleEnabled:worker.scheduleEnabled,linkEnabled:worker.enabled,linkSyncEnabled:worker.syncEnabled,linkCheckEnabled:worker.checkEnabled,linkMaintenanceEnabled:worker.maintenanceEnabled,crawlEnabled:true}}});
+  return Response.json({data:{checksEnabled,settings:{linkScheduleEnabled:worker.scheduleEnabled,linkEnabled:worker.enabled,linkCheckEnabled:worker.checkEnabled,linkMaintenanceEnabled:worker.maintenanceEnabled,crawlEnabled:true}}});
  }
  if(path==='/api/admin/link-cleanup'){
   let list=cleanupItems.filter(t=>!url.searchParams.get('provider')||t.provider===url.searchParams.get('provider'));

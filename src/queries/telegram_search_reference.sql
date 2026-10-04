@@ -1,25 +1,8 @@
-WITH scoped AS (SELECT r.id,r.manual_override,r.name,r.description,r.datetime,resource_cloud_types(r.links_json) AS cloud_types_json,r.links_json,r.tags_json,r.images_json,r.published_at,r.search_text,o.channel_id,o.message_id,o.result_json,m.published_at AS occurrence_date
+-- Independent unindexed oracle for resource title/search-scope tests.
+SELECT jsonb_build_object('id',r.id,'name',r.name,'description',r.description,
+ 'datetime',r.datetime,'cloud_types',resource_link_types(r.id),
+ 'links',resource_links_json(r.id),'images',r.images_json) AS item
 FROM managed_resources r
-JOIN resource_occurrences o ON o.resource_id=r.id
-JOIN source_messages m USING(channel_id,message_id)
-WHERE r.origin='telegram'
-  AND r.enabled
-  AND r.deleted_at IS NULL
-  AND o.channel_id=ANY($3)
-  AND m.parse_status='parsed'
-  AND ($2::text IS NULL OR EXISTS(SELECT 1
-FROM resource_grams g
-WHERE g.resource_id=r.id
-  AND g.gram=$2))),
-visible AS (SELECT *,CASE WHEN manual_override THEN jsonb_build_object('id',id,'name',name,'description',description,'datetime',datetime,'cloud_types',cloud_types_json,'links',links_json,'tags',tags_json,'images',images_json) ELSE result_json END AS presentation,
-lower(COALESCE(CASE WHEN manual_override THEN name ELSE result_json->>'name' END,'')) AS eff_name
-FROM scoped),
-matches AS (SELECT *
-FROM visible
-WHERE strpos(eff_name,$1)>0),
-picked AS (SELECT DISTINCT ON(id) id,presentation,eff_name,occurrence_date
-FROM matches
-ORDER BY id,occurrence_date DESC NULLS LAST,channel_id,message_id DESC)
-SELECT p.presentation || jsonb_build_object('id',p.id) AS item
-FROM picked p
-ORDER BY (p.eff_name=$1) DESC,(strpos(p.eff_name,$1)>0) DESC,p.occurrence_date DESC NULLS LAST,p.id LIMIT 200
+WHERE origin='telegram' AND enabled
+AND source_channel_ids && $2::text[] AND strpos(lower(name),$1)>0
+ORDER BY (lower(name)=$1) DESC,published_at DESC NULLS LAST,id LIMIT 200

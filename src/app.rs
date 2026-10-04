@@ -38,6 +38,8 @@ pub struct AppState {
     pub resolutions: Arc<crate::runtime::ResolutionTasks>,
     pub worker_settings:
         Arc<tokio::sync::Mutex<Option<(std::time::Instant, crate::runtime::WorkerSettings)>>>,
+    pub link_check_settings:
+        Arc<tokio::sync::Mutex<Option<(std::time::Instant, (bool, Vec<String>))>>>,
     pub provider_writes:
         Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>>,
     pub search_cache: Arc<tokio::sync::Mutex<SearchCache>>,
@@ -75,6 +77,7 @@ impl AppState {
             local_search_locks: Arc::new(crate::local_index::SearchLocks::default()),
             resolutions: Arc::new(crate::runtime::ResolutionTasks::default()),
             worker_settings: Arc::new(tokio::sync::Mutex::new(None)),
+            link_check_settings: Arc::new(tokio::sync::Mutex::new(None)),
             provider_writes: Arc::new(std::sync::Mutex::new(Default::default())),
             search_cache: Arc::new(tokio::sync::Mutex::new(SearchCache::default())),
             security: SecurityConfig::from_env(),
@@ -198,10 +201,6 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/admin/crawl/channels/{channel}/messages/action",
             post(handlers::crawl_messages_action),
-        )
-        .route(
-            "/admin/crawl/channels/{channel}/messages/{id}",
-            get(handlers::crawl_message_get),
         )
         .route(
             "/admin/crawl/settings",
@@ -482,7 +481,6 @@ mod tests {
             "/api/admin/hot-searches/search-term",
             "/api/admin/proxies/proxy-id",
             "/api/admin/crawl/overview",
-            "/api/admin/crawl/channels/channel-id/messages/1",
             "/api/admin/crawl/settings",
             "/api/admin/crawl/channels/channel-id/failures",
             "/api/admin/proxies/proxy-id/references",

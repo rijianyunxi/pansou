@@ -116,7 +116,7 @@ async function saveImport() {
   const a = dialog.value; if (!a || busy.value || !credential.value.trim()) return; busy.value = a.provider; loginError.value = '';
   try {
     const result = await apiFetch<{ data: { items: CloudAccount[] } }>(`/api/admin/cloud-accounts/${a.provider}/import`, { method: 'POST', body: { credential: credential.value.trim(), intent: intent.value, expectedEpoch: a.bindingEpoch }, silentError: true });
-    if (!alive) return; accounts.value = result.data.items; credential.value = ''; dialog.value = null; notice.value = '凭证已验证并加密保存。'; error.value = '';
+    if (!alive) return; accounts.value = result.data.items; credential.value = ''; dialog.value = null; notice.value = '凭证已验证并保存。'; error.value = '';
   } catch (e) { if (alive) loginError.value = apiErrorMessage(e, '验证或保存凭证失败'); } finally { busy.value = null; }
 }
 async function check(a: CloudAccount) {
@@ -164,7 +164,7 @@ onBeforeUnmount(() => { alive = false; generation++; loadController?.abort(); po
     <header class="account-heading"><div class="account-title"><h1><Cloud :size="22" aria-hidden="true" />网盘账号</h1><span v-if="loaded" class="account-count">{{ connectedCount }} / {{ DELIVERY_PROVIDERS.length }} 已连接</span></div><Button variant="outline" :disabled="loading || !!busy" @click="load(); refreshStatus()"><RefreshCw :size="16" aria-hidden="true" />{{ loading ? '读取中…' : '刷新' }}</Button></header>
 
     <aside class="runtime-strip" aria-live="polite">
-      <div class="runtime-summary"><span class="runtime-status"><i :class="{ online: runtimeOnline }" aria-hidden="true"></i>{{ runtimeLabel }}</span><span v-if="monitor" class="runtime-counts">待关联 <b>{{ monitor.links.syncPending.toLocaleString() }}</b><span class="runtime-divider">/</span>待清理 <b>{{ monitor.links.queues.cleanup.queued }}</b></span></div>
+      <div class="runtime-summary"><span class="runtime-status"><i :class="{ online: runtimeOnline }" aria-hidden="true"></i>{{ runtimeLabel }}</span><span v-if="monitor" class="runtime-counts">待清理 <b>{{ monitor.links.queues.cleanup.queued }}</b></span></div>
       <div class="runtime-links"><RouterLink to="/admin/tasks">后台任务<ArrowUpRight :size="14" aria-hidden="true" /></RouterLink><RouterLink to="/admin/monitor">运行监控<ArrowUpRight :size="14" aria-hidden="true" /></RouterLink></div>
     </aside>
 
@@ -195,7 +195,7 @@ onBeforeUnmount(() => { alive = false; generation++; loadController?.abort(); po
 
     <CloudPolicyDialog v-if="policyKey && policyForm" :provider="policyKey" :policy="policyForm" :configured="configured[policyKey] || false" :busy="policyBusy" @close="closePolicy" @save="savePolicy" />
 
-    <AdminDialog v-if="dialog" :title="(importing ? '高级导入 · ' : '扫码连接 · ') + name(dialog.provider)" :description="intent === 'replace' ? (dialog.subjectId ? '将更换全站服务账号；旧产物归属不会转移。' : '原凭证未完成身份核实，本次登录的账号将接管该网盘槽位；旧凭证的转存产物不会转移。') : importing ? '仅导入对应网盘的官方登录凭证；服务端验证后加密保存。' : scanInstructions(dialog.provider)" :busy="creating || !!busy" @close="close">
+    <AdminDialog v-if="dialog" :title="(importing ? '高级导入 · ' : '扫码连接 · ') + name(dialog.provider)" :description="intent === 'replace' ? (dialog.subjectId ? '将更换全站服务账号；旧产物归属不会转移。' : '原凭证未完成身份核实，本次登录的账号将接管该网盘槽位；旧凭证的转存产物不会转移。') : importing ? '仅导入对应网盘的官方登录凭证；服务端验证后保存。' : scanInstructions(dialog.provider)" :busy="creating || !!busy" @close="close">
       <div class="account-dialog"><p v-if="loginError" role="alert" class="account-error">{{ loginError }}</p>
         <form v-if="importing" @submit.prevent="saveImport"><label for="cloud-credential">{{ dialog.provider === 'baidu' || dialog.provider === 'quark' ? '网页登录 Cookie' : '登录凭证 JSON' }}</label><p id="credential-hint" class="account-hint">{{ dialog.provider === 'baidu' || dialog.provider === 'quark' ? '复制官方网页请求的完整 Cookie。百度需要 BDUSS/BDUSS_BFESS 和 BAIDUID。' : '可导入同一官方会话的 access_token、refresh_token 和设备字段；账号 ID 与阿里存储空间由服务端核实。迅雷还需要有效的 x-captcha-token。' }}不要把凭证发给别人，保存成功后输入框会清空。</p><Textarea id="cloud-credential" v-model="credential" rows="7" maxlength="32768" autocomplete="off" autocapitalize="off" :spellcheck="false" aria-describedby="credential-hint" :disabled="!!busy" /><Button type="submit" :disabled="!!busy || !credential.trim()">{{ busy ? '正在验证并保存…' : '验证并保存' }}</Button></form>
         <template v-else><p role="status">{{ creating ? '正在生成二维码…' : session ? accountStatus(session.status) : '二维码未生成' }}</p><img v-if="session?.qrImage && safeQrImage(session.qrImage) && sessionActive(session.status)" class="login-qr" :src="session.qrImage" :alt="name(dialog.provider) + '登录二维码'" width="256" height="256" /><p v-if="session?.expiresAt && sessionActive(session.status)" class="account-hint">二维码有效至 {{ date(session.expiresAt) }}。请在手机端确认登录。</p><p v-if="session?.errorCode" role="status" class="account-error">{{ authReason(session.errorCode) }}</p><Button v-if="!creating && (!session || !sessionActive(session.status)) && session?.status !== 'connected'" @click="start">重新生成二维码</Button><Button variant="outline" :disabled="creating" @click="close">{{ session?.status === 'connected' ? '完成' : '取消连接' }}</Button></template>

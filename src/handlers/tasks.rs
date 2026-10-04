@@ -38,12 +38,11 @@ fn validate(kind: &str, q: &TaskQuery) -> Result<Option<Cursor>, ApiError> {
     }
     if !matches!(
         kind,
-        "crawl" | "sync" | "checks" | "resolve" | "operations" | "maintenance"
+        "crawl" | "checks" | "resolve" | "operations" | "maintenance"
     ) {
         return Err(ApiError::BadRequest("未知任务类型".into()));
     }
     let allowed: &[&str] = match kind {
-        "sync" => &["all", "queued"],
         "resolve" => &[
             "all",
             "attention",
@@ -103,7 +102,6 @@ fn validate(kind: &str, q: &TaskQuery) -> Result<Option<Cursor>, ApiError> {
     if let Some(c) = &cursor {
         let valid = match kind {
             "resolve" | "operations" => Uuid::parse_str(&c.id).is_ok(),
-            "sync" => !c.id.is_empty() && c.id.len() <= 256,
             _ => c.id.parse::<i64>().is_ok_and(|n| n > 0),
         };
         if !valid || c.kind != kind {
@@ -135,7 +133,7 @@ fn push_check_candidates<'a>(sql: &mut QueryBuilder<'a, Postgres>, q: &'a TaskQu
         }
         sql.push("SELECT j.id,j.created_at FROM link_check_jobs j");
         if provider.is_some() || *needs_catalog {
-            sql.push(" JOIN link_catalog c ON c.id=j.link_id");
+            sql.push(" JOIN resource_links c ON c.id=j.link_id");
         }
         sql.push(" WHERE ").push(*predicate);
         if let Some(provider) = provider {
@@ -183,7 +181,7 @@ async fn check_task_page(
         .push_bind((q.page.unwrap_or(1) - 1) * page_size)
         .push(") SELECT jsonb_build_object(")
         .push(projection)
-        .push(") item FROM page p JOIN link_check_jobs j ON j.id=p.id JOIN link_catalog c ON c.id=j.link_id ORDER BY p.created_at DESC,p.id DESC");
+        .push(") item FROM page p JOIN link_check_jobs j ON j.id=p.id JOIN resource_links c ON c.id=j.link_id ORDER BY p.created_at DESC,p.id DESC");
     let items = sql
         .build_query_scalar::<Value>()
         .fetch_all(&mut *connection)
@@ -212,23 +210,16 @@ pub async fn background_tasks(
             "j.created_at",
             "bigint",
         ),
-        "sync" => (
-            "'id',j.resource_id,'title',r.name,'kind','link-sync','status','queued','createdAt',j.updated_at,'updatedAt',j.updated_at,'revision',r.links_revision,'canRetry',false,'canCancel',false",
-            "link_sync_queue j JOIN managed_resources r ON r.id=j.resource_id",
-            "$1='' AND $2 IN('all','queued')",
-            "j.updated_at",
-            "text",
-        ),
         "checks" => (
             "'id',j.id::text,'title',c.identity,'provider',c.provider,'kind',j.kind,'status',j.status,'createdAt',j.created_at,'updatedAt',j.updated_at,'attempts',j.attempts,'runAfter',j.run_after,'leaseUntil',j.lease_until,'validity',CASE WHEN j.kind='original' THEN CASE WHEN c.valid_until>now() THEN c.validity ELSE -1 END END,'lastAttemptAt',c.last_attempt_at,'checkedAt',c.checked_at,'failureCount',c.failure_count,'errorCode',COALESCE(j.last_error_code,CASE WHEN j.kind='original' THEN c.last_error_code END),'originalUrl',c.original_url,'canRetry',j.kind='original' AND (j.status<>'running' OR j.lease_until<=now()),'canCancel',false",
-            "link_check_jobs j JOIN link_catalog c ON c.id=j.link_id",
+            "link_check_jobs j JOIN resource_links c ON c.id=j.link_id",
             "($1='' OR c.provider=$1) AND ($2='all' OR $2='attention' AND (j.status='failed' OR c.failure_count>0 OR j.status='running' AND j.lease_until<=now()) OR j.status=$2)",
             "j.created_at",
             "bigint",
         ),
         "resolve" => (
             "'id',j.id::text,'title',c.identity,'provider',c.provider,'kind','resolve','status',j.status,'createdAt',j.created_at,'updatedAt',j.updated_at,'deadlineAt',j.deadline_at,'delivery',j.delivery,'reasonCode',j.reason_code,'resultKind',j.result_kind,'cacheHit',j.response_json->'cacheHit','originalUrl',c.original_url,'canRetry',false,'canCancel',false",
-            "link_resolve_requests j JOIN link_catalog c ON c.id=j.link_id",
+            "link_resolve_requests j JOIN resource_links c ON c.id=j.link_id",
             "($1='' OR c.provider=$1) AND ($2='all' OR $2='attention' AND (j.status='failed' OR j.result_kind='unavailable' OR j.delivery='original' AND j.reason_code NOT IN('delivery_disabled','unsupported_provider') OR j.status IN('queued','running') AND j.deadline_at<=now()) OR j.status=$2)",
             "j.created_at",
             "uuid",
@@ -249,7 +240,6 @@ pub async fn background_tasks(
         ),
     };
     let id = match kind.as_str() {
-        "sync" => "j.resource_id",
         "operations" => "j.request_key",
         _ => "j.id",
     };
@@ -295,7 +285,7 @@ pub async fn background_tasks(
         "crawl" => super::monitoring::worker_status(&s, crate::runtime::WorkerKind::Crawl, true)
             .await["state"]
             .clone(),
-        "sync" | "checks" | "maintenance" => super::monitoring::worker_status(
+        "checks" | "maintenance" => super::monitoring::worker_status(
             &s,
             crate::runtime::WorkerKind::Links,
             true,
@@ -324,7 +314,7 @@ pub async fn background_check_retry(
             "有效性检测已关闭，请先在系统设置启用；重新检测不会绕过策略或额度".into(),
         ));
     }
-    let row=sqlx::query("SELECT j.link_id,j.kind,c.provider FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE j.id=$1")
+    let row=sqlx::query("SELECT j.link_id,j.kind,c.provider FROM link_check_jobs j JOIN resource_links c ON c.id=j.link_id WHERE j.id=$1")
         .bind(id).fetch_optional(&mut *tx).await?.ok_or_else(||ApiError::NotFound("检测任务不存在".into()))?;
     if row.get::<String, _>("kind") != "original" {
         return Err(ApiError::Conflict("此任务不支持手动重检".into()));
@@ -353,11 +343,11 @@ pub async fn background_check_retry(
     sqlx::query("UPDATE link_check_jobs SET status='queued',lease_token=NULL,lease_until=NULL,updated_at=now() WHERE link_id=$1 AND kind='original' AND status='running' AND lease_until<=now()")
         .bind(link).execute(&mut *tx).await?;
     // The catalog trigger keeps all queued schedules in sync; preserve observations.
-    sqlx::query("UPDATE link_catalog SET next_check_at=now(),updated_at=now() WHERE id=$1")
+    sqlx::query("UPDATE resource_links SET next_check_at=now(),updated_at=now() WHERE id=$1")
         .bind(link)
         .execute(&mut *tx)
         .await?;
-    let job:i64=sqlx::query_scalar("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT id,input_version,'original',10 FROM link_catalog WHERE id=$1 ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10,updated_at=now() RETURNING id")
+    let job:i64=sqlx::query_scalar("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT id,input_version,'original',10 FROM resource_links WHERE id=$1 ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10,updated_at=now() RETURNING id")
         .bind(link).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(ok(json!({"id":job,"status":"queued"})))

@@ -13,7 +13,6 @@ pub enum WorkerKind {
     Links,
     /// Background link scheduling, independent of the legacy cleanup-only switch.
     LinkSchedule,
-    LinkSync,
     LinkCheck,
     LinkMaintenance,
 }
@@ -25,7 +24,6 @@ impl WorkerKind {
             Self::Crawl => "crawl",
             Self::Links => "link-cleanup",
             Self::LinkSchedule => "link-schedule",
-            Self::LinkSync => "link-sync",
             Self::LinkCheck => "link-check",
             Self::LinkMaintenance => LINK_MAINTENANCE,
         }
@@ -37,11 +35,9 @@ impl WorkerKind {
     pub fn key(self) -> &'static str {
         match self {
             Self::Crawl => "pansou:crawl:workers",
-            Self::Links
-            | Self::LinkSchedule
-            | Self::LinkSync
-            | Self::LinkCheck
-            | Self::LinkMaintenance => "pansou:link:workers",
+            Self::Links | Self::LinkSchedule | Self::LinkCheck | Self::LinkMaintenance => {
+                "pansou:link:workers"
+            }
         }
     }
 }
@@ -52,7 +48,6 @@ pub struct WorkerSettings {
     pub crawl_enabled: bool,
     pub link_enabled: bool,
     pub link_schedule_enabled: bool,
-    pub link_sync_enabled: bool,
     pub link_check_enabled: bool,
     pub link_maintenance_enabled: bool,
 }
@@ -63,7 +58,6 @@ impl Default for WorkerSettings {
             crawl_enabled: true,
             link_enabled: true,
             link_schedule_enabled: true,
-            link_sync_enabled: true,
             link_check_enabled: true,
             link_maintenance_enabled: true,
         }
@@ -76,7 +70,6 @@ impl WorkerSettings {
             WorkerKind::Crawl => self.crawl_enabled,
             WorkerKind::LinkSchedule => self.link_schedule_enabled,
             WorkerKind::Links => self.link_schedule_enabled && self.link_enabled,
-            WorkerKind::LinkSync => self.link_schedule_enabled && self.link_sync_enabled,
             WorkerKind::LinkCheck => self.link_schedule_enabled && self.link_check_enabled,
             WorkerKind::LinkMaintenance => {
                 self.link_schedule_enabled && self.link_maintenance_enabled
@@ -270,7 +263,9 @@ pub async fn schedule_slot(state: &AppState, task: &str, seconds: i32) -> Result
 
 fn lane_error_code(error: &ApiError) -> &'static str {
     match error {
-        ApiError::Unauthorized(_) | ApiError::Forbidden(_) => "account_unavailable",
+        ApiError::CloudAuthRequired(_) | ApiError::Unauthorized(_) | ApiError::Forbidden(_) => {
+            "account_unavailable"
+        }
         ApiError::TooManyRequests(_) => "rate_limited",
         ApiError::Unavailable(_) => "dependency_unavailable",
         ApiError::Upstream(_) | ApiError::Crawl { .. } => "upstream_error",
@@ -330,11 +325,7 @@ mod settings_tests {
                 .unwrap();
         assert!(!settings.crawl_enabled && !settings.link_enabled);
         assert!(settings.link_schedule_enabled);
-        assert!(
-            settings.link_sync_enabled
-                && settings.link_check_enabled
-                && settings.link_maintenance_enabled
-        );
+        assert!(settings.link_check_enabled && settings.link_maintenance_enabled);
         assert!(
             serde_json::from_value::<WorkerSettings>(
                 serde_json::json!({"linkScheduleEnabled":"false"})
@@ -349,19 +340,13 @@ mod settings_tests {
     #[test]
     fn independent_lanes_and_global_gate_preserve_each_other() {
         let kinds = [
-            WorkerKind::LinkSync,
             WorkerKind::LinkCheck,
             WorkerKind::Links,
             WorkerKind::LinkMaintenance,
         ];
-        for (index, key) in [
-            "linkSyncEnabled",
-            "linkCheckEnabled",
-            "linkEnabled",
-            "linkMaintenanceEnabled",
-        ]
-        .iter()
-        .enumerate()
+        for (index, key) in ["linkCheckEnabled", "linkEnabled", "linkMaintenanceEnabled"]
+            .iter()
+            .enumerate()
         {
             let mut settings: WorkerSettings =
                 serde_json::from_value(serde_json::json!({*key:false})).unwrap();
@@ -462,6 +447,7 @@ pub async fn settings_listener(state: &AppState) {
             loop {
                 listener.recv().await?;
                 *state.worker_settings.lock().await = None;
+                *state.link_check_settings.lock().await = None;
             }
             #[allow(unreachable_code)]
             Ok::<(), sqlx::Error>(())

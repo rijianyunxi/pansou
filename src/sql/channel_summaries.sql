@@ -1,15 +1,11 @@
--- Read persisted counts, then exclude only the inactive resource set through
--- its partial index. Visibility changes take effect without rebuilding counts.
-WITH inactive_counts AS (
- SELECT refs.channel_id,count(*) n
- FROM managed_resources r
- JOIN channel_resource_references refs ON refs.resource_id=r.id
- WHERE (NOT r.enabled OR r.deleted_at IS NOT NULL) AND refs.channel_id=ANY($1)
- GROUP BY refs.channel_id
-)
-SELECT c.id,COALESCE(s.failed_count,0) failed_count,
- COALESCE(s.parsed_resource_count,0)-COALESCE(hidden.n,0) resource_count
-FROM crawl_channels c
-LEFT JOIN channel_statistics s ON s.channel_id=c.id
-LEFT JOIN inactive_counts hidden ON hidden.channel_id=c.id
-WHERE c.id=ANY($1);
+SELECT c.id,
+ (SELECT count(*) FROM crawl_message_tasks t WHERE t.channel_id=c.id AND t.status='failed') failed_count,
+ (SELECT count(*) FROM managed_resources r WHERE r.enabled
+  AND r.source_channel_ids @> ARRAY[c.id]) resource_count,
+ (SELECT count(DISTINCT r.id) FROM crawl_message_tasks t
+  CROSS JOIN LATERAL unnest(t.resource_ids) ids(resource_id)
+  JOIN managed_resources r ON r.id=ids.resource_id
+  WHERE t.channel_id=c.id AND t.status='parsed'
+  AND t.task_at >= (date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai')
+  AND r.enabled) today_resource_count
+FROM crawl_channels c WHERE c.id=ANY($1)

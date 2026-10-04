@@ -70,18 +70,16 @@
                 </TableCell>
                 <TableCell class="source-status-cell" data-label="状态">
                   <div class="source-state-tags">
-                    <span
-                      class="source-state-tag"
-                      :class="source.enabled === false ? 'disabled' : 'enabled'"
+                    <AdminStatusBadge
+                      :state="source.enabled === false ? 'disabled' : 'enabled'"
                     >
                       {{ source.enabled === false ? "已停用" : "已启用" }}
-                    </span>
-                    <span
-                      class="source-state-tag"
-                      :class="circuitStateClass(source.id)"
+                    </AdminStatusBadge>
+                    <AdminStatusBadge
+                      :state="sourceCircuitStates[source.id] || 'closed'"
                     >
                       {{ circuitStateLabel(source.id) }}
-                    </span>
+                    </AdminStatusBadge>
                   </div>
                 </TableCell>
                 <TableCell class="source-priority-cell" data-label="优先级">
@@ -231,6 +229,7 @@
 
 <script setup lang="ts">
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
+import AdminStatusBadge from "@/components/admin/AdminStatusBadge.vue";
 import { Card } from "@/components/admin/ui/card";
 import { Button } from "@/components/admin/ui/button";
 import { Input } from "@/components/admin/ui/input";
@@ -351,14 +350,6 @@ function circuitStateLabel(sourceId: string): string {
     : state === "half-open"
       ? "半开"
       : "未熔断";
-}
-function circuitStateClass(sourceId: string): string {
-  const state = sourceCircuitStates.value[sourceId];
-  return state === "open"
-    ? "circuit-open"
-    : state === "half-open"
-      ? "circuit-half-open"
-      : "circuit-closed";
 }
 
 const filteredSources = computed(() =>

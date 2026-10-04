@@ -12,7 +12,7 @@ const scenario=new URLSearchParams(location.search).get('scenario');
 let items=Array.from({length:scenario==='pagination'?21:1},(_,i)=>({
  id:`fixture_${i+1}`,name:`示例频道 ${i+1}`,enabled:true,version:1,
  historyComplete:true,historyPages:120,lastSyncedAt:new Date().toISOString(),nextSyncAt:new Date().toISOString(),
- resourceCount:1800,failedMessageCount:0,latestJob:null,taskState:'idle',lastError:null,
+ resourceCount:1800,todayResourceCount:24,failedMessageCount:0,latestJob:null,taskState:'idle',lastError:null,
 }));
 // Every request is mocked; deletion must never reach the real admin API.
 window.fetch=async(input,options={})=>{

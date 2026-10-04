@@ -6,24 +6,29 @@ fn cleans_html_markup_and_entities_from_json_text_fields() {
     let result = apply(spec, raw, "json", "demo", "test").unwrap();
     assert_eq!(result[0].name, "demo");
     assert_eq!(result[0].description.as_deref(), Some("简介 内容 & 更多"));
-    assert_eq!(
-        result[0].tags.as_deref(),
-        Some(["tag".to_owned()].as_slice())
+    assert!(
+        serde_json::to_value(&result[0])
+            .unwrap()
+            .get("tags")
+            .is_none()
     );
 }
 #[test]
-fn removes_internal_plugin_tags_from_public_results() {
+fn discards_all_upstream_tags_from_parsed_resources() {
     let raw = r#"{"data":[{"id":"1","title":"demo","links":[{"url":"https://pan.baidu.com/s/abc"}],"tags":["plugin:wanou","电影"]}]}"#;
     let spec = r#"{"kind":"json","items":"$.data[*]","fields":{"id":"id","name":"title","links":"links","tags":"tags"}}"#;
     let result = apply(spec, raw, "json", "demo", "wanou").unwrap();
-    assert_eq!(
-        result[0].tags.as_deref(),
-        Some(["电影".to_owned()].as_slice())
+    assert!(
+        serde_json::to_value(&result[0])
+            .unwrap()
+            .get("tags")
+            .is_none()
     );
 }
 #[test]
 fn parses_native_json_transform() {
-    let raw = r#"{"data":[{"id":"1","title":"demo","links":[{"url":"https://pan.baidu.com/s/abc"}]}]}"#;
+    let raw =
+        r#"{"data":[{"id":"1","title":"demo","links":[{"url":"https://pan.baidu.com/s/abc"}]}]}"#;
     let spec = r#"{"kind":"json","items":"$.data[*]","fields":{"id":"id","name":"title","links":"links"}}"#;
     let result = apply(spec, raw, "json", "demo", "test").unwrap();
     assert_eq!(result[0].name, "demo");
@@ -76,7 +81,7 @@ fn parses_xiaokupan_tson_payload() {
 #[test]
 fn parses_wanou_vod_payload_without_mixing_fields() {
     let raw = r#"{"list":[{"vod_id":42,"vod_name":"测试影片","vod_content":"单独的影片简介","vod_time":"2026-09-29 09:30:00","vod_down_url":"夸克$https://pan.quark.cn/s/demo$$$百度$https://pan.baidu.com/s/demo","vod_tag":"电影","vod_pic":"https://img.example/demo.jpg"}]}"#;
-    let spec = r#"{"kind":"json","items":"$.list[*]","fields":{"id":"$.vod_id","name":"$.vod_name","description":"$.vod_content","datetime":"$.vod_time","links":"$.vod_down_url","tags":"$.vod_tag","images":"$.vod_pic"}}"#;
+    let spec = r#"{"kind":"json","items":"$.list[*]","fields":{"id":"$.vod_id","name":"$.vod_name","description":"$.vod_content","datetime":"$.vod_time","links":"$.vod_down_url","images":"$.vod_pic"}}"#;
     let result = apply(spec, raw, "json", "测试", "wanou").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name, "测试影片");
@@ -105,9 +110,11 @@ fn telegram_tag_heading_and_footer_do_not_become_title_or_description() {
     assert_eq!(results[0].description.as_deref(), Some("正常简介"));
     assert_eq!(results[0].links.len(), 4);
     assert_eq!(results[0].links[2].r#type, "guangya");
-    assert_eq!(
-        results[0].tags.as_ref().unwrap(),
-        &vec!["电影".to_owned(), "剧情".to_owned()]
+    assert!(
+        serde_json::to_value(&results[0])
+            .unwrap()
+            .get("tags")
+            .is_none()
     );
 }
 #[test]

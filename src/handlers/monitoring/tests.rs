@@ -194,7 +194,6 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
     .unwrap();
     // Each lane is persisted independently and really stops taking batches.
     let lanes = [
-        ("link-sync", WorkerKind::LinkSync, "syncEnabled"),
         ("link-check", WorkerKind::LinkCheck, "checkEnabled"),
         (
             "link-maintenance",
@@ -279,7 +278,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
         call(
             &router,
             "PUT",
-            "/api/admin/runtime/workers/link-sync",
+            "/api/admin/runtime/workers/link-maintenance",
             Some(&admin.token),
             json!({"enabled":false})
         ),
@@ -295,12 +294,12 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
     assert_eq!(check_update.0, StatusCode::OK);
     let saved = runtime::settings(&state).await.unwrap();
     assert!(
-        !saved.link_sync_enabled
+        !saved.link_maintenance_enabled
             && !saved.link_check_enabled
             && !saved.link_enabled
             && !saved.crawl_enabled
     );
-    assert!(saved.link_schedule_enabled && saved.link_maintenance_enabled);
+    assert!(saved.link_schedule_enabled);
     let check_policy_after = sqlx::query_scalar::<_, Value>(
         "SELECT value_json FROM policy_settings WHERE key='link-check'",
     )
@@ -311,7 +310,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
         check_policy_before, check_policy_after,
         "runtime switches must not alter detection policy"
     );
-    for endpoint in ["link-sync", "link-check"] {
+    for endpoint in ["link-maintenance", "link-check"] {
         assert_eq!(
             call(
                 &router,
@@ -330,7 +329,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
     let sync_ticks = independent.clone();
     runtime::lane(
         &sync_state,
-        runtime::WorkerKind::LinkSync,
+        runtime::WorkerKind::LinkMaintenance,
         "local-sync-independent",
         1,
         || async {
@@ -349,7 +348,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
         call(
             &router,
             "PUT",
-            "/api/admin/runtime/workers/link-sync",
+            "/api/admin/runtime/workers/link-maintenance",
             Some(&admin.token),
             json!({"enabled":false})
         )
@@ -378,11 +377,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
             .await
             .unwrap()
     );
-    for kind in [
-        WorkerKind::LinkSync,
-        WorkerKind::LinkCheck,
-        WorkerKind::LinkMaintenance,
-    ] {
+    for kind in [WorkerKind::LinkCheck, WorkerKind::LinkMaintenance] {
         assert!(!runtime::enabled(&state, kind).await.unwrap());
     }
     let paused_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
@@ -395,8 +390,8 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
     });
     runtime::lane(
         &paused_state,
-        runtime::WorkerKind::LinkSync,
-        "link-sync",
+        runtime::WorkerKind::LinkMaintenance,
+        "link-maintenance",
         1,
         || async {
             ticks.fetch_add(1, Ordering::SeqCst);
@@ -443,18 +438,13 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
         "resuming scheduling must preserve independent cleanup pause"
     );
     assert!(
-        !runtime::enabled(&state, WorkerKind::LinkSync)
+        !runtime::enabled(&state, WorkerKind::LinkMaintenance)
             .await
             .unwrap(),
-        "total resume preserves independent sync pause"
+        "total resume preserves independent maintenance pause"
     );
     assert!(
         runtime::enabled(&state, WorkerKind::LinkCheck)
-            .await
-            .unwrap()
-    );
-    assert!(
-        runtime::enabled(&state, WorkerKind::LinkMaintenance)
             .await
             .unwrap()
     );
@@ -462,7 +452,7 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
         call(
             &router,
             "PUT",
-            "/api/admin/runtime/workers/link-sync",
+            "/api/admin/runtime/workers/link-maintenance",
             Some(&admin.token),
             json!({"enabled":true})
         )
@@ -473,8 +463,8 @@ async fn monitor_and_worker_controls_follow_runtime_architecture() {
     let resumed_state = Arc::new(AppState::new(pool.clone(), state.redis.clone()));
     runtime::lane(
         &resumed_state,
-        runtime::WorkerKind::LinkSync,
-        "link-sync",
+        runtime::WorkerKind::LinkMaintenance,
+        "link-maintenance",
         1,
         || async {
             paused_ticks.fetch_add(1, Ordering::SeqCst);

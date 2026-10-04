@@ -17,7 +17,22 @@ function guangyaBrowserUrl(value) {
   }
   return 'https://' + match[1].toLowerCase() + '/s/' + match[2] + query + '#/share';
 }
+function xunleiBrowserUrl(value) {
+  const match = /^(https?:\/\/pan\.xunlei\.com\/s\/[\w-]+\/?)(\?[^#\s]*)?(#[^\s]*)?$/i.exec(value.url || '');
+  if (!match) return null;
+  let query = match[2] || '';
+  if (value.password) {
+    const pairs = query.slice(1).split('&').filter(Boolean);
+    const kept = pairs.filter(pair => {
+      try { return decodeURIComponent(pair.split('=')[0].replace(/\+/g, ' ')) !== 'pwd'; }
+      catch (_) { return true; }
+    });
+    kept.push('pwd=' + encodeURIComponent(value.password));
+    query = '?' + kept.join('&');
+  }
+  return match[1] + query + (match[3] || '');
+}
 function clipboardText(value) {
-  return guangyaBrowserUrl(value) || value.url + (value.password ? '\n提取码：' + value.password : '');
+  return guangyaBrowserUrl(value) || xunleiBrowserUrl(value) || value.url + (value.password ? '\n提取码：' + value.password : '');
 }
 module.exports = { guangyaBrowserUrl, clipboardText };

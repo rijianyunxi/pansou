@@ -1,6 +1,5 @@
-//! Administrative account bindings. Secrets never leave the server and every
-//! credential replacement is fenced by binding epoch, token revision and lease.
-mod crypto;
+//! Administrative account bindings. Every credential replacement is fenced by
+//! binding epoch, token revision and lease.
 mod providers;
 #[cfg(test)]
 mod tests;
@@ -11,7 +10,6 @@ use crate::{
     error::ApiError,
 };
 use chrono::{DateTime, Duration, Utc};
-use crypto::Cipher;
 use serde_json::{Value, json};
 use sqlx::{FromRow, Row};
 use std::sync::Arc;
@@ -58,8 +56,12 @@ impl AuthFailure {
             Self::AccountUnverified => {
                 "原账号凭证已失效且从未完成身份核实，无法确认是否为同一账号；请选择更换账号，或先断开连接再连接"
             }
-            Self::ExchangeUncertain => "扫码授权兑换结果未确认，为避免重复使用一次性票据，请重新扫码",
-            Self::ClientConfiguration => "续期缺少同一官方登录会话的 client_id，请重新高级导入完整客户端配置",
+            Self::ExchangeUncertain => {
+                "扫码授权兑换结果未确认，为避免重复使用一次性票据，请重新扫码"
+            }
+            Self::ClientConfiguration => {
+                "续期缺少同一官方登录会话的 client_id，请重新高级导入完整客户端配置"
+            }
             Self::Unsupported => "此网盘的扫码协议尚未确认，请使用高级导入",
         };
         match self {
@@ -76,7 +78,6 @@ impl AuthFailure {
 #[derive(FromRow)]
 pub struct Stored {
     pub credential: String,
-    pub credential_cipher: Option<String>,
     pub account_key: Option<String>,
     pub binding_epoch: i64,
     pub token_revision: i64,
@@ -86,35 +87,12 @@ pub struct Stored {
     pub auth_source: String,
     pub refresh_lease_until: Option<DateTime<Utc>>,
     pub refresh_started_at: Option<DateTime<Utc>>,
-    pub pending_refresh_cipher: Option<String>,
+    pub pending_refresh_credential: Option<String>,
 }
 impl Stored {
-    pub fn raw(&self, provider: Provider) -> Result<String, ApiError> {
-        match &self.credential_cipher {
-            Some(v) => Cipher::load()?.open(
-                &account_aad(
-                    provider,
-                    self.account_key.as_deref().unwrap_or(""),
-                    self.binding_epoch,
-                    self.token_revision,
-                ),
-                v,
-            ),
-            None => Ok(self.credential.clone()),
-        }
-    }
     fn configured(&self) -> bool {
-        self.credential_cipher.is_some() || !self.credential.trim().is_empty()
+        !self.credential.trim().is_empty()
     }
-}
-fn account_aad(p: Provider, key: &str, epoch: i64, revision: i64) -> String {
-    format!("account:{}:{key}:{epoch}:{revision}", p.name())
-}
-fn session_aad(p: Provider, id: Uuid) -> String {
-    format!("login:{}:{id}", p.name())
-}
-fn refresh_aad(p: Provider, key: &str, epoch: i64, revision: i64) -> String {
-    format!("refresh:{}:{key}:{epoch}:{revision}", p.name())
 }
 pub async fn verify_binding_identity(
     state: &AppState,
@@ -137,23 +115,14 @@ pub async fn persist_cookies(
     revision: i64,
     updates: &[String],
 ) -> Result<Option<i64>, ApiError> {
-    let old=sqlx::query_as::<_,Stored>("SELECT * FROM cloud_account_settings WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND credential_cipher IS NOT NULL").bind(p.name()).bind(epoch).bind(revision).fetch_optional(pool).await?;
+    let old=sqlx::query_as::<_,Stored>("SELECT * FROM cloud_account_settings WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND credential<>''").bind(p.name()).bind(epoch).bind(revision).fetch_optional(pool).await?;
     let Some(old) = old else { return Ok(None) };
-    let raw = old.raw(p)?;
+    let raw = old.credential.clone();
     let merged = cloud_drive::transport::merge_cookies(&raw, updates);
     if raw == merged {
         return Ok(Some(revision));
     }
-    let cipher = Cipher::load()?.seal(
-        &account_aad(
-            p,
-            old.account_key.as_deref().unwrap_or(""),
-            epoch,
-            revision + 1,
-        ),
-        &merged,
-    )?;
-    let changed=sqlx::query("UPDATE cloud_account_settings SET credential_cipher=$4,token_revision=token_revision+1,updated_at=now() WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND refresh_lease IS NULL").bind(p.name()).bind(epoch).bind(revision).bind(cipher).execute(pool).await?.rows_affected();
+    let changed=sqlx::query("UPDATE cloud_account_settings SET credential=$4,token_revision=token_revision+1,updated_at=now() WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3 AND refresh_lease IS NULL").bind(p.name()).bind(epoch).bind(revision).bind(merged).execute(pool).await?.rows_affected();
     Ok((changed == 1).then_some(revision + 1))
 }
 pub async fn stored(state: &AppState, p: Provider) -> Result<Option<Stored>, ApiError> {
@@ -165,7 +134,7 @@ pub async fn stored(state: &AppState, p: Provider) -> Result<Option<Stored>, Api
     )
 }
 pub async fn list(state: &AppState) -> Result<Value, ApiError> {
-    let rows=sqlx::query("SELECT provider,credential<>' ' AND credential<>'' OR credential_cipher IS NOT NULL AS configured,subject_id,display_name,storage_scope,auth_status,auth_source,refreshable,binding_epoch,token_revision,expires_at,last_verified_at,last_refresh_at,last_error_code FROM cloud_account_settings").fetch_all(&state.pool).await?;
+    let rows=sqlx::query("SELECT provider,credential<>'' AS configured,subject_id,display_name,storage_scope,auth_status,auth_source,refreshable,binding_epoch,token_revision,expires_at,last_verified_at,last_refresh_at,last_error_code FROM cloud_account_settings").fetch_all(&state.pool).await?;
     let mut result = Vec::new();
     for p in Provider::ALL {
         let row = rows
@@ -235,10 +204,7 @@ async fn verify(state: &AppState, p: Provider, raw: &str) -> Result<providers::I
         .await
         .map_err(AuthFailure::api)?;
     let drive = Drive::from_state(state, p, identity.raw.clone());
-    drive
-        .list(p.root())
-        .await
-        .map_err(|e| e.api())?;
+    drive.list(p.root()).await.map_err(|e| e.api())?;
     identity.raw = drive.wire.snapshot().await;
     Ok(identity)
 }
@@ -323,7 +289,7 @@ async fn commit(
     lease: Option<Uuid>,
 ) -> Result<(), CommitError> {
     let key = providers::stable_key(p, &identity.subject, &identity.scope);
-    let oldraw = old.raw(p)?;
+    let oldraw = old.credential.clone();
     let oldkey = if let Some(k) = &old.account_key {
         Some(k.clone())
     } else if !oldraw.is_empty() {
@@ -350,7 +316,6 @@ async fn commit(
     }
     let epoch = old.binding_epoch + if same { 0 } else { 1 };
     let revision = old.token_revision + 1;
-    let sealed = Cipher::load()?.seal(&account_aad(p, &key, epoch, revision), &identity.raw)?;
     let expires = providers::expires_at(&identity.raw);
     let refreshable = providers::refreshable(p, &identity.raw);
     let next = next_check(expires, refreshable);
@@ -371,18 +336,17 @@ async fn commit(
     }
     if same && old.account_key.is_none() {
         let legacy = cloud_drive::credential_fingerprint(p, &oldraw);
-        sqlx::query("INSERT INTO cloud_account_aliases(provider,legacy_key,account_key) VALUES($1,$2,$3) ON CONFLICT(provider,legacy_key) DO NOTHING").bind(p.name()).bind(&legacy).bind(&key).execute(&mut *tx).await?;
         sqlx::query("UPDATE link_share_cache SET target_account_key=$2,ownership_manifest_json=jsonb_set(ownership_manifest_json,'{account}',to_jsonb($2::text)) WHERE target_account_key=$1").bind(&legacy).bind(&key).execute(&mut *tx).await?;
     }
-    sqlx::query("UPDATE cloud_account_settings SET credential='',credential_cipher=$2,account_key=$3,subject_id=$4,display_name=$5,storage_scope=$6,auth_status='ready',auth_source=$7,refreshable=$8,token_revision=$9,binding_epoch=$10,expires_at=$11,next_check_at=$12,last_verified_at=now(),last_refresh_at=CASE WHEN $13 THEN now() ELSE last_refresh_at END,last_error_code=NULL,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL,refresh_started_at=NULL,updated_at=now() WHERE provider=$1")
-        .bind(p.name()).bind(sealed).bind(&key).bind(&identity.subject).bind(&identity.name).bind(&identity.scope).bind(if matches!(source,"maintenance"|"check"){old.auth_source.as_str()}else{source}).bind(refreshable).bind(revision).bind(epoch).bind(expires).bind(next).bind(lease.is_some()&&old.refreshable).execute(&mut *tx).await?;
+    sqlx::query("UPDATE cloud_account_settings SET credential=$2,account_key=$3,subject_id=$4,display_name=$5,storage_scope=$6,auth_status='ready',auth_source=$7,refreshable=$8,token_revision=$9,binding_epoch=$10,expires_at=$11,next_check_at=$12,last_verified_at=now(),last_refresh_at=CASE WHEN $13 THEN now() ELSE last_refresh_at END,last_error_code=NULL,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_credential=NULL,refresh_started_at=NULL,updated_at=now() WHERE provider=$1")
+        .bind(p.name()).bind(&identity.raw).bind(&key).bind(&identity.subject).bind(&identity.name).bind(&identity.scope).bind(if matches!(source,"maintenance"|"check"){old.auth_source.as_str()}else{source}).bind(refreshable).bind(revision).bind(epoch).bind(expires).bind(next).bind(lease.is_some()&&old.refreshable).execute(&mut *tx).await?;
     if same || !old.configured() {
         sqlx::query("UPDATE link_cleanup_jobs j SET status='queued',run_after=now(),last_error_code=NULL,updated_at=now() FROM link_share_cache c WHERE j.share_cache_id=c.id AND c.target_account_key=$1 AND j.status='blocked' AND j.last_error_code='waiting_auth'").bind(&key).execute(&mut *tx).await?;
     }
     if let Some((id, token)) = session {
-        sqlx::query("UPDATE cloud_login_sessions SET status='connected',context_cipher=NULL,qr_image=NULL,error_code=NULL,poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2").bind(id).bind(token).execute(&mut *tx).await?;
+        sqlx::query("UPDATE cloud_login_sessions SET status='connected',context_json=NULL,qr_image=NULL,error_code=NULL,poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2").bind(id).bind(token).execute(&mut *tx).await?;
     } else if lease.is_none() {
-        sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_cipher=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
+        sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_json=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -400,11 +364,11 @@ pub async fn disconnect(state: &AppState, p: Provider, epoch: i64) -> Result<(),
     ensure_row(state, p).await?;
     let mut tx = state.pool.begin().await?;
     write_lock(&mut tx, p).await?;
-    let changed=sqlx::query("UPDATE cloud_account_settings SET credential='',credential_cipher=NULL,pending_refresh_cipher=NULL,refresh_started_at=NULL,account_key=NULL,subject_id=NULL,display_name=NULL,storage_scope='',auth_status='disconnected',refreshable=false,binding_epoch=binding_epoch+1,token_revision=token_revision+1,expires_at=NULL,last_error_code=NULL,refresh_lease=NULL,refresh_lease_until=NULL,updated_at=now() WHERE provider=$1 AND binding_epoch=$2").bind(p.name()).bind(epoch).execute(&mut *tx).await?.rows_affected();
+    let changed=sqlx::query("UPDATE cloud_account_settings SET credential='',pending_refresh_credential=NULL,refresh_started_at=NULL,account_key=NULL,subject_id=NULL,display_name=NULL,storage_scope='',auth_status='disconnected',refreshable=false,binding_epoch=binding_epoch+1,token_revision=token_revision+1,expires_at=NULL,last_error_code=NULL,refresh_lease=NULL,refresh_lease_until=NULL,updated_at=now() WHERE provider=$1 AND binding_epoch=$2").bind(p.name()).bind(epoch).execute(&mut *tx).await?.rows_affected();
     if changed == 0 {
         return Err(ApiError::Conflict("账号状态已变化，请刷新后重试".into()));
     }
-    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_cipher=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_json=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -419,7 +383,7 @@ pub async fn check(state: &AppState, p: Provider) -> Result<(), ApiError> {
     if old.refresh_lease_until.is_some_and(|t| t > Utc::now()) {
         return Err(ApiError::Unavailable("网盘凭证正在维护，请稍后检查".into()));
     }
-    if old.refreshable || old.pending_refresh_cipher.is_some() {
+    if old.refreshable || old.pending_refresh_credential.is_some() {
         // Explicit checks may request maintenance early, but a check that raced
         // a completed rotation must not schedule another refresh of the new token.
         sqlx::query("UPDATE cloud_account_settings SET next_check_at=now() WHERE provider=$1 AND binding_epoch=$2 AND token_revision=$3")
@@ -431,7 +395,7 @@ pub async fn check(state: &AppState, p: Provider) -> Result<(), ApiError> {
         }
         return Ok(());
     }
-    let identity = match verify(state, p, &old.raw(p)?).await {
+    let identity = match verify(state, p, &old.credential).await {
         Ok(i) => i,
         Err(error) => {
             let transient = matches!(
@@ -476,19 +440,19 @@ pub async fn credentials(state: &AppState, p: Provider) -> Result<Option<Stored>
     let Some(old) = stored(state, p).await? else {
         return Ok(None);
     };
-    if old.credential_cipher.is_none() {
-        return Ok(Some(old));
+    if !old.configured() {
+        return Ok(None);
     }
     if old.auth_status == "reauthorization_required" {
         return Err(AuthFailure::Reauthorize.api());
     }
-    if old.pending_refresh_cipher.is_some() || old.refresh_started_at.is_some() {
+    if old.pending_refresh_credential.is_some() || old.refresh_started_at.is_some() {
         maintain(state, p).await?;
         let fresh = stored(state, p).await?.unwrap();
         if fresh.auth_status == "reauthorization_required" {
             return Err(AuthFailure::Reauthorize.api());
         }
-        if fresh.pending_refresh_cipher.is_some() || fresh.refresh_started_at.is_some() {
+        if fresh.pending_refresh_credential.is_some() || fresh.refresh_started_at.is_some() {
             return Err(ApiError::Unavailable(
                 "网盘凭证正在更新或验证，请稍后重试".into(),
             ));
@@ -517,40 +481,17 @@ pub async fn credentials(state: &AppState, p: Provider) -> Result<Option<Stored>
 }
 async fn maintain(state: &AppState, p: Provider) -> Result<(), ApiError> {
     let token = Uuid::new_v4();
-    let row=sqlx::query_as::<_,Stored>("UPDATE cloud_account_settings SET refresh_lease=$2,refresh_lease_until=now()+interval '180 seconds' WHERE provider=$1 AND credential_cipher IS NOT NULL AND auth_status IN('ready','degraded','reauthorization_required') AND (next_check_at<=now() OR pending_refresh_cipher IS NOT NULL OR refresh_started_at IS NOT NULL) AND (refresh_lease IS NULL OR refresh_lease_until<now()) RETURNING *").bind(p.name()).bind(token).fetch_optional(&state.pool).await?;
+    let row=sqlx::query_as::<_,Stored>("UPDATE cloud_account_settings SET refresh_lease=$2,refresh_lease_until=now()+interval '180 seconds' WHERE provider=$1 AND credential<>'' AND auth_status IN('ready','degraded','reauthorization_required') AND (next_check_at<=now() OR pending_refresh_credential IS NOT NULL OR refresh_started_at IS NOT NULL) AND (refresh_lease IS NULL OR refresh_lease_until<now()) RETURNING *").bind(p.name()).bind(token).fetch_optional(&state.pool).await?;
     let Some(old) = row else { return Ok(()) };
-    if old.refresh_started_at.is_some() && old.pending_refresh_cipher.is_none() {
+    if old.refresh_started_at.is_some() && old.pending_refresh_credential.is_none() {
         mark_failure(state, p, &old, "refresh_uncertain", false, Some(token)).await?;
         return Ok(());
     }
-    let pending = old.pending_refresh_cipher.is_some();
-    let raw = match &old.pending_refresh_cipher {
-        Some(v) => Cipher::load()?.open(
-            &refresh_aad(
-                p,
-                old.account_key.as_deref().unwrap_or(""),
-                old.binding_epoch,
-                old.token_revision,
-            ),
-            v,
-        ),
-        None => old.raw(p),
-    };
-    let raw = match raw {
-        Ok(r) => r,
-        Err(e) => {
-            mark_failure(
-                state,
-                p,
-                &old,
-                "credential_key_unavailable",
-                true,
-                Some(token),
-            )
-            .await?;
-            return Err(e);
-        }
-    };
+    let pending = old.pending_refresh_credential.is_some();
+    let raw = old
+        .pending_refresh_credential
+        .clone()
+        .unwrap_or_else(|| old.credential.clone());
     if old.refreshable && !pending {
         sqlx::query("UPDATE cloud_account_settings SET refresh_started_at=now() WHERE provider=$1 AND refresh_lease=$2").bind(p.name()).bind(token).execute(&state.pool).await?;
     }
@@ -562,16 +503,7 @@ async fn maintain(state: &AppState, p: Provider) -> Result<(), ApiError> {
     match result {
         Ok(raw) => {
             if old.refreshable && !pending {
-                let sealed = Cipher::load()?.seal(
-                    &refresh_aad(
-                        p,
-                        old.account_key.as_deref().unwrap_or(""),
-                        old.binding_epoch,
-                        old.token_revision,
-                    ),
-                    &raw,
-                )?;
-                let staged=sqlx::query("UPDATE cloud_account_settings SET pending_refresh_cipher=$3,refresh_started_at=NULL WHERE provider=$1 AND refresh_lease=$2 AND token_revision=$4 AND binding_epoch=$5").bind(p.name()).bind(token).bind(sealed).bind(old.token_revision).bind(old.binding_epoch).execute(&state.pool).await?.rows_affected();
+                let staged=sqlx::query("UPDATE cloud_account_settings SET pending_refresh_credential=$3,refresh_started_at=NULL WHERE provider=$1 AND refresh_lease=$2 AND token_revision=$4 AND binding_epoch=$5").bind(p.name()).bind(token).bind(&raw).bind(old.token_revision).bind(old.binding_epoch).execute(&state.pool).await?.rows_affected();
                 if staged == 0 {
                     return Ok(());
                 }
@@ -683,7 +615,7 @@ pub async fn start_login(
             "扫码创建过于频繁，请稍后再试".into(),
         ));
     }
-    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_cipher=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_json=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE provider=$1 AND status IN('starting','waiting','scanned','verifying')").bind(p.name()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO cloud_login_sessions(id,actor_id,provider,intent,expected_epoch,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '60 seconds')").bind(id).bind(actor).bind(p.name()).bind(intent).bind(epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     let started = async {
@@ -691,19 +623,17 @@ pub async fn start_login(
         let image = providers::qr_image(state, p, &login.qr_url)
             .await
             .map_err(AuthFailure::api)?;
-        let sealed = Cipher::load()?.seal(
-            &session_aad(p, id),
-            &serde_json::to_string(&login.context).map_err(|_| AuthFailure::Protocol.api())?,
-        )?;
-        sqlx::query("UPDATE cloud_login_sessions SET status='waiting',context_cipher=$2,qr_image=$3,expires_at=$4,interval_seconds=$5,next_poll_at=now(),updated_at=now() WHERE id=$1 AND status='starting'")
-            .bind(id).bind(sealed).bind(image).bind(Utc::now()+Duration::seconds(login.expires)).bind(login.interval as i32).execute(&state.pool).await?;
+        let context_json =
+            serde_json::to_string(&login.context).map_err(|_| AuthFailure::Protocol.api())?;
+        sqlx::query("UPDATE cloud_login_sessions SET status='waiting',context_json=$2,qr_image=$3,expires_at=$4,interval_seconds=$5,next_poll_at=now(),updated_at=now() WHERE id=$1 AND status='starting'")
+            .bind(id).bind(context_json).bind(image).bind(Utc::now()+Duration::seconds(login.expires)).bind(login.interval as i32).execute(&state.pool).await?;
         Ok::<_, ApiError>(())
     };
     let started = tokio::time::timeout(std::time::Duration::from_secs(35), started)
         .await
         .unwrap_or_else(|_| Err(ApiError::Upstream("二维码生成超时，请稍后重试".into())));
     if let Err(e) = started {
-        sqlx::query("UPDATE cloud_login_sessions SET status='failed',error_code='qr_start_failed',context_cipher=NULL,qr_image=NULL WHERE id=$1 AND status='starting'").bind(id).execute(&state.pool).await?;
+        sqlx::query("UPDATE cloud_login_sessions SET status='failed',error_code='qr_start_failed',context_json=NULL,qr_image=NULL WHERE id=$1 AND status='starting'").bind(id).execute(&state.pool).await?;
         return Err(e);
     }
     session(state, p, id, actor).await
@@ -730,7 +660,7 @@ pub async fn session(
     )
 }
 pub async fn cancel(state: &AppState, p: Provider, id: Uuid, actor: i64) -> Result<(), ApiError> {
-    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_cipher=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE id=$1 AND provider=$2 AND actor_id=$3 AND status IN('starting','waiting','scanned','verifying')").bind(id).bind(p.name()).bind(actor).execute(&state.pool).await?;
+    sqlx::query("UPDATE cloud_login_sessions SET status='cancelled',context_json=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE id=$1 AND provider=$2 AND actor_id=$3 AND status IN('starting','waiting','scanned','verifying')").bind(id).bind(p.name()).bind(actor).execute(&state.pool).await?;
     Ok(())
 }
 #[cfg(test)]
@@ -738,7 +668,7 @@ async fn poll_once(state: &AppState) -> Result<(), ApiError> {
     poll_provider_once(state, None).await
 }
 async fn poll_provider_once(state: &AppState, provider: Option<Provider>) -> Result<(), ApiError> {
-    sqlx::query("UPDATE cloud_login_sessions SET status='expired',context_cipher=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE expires_at<=now() AND status IN('starting','waiting','scanned','verifying')").execute(&state.pool).await?;
+    sqlx::query("UPDATE cloud_login_sessions SET status='expired',context_json=NULL,qr_image=NULL,poll_lease=NULL,poll_lease_until=NULL WHERE expires_at<=now() AND status IN('starting','waiting','scanned','verifying')").execute(&state.pool).await?;
     let lease = Uuid::new_v4();
     let Some(row)=sqlx::query("UPDATE cloud_login_sessions SET poll_lease=$1,poll_lease_until=now()+interval '90 seconds' WHERE id=(SELECT id FROM cloud_login_sessions WHERE ($2::text IS NULL OR provider=$2) AND status IN('waiting','scanned','verifying') AND next_poll_at<=now() AND expires_at>now() AND (poll_lease IS NULL OR poll_lease_until<now()) ORDER BY next_poll_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *").bind(lease).bind(provider.map(Provider::name)).fetch_optional(&state.pool).await? else{return Ok(())};
     let p = Provider::from_name(&row.get::<String, _>("provider"))?;
@@ -746,9 +676,7 @@ async fn poll_provider_once(state: &AppState, provider: Option<Provider>) -> Res
     let mut stage = "session_context";
     let mut auth_failure = None;
     let outcome=async {
-        let cipher=Cipher::load()?;
-        let raw=cipher.open(&session_aad(p,id),&row.get::<String,_>("context_cipher"))?;
-        let mut context:providers::Context=serde_json::from_str(&raw).map_err(|_|AuthFailure::Protocol.api())?;
+        let mut context:providers::Context=serde_json::from_str(&row.get::<String,_>("context_json")).map_err(|_|AuthFailure::Protocol.api())?;
         let verifying=row.get::<String,_>("status")=="verifying";
         stage="token_exchange";
         let polled=if verifying {providers::Poll::Ready(cloud_drive::scalar(&context.data["pending_credential"]))}else{providers::poll(state,p,&mut context).await.map_err(|failure|{auth_failure=Some(failure);failure.api()})?};
@@ -757,8 +685,8 @@ async fn poll_provider_once(state: &AppState, provider: Option<Provider>) -> Res
                 // Store the exchange result before validation; a network retry must
                 // not exchange a one-use QR ticket again.
                 context.data=json!({"pending_credential":raw});
-                let sealed=cipher.seal(&session_aad(p,id),&serde_json::to_string(&context).unwrap())?;
-                let updated=sqlx::query("UPDATE cloud_login_sessions SET status='verifying',context_cipher=$3,qr_image=NULL,expires_at=CASE WHEN status='verifying' THEN expires_at ELSE GREATEST(expires_at,now()+interval '120 seconds') END,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying') AND expires_at>now()").bind(id).bind(lease).bind(sealed).execute(&state.pool).await?.rows_affected();
+                let context_json=serde_json::to_string(&context).map_err(|_|AuthFailure::Protocol.api())?;
+                let updated=sqlx::query("UPDATE cloud_login_sessions SET status='verifying',context_json=$3,qr_image=NULL,expires_at=CASE WHEN status='verifying' THEN expires_at ELSE GREATEST(expires_at,now()+interval '120 seconds') END,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying') AND expires_at>now()").bind(id).bind(lease).bind(context_json).execute(&state.pool).await?.rows_affected();
                 if updated==0{return Ok(())}
                 let old=stored(state,p).await?.unwrap();
                 if old.binding_epoch!=row.get::<i64,_>("expected_epoch"){return Err(ApiError::Conflict("账号已被修改".into()));}
@@ -782,8 +710,8 @@ async fn poll_provider_once(state: &AppState, provider: Option<Provider>) -> Res
             providers::Poll::Slower=>{sqlx::query("UPDATE cloud_login_sessions SET interval_seconds=LEAST(interval_seconds+5,30) WHERE id=$1 AND poll_lease=$2").bind(id).bind(lease).execute(&state.pool).await?;("waiting",None)},
         };
         let terminal=matches!(status,"expired"|"denied");
-        let sealed=if terminal{None}else{Some(cipher.seal(&session_aad(p,id),&serde_json::to_string(&context).unwrap())?)};
-        sqlx::query("UPDATE cloud_login_sessions SET status=$3,error_code=$4,context_cipher=$5,qr_image=CASE WHEN $6 THEN NULL ELSE qr_image END,next_poll_at=now()+make_interval(secs=>interval_seconds),poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying')").bind(id).bind(lease).bind(status).bind(error).bind(sealed).bind(terminal).execute(&state.pool).await?;
+        let context_json=if terminal{None}else{Some(serde_json::to_string(&context).map_err(|_|AuthFailure::Protocol.api())?)};
+        sqlx::query("UPDATE cloud_login_sessions SET status=$3,error_code=$4,context_json=$5,qr_image=CASE WHEN $6 THEN NULL ELSE qr_image END,next_poll_at=now()+make_interval(secs=>interval_seconds),poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying')").bind(id).bind(lease).bind(status).bind(error).bind(context_json).bind(terminal).execute(&state.pool).await?;
         Ok::<_,ApiError>(())
     }.await;
     if let Err(e) = outcome {
@@ -791,7 +719,7 @@ async fn poll_provider_once(state: &AppState, provider: Option<Provider>) -> Res
         // Only fixed stage/error codes are logged; never upstream bodies, tokens,
         // user identifiers or QR tickets.
         tracing::warn!(provider=%p.name(),stage,error_code=%code,http_status=e.status().as_u16(),detail=%e,"cloud login step failed");
-        sqlx::query("UPDATE cloud_login_sessions SET status=CASE WHEN $3 THEN status ELSE 'failed' END,error_code=$4,context_cipher=CASE WHEN $3 THEN context_cipher ELSE NULL END,qr_image=CASE WHEN $3 THEN qr_image ELSE NULL END,next_poll_at=now()+interval '10 seconds',poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying')")
+        sqlx::query("UPDATE cloud_login_sessions SET status=CASE WHEN $3 THEN status ELSE 'failed' END,error_code=$4,context_json=CASE WHEN $3 THEN context_json ELSE NULL END,qr_image=CASE WHEN $3 THEN qr_image ELSE NULL END,next_poll_at=now()+interval '10 seconds',poll_lease=NULL,poll_lease_until=NULL,updated_at=now() WHERE id=$1 AND poll_lease=$2 AND status IN('waiting','scanned','verifying')")
             .bind(id).bind(lease).bind(transient).bind(code).execute(&state.pool).await?;
     }
     Ok(())
@@ -813,9 +741,6 @@ fn login_failure(stage: &str, auth: Option<AuthFailure>, error: &ApiError) -> (b
             ApiError::CloudAuthRequired(_) => (false, "reauthorization_required"),
             ApiError::Forbidden(_) => (false, "permission_denied"),
             ApiError::TooManyRequests(_) => (true, "rate_limited"),
-            ApiError::Unavailable(_) if stage == "session_context" => {
-                (false, "credential_key_unavailable")
-            }
             ApiError::Upstream(_) | ApiError::Unavailable(_) => (true, "network_error"),
             _ => (false, "verification_failed"),
         }
@@ -849,7 +774,7 @@ async fn maintenance_worker(state: &AppState) -> Result<(), ApiError> {
         if state.shutdown.is_cancelled() {
             return Ok(());
         }
-        let due=sqlx::query_scalar::<_,String>("SELECT provider FROM cloud_account_settings WHERE credential_cipher IS NOT NULL AND auth_status IN('ready','degraded') AND next_check_at<=now() AND (refresh_lease IS NULL OR refresh_lease_until<now()) ORDER BY next_check_at LIMIT 1").fetch_optional(&state.pool).await?;
+        let due=sqlx::query_scalar::<_,String>("SELECT provider FROM cloud_account_settings WHERE credential<>'' AND auth_status IN('ready','degraded') AND next_check_at<=now() AND (refresh_lease IS NULL OR refresh_lease_until<now()) ORDER BY next_check_at LIMIT 1").fetch_optional(&state.pool).await?;
         if let Some(provider) = due {
             if let Ok(p) = Provider::from_name(&provider) {
                 if let Err(error) = maintain(&state, p).await {

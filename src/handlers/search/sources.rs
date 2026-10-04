@@ -37,13 +37,13 @@ pub(crate) async fn load_sources(
         });
     }
     let filter = ids.map(Vec::as_slice);
-    let rows = sqlx::query_as!(Source,
+    let rows = sqlx::query_as::<_, Source>(
         "SELECT id,name,description,url,method,format,priority,enabled,request_json AS request,transform FROM resource_sources WHERE enabled=true AND kind='live' AND ($1::text[] IS NULL OR id=ANY($1)) ORDER BY priority,id",
-        filter,
-    ).fetch_all(&state.pool).await?;
-    let local_channels = sqlx::query_scalar!("SELECT id FROM crawl_channels ORDER BY id")
-        .fetch_all(&state.pool)
-        .await?;
+    ).bind(filter).fetch_all(&state.pool).await?;
+    let local_channels =
+        sqlx::query_scalar::<_, String>("SELECT id FROM crawl_channels ORDER BY id")
+            .fetch_all(&state.pool)
+            .await?;
     let mut live_sources = Vec::new();
     for source in rows {
         if crate::telegram::channel(&source.url).is_some() {

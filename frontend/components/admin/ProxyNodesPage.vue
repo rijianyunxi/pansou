@@ -5,6 +5,7 @@ import { useAdminConfirm } from "@/composables/admin/useAdminConfirm";
 import type { ProxyNode } from "@/types/outbound";
 import AdminDialog from "./AdminDialog.vue";
 import AdminRowActions from "./AdminRowActions.vue";
+import AdminStatusBadge from "./AdminStatusBadge.vue";
 import AdminCheckbox from "./AdminCheckbox.vue";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
@@ -146,12 +147,14 @@ async function showRefs(n: ProxyNode) {
 }
 function state(n: ProxyNode) {
   return !n.enabled
-    ? "已停用"
+    ? { state: "disabled", label: "已停用" }
     : n.dailyLimit > 0 && n.quotaUsed >= n.dailyLimit
-      ? "额度耗尽"
+      ? { state: "exhausted", label: "额度耗尽" }
       : n.circuitState === "open"
-        ? "熔断中"
-        : "已启用";
+        ? { state: "open", label: "熔断中" }
+        : n.circuitState === "half-open"
+          ? { state: "half-open", label: "半开" }
+          : { state: "enabled", label: "已启用" };
 }
 onMounted(load);
 </script>
@@ -187,7 +190,7 @@ onMounted(load);
               </p></TableCell
             ><TableCell
               >{{ n.quotaUsed }} / {{ n.dailyLimit || "不限" }}</TableCell
-            ><TableCell>{{ state(n) }}</TableCell
+            ><TableCell><AdminStatusBadge :state="state(n).state">{{ state(n).label }}</AdminStatusBadge></TableCell
             ><TableCell
               ><Button variant="ghost" size="sm" @click="showRefs(n)"
                 >{{ n.referenceCount }} 个引用</Button

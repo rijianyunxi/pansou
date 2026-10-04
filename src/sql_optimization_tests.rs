@@ -1,20 +1,28 @@
 //! Opt-in SQL contract tests; all mutations roll back in a disposable database.
 use crate::{db, resource_clean};
 use serde_json::{Value, json};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
-async fn hot_search_counts_recover_history_and_increment_without_overriding_moderation() {
+async fn hot_search_counts_increment_atomically_without_overriding_moderation() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
     let pool = db::connect(&url).await.unwrap();
     let mut tx = pool.begin().await.unwrap();
     let schema = format!("hot_search_{}", uuid::Uuid::new_v4().simple());
-    sqlx::raw_sql(&format!("CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"))
-        .execute(&mut *tx).await.unwrap();
-    sqlx::raw_sql(include_str!("../migrations/001_init.sql"))
-        .execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    for migration in sqlx::migrate!("./migrations").iter() {
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
     sqlx::raw_sql(
         "INSERT INTO hot_searches(term,normalized_term,score,last_searched) VALUES('已有热词','已有热词',4,'2026-09-27');
          INSERT INTO hot_searches(term,score,last_searched,status,source,pinned,manual_weight)
@@ -26,274 +34,158 @@ async fn hot_search_counts_recover_history_and_increment_without_overriding_mode
            FROM unnest(ARRAY['已有热词','新热词','blocked','hidden','pending']) term CROSS JOIN generate_series(1,3) i;
          INSERT INTO search_logs(keyword,ip,search_scope) VALUES('   ','127.0.0.1','system');"
     ).execute(&mut *tx).await.unwrap();
-    let backfill = include_str!("../migrations/020_restore_hot_search_counts.sql");
-    sqlx::raw_sql(backfill).execute(&mut *tx).await.unwrap();
-    let snapshot: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h ORDER BY term")
-        .fetch_all(&mut *tx).await.unwrap();
-    assert_eq!(snapshot.len(), 5);
-    assert_eq!(snapshot.iter().find(|h| h["term"] == "已有热词").unwrap()["score"], 7);
-    let new_term = snapshot.iter().find(|h| h["term"] == "新热词").unwrap();
-    assert_eq!(new_term["score"], 3);
-    assert_eq!(new_term["status"], "approved");
-    assert_eq!(new_term["source"], "auto");
-    for status in ["blocked", "hidden", "pending"] {
-        let item = snapshot.iter().find(|h| h["term"] == status).unwrap();
-        assert_eq!(item["score"], 53);
-        assert_eq!(item["status"], status);
-        assert_eq!(item["source"], "manual");
-        assert_eq!(item["pinned"], true);
-        assert_eq!(item["manual_weight"], 9);
-    }
-    sqlx::raw_sql(backfill).execute(&mut *tx).await.unwrap();
-    let replay: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h ORDER BY term")
-        .fetch_all(&mut *tx).await.unwrap();
-    assert_eq!(replay, snapshot, "backfill must not count history twice");
-
     for term in ["blocked", "blocked", "New Term", "New Term"] {
         let id: i64 = sqlx::query_scalar(include_str!("queries/create_search_log.sql"))
-            .bind("test-session").bind(None::<i64>).bind(term).bind("127.0.0.1")
-            .bind("system").bind(json!([])).bind(json!([])).bind(term.to_lowercase())
-            .fetch_one(&mut *tx).await.unwrap();
+            .bind("test-session")
+            .bind(None::<i64>)
+            .bind(term)
+            .bind("127.0.0.1")
+            .bind("system")
+            .bind(json!([]))
+            .bind(json!([]))
+            .bind(term.to_lowercase())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
         // Completing a search does not cause a second popularity increment.
         sqlx::query("UPDATE search_logs SET status='completed' WHERE id=$1")
-            .bind(id).execute(&mut *tx).await.unwrap();
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
     }
-    let blocked: Value = sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h WHERE term='blocked'")
-        .fetch_one(&mut *tx).await.unwrap();
-    assert_eq!(blocked["score"], 55);
+    let blocked: Value =
+        sqlx::query_scalar("SELECT to_jsonb(h) FROM hot_searches h WHERE term='blocked'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(blocked["score"], 52);
     assert_eq!(blocked["status"], "blocked");
     assert_eq!(blocked["source"], "manual");
     assert_eq!(blocked["pinned"], true);
     assert_eq!(blocked["manual_weight"], 9);
-    let new_term: (String, i64, String) = sqlx::query_as("SELECT normalized_term,score,status FROM hot_searches WHERE term='New Term'")
-        .fetch_one(&mut *tx).await.unwrap();
+    let new_term: (String, i64, String) = sqlx::query_as(
+        "SELECT normalized_term,score,status FROM hot_searches WHERE term='New Term'",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
     assert_eq!(new_term, ("new term".into(), 2, "approved".into()));
-    let logs: i64 = sqlx::query_scalar("SELECT count(*) FROM search_logs WHERE session_id='test-session'")
-        .fetch_one(&mut *tx).await.unwrap();
+    let logs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM search_logs WHERE session_id='test-session'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
     assert_eq!(logs, 4);
 
     // A log failure must leave its popularity unchanged.
-    sqlx::raw_sql("SAVEPOINT invalid_search").execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql("SAVEPOINT invalid_search")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let result = sqlx::query_scalar::<_, i64>(include_str!("queries/create_search_log.sql"))
-        .bind("invalid-session").bind(i64::MAX).bind("New Term").bind("127.0.0.1")
-        .bind("system").bind(json!([])).bind(json!([])).bind("new term")
-        .fetch_one(&mut *tx).await;
+        .bind("invalid-session")
+        .bind(i64::MAX)
+        .bind("New Term")
+        .bind("127.0.0.1")
+        .bind("system")
+        .bind(json!([]))
+        .bind(json!([]))
+        .bind("new term")
+        .fetch_one(&mut *tx)
+        .await;
     assert!(result.is_err());
-    sqlx::raw_sql("ROLLBACK TO SAVEPOINT invalid_search").execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql("ROLLBACK TO SAVEPOINT invalid_search")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let score: i64 = sqlx::query_scalar("SELECT score FROM hot_searches WHERE term='New Term'")
-        .fetch_one(&mut *tx).await.unwrap();
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
     assert_eq!(score, 2);
-    tx.rollback().await.unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
-async fn raw_html_removal_preserves_existing_metadata_and_resource_relationships() {
-    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
-    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
-    let pool = db::connect(&url).await.unwrap();
-    db::init_db(&pool).await.unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    // Replay the real pre-019 schema in a disposable namespace, including FK/trigger dependencies.
-    // The entire namespace and its data roll back; the application's public schema is untouched.
-    let schema = format!("raw_upgrade_{}", uuid::Uuid::new_v4().simple());
-    sqlx::raw_sql(&format!("CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"))
-        .execute(&mut *tx).await.unwrap();
-    for migration in sqlx::migrate!("./migrations").iter().filter(|m| m.version < 19) {
-        sqlx::raw_sql(&migration.sql).execute(&mut *tx).await.unwrap();
-    }
-    sqlx::raw_sql(
-        "INSERT INTO crawl_channels(id,name) VALUES('raw-fixture','fixture');
-         INSERT INTO source_messages(channel_id,message_id,raw_html,raw_hash,parse_version,parse_status,published_at)
-           VALUES('raw-fixture',1,repeat('<html>old original</html>',100000),'kept-hash','kept-version','parsed','2026-10-01T00:00:00Z'),
-                 ('raw-fixture',2,'failed original','failed-hash','kept-version','failed',NULL),
-                 ('raw-fixture',3,'empty original','empty-hash','kept-version','empty',NULL);
-         INSERT INTO managed_resources(id,name,origin,search_text) VALUES('raw-resource','保留资源','telegram','保留资源');
-         INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json)
-           VALUES('raw-fixture',1,'raw-resource','{\"id\":\"raw-resource\",\"name\":\"保留资源\"}');"
-    ).execute(&mut *tx).await.unwrap();
-    let before: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(m)-'raw_html' FROM source_messages m ORDER BY channel_id,message_id")
-        .fetch_all(&mut *tx).await.unwrap();
-    let before_stats: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM channel_statistics s WHERE channel_id='raw-fixture'")
-        .fetch_one(&mut *tx).await.unwrap();
-    sqlx::raw_sql(include_str!("../migrations/019_remove_source_message_raw_html.sql"))
-        .execute(&mut *tx).await.unwrap();
-    let after: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(m) FROM source_messages m ORDER BY channel_id,message_id")
-        .fetch_all(&mut *tx).await.unwrap();
-    assert_eq!(after, before);
-    let after_stats: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM channel_statistics s WHERE channel_id='raw-fixture'")
-        .fetch_one(&mut *tx).await.unwrap();
-    assert_eq!(after_stats, before_stats);
-    let relationships: i64 = sqlx::query_scalar("SELECT count(*) FROM resource_occurrences o JOIN source_messages m USING(channel_id,message_id) JOIN managed_resources r ON r.id=o.resource_id")
-        .fetch_one(&mut *tx).await.unwrap();
-    assert_eq!(relationships, 1);
-    let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='source_messages' AND column_name='raw_html')")
-        .bind(&schema).fetch_one(&mut *tx).await.unwrap();
-    assert!(!present);
     tx.rollback().await.unwrap();
 }
 
 async fn compare_search(tx: &mut Transaction<'_, Postgres>, scope: &[String], keywords: &[&str]) {
     for keyword in keywords {
         let keyword = keyword.to_lowercase();
-        let grams = resource_clean::grams(&keyword);
-        let longest = grams.iter().map(|g| g.chars().count()).max().unwrap_or(0);
-        let grams: Vec<_> = grams
+        let all = resource_clean::grams(&keyword);
+        let longest = all.iter().map(|g| g.chars().count()).max().unwrap_or(0);
+        let grams: Vec<_> = all
             .into_iter()
             .filter(|g| g.chars().count() == longest)
             .take(8)
             .collect();
         let expected: Vec<Value> =
-            sqlx::query(include_str!("queries/telegram_search_reference.sql"))
+            sqlx::query_scalar(include_str!("queries/telegram_search_reference.sql"))
                 .bind(&keyword)
-                .bind(None::<String>)
                 .bind(scope)
                 .fetch_all(&mut **tx)
                 .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.get("item"))
-                .collect();
-        let rows = if let Some(gram) = grams.first() {
-            sqlx::query(include_str!("queries/telegram_search_gram.sql"))
-                .bind(&keyword)
-                .bind(gram)
-                .bind(scope)
-                .bind(&grams[1..])
-                .fetch_all(&mut **tx)
-                .await
-                .unwrap()
-        } else {
-            sqlx::query(include_str!("queries/telegram_search.sql"))
-                .bind(&keyword)
-                .bind(None::<String>)
-                .bind(scope)
-                .fetch_all(&mut **tx)
-                .await
-                .unwrap()
-        };
-        let actual: Vec<Value> = rows.into_iter().map(|r| r.get("item")).collect();
+                .unwrap();
+        let actual: Vec<Value> = sqlx::query_scalar(include_str!("queries/telegram_search.sql"))
+            .bind(&keyword)
+            .bind(&grams)
+            .bind(scope)
+            .fetch_all(&mut **tx)
+            .await
+            .unwrap();
         assert_eq!(actual, expected, "keyword={keyword}, scope={scope:?}");
     }
 }
 
-async fn compare_cloud_types(tx: &mut Transaction<'_, Postgres>) {
-    let expected: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT cloud_type,count(*) FROM (SELECT DISTINCT r.id,t.cloud_type FROM managed_resources r CROSS JOIN LATERAL jsonb_array_elements_text(resource_cloud_types(r.links_json)) t(cloud_type) WHERE r.deleted_at IS NULL) types GROUP BY cloud_type ORDER BY cloud_type",
-    ).fetch_all(&mut **tx).await.unwrap();
-    let actual: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT cloud_type,resource_count FROM resource_cloud_type_counts ORDER BY cloud_type",
-    )
-    .fetch_all(&mut **tx)
-    .await
-    .unwrap();
-    assert_eq!(actual, expected);
-}
-
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
-async fn projections_metadata_and_real_change_invalidation_match_original_contract() {
+async fn direct_resource_search_matches_oracle_and_invalidates_only_content_changes() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
     let pool: PgPool = db::connect(&url).await.unwrap();
     db::init_db(&pool).await.unwrap();
-    let stats = crate::admin_stats::AdminStats::default();
-    for cloud_type in ["mobile", "quark", "missing-provider-fixture"] {
-        let expected: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_resources WHERE deleted_at IS NULL AND resource_cloud_types(links_json) ? $1")
-            .bind(cloud_type).fetch_one(&pool).await.unwrap();
-        assert_eq!(
-            stats.resource_total(&pool, "", cloud_type).await.unwrap(),
-            expected
-        );
-    }
     let mut tx = pool.begin().await.unwrap();
     let prefix = uuid::Uuid::new_v4().simple().to_string();
     let public = format!("public_{prefix}");
     let private = format!("private_{prefix}");
-    let moved = format!("moved_{prefix}");
-    for channel in [&public, &private, &moved] {
-        sqlx::query("INSERT INTO crawl_channels(id,name) VALUES($1,$1)")
-            .bind(channel)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    let mut ids = Vec::new();
     for i in 0..260i64 {
-        let id = format!("{prefix}_{i:03}");
-        let title = match i {
-            0 => "电影 资料 !!!".to_owned(),
-            1 => "电影".to_owned(),
-            5 => "纯!!!符号".to_owned(),
-            6 => "a !!! b".to_owned(),
-            _ => format!("电影资料 {i:03}"),
+        let title = match i % 6 {
+            0 => "三体",
+            1 => "三体 4K",
+            2 => "电影 资料",
+            3 => "!!!",
+            4 => "a !!! b",
+            _ => "流浪地球",
         };
-        sqlx::query("INSERT INTO managed_resources(id,name,origin,links_json,search_text) VALUES($1,$2,'telegram',$3,$2)")
-            .bind(&id).bind(&title).bind(json!([{"type":"quark","url":"https://pan.quark.cn/s/first"},{"type":"quark","url":"https://pan.quark.cn/s/second"},{"type":"baidu","url":"https://pan.baidu.com/s/third"}]))
+        let channels = if i % 7 == 0 {
+            vec![private.clone()]
+        } else {
+            vec![public.clone(), private.clone()]
+        };
+        sqlx::query("INSERT INTO managed_resources(id,name,description,origin,source_channel_ids,published_at) VALUES($1,$2,'description-only','telegram',$3,to_timestamp($4))")
+            .bind(format!("{prefix}_{i}")).bind(title).bind(channels).bind(1700000000.0+i as f64)
             .execute(&mut *tx).await.unwrap();
-        for (channel, name) in [
-            (&public, title.clone()),
-            (&private, format!("私密标题 {i:03}")),
-        ] {
-            sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status,published_at) VALUES($1,$2,'test','test','parsed',to_timestamp($3))")
-                .bind(channel).bind(i+1).bind((1_700_000_000+i) as f64)
-                .execute(&mut *tx).await.unwrap();
-            let item = json!({"id":"incorrect_snapshot_id","name":name,"description":"only display, not searchable","cloud_types":["quark"],"links":[],"tags":["secret-tag"],"images":[]});
-            sqlx::query("INSERT INTO resource_occurrences(channel_id,message_id,resource_id,result_json) VALUES($1,$2,$3,$4)")
-                .bind(channel).bind(i+1).bind(&id).bind(item).execute(&mut *tx).await.unwrap();
-        }
-        let grams = resource_clean::grams(&format!("{title} 私密标题 {i:03}"));
-        sqlx::query("INSERT INTO resource_grams(resource_id,gram) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING")
-            .bind(&id).bind(grams).execute(&mut *tx).await.unwrap();
-        ids.push(id);
     }
     let keywords = [
-        "电影",
-        "资料",
-        "电影资料",
-        "电影 资料",
+        "三体",
+        "三",
         "!!!",
+        "电影 资料",
         "a !!! b",
-        "影",
-        "不存在",
-        "only display",
-        "secret-tag",
+        "流浪地球",
+        "4k",
+        "description-only",
         "",
     ];
-    compare_search(&mut tx, std::slice::from_ref(&public), &keywords).await;
-    compare_search(
-        &mut tx,
-        &[public.clone(), private.clone()],
-        &["电影", "私密标题", ""],
-    )
-    .await;
-    compare_search(&mut tx, std::slice::from_ref(&moved), &["电影", "!!!", ""]).await;
-    compare_cloud_types(&mut tx).await;
-
-    // Zero-row UPDATE, identical UPDATE/JSON and ON CONFLICT do not invalidate.
+    compare_search(&mut tx, &[public.clone()], &keywords).await;
+    compare_search(&mut tx, &[private.clone()], &keywords).await;
+    compare_search(&mut tx, &[public.clone(), private.clone()], &keywords).await;
+    let id = format!("{prefix}_0");
     let before: i64 =
         sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-    sqlx::query("UPDATE managed_resources SET name=name WHERE false")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
     sqlx::query("UPDATE managed_resources SET name=name WHERE id=$1")
-        .bind(&ids[0])
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO managed_resources(id,name) VALUES($1,'ignored') ON CONFLICT DO NOTHING",
-    )
-    .bind(&ids[0])
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE resource_occurrences SET result_json=result_json WHERE resource_id=$1")
-        .bind(&ids[0])
+        .bind(&id)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -302,77 +194,36 @@ async fn projections_metadata_and_real_change_invalidation_match_original_contra
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-    assert_eq!(after, before);
-
-    sqlx::query(
-        "UPDATE managed_resources SET name='人工电影标题',manual_override=true WHERE id=$1",
-    )
-    .bind(&ids[0])
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE managed_resources SET enabled=false WHERE id=$1")
-        .bind(&ids[3])
+    assert_eq!(before, after);
+    sqlx::query("UPDATE managed_resources SET link_validity=1 WHERE id=$1")
+        .bind(&id)
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("UPDATE managed_resources SET deleted_at=now() WHERE id=$1")
-        .bind(&ids[4])
+    let after: i64 =
+        sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    sqlx::query("UPDATE managed_resources SET name='新标题',enabled=false WHERE id=$1")
+        .bind(&id)
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE source_messages SET parse_status='failed' WHERE channel_id=$1 AND message_id=3",
-    )
-    .bind(&public)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE source_messages SET published_at=NULL WHERE channel_id=$1 AND message_id=8",
-    )
-    .bind(&public)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    compare_search(
-        &mut tx,
-        std::slice::from_ref(&public),
-        &["电影", "资料", "人工", "!!!", ""],
-    )
-    .await;
-    compare_cloud_types(&mut tx).await;
-    sqlx::query("UPDATE source_messages SET parse_status='parsed',published_at=now() WHERE channel_id=$1 AND message_id=3")
-        .bind(&public).execute(&mut *tx).await.unwrap();
-    sqlx::query("UPDATE managed_resources SET deleted_at=NULL,links_json='[{\"type\":\"custom-provider\",\"url\":\"custom:first\"},{\"type\":\"custom-provider\",\"url\":\"custom:second\"}]' WHERE id=$1")
-        .bind(&ids[4]).execute(&mut *tx).await.unwrap();
-    sqlx::query("INSERT INTO source_messages(channel_id,message_id,raw_hash,parse_version,parse_status) VALUES($1,6,'test','test','parsed')")
-        .bind(&moved).execute(&mut *tx).await.unwrap();
-    sqlx::query(
-        "UPDATE resource_occurrences SET channel_id=$2 WHERE channel_id=$1 AND message_id=6",
-    )
-    .bind(&public)
-    .bind(&moved)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    compare_search(&mut tx, std::slice::from_ref(&public), &keywords).await;
-    compare_search(&mut tx, std::slice::from_ref(&moved), &["!!!", ""]).await;
-    sqlx::query("DELETE FROM managed_resources WHERE id=$1")
-        .bind(&ids[4])
+    compare_search(&mut tx, &[public.clone()], &["三体", "新标题"]).await;
+    sqlx::query("UPDATE managed_resources SET enabled=true WHERE id=$1")
+        .bind(&id)
         .execute(&mut *tx)
         .await
         .unwrap();
-    compare_cloud_types(&mut tx).await;
-    compare_search(&mut tx, std::slice::from_ref(&public), &["电影", ""]).await;
+    compare_search(&mut tx, &[public], &["三体", "新标题"]).await;
+    let grams: Vec<String> =
+        sqlx::query_scalar("SELECT name_grams FROM managed_resources WHERE id=$1")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(grams, resource_clean::grams("新标题"));
     tx.rollback().await.unwrap();
-    assert!(
-        !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM resource_search_documents WHERE resource_id=$1)"
-        )
-        .bind(&ids[0])
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-    );
 }

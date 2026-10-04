@@ -1,5 +1,5 @@
 //! Build public search results and persist session-bound capabilities.
-use super::{FACT_COLUMNS, Fact, REF_SECONDS, Snapshot, aggregate, fingerprint, keyed, subject};
+use super::{Fact, REF_SECONDS, Snapshot, aggregate, fingerprint, keyed, subject};
 use crate::{
     app::AppState,
     auth::Session,
@@ -9,7 +9,6 @@ use crate::{
 };
 use chrono::Utc;
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -55,20 +54,16 @@ pub(crate) async fn project(
         .iter()
         .flat_map(|r| r.links.iter().map(fingerprint))
         .collect();
-    let rows = if custom {
-        vec![]
+    let owners: Vec<String> = if source.is_none() {
+        results.iter().map(|r| r.id.clone()).collect()
     } else {
-        sqlx::query(&format!(
-        "SELECT input_fingerprint,{FACT_COLUMNS} FROM link_catalog WHERE input_fingerprint=ANY($1)"
-    ))
-    .bind(&fingerprints)
-    .fetch_all(&state.pool)
-    .await?
+        vec![]
     };
-    let facts: HashMap<String, Fact> = rows
-        .iter()
-        .map(|r| Ok((r.try_get("input_fingerprint")?, sqlx::FromRow::from_row(r)?)))
-        .collect::<Result<_, sqlx::Error>>()?;
+    let facts = if custom {
+        HashMap::new()
+    } else {
+        super::load_facts(state, &owners, &fingerprints).await?
+    };
     let mut pipe = redis::pipe();
     let expires_at = Utc::now() + chrono::Duration::seconds(REF_SECONDS as i64);
     let mut projected = vec![];
@@ -84,7 +79,7 @@ pub(crate) async fn project(
             let link_ref = Uuid::new_v4().to_string();
             private.insert(link_ref.clone(), link.clone());
             let key = keyed(&session.token, &resource_clean::link_identity(&link.url)); keys.push(key.clone());
-            let fact = facts.get(&fingerprint(link));
+            let fact = super::scoped_fact(&facts,if source.is_none(){Some(result.id.as_str())}else{None},link);
             json!({"linkRef":link_ref,"linkKey":key,"type":clean(&link.r#type,&result.links),"validity":fact.map_or(-1,Fact::current),"checkedAt":fact.and_then(|f| f.checked_at),"stale":fact.is_some_and(Fact::stale)})
         }).collect();
         keys.sort();

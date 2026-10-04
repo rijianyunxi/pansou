@@ -1,5 +1,5 @@
 use super::*;
-use base64::{Engine,engine::general_purpose::STANDARD};
+use base64::{Engine, engine::general_purpose::STANDARD};
 #[test]
 fn login_errors_preserve_stage_and_retry_only_transient_failures() {
     let protocol = AuthFailure::Protocol.api();
@@ -12,7 +12,17 @@ fn login_errors_preserve_stage_and_retry_only_transient_failures() {
         login_failure("token_exchange", Some(AuthFailure::Network), &network),
         (true, "token_exchange:network_error".into())
     );
-    assert_eq!(login_failure("token_exchange",Some(AuthFailure::ExchangeUncertain),&AuthFailure::ExchangeUncertain.api()),(false,"token_exchange:authorization_exchange_uncertain".into()));
+    assert_eq!(
+        login_failure(
+            "token_exchange",
+            Some(AuthFailure::ExchangeUncertain),
+            &AuthFailure::ExchangeUncertain.api()
+        ),
+        (
+            false,
+            "token_exchange:authorization_exchange_uncertain".into()
+        )
+    );
     assert_eq!(
         login_failure(
             "root_access",
@@ -42,35 +52,7 @@ fn a_state_conflict_is_never_reported_as_an_account_switch() {
     }
 }
 #[test]
-fn versions_bind_ciphertext_and_schedule_before_expiry() {
-    let cipher = Cipher::from_key(&[9; 32]).unwrap();
-    let encrypted = cipher
-        .seal(&account_aad(Provider::Quark, "account_one", 1, 2), "secret")
-        .unwrap();
-    assert!(
-        cipher
-            .open(
-                &account_aad(Provider::Quark, "account_one", 2, 2),
-                &encrypted
-            )
-            .is_err()
-    );
-    assert!(
-        cipher
-            .open(
-                &account_aad(Provider::Quark, "account_one", 1, 3),
-                &encrypted
-            )
-            .is_err()
-    );
-    assert!(
-        cipher
-            .open(
-                &account_aad(Provider::Quark, "account_two", 1, 2),
-                &encrypted
-            )
-            .is_err()
-    );
+fn account_maintenance_schedules_refresh_before_expiry() {
     let expiration = Utc::now() + Duration::hours(2);
     assert!(next_check(Some(expiration), true) < expiration);
     assert!(validate_intent("replace").is_ok());
@@ -100,8 +82,14 @@ async fn upstream(
     use axum::response::IntoResponse;
     let path = request.uri().path().to_owned();
     if path == "/passport.baidu.com/channel/unicast" {
-        let delay={let mut m=mock.lock().await;m.baidu_calls+=1;m.baidu_long_poll};
-        if delay {tokio::time::sleep(std::time::Duration::from_secs(4)).await;}
+        let delay = {
+            let mut m = mock.lock().await;
+            m.baidu_calls += 1;
+            m.baidu_long_poll
+        };
+        if delay {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        }
     }
     if path == "/account.guangyapan.com/v1/user/me" && request.method() != axum::http::Method::GET {
         return (
@@ -118,8 +106,8 @@ async fn upstream(
         .to_owned();
     let mut mock = mock.lock().await;
     if path.starts_with("/account.guangyapan.com/") {
-        assert_eq!(request.headers()["x-os-version"],"Win32");
-        assert_eq!(request.headers()["x-device-model"],"chrome%2F131.0.0.0");
+        assert_eq!(request.headers()["x-os-version"], "Win32");
+        assert_eq!(request.headers()["x-device-model"], "chrome%2F131.0.0.0");
         assert!(request.headers().contains_key("x-device-id"));
     }
     if mock.identity_protocol_failure && path == "/account.guangyapan.com/v1/user/me" {
@@ -150,9 +138,25 @@ async fn upstream(
                 // across redirect hops, so the exchange response itself carries no
                 // identity payload, only the first Set-Cookie of the chain.
                 return if mock.quark_broken_session {
-                    (axum::http::StatusCode::FOUND, [("location", "/account/scan-landing")], "").into_response()
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [("location", "/account/scan-landing")],
+                        "",
+                    )
+                        .into_response()
                 } else {
-                    (axum::http::StatusCode::FOUND, [("location", "/account/scan-landing"), ("set-cookie", "__puus=qr-cookie; Domain=quark.cn; Path=/; Secure; HttpOnly")], "").into_response()
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [
+                            ("location", "/account/scan-landing"),
+                            (
+                                "set-cookie",
+                                "__puus=qr-cookie; Domain=quark.cn; Path=/; Secure; HttpOnly",
+                            ),
+                        ],
+                        "",
+                    )
+                        .into_response()
                 };
             }
             if cookie.is_empty() || cookie == "ctoken=anonymous" {
@@ -164,7 +168,10 @@ async fn upstream(
         "/pan.quark.cn/account/scan-landing" => {
             let mut response = axum::Json(json!({"success":true,"code":"OK","data":{"uid":"subject1","nickname":"Test account"}})).into_response();
             if !mock.quark_broken_session {
-                response.headers_mut().append("set-cookie", axum::http::HeaderValue::from_static("ctoken=scan-landing; Path=/"));
+                response.headers_mut().append(
+                    "set-cookie",
+                    axum::http::HeaderValue::from_static("ctoken=scan-landing; Path=/"),
+                );
             }
             return response;
         }
@@ -180,7 +187,7 @@ async fn upstream(
             assert!(request.headers().contains_key("x-device-id"));
             assert!(request.headers().contains_key("x-signature"));
             json!({"result":!mock.ali_device_failure})
-        },
+        }
         "/account.guangyapan.com/v1/user/me" | "/xluser-ssl.xunlei.com/v1/user/me" => {
             json!({"sub":"subject1","name":"Test account"})
         }
@@ -194,7 +201,7 @@ async fn upstream(
             )
             .unwrap();
             if input["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code" {
-                mock.qr_exchanges+=1;
+                mock.qr_exchanges += 1;
                 json!({"access_token":"qr-access","refresh_token":"qr-refresh","expires_in":7200})
             } else {
                 mock.refreshes += 1;
@@ -208,15 +215,21 @@ async fn upstream(
             json!({"status":2000000,"data":{"members":{"token":"fixture-qr"}}})
         }
         "/uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken" => {
-            mock.quark_poll_calls+=1;
+            mock.quark_poll_calls += 1;
             if mock.quark_scan_confirmed {
                 json!({"status":2000000,"data":{"members":{"service_ticket":"fixture-service-ticket"}}})
             } else {
                 json!({"status":50004001})
             }
         }
-        "/passport.baidu.com/channel/unicast"=>if mock.baidu_long_poll{json!({"errno":"1"})}else{json!({"errno":"0","channel_v":{"status":"0","v":"fixture-ticket"}})},
-        "/passport.baidu.com/v3/login/main/qrbdusslogin"=>{
+        "/passport.baidu.com/channel/unicast" => {
+            if mock.baidu_long_poll {
+                json!({"errno":"1"})
+            } else {
+                json!({"errno":"0","channel_v":{"status":"0","v":"fixture-ticket"}})
+            }
+        }
+        "/passport.baidu.com/v3/login/main/qrbdusslogin" => {
             if mock.baidu_unparseable_exchange {
                 // JS-only JSONP: the trailing comma is valid JavaScript that a
                 // browser evaluates, but no JSON repair may ever accept it. The
@@ -231,22 +244,59 @@ async fn upstream(
                 r#"fixture({"errInfo":{"no":"0"},'data':{"u":"https:\/\/pan.baidu.com\/fixture-finish\?from\=scan\&ok\=1","user":{"displayName":"O\'Brien"}}})"#,
             ).into_response();
         }
-        "/pan.baidu.com/"=>return ([("set-cookie","BAIDUID=fixture-browser; Domain=baidu.com; Path=/")],axum::Json(json!({}))).into_response(),
-        "/pan.baidu.com/fixture-finish"=>{
+        "/pan.baidu.com/" => {
+            return (
+                [(
+                    "set-cookie",
+                    "BAIDUID=fixture-browser; Domain=baidu.com; Path=/",
+                )],
+                axum::Json(json!({})),
+            )
+                .into_response();
+        }
+        "/pan.baidu.com/fixture-finish" => {
             assert_eq!(request.uri().query(), Some("from=scan&ok=1"));
-            return (axum::http::StatusCode::FOUND,[("location","/fixture-confirm"),("set-cookie","BAIDUID=fixture-browser; Domain=baidu.com; Path=/")],"").into_response();
-        },
-        "/pan.baidu.com/fixture-confirm"=>return ([("set-cookie","BDUSS_BFESS=fixture-login; Domain=baidu.com; Path=/")],axum::Json(json!({}))).into_response(),
-        "/auth.aliyundrive.com/v2/oauth/authorize"=>json!({}),
-        "/passport.aliyundrive.com/newlogin/qrcode/generate.do"=>json!({"content":{"data":{"codeContent":"https://www.alipan.com/scan?fixture=1","ck":"fixture-ck","t":123}}}),
-        "/passport.aliyundrive.com/newlogin/qrcode/query.do"=>{
-            assert_eq!(request.method(),axum::http::Method::POST);
-            assert_eq!(request.headers()["content-type"],"application/x-www-form-urlencoded");
-            let body=axum::body::to_bytes(request.into_body(),32768).await.unwrap();
-            let params:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();
-            assert_eq!(params["ck"],"fixture-ck");
+            return (
+                axum::http::StatusCode::FOUND,
+                [
+                    ("location", "/fixture-confirm"),
+                    (
+                        "set-cookie",
+                        "BAIDUID=fixture-browser; Domain=baidu.com; Path=/",
+                    ),
+                ],
+                "",
+            )
+                .into_response();
+        }
+        "/pan.baidu.com/fixture-confirm" => {
+            return (
+                [(
+                    "set-cookie",
+                    "BDUSS_BFESS=fixture-login; Domain=baidu.com; Path=/",
+                )],
+                axum::Json(json!({})),
+            )
+                .into_response();
+        }
+        "/auth.aliyundrive.com/v2/oauth/authorize" => json!({}),
+        "/passport.aliyundrive.com/newlogin/qrcode/generate.do" => {
+            json!({"content":{"data":{"codeContent":"https://www.alipan.com/scan?fixture=1","ck":"fixture-ck","t":123}}})
+        }
+        "/passport.aliyundrive.com/newlogin/qrcode/query.do" => {
+            assert_eq!(request.method(), axum::http::Method::POST);
+            assert_eq!(
+                request.headers()["content-type"],
+                "application/x-www-form-urlencoded"
+            );
+            let body = axum::body::to_bytes(request.into_body(), 32768)
+                .await
+                .unwrap();
+            let params: std::collections::HashMap<_, _> =
+                url::form_urlencoded::parse(&body).into_owned().collect();
+            assert_eq!(params["ck"], "fixture-ck");
             json!({"content":{"data":{"qrCodeStatus":"CONFIRMED","bizExt":STANDARD.encode(br#"{"pds_login_result":{"refreshToken":"fixture-refresh"}}"#)}}})
-        },
+        }
         p if p.starts_with("/drive/") => {
             if mock.directory_failure {
                 return (axum::http::StatusCode::BAD_GATEWAY, axum::Json(json!({})))
@@ -257,7 +307,15 @@ async fn upstream(
                 return (
                     [(
                         "set-cookie",
-                        format!("__puus={}rotated-cookie-{}; Domain=quark.cn; Path=/", if cookie.contains("account_two") {"account_two-"}else{""}, mock.quark_cookie_rotations),
+                        format!(
+                            "__puus={}rotated-cookie-{}; Domain=quark.cn; Path=/",
+                            if cookie.contains("account_two") {
+                                "account_two-"
+                            } else {
+                                ""
+                            },
+                            mock.quark_cookie_rotations
+                        ),
                     )],
                     axum::Json(json!({"code":0,"data":{"list":[]}})),
                 )
@@ -277,101 +335,243 @@ async fn upstream(
 }
 
 #[tokio::test]
-#[ignore = "requires isolated _test PostgreSQL, Redis and explicit test key"]
+#[ignore = "requires isolated _test PostgreSQL and Redis"]
 async fn provider_qr_protocols_and_independent_polling_are_strict() {
-    let database=std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
-    assert!(url::Url::parse(&database).unwrap().path().ends_with("_test"));
-    assert!(std::env::var("PANSOU_CLOUD_CREDENTIAL_KEY").is_ok());
-    let redis=std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
-    assert_ne!(url::Url::parse(&redis).unwrap().path(),"/0");
-    let pool=sqlx::postgres::PgPoolOptions::new().max_connections(12).connect(&database).await.unwrap();
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(
+        url::Url::parse(&database)
+            .unwrap()
+            .path()
+            .ends_with("_test")
+    );
+    let redis = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert_ne!(url::Url::parse(&redis).unwrap().path(), "/0");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(12)
+        .connect(&database)
+        .await
+        .unwrap();
     crate::db::init_db(&pool).await.unwrap();
-    let mock=Arc::new(tokio::sync::Mutex::new(MockAuth::default()));
-    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base=format!("http://{}/",listener.local_addr().unwrap());
-    let server=axum::Router::new().fallback(axum::routing::any(upstream)).with_state(mock.clone());
-    let server=tokio::spawn(async move{axum::serve(listener,server).await.unwrap()});
-    let mut state=AppState::new(pool.clone(),crate::redis_store::RedisStore::connect(&redis).await.unwrap());
-    state.cloud_auth_test_base=Some(base.clone());
-    let drive=url::Url::parse(&format!("{base}drive/")).unwrap();
-    state.cloud_test_bases=Some(cloud_drive::TestBases{baidu:drive.clone(),quark_pc:drive.clone(),quark_share:drive});
-    let state=Arc::new(state);
-    let mut baidu=providers::Context{data:json!({"sign":"fixture-sign","gid":"fixture-gid","callback":"fixture"}),..Default::default()};
-    let providers::Poll::Ready(cookie)=providers::poll(&state,Provider::Baidu,&mut baidu).await.unwrap()else{panic!("Baidu fixture did not complete")};
+    let mock = Arc::new(tokio::sync::Mutex::new(MockAuth::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let server = axum::Router::new()
+        .fallback(axum::routing::any(upstream))
+        .with_state(mock.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let mut state = AppState::new(
+        pool.clone(),
+        crate::redis_store::RedisStore::connect(&redis)
+            .await
+            .unwrap(),
+    );
+    state.cloud_auth_test_base = Some(base.clone());
+    let drive = url::Url::parse(&format!("{base}drive/")).unwrap();
+    state.cloud_test_bases = Some(cloud_drive::TestBases {
+        baidu: drive.clone(),
+        quark_pc: drive.clone(),
+        quark_share: drive,
+    });
+    let state = Arc::new(state);
+    let mut baidu = providers::Context {
+        data: json!({"sign":"fixture-sign","gid":"fixture-gid","callback":"fixture"}),
+        ..Default::default()
+    };
+    let providers::Poll::Ready(cookie) = providers::poll(&state, Provider::Baidu, &mut baidu)
+        .await
+        .unwrap()
+    else {
+        panic!("Baidu fixture did not complete")
+    };
     assert!(cookie.contains("BDUSS_BFESS=fixture-login"));
     assert!(cookie.contains("BAIDUID=fixture-browser"));
-    verify(&state,Provider::Baidu,&cookie).await.unwrap();
+    verify(&state, Provider::Baidu, &cookie).await.unwrap();
     // A JS-only exchange body must not fail the login: the session cookie the
     // response carries decides the outcome, and identity still gates storage.
-    mock.lock().await.baidu_unparseable_exchange=true;
-    let mut baidu_garbage=providers::Context{data:json!({"sign":"fixture-sign","gid":"fixture-gid","callback":"fixture"}),..Default::default()};
-    let providers::Poll::Ready(cookie)=providers::poll(&state,Provider::Baidu,&mut baidu_garbage).await.unwrap()else{panic!("Baidu unparseable exchange did not complete")};
+    mock.lock().await.baidu_unparseable_exchange = true;
+    let mut baidu_garbage = providers::Context {
+        data: json!({"sign":"fixture-sign","gid":"fixture-gid","callback":"fixture"}),
+        ..Default::default()
+    };
+    let providers::Poll::Ready(cookie) =
+        providers::poll(&state, Provider::Baidu, &mut baidu_garbage)
+            .await
+            .unwrap()
+    else {
+        panic!("Baidu unparseable exchange did not complete")
+    };
     assert!(cookie.contains("BDUSS=fixture-login"));
     assert!(cookie.contains("BAIDUID=fixture-browser"));
-    verify(&state,Provider::Baidu,&cookie).await.unwrap();
-    mock.lock().await.baidu_unparseable_exchange=false;
-    let mut ali=providers::start(&state,Provider::Aliyun).await.unwrap().context;
-    let providers::Poll::Ready(token)=providers::poll(&state,Provider::Aliyun,&mut ali).await.unwrap()else{panic!("Ali fixture did not complete")};
-    verify(&state,Provider::Aliyun,&token).await.unwrap();
+    verify(&state, Provider::Baidu, &cookie).await.unwrap();
+    mock.lock().await.baidu_unparseable_exchange = false;
+    let mut ali = providers::start(&state, Provider::Aliyun)
+        .await
+        .unwrap()
+        .context;
+    let providers::Poll::Ready(token) = providers::poll(&state, Provider::Aliyun, &mut ali)
+        .await
+        .unwrap()
+    else {
+        panic!("Ali fixture did not complete")
+    };
+    verify(&state, Provider::Aliyun, &token).await.unwrap();
     let raw=json!({"access_token":"fixture-access","device_id":"fixture-device","x-device-id":"fixture-device","x-signature":"stale-signature","device_private_key":STANDARD.encode([9u8;32])}).to_string();
-    let renewed=providers::identity(&state,Provider::Aliyun,&raw).await.unwrap();
-    let value:Value=serde_json::from_str(&renewed.raw).unwrap();
+    let renewed = providers::identity(&state, Provider::Aliyun, &raw)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_str(&renewed.raw).unwrap();
     assert!(value.get("x-signature").is_none());
     assert!(value.get("x-device-id").is_none());
-    mock.lock().await.ali_device_failure=true;
-    assert!(matches!(providers::identity(&state,Provider::Aliyun,&raw).await,Err(AuthFailure::Protocol)));
-    mock.lock().await.ali_device_failure=false;
-    assert!(matches!(providers::refresh(&state,Provider::Xunlei,&json!({"refresh_token":"fixture"}).to_string()).await,Err(AuthFailure::ClientConfiguration)));
-    let mut guangya=providers::start(&state,Provider::Guangya).await.unwrap().context;
-    let original_device=guangya.data["device_id"].clone();
-    let original_sign=guangya.data["device_sign"].clone();
-    let providers::Poll::Ready(token)=providers::poll(&state,Provider::Guangya,&mut guangya).await.unwrap()else{panic!("Guangya fixture did not complete")};
-    let token:Value=serde_json::from_str(&token).unwrap();
-    assert_eq!(token["device_id"],original_device);
-    assert_eq!(token["device_sign"],original_sign);
+    mock.lock().await.ali_device_failure = true;
+    assert!(matches!(
+        providers::identity(&state, Provider::Aliyun, &raw).await,
+        Err(AuthFailure::Protocol)
+    ));
+    mock.lock().await.ali_device_failure = false;
+    assert!(matches!(
+        providers::refresh(
+            &state,
+            Provider::Xunlei,
+            &json!({"refresh_token":"fixture"}).to_string()
+        )
+        .await,
+        Err(AuthFailure::ClientConfiguration)
+    ));
+    let mut guangya = providers::start(&state, Provider::Guangya)
+        .await
+        .unwrap()
+        .context;
+    let original_device = guangya.data["device_id"].clone();
+    let original_sign = guangya.data["device_sign"].clone();
+    let providers::Poll::Ready(token) = providers::poll(&state, Provider::Guangya, &mut guangya)
+        .await
+        .unwrap()
+    else {
+        panic!("Guangya fixture did not complete")
+    };
+    let token: Value = serde_json::from_str(&token).unwrap();
+    assert_eq!(token["device_id"], original_device);
+    assert_eq!(token["device_sign"], original_sign);
     assert!(token.get("device_code").is_none());
-    verify(&state,Provider::Guangya,&token.to_string()).await.unwrap();
+    verify(&state, Provider::Guangya, &token.to_string())
+        .await
+        .unwrap();
 
-    let unique=Uuid::new_v4().to_string();
+    let unique = Uuid::new_v4().to_string();
     let actor:i64=sqlx::query_scalar("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,'fixture','admin') RETURNING id").bind(&unique).fetch_one(&pool).await.unwrap();
-    let login=start_login(&state,Provider::Guangya,actor,"connect",0).await.unwrap();
-    let gid=Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
-    sqlx::query("UPDATE cloud_login_sessions SET expires_at=now()+interval '10 seconds' WHERE id=$1").bind(gid).execute(&pool).await.unwrap();
-    mock.lock().await.directory_failure=true;
-    poll_provider_once(&state,Some(Provider::Guangya)).await.unwrap();
-    assert_eq!(session(&state,Provider::Guangya,gid,actor).await.unwrap()["status"],"verifying");
-    let exchanges=mock.lock().await.qr_exchanges;
-    let deadline:DateTime<Utc>=sqlx::query_scalar("SELECT expires_at FROM cloud_login_sessions WHERE id=$1").bind(gid).fetch_one(&pool).await.unwrap();
-    assert!(deadline>Utc::now()+Duration::seconds(100),"confirmed authorization needs a bounded verification window beyond QR expiry");
-    sqlx::query("UPDATE cloud_login_sessions SET next_poll_at=now() WHERE id=$1").bind(gid).execute(&pool).await.unwrap();
-    mock.lock().await.directory_failure=false;
-    poll_provider_once(&state,Some(Provider::Guangya)).await.unwrap();
-    assert_eq!(mock.lock().await.qr_exchanges,exchanges,"verification retry must not redeem the code twice");
-    assert_eq!(sqlx::query_scalar::<_,DateTime<Utc>>("SELECT expires_at FROM cloud_login_sessions WHERE id=$1").bind(gid).fetch_one(&pool).await.unwrap(),deadline,"verification window must not slide on retries");
-    assert_eq!(session(&state,Provider::Guangya,gid,actor).await.unwrap()["status"],"connected");
+    let login = start_login(&state, Provider::Guangya, actor, "connect", 0)
+        .await
+        .unwrap();
+    let gid = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "UPDATE cloud_login_sessions SET expires_at=now()+interval '10 seconds' WHERE id=$1",
+    )
+    .bind(gid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    mock.lock().await.directory_failure = true;
+    poll_provider_once(&state, Some(Provider::Guangya))
+        .await
+        .unwrap();
+    assert_eq!(
+        session(&state, Provider::Guangya, gid, actor)
+            .await
+            .unwrap()["status"],
+        "verifying"
+    );
+    let exchanges = mock.lock().await.qr_exchanges;
+    let deadline: DateTime<Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM cloud_login_sessions WHERE id=$1")
+            .bind(gid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        deadline > Utc::now() + Duration::seconds(100),
+        "confirmed authorization needs a bounded verification window beyond QR expiry"
+    );
+    sqlx::query("UPDATE cloud_login_sessions SET next_poll_at=now() WHERE id=$1")
+        .bind(gid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    mock.lock().await.directory_failure = false;
+    poll_provider_once(&state, Some(Provider::Guangya))
+        .await
+        .unwrap();
+    assert_eq!(
+        mock.lock().await.qr_exchanges,
+        exchanges,
+        "verification retry must not redeem the code twice"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, DateTime<Utc>>(
+            "SELECT expires_at FROM cloud_login_sessions WHERE id=$1"
+        )
+        .bind(gid)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        deadline,
+        "verification window must not slide on retries"
+    );
+    assert_eq!(
+        session(&state, Provider::Guangya, gid, actor)
+            .await
+            .unwrap()["status"],
+        "connected"
+    );
 
-    let login=start_login(&state,Provider::Quark,actor,"connect",0).await.unwrap();
-    let qid=Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
-    let bid=Uuid::new_v4();
-    let context=Cipher::load().unwrap().seal(&session_aad(Provider::Baidu,bid),&serde_json::to_string(&baidu).unwrap()).unwrap();
-    sqlx::query("INSERT INTO cloud_login_sessions(id,actor_id,provider,intent,expected_epoch,status,context_cipher,expires_at) VALUES($1,$2,'baidu','connect',0,'waiting',$3,now()+interval '5 minutes')").bind(bid).bind(actor).bind(context).execute(&pool).await.unwrap();
-    {let mut m=mock.lock().await;m.baidu_long_poll=true;m.baidu_calls=0;}
-    let worker_state=state.clone();
-    let worker=tokio::spawn(async move{super::worker(worker_state).await.unwrap()});
-    tokio::time::timeout(std::time::Duration::from_secs(1),async{loop{let m=mock.lock().await;if m.baidu_calls>0&&m.quark_poll_calls>0{break;}drop(m);tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.unwrap();
-    mock.lock().await.quark_scan_confirmed=true;
+    let login = start_login(&state, Provider::Quark, actor, "connect", 0)
+        .await
+        .unwrap();
+    let qid = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    let bid = Uuid::new_v4();
+    let context = serde_json::to_string(&baidu).unwrap();
+    sqlx::query("INSERT INTO cloud_login_sessions(id,actor_id,provider,intent,expected_epoch,status,context_json,expires_at) VALUES($1,$2,'baidu','connect',0,'waiting',$3,now()+interval '5 minutes')").bind(bid).bind(actor).bind(context).execute(&pool).await.unwrap();
+    {
+        let mut m = mock.lock().await;
+        m.baidu_long_poll = true;
+        m.baidu_calls = 0;
+    }
+    let worker_state = state.clone();
+    let worker = tokio::spawn(async move { super::worker(worker_state).await.unwrap() });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let m = mock.lock().await;
+            if m.baidu_calls > 0 && m.quark_poll_calls > 0 {
+                break;
+            }
+            drop(m);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    mock.lock().await.quark_scan_confirmed = true;
     // Quark's own loop must confirm on its own cadence: session interval plus the
     // worker's inter-poll sleep stays well under this window, while a shared
     // batch loop would additionally inherit Baidu's 4s long poll.
-    tokio::time::timeout(std::time::Duration::from_secs(7),async{loop{if session(&state,Provider::Quark,qid,actor).await.unwrap()["status"]=="connected"{break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await.expect("a pending Baidu poll blocked Quark's next poll");
+    tokio::time::timeout(std::time::Duration::from_secs(7), async {
+        loop {
+            if session(&state, Provider::Quark, qid, actor).await.unwrap()["status"] == "connected"
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a pending Baidu poll blocked Quark's next poll");
     state.shutdown.cancel();
     worker.await.unwrap();
     server.abort();
 }
 
 #[tokio::test]
-#[ignore = "requires isolated _test PostgreSQL, Redis and explicit test credential key"]
-async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
+#[ignore = "requires isolated _test PostgreSQL and Redis"]
+async fn plaintext_bindings_refresh_sessions_and_ownership_are_fenced() {
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode},
@@ -380,10 +580,6 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
     use tower::ServiceExt;
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
-    assert!(
-        std::env::var("PANSOU_CLOUD_CREDENTIAL_KEY").is_ok(),
-        "never create a production key during tests"
-    );
     let redis_url = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
     assert_ne!(url::Url::parse(&redis_url).unwrap().path(), "/0");
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -452,23 +648,17 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
     assert_eq!(response["data"]["items"].as_array().unwrap().len(), 5);
 
-    // A verified legacy identity adopts only its own artifacts and becomes encrypted.
-    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','__puus=legacy-cookie') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,credential_cipher=NULL,account_key=NULL").execute(&pool).await.unwrap();
+    // A verified legacy identity adopts only its own artifacts.
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','__puus=legacy-cookie') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,account_key=NULL").execute(&pool).await.unwrap();
     let legacy = cloud_drive::credential_fingerprint(Provider::Quark, "__puus=legacy-cookie");
     let link = Uuid::new_v4();
     let cache = Uuid::new_v4();
-    sqlx::query("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint) VALUES($1,'quark',$2,'https://pan.quark.cn/s/auth-fixture',$2)").bind(link).bind(&unique).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint) VALUES($1,'quark',$2,'https://pan.quark.cn/s/auth-fixture',$2)").bind(link).bind(&unique).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO link_share_cache(id,link_id,input_version,target_account_key,account_revision,policy_revision,target_dir,state,retention_seconds,cleanup_after,ownership_manifest_json) VALUES($1,$2,1,$3,1,1,'project','saved',60,now()-interval '1 minute',$4)").bind(cache).bind(link).bind(&legacy).bind(json!({"account":legacy})).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO link_cleanup_jobs(share_cache_id,status,last_error_code,run_after,attempts) VALUES($1,'blocked','waiting_auth',now(),2)").bind(cache).execute(&pool).await.unwrap();
     check(&state, Provider::Quark).await.unwrap();
     let q = stored(&state, Provider::Quark).await.unwrap().unwrap();
-    assert!(q.credential.is_empty());
-    assert!(
-        !q.credential_cipher
-            .as_ref()
-            .unwrap()
-            .contains("legacy-cookie")
-    );
+    assert!(q.credential.contains("__puus=rotated-cookie-"));
     assert_eq!(q.auth_status, "ready");
     let key = q.account_key.clone().unwrap();
     assert_eq!(
@@ -521,12 +711,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
     let rotated = stored(&state, Provider::Quark).await.unwrap().unwrap();
     assert_eq!(rotated.binding_epoch, epoch);
     assert!(rotated.token_revision > q.token_revision);
-    assert!(
-        rotated
-            .raw(Provider::Quark)
-            .unwrap()
-            .contains("rotated-cookie")
-    );
+    assert!(rotated.credential.contains("rotated-cookie"));
     let stale = rotated.token_revision;
     import(
         &state,
@@ -566,7 +751,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         let old = stored(&state, p).await.unwrap().unwrap();
         assert_eq!(old.auth_status, "ready");
         assert!(old.refreshable);
-        assert!(old.raw(p).unwrap().contains("subject1"));
+        assert!(old.credential.contains("subject1"));
         let subject_key = old.account_key.clone();
         let oldepoch = old.binding_epoch;
         sqlx::query("UPDATE cloud_account_settings SET next_check_at=now() WHERE provider=$1")
@@ -581,7 +766,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         assert_eq!(new.account_key, subject_key);
         assert_eq!(new.binding_epoch, oldepoch);
         assert_eq!(new.token_revision, old.token_revision + 1);
-        assert!(new.raw(p).unwrap().contains("refresh-"));
+        assert!(new.credential.contains("refresh-"));
         assert!(
             list(&state)
                 .await
@@ -606,7 +791,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
     mock.lock().await.directory_failure = true;
     assert!(maintain(&state, Provider::Guangya).await.is_err());
     let pending = stored(&state, Provider::Guangya).await.unwrap().unwrap();
-    assert!(pending.pending_refresh_cipher.is_some());
+    assert!(pending.pending_refresh_credential.is_some());
     assert_eq!(pending.token_revision, before.token_revision);
     let count = mock.lock().await.refreshes;
     mock.lock().await.directory_failure = false;
@@ -621,7 +806,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
             .await
             .unwrap()
             .unwrap()
-            .pending_refresh_cipher
+            .pending_refresh_credential
             .is_none()
     );
     sqlx::query("UPDATE cloud_account_settings SET refresh_started_at=now()-interval '10 minutes',refresh_lease=$1,refresh_lease_until=now()-interval '1 minute' WHERE provider='guangya'").bind(Uuid::new_v4()).execute(&pool).await.unwrap();
@@ -683,18 +868,12 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         "connected"
     );
     let connected = stored(&state, Provider::Quark).await.unwrap().unwrap();
-    assert!(
-        connected
-            .raw(Provider::Quark)
-            .unwrap()
-            .contains("__puus=rotated-cookie")
-    );
+    assert!(connected.credential.contains("__puus=rotated-cookie"));
     assert_eq!(
         connected.account_key,
         Some(providers::stable_key(Provider::Quark, "subject1", ""))
     );
     assert_eq!(connected.binding_epoch, before.binding_epoch + 1);
-    assert!(connected.credential.is_empty());
     assert!(matches!(
         providers::identity(&state, Provider::Quark, "ctoken=anonymous").await,
         Err(AuthFailure::Reauthorize)
@@ -703,18 +882,29 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
     // fail at the exchange stage instead of storing a credential that later
     // verifies as anonymous.
     let before = stored(&state, Provider::Quark).await.unwrap().unwrap();
-    let broken = start_login(&state, Provider::Quark, actor, "replace", before.binding_epoch)
-        .await
-        .unwrap();
+    let broken = start_login(
+        &state,
+        Provider::Quark,
+        actor,
+        "replace",
+        before.binding_epoch,
+    )
+    .await
+    .unwrap();
     let broken_id = Uuid::parse_str(broken["id"].as_str().unwrap()).unwrap();
     mock.lock().await.quark_scan_confirmed = true;
     mock.lock().await.quark_broken_session = true;
     poll_once(&state).await.unwrap();
     mock.lock().await.quark_scan_confirmed = false;
     mock.lock().await.quark_broken_session = false;
-    let failed = session(&state, Provider::Quark, broken_id, actor).await.unwrap();
+    let failed = session(&state, Provider::Quark, broken_id, actor)
+        .await
+        .unwrap();
     assert_eq!(failed["status"], "failed");
-    assert_eq!(failed["errorCode"], "token_exchange:reauthorization_required");
+    assert_eq!(
+        failed["errorCode"],
+        "token_exchange:reauthorization_required"
+    );
     let untouched = stored(&state, Provider::Quark).await.unwrap().unwrap();
     assert_eq!(untouched.token_revision, before.token_revision);
     assert_eq!(untouched.auth_status, before.auth_status);
@@ -743,7 +933,15 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         "account_identity:provider_protocol_error"
     );
     assert!(!rejected.to_string().contains("fixture-sensitive-body"));
-    assert!(sqlx::query_scalar::<_,bool>("SELECT context_cipher IS NULL AND qr_image IS NULL FROM cloud_login_sessions WHERE id=$1").bind(rejected_id).fetch_one(&pool).await.unwrap());
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT context_json IS NULL AND qr_image IS NULL FROM cloud_login_sessions WHERE id=$1"
+        )
+        .bind(rejected_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    );
     assert_eq!(
         stored(&state, Provider::Guangya)
             .await
@@ -799,7 +997,13 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
             .await
             .unwrap()
             .unwrap()
-            .credential_cipher
+            .credential
+            .is_empty()
+    );
+    assert!(
+        credentials(&state, Provider::Guangya)
+            .await
+            .unwrap()
             .is_none()
     );
     assert!(matches!(
@@ -817,7 +1021,7 @@ async fn encrypted_bindings_refresh_sessions_and_ownership_are_fenced() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM link_catalog WHERE id=$1")
+    sqlx::query("DELETE FROM resource_links WHERE id=$1")
         .bind(link)
         .execute(&pool)
         .await

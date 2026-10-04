@@ -8,11 +8,11 @@ import '/app.vue';
 const scenario=new URLSearchParams(location.search).get('scenario');
 const link=(i)=>({type:i%3===0?'baidu':i%3===1?'quark':'aliyun',url:['https://pan.baidu.com/s/','https://pan.quark.cn/s/','https://www.alipan.com/s/'][i%3]+`1CLzyl6BTd1Ruz6S0E9aZRwExample${i}?pwd=9527`,linkKey:`fixture-${i}`,checkSupported:true,password:i%3===0?'9gj8':null,validity:i%4===0?1:i%4===1?0:-1,checkedAt:i%4===3?null:'2026-10-03T03:28:55Z',lastAttemptAt:i%4===2?'2026-10-03T03:28:55Z':null,stale:i===4});
 const items=[
- {id:'a',name:'功夫女足（2026）4K HDR10',description:'一众顶尖球队，即将展开一场前所未有的巅峰对决。',tags:['电影','剧情','leoziyuan'],links:[link(0),link(1),link(2)],datetime:'2026-10-03 11:45:50'},
- {id:'b',name:'凡人修仙传 年番合集 · 4K 高码率版',description:'全集按季度整理，包含多个网盘和版本。',tags:['动画','4K','国语'],links:Array.from({length:70},(_,i)=>link(i)),datetime:'2026-10-03 11:45:42'},
- {id:'c',name:'光阴之外（2025）4K HQ S01',description:'天地是万物众生的客舍，光阴是古往今来的过客。',tags:['剧集'],links:[link(4)],datetime:'2026-10-03 11:45:32'},
- {id:'d',name:'摄影与构图入门：从基础到实践',description:'',tags:[],links:[link(3)],datetime:'2026-10-02 23:10:10',enabled:false},
- {id:'e',name:'没有链接的资源',links:[],tags:[],datetime:null}
+ {id:'a',name:'功夫女足（2026）4K HDR10',description:'一众顶尖球队，即将展开一场前所未有的巅峰对决。',links:[link(0),link(1),link(2)],datetime:'2026-10-03 11:45:50'},
+ {id:'b',name:'凡人修仙传 年番合集 · 4K 高码率版',description:'全集按季度整理，包含多个网盘和版本。',links:Array.from({length:70},(_,i)=>link(i)),datetime:'2026-10-03 11:45:42'},
+ {id:'c',name:'光阴之外（2025）4K HQ S01',description:'天地是万物众生的客舍，光阴是古往今来的过客。',links:[link(4)],datetime:'2026-10-03 11:45:32'},
+ {id:'d',name:'摄影与构图入门：从基础到实践',description:'',links:[link(3)],datetime:'2026-10-02 23:10:10',enabled:false},
+ {id:'e',name:'没有链接的资源',links:[],datetime:null}
 ].map(item=>({enabled:true,cloud_types:[...new Set(item.links.map(l=>l.type))],...item}));
 // Fail closed: preview data and simulated actions never reach a real API.
 window.fetch=async(input,options={})=>{
@@ -24,6 +24,7 @@ window.fetch=async(input,options={})=>{
  }
  if(method!=='GET')throw new Error('验收页禁止真实写入');
  if(path==='/api/account/session')return Response.json({authenticated:true,user:{id:1,username:'模拟管理员',role:'admin',status:'active'}});
+ if(path.startsWith('/api/admin/resources/'))return Response.json({data:{resource:items.find(item=>item.id===path.split('/').at(-1))||null}});
  if(path==='/api/admin/resources'){
   if(scenario==='error')return Response.json({message:'模拟加载失败'},{status:503});
   const q=url.searchParams.get('q')||'',type=url.searchParams.get('cloudType');

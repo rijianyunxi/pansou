@@ -97,6 +97,7 @@ setDocumentHead(() => ({
     { property: "og:site_name", content: siteName },
     { property: "og:title", content: siteTitle },
     { property: "og:description", content: siteDescription },
+    { property: "og:image", content: new URL("/og.svg", window.location.origin).href },
     { property: "og:image:type", content: "image/svg+xml" },
     { property: "og:image:width", content: "1200" },
     { property: "og:image:height", content: "630" },
@@ -104,6 +105,7 @@ setDocumentHead(() => ({
     { name: "twitter:card", content: "summary_large_image" },
     { name: "twitter:title", content: siteTitle },
     { name: "twitter:description", content: siteDescription },
+    { name: "twitter:image", content: new URL("/og.svg", window.location.origin).href },
     { name: "twitter:image:alt", content: siteImageAlt },
   ],
 }));

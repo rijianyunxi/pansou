@@ -152,8 +152,12 @@ pub(crate) async fn record_check(
     state: &AppState,
     link: &Link,
     value: &Value,
+    resource: Option<&str>,
 ) -> Result<(), ApiError> {
-    let id = register(state, link).await?;
+    let id = match resource {
+        Some(id) => owned_id(state, id, link).await?,
+        None => register(state, link).await?,
+    };
     let policy = delivery::load_provider(
         state,
         crate::cloud_drive::Provider::from_name(&link.r#type)?,
@@ -163,6 +167,30 @@ pub(crate) async fn record_check(
 }
 const FACT_COLUMNS: &str =
     "id,validity,checked_at,valid_until,last_attempt_at,last_error_code,created_at";
+type Facts = HashMap<(Option<String>, String), Fact>;
+pub(super) async fn load_facts(
+    state: &AppState,
+    owners: &[String],
+    keys: &[String],
+) -> Result<Facts, ApiError> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows=sqlx::query(&format!("SELECT resource_id,input_fingerprint,{FACT_COLUMNS} FROM resource_links WHERE input_fingerprint=ANY($1) AND (resource_id=ANY($2) OR resource_id IS NULL) ORDER BY checked_at ASC NULLS FIRST,id"))
+        .bind(keys).bind(owners).fetch_all(&state.pool).await?;
+    rows.iter()
+        .map(|r| {
+            Ok((
+                (r.try_get("resource_id")?, r.try_get("input_fingerprint")?),
+                sqlx::FromRow::from_row(r)?,
+            ))
+        })
+        .collect::<Result<_, sqlx::Error>>()
+        .map_err(Into::into)
+}
+fn scoped_fact<'a>(facts: &'a Facts, owner: Option<&str>, link: &Link) -> Option<&'a Fact> {
+    facts.get(&(owner.map(str::to_owned), fingerprint(link)))
+}
 /// Read existing per-link observations in one batch. Listing admin resources
 /// must not register links or enqueue checks, and must match the password too.
 pub(crate) async fn admin_resource_observations(
@@ -176,18 +204,13 @@ pub(crate) async fn admin_resource_observations(
         .filter_map(|l| serde_json::from_value::<Link>(l.clone()).ok())
         .map(|l| fingerprint(&l))
         .collect();
-    let rows = if fingerprints.is_empty() {
-        Vec::new()
-    } else {
-        sqlx::query(&format!(
-        "SELECT input_fingerprint,{FACT_COLUMNS} FROM link_catalog WHERE input_fingerprint=ANY($1)"
-    )).bind(&fingerprints).fetch_all(&state.pool).await?
-    };
-    let facts: HashMap<String, Fact> = rows
+    let owners: Vec<String> = resources
         .iter()
-        .map(|r| Ok((r.try_get("input_fingerprint")?, sqlx::FromRow::from_row(r)?)))
-        .collect::<Result<_, sqlx::Error>>()?;
+        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+        .collect();
+    let facts = load_facts(state, &owners, &fingerprints).await?;
     for resource in resources {
+        let owner = resource["id"].as_str().unwrap_or("").to_owned();
         let mut validities = Vec::new();
         let mut checked_at: Option<DateTime<Utc>> = None;
         if let Some(links) = resource["links"].as_array_mut() {
@@ -196,10 +219,14 @@ pub(crate) async fn admin_resource_observations(
                     validities.push(-1);
                     continue;
                 };
-                let observation = facts.get(&fingerprint(&link)).map(Fact::public)
+                let observation = scoped_fact(&facts,if owner.is_empty(){None}else{Some(&owner)},&link).map(Fact::public)
                     .unwrap_or_else(|| json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null,"createdAt":null,"checkStatus":"unchecked","checkMessage":null}));
                 validities.push(observation["validity"].as_i64().unwrap_or(-1) as i16);
-                if let Some(fact) = facts.get(&fingerprint(&link)) {
+                if let Some(fact) = scoped_fact(
+                    &facts,
+                    if owner.is_empty() { None } else { Some(&owner) },
+                    &link,
+                ) {
                     checked_at = checked_at.max(fact.checked_at);
                 }
                 if let (Some(link), Some(fields)) = (value.as_object_mut(), observation.as_object())
@@ -247,13 +274,12 @@ pub async fn admin_resource_link_check(
     Json(input): Json<AdminLinkCheck>,
 ) -> Result<Json<Value>, ApiError> {
     admin(&state, &headers).await?;
-    let stored: Value = sqlx::query_scalar(
-        "SELECT links_json FROM managed_resources WHERE id=$1 AND deleted_at IS NULL",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("资源不存在".into()))?;
+    let stored: Value =
+        sqlx::query_scalar("SELECT resource_links_json(id) FROM managed_resources WHERE id=$1")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("资源不存在".into()))?;
     let link = stored
         .as_array()
         .into_iter()
@@ -283,7 +309,7 @@ pub async fn admin_resource_link_check(
     let result = tokio::time::timeout(Duration::from_secs(20), drive.check(&reference))
         .await
         .unwrap_or_else(|_| json!({"status":"unknown","message":"检测超时，请稍后重试"}));
-    let link_id = register(&state, &link).await?;
+    let link_id = owned_id(&state, &id, &link).await?;
     worker::record(&state, link_id, &result, &policy).await?;
     let mut observation = fact(&state, link_id).await?.public();
     observation["linkKey"] = json!(input.link_key);
@@ -292,16 +318,40 @@ pub async fn admin_resource_link_check(
 }
 async fn fact(state: &AppState, id: Uuid) -> Result<Fact, ApiError> {
     Ok(sqlx::query_as(&format!(
-        "SELECT {FACT_COLUMNS} FROM link_catalog WHERE id=$1"
+        "SELECT {FACT_COLUMNS} FROM resource_links WHERE id=$1"
     ))
     .bind(id)
     .fetch_one(&state.pool)
     .await?)
 }
-pub(super) async fn register(state: &AppState, link: &Link) -> Result<Uuid, ApiError> {
-    Ok(sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,original_password,input_fingerprint,next_check_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(input_fingerprint) DO UPDATE SET last_seen_at=now() RETURNING id")
-        .bind(Uuid::new_v4()).bind(&link.r#type).bind(resource_clean::link_identity(&link.url)).bind(&link.url).bind(&link.password).bind(fingerprint(link)).fetch_one(&state.pool).await?)
+pub(super) async fn owned_id(
+    state: &AppState,
+    resource: &str,
+    link: &Link,
+) -> Result<Uuid, ApiError> {
+    sqlx::query_scalar("SELECT id FROM resource_links WHERE resource_id=$1 AND input_fingerprint=$2 ORDER BY position LIMIT 1")
+        .bind(resource).bind(fingerprint(link)).fetch_optional(&state.pool).await?
+        .ok_or_else(||ApiError::Conflict("链接已变更，请刷新后重试".into()))
 }
+pub(super) async fn register(state: &AppState, link: &Link) -> Result<Uuid, ApiError> {
+    let key = fingerprint(link);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,48))")
+        .bind(&key)
+        .execute(&mut *tx)
+        .await?;
+    let existing:Option<Uuid>=sqlx::query_scalar("SELECT id FROM resource_links WHERE resource_id IS NULL AND input_fingerprint=$1 ORDER BY created_at DESC LIMIT 1")
+        .bind(&key).fetch_optional(&mut *tx).await?;
+    let id = if let Some(id) = existing {
+        id
+    } else {
+        sqlx::query_scalar("INSERT INTO resource_links(id,provider,identity,original_url,original_password,input_fingerprint,next_check_at) VALUES($1,$2,$3,$4,$5,$6,now()) RETURNING id")
+            .bind(Uuid::new_v4()).bind(&link.r#type).bind(resource_clean::link_identity(&link.url)).bind(&link.url).bind(&link.password).bind(key).fetch_one(&mut *tx).await?
+    };
+    tx.commit().await?;
+    Ok(id)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LinkRef {
@@ -375,10 +425,14 @@ pub async fn resolve(
             return Err(ApiError::TooManyRequests("获取过于频繁，请稍后重试".into()));
         }
     }
-    let id = register(&state, &link).await?;
+    let id = if snap.source.is_none() {
+        owned_id(&state, &snap.resource_id, &link).await?
+    } else {
+        register(&state, &link).await?
+    };
     // A click can create urgent work even if this link was registered while checks
     // were disabled. Never replace or steal another worker's running lease.
-    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',10 FROM link_catalog c WHERE c.id=$1 AND c.provider IN('baidu','quark','aliyun','xunlei','guangya') AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10 WHERE link_check_jobs.status='queued' AND link_check_jobs.priority<>10")
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',10 FROM resource_links c WHERE c.id=$1 AND c.provider IN('baidu','quark','aliyun','xunlei','guangya') AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT(link_id,input_version) WHERE kind='original' AND status IN('queued','running') DO UPDATE SET priority=10 WHERE link_check_jobs.status='queued' AND link_check_jobs.priority<>10")
         .bind(id)
         .execute(&state.pool)
         .await?;
@@ -572,7 +626,7 @@ async fn operation(
             value = fallback(key, link, &current, "original_invalid");
         }
         if value["delivery"] == "reshared" {
-            let share=sqlx::query("SELECT s.target_account_key,c.provider,a.credential,a.account_key,a.auth_status FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id JOIN cloud_account_settings a ON a.provider=c.provider WHERE s.id=$1 AND s.state='ready' AND s.share_validity=1 AND s.cleanup_after>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)) AND (s.share_expires_at IS NULL OR s.share_expires_at>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)))").bind(row.get::<Option<Uuid>,_>("share_cache_id")).fetch_optional(&state.pool).await?;
+            let share=sqlx::query("SELECT s.target_account_key,c.provider,a.credential,a.account_key,a.auth_status FROM link_share_cache s JOIN resource_links c ON c.id=s.link_id JOIN cloud_account_settings a ON a.provider=c.provider WHERE s.id=$1 AND s.state='ready' AND s.share_validity=1 AND s.cleanup_after>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)) AND (s.share_expires_at IS NULL OR s.share_expires_at>now()+make_interval(secs=>COALESCE((s.ownership_manifest_json->>'minRemainingSeconds')::double precision,5)))").bind(row.get::<Option<Uuid>,_>("share_cache_id")).fetch_optional(&state.pool).await?;
             let ready = share.is_some_and(|r| {
                 let Ok(provider) =
                     crate::cloud_drive::Provider::from_name(&r.get::<String, _>("provider"))

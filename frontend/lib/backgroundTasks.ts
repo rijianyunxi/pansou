@@ -1,7 +1,6 @@
 import { adminPaginationFilters } from './adminPagination.ts';
 
 export const TASK_KINDS = [
-  { key: 'sync', name: '资源链接同步', hint: '登记新采集或编辑后的资源链接，并将检测结果汇总到资源状态。暂停后新资源仍可搜索和取链，链接登记与状态汇总会延后；同步成功后任务出队。', statuses: ['all','queued'] },
   { key: 'checks', name: '有效性检测', hint: '有效性显示链接当前观测，不是每次任务的历史快照；检测完成不代表链接有效。重检仍受账号、频率、额度和熔断策略限制。', statuses: ['all','attention','queued','running','completed','failed'] },
   { key: 'resolve', name: '取链 / 转存', hint: '用户复制或打开链接时触发，暂停后台调度后仍会执行。是否转存由网盘账号中的转存配置决定；取链失败或超时可回退原链接，确认失效则提示不可用。', statuses: ['all','attention','queued','running','completed','failed'] },
   { key: 'cleanup', name: '链接清理', hint: '管理到期或取链超时产生的云端产物。', statuses: ['all','attention','queued','running','blocked','failed','completed','ignored'] },
@@ -29,7 +28,7 @@ const labels: Record<string,string> = {
   failed:'失败', paused:'已暂停', cancelled:'已取消', blocked:'已阻塞', ignored:'已忽略', uncertain:'结果待核实',
   original:'原链接检测', reshared:'转存分享',
   resolve:'按需取链', save:'转存', existing:'复用', delete:'删除',
-  'link-sync':'资源链接同步', 'link-check':'有效性检测', 'link-cleanup':'链接清理', 'link-maintenance':'过期与超时处理',
+  'link-check':'有效性检测', 'link-cleanup':'链接清理', 'link-maintenance':'过期与超时处理',
 };
 export function taskLabel(key?: string) { return key ? labels[key] || key : '未记录'; }
 const reasons: Record<string,string> = {

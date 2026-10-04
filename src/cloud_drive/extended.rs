@@ -172,12 +172,21 @@ pub(crate) fn guangya_auth_headers(raw: &str) -> Result<HeaderMap, ()> {
     // Match the Windows Chrome 131 UA used by both authentication and storage
     // transports. Account SDK metadata is distinct from business root headers.
     for (name, value) in [
-        ("x-client-version", "0.0.1"), ("x-device-name", "PC-Chrome"),
-        ("x-device-model", "chrome%2F131.0.0.0"), ("x-net-work-type", "NONE"),
-        ("x-os-version", "Win32"), ("x-platform-version", "1"),
-        ("x-protocol-version", "301"), ("x-provider-name", "NONE"),
+        ("x-client-version", "0.0.1"),
+        ("x-device-name", "PC-Chrome"),
+        ("x-device-model", "chrome%2F131.0.0.0"),
+        ("x-net-work-type", "NONE"),
+        ("x-os-version", "Win32"),
+        ("x-platform-version", "1"),
+        ("x-protocol-version", "301"),
+        ("x-provider-name", "NONE"),
         ("x-sdk-version", "9.1.3"),
-    ] { headers.insert(HeaderName::from_static(name), HeaderValue::from_static(value)); }
+    ] {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
     Ok(headers)
 }
 
@@ -253,14 +262,37 @@ impl Extended {
             serde_json::from_str::<Value>(&raw)
                 .map_err(|_| self.wire.error(ErrorKind::Login, "账号响应格式异常"))?
         };
-        let code=scalar(&value["code"]);
-        let error=scalar(&value["error"]);
-        if matches!(code.as_str(),"AccessTokenInvalid"|"AccessTokenExpired"|"InvalidAccessToken"|"Unauthorized"|"401"|"403")||matches!(error.as_str(),"invalid_token"|"invalid_grant"|"unauthorized"|"unauthenticated"|"captcha_required"){
-            self.wire.auth_rejected(code!="403"&&error!="captcha_required").await;
-            return Err(self.wire.error(ErrorKind::Login,"账号授权已失效或需要额外验证，请重新连接"));
+        let code = scalar(&value["code"]);
+        let error = scalar(&value["error"]);
+        if matches!(
+            code.as_str(),
+            "AccessTokenInvalid"
+                | "AccessTokenExpired"
+                | "InvalidAccessToken"
+                | "Unauthorized"
+                | "401"
+                | "403"
+        ) || matches!(
+            error.as_str(),
+            "invalid_token"
+                | "invalid_grant"
+                | "unauthorized"
+                | "unauthenticated"
+                | "captcha_required"
+        ) {
+            self.wire
+                .auth_rejected(code != "403" && error != "captcha_required")
+                .await;
+            return Err(self
+                .wire
+                .error(ErrorKind::Login, "账号授权已失效或需要额外验证，请重新连接"));
         }
         let actual = text(self.data(&value), &["user_id", "userId", "sub", "id"]);
-        if actual.is_empty(){return Err(self.wire.error(ErrorKind::Upstream,"账号响应缺少身份字段，无法核实账号"));}
+        if actual.is_empty() {
+            return Err(self
+                .wire
+                .error(ErrorKind::Upstream, "账号响应缺少身份字段，无法核实账号"));
+        }
         if actual != self.user_id {
             return Err(self.wire.error(
                 ErrorKind::Ownership,
@@ -308,9 +340,14 @@ impl Extended {
             if code != "0" && !(wire.provider == Provider::Guangya && code == "200") {
                 tracing::warn!(provider=%wire.provider.name(), business_code=%code, "token drive call rejected by business code");
                 let kind = match code.as_str() {
-                    "AccessTokenInvalid" | "AccessTokenExpired" | "InvalidAccessToken"
-                    | "Unauthorized" | "401" | "DeviceSessionSignatureInvalid"
-                    | "DeviceSessionSignatureOffline" | "DeviceSessionNotFound" => ErrorKind::Login,
+                    "AccessTokenInvalid"
+                    | "AccessTokenExpired"
+                    | "InvalidAccessToken"
+                    | "Unauthorized"
+                    | "401"
+                    | "DeviceSessionSignatureInvalid"
+                    | "DeviceSessionSignatureOffline"
+                    | "DeviceSessionNotFound" => ErrorKind::Login,
                     "ShareLinkNotFound" | "ShareLinkExpired" | "ShareLinkCancelled" => {
                         ErrorKind::InvalidLink
                     }
@@ -318,7 +355,9 @@ impl Extended {
                     "TooManyRequests" | "429" => ErrorKind::RateLimit,
                     _ => ErrorKind::Upstream,
                 };
-                if kind==ErrorKind::Login {wire.auth_rejected(true).await;}
+                if kind == ErrorKind::Login {
+                    wire.auth_rejected(true).await;
+                }
                 return Err(wire.error(kind, "网盘拒绝操作，请检查登录凭据、提取码或账号限制"));
             }
         } else if wire.provider == Provider::Guangya {
@@ -448,10 +487,9 @@ impl Extended {
             data_keys=?data.as_object().map(|o|o.keys().collect::<Vec<_>>()),
             "drive listing response has no known file list field"
         );
-        Err(self.wire.error(
-            ErrorKind::Upstream,
-            "目录响应缺少文件列表，拒绝当作空目录",
-        ))
+        Err(self
+            .wire
+            .error(ErrorKind::Upstream, "目录响应缺少文件列表，拒绝当作空目录"))
     }
     async fn listing(
         &self,
@@ -726,9 +764,15 @@ impl Extended {
         Ok(owned)
     }
     pub async fn transfer(&self, context: &Context, dir: &str) -> Result<Vec<String>, DriveError> {
-        self.transfer_with_listing(context, dir).await.map(|(ids, _)| ids)
+        self.transfer_with_listing(context, dir)
+            .await
+            .map(|(ids, _)| ids)
     }
-    pub async fn transfer_with_listing(&self, context: &Context, dir: &str) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
+    pub async fn transfer_with_listing(
+        &self,
+        context: &Context,
+        dir: &str,
+    ) -> Result<(Vec<String>, Option<Vec<File>>), DriveError> {
         self.wire.require_login().await?;
         let ids: Vec<&str> = context.files.iter().map(|f| f.id.as_str()).collect();
         let mut acknowledged = vec![];
@@ -831,9 +875,9 @@ impl Extended {
             provider: Some(self.wire.provider),
             password: Some(password.clone()),
         }
-            .parse()
-            .map_err(|_| self.wire.error(ErrorKind::Upstream, "平台返回非法分享 URL"))?
-            .browser_url();
+        .parse()
+        .map_err(|_| self.wire.error(ErrorKind::Upstream, "平台返回非法分享 URL"))?
+        .browser_url();
         Ok(json!({"shareId":id,"url":canonical,"password":password,"shareExpiresAt":expires}))
     }
     pub async fn revoke_share(&self, id: &str) -> Result<(), DriveError> {
@@ -940,17 +984,28 @@ mod tests {
         }
         let base = "https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m";
         for (suffix, code) in [("", ""), ("?code=ewcc", "ewcc")] {
-            let data = json!({"shareId":"1953404474227400751","shareUrl":format!("{base}{suffix}")});
+            let data =
+                json!({"shareId":"1953404474227400751","shareUrl":format!("{base}{suffix}")});
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut drive = provider(Provider::Guangya);
-            drive.base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            drive.base =
+                Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
             let app = Router::new().fallback(any(create)).with_state(data);
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let file = drive.file(&json!({"id":"fixture-file","name":"movie.mp4","type":"file","size":42})).unwrap();
+            let file = drive
+                .file(&json!({"id":"fixture-file","name":"movie.mp4","type":"file","size":42}))
+                .unwrap();
             let share = drive.share(&[file], 7).await.unwrap();
             assert_eq!(share["shareId"], "1953404474227400751");
             assert_eq!(share["password"], code);
-            assert_eq!(share["url"], if code.is_empty() { format!("{base}#/share") } else { format!("{base}?code={code}#/share") });
+            assert_eq!(
+                share["url"],
+                if code.is_empty() {
+                    format!("{base}#/share")
+                } else {
+                    format!("{base}?code={code}#/share")
+                }
+            );
             server.abort();
         }
     }
@@ -989,7 +1044,12 @@ mod tests {
         // Captured from userres/v1/file/get_file_list on 2026-10-03: an empty
         // directory answers {"msg":"success","data":{}} with no list field.
         let drive = provider(Provider::Guangya);
-        assert!(drive.array(&json!({"msg":"success","data":{}})).unwrap().is_empty());
+        assert!(
+            drive
+                .array(&json!({"msg":"success","data":{}}))
+                .unwrap()
+                .is_empty()
+        );
         // A non-empty listing keeps its entries, and the shape that broke the
         // delivery before stays parseable.
         let root = json!({"msg":"success","data":{"total":1,"list":[
@@ -1001,13 +1061,19 @@ mod tests {
         assert!(drive.array(&json!({"msg":"出错了","data":{}})).is_err());
         assert!(drive.array(&json!({"data":{}})).is_err());
         for other in [Provider::Aliyun, Provider::Xunlei] {
-            assert!(provider(other).array(&json!({"msg":"success","data":{}})).is_err());
+            assert!(
+                provider(other)
+                    .array(&json!({"msg":"success","data":{}}))
+                    .is_err()
+            );
         }
     }
 
     #[tokio::test]
     async fn short_tasks_are_confirmed_without_whole_second_polling_gaps() {
-        async fn status(State(calls): State<std::sync::Arc<std::sync::atomic::AtomicUsize>>) -> Json<Value> {
+        async fn status(
+            State(calls): State<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+        ) -> Json<Value> {
             let count = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Json(json!({"code":0,"data":{"status":if count < 2 {1} else {2}}}))
         }
@@ -1015,33 +1081,49 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut drive = provider(Provider::Guangya);
         drive.base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let app = Router::new().fallback(any(status)).with_state(calls.clone());
+        let app = Router::new()
+            .fallback(any(status))
+            .with_state(calls.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let started = std::time::Instant::now();
         drive.wait_task("fixture-task").await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
-        assert!(started.elapsed() < Duration::from_millis(1800), "short task waited {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "short task waited {:?}",
+            started.elapsed()
+        );
         server.abort();
     }
 
     #[tokio::test]
     async fn guangya_identity_uses_get_and_rejects_wrong_account() {
-        async fn identity(request: axum::http::Request<axum::body::Body>) -> axum::response::Response {
+        async fn identity(
+            request: axum::http::Request<axum::body::Body>,
+        ) -> axum::response::Response {
             assert_eq!(request.uri().path(), "/v1/user/me");
             assert_eq!(request.headers()["authorization"], "Bearer fixture-access");
             if request.method() != Method::GET {
-                return (axum::http::StatusCode::NOT_IMPLEMENTED, Json(json!({"error":"unimplemented"}))).into_response();
+                return (
+                    axum::http::StatusCode::NOT_IMPLEMENTED,
+                    Json(json!({"error":"unimplemented"})),
+                )
+                    .into_response();
             }
             Json(json!({"sub":"fixture-user"})).into_response()
         }
-        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut drive=provider(Provider::Guangya);
-        drive.account_base=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
-        let app=Router::new().fallback(any(identity));
-        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut drive = provider(Provider::Guangya);
+        drive.account_base =
+            Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let app = Router::new().fallback(any(identity));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         drive.verify_account().await.unwrap();
-        drive.user_id="wrong-account".into();
-        assert_eq!(drive.verify_account().await.unwrap_err().kind,ErrorKind::Ownership);
+        drive.user_id = "wrong-account".into();
+        assert_eq!(
+            drive.verify_account().await.unwrap_err().kind,
+            ErrorKind::Ownership
+        );
         server.abort();
     }
 

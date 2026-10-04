@@ -23,7 +23,7 @@ const settings = computed(() => route.query.settings === "1"),
   messageStatus = computed(() =>
     typeof route.query.status === "string" ? route.query.status : undefined,
   ),
-  messageId = computed(() => Number(route.query.message) || undefined);
+  messageScope = computed(() => route.query.scope === "today" ? "today" as const : "all" as const);
 const channelsRef = ref<InstanceType<typeof CrawlChannelsTab>>();
 const notice = ref("");
 const {
@@ -39,11 +39,11 @@ const metrics = computed(() => [
   { key: 'review', label: '待复核页', value: overview.value?.review, hint: '页面解析异常，待检查' },
 ]);
 function overlay(query: Record<string, string | number | undefined>) {
-  const { edit, settings, messages, message, status, ...rest } = route.query;
+  const { edit, settings, messages, status, scope, ...rest } = route.query;
   void router.push({ query: { ...rest, ...query } });
 }
 function close() {
-  const { edit, settings, messages, message, status, ...rest } = route.query;
+  const { edit, settings, messages, status, scope, ...rest } = route.query;
   void router.replace({ query: rest });
 }
 async function refresh() {
@@ -99,7 +99,7 @@ function saved() {
       {{ overviewError }}
     </p>
     <p v-if="notice" role="status" class="feature-notice">{{ notice }}</p>
-    <CrawlChannelsTab ref="channelsRef" @edit="overlay({edit:$event})" @messages="(channel, st) => overlay({messages:channel,status:st||undefined})" @changed="refreshOverview" />
+    <CrawlChannelsTab ref="channelsRef" @edit="overlay({edit:$event})" @messages="(channel, st, scope) => overlay({messages:channel,status:st,scope})" @changed="refreshOverview" />
     <CrawlChannelEditor
       v-if="editId !== undefined"
       :key="editId"
@@ -115,9 +115,9 @@ function saved() {
       "
     /><CrawlMessagesSheet
       v-else-if="messageChannel"
-      :key="messageChannel"
+      :key="messageChannel + messageScope + messageStatus"
       :channel="messageChannel"
-      :initial-message="messageId"
+      :scope="messageScope"
       :initial-status="messageStatus"
       @close="close"
       @changed="refresh"

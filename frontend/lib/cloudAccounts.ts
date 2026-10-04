@@ -26,7 +26,6 @@ const errors: Record<string,string> = {
   qr_start_failed:'无法生成二维码，请重试或使用高级导入。', qr_expired:'二维码已过期，请重新生成。',
   authorization_denied:'你已在手机上拒绝授权。', reauthorization_required:'授权已失效，请重新连接。',
   verification_required:'请在官方网站完成额外验证后重新连接。',
-  credential_key_unavailable:'服务端凭证密钥不可用，请恢复原密钥或检查配置。',
   refresh_uncertain:'刷新请求结果未确认，为防止重复使用旧刷新令牌，请重新授权。',
   authorization_exchange_uncertain:'扫码授权兑换结果未确认。为避免重复使用一次性票据，请重新生成二维码并扫码。',
   client_configuration_required:'续期缺少同一官方会话的客户端配置，请高级导入完整 client_id 和所需设备字段，不要混用不同客户端的令牌。',

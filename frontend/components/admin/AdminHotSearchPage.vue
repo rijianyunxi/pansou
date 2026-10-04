@@ -132,9 +132,7 @@
                     >人工权重 {{ item.manualWeight }}</small
                   ></TableCell
                 ><TableCell
-                  ><span
-                    :class="['status-badge', `hot-status-${item.status}`]"
-                    >{{ statusLabel(item.status) }}</span
+                  ><AdminStatusBadge :state="item.status">{{ statusLabel(item.status) }}</AdminStatusBadge
                   ></TableCell
                 ><TableCell>{{
                   item.source === "manual" ? "人工" : "自动"
@@ -278,6 +276,7 @@
 <script setup lang="ts">
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import { Switch } from "@/components/admin/ui/switch";
+import AdminStatusBadge from "./AdminStatusBadge.vue";
 import { Card } from "@/components/admin/ui/card";
 import { Button } from "@/components/admin/ui/button";
 import { Input } from "@/components/admin/ui/input";
@@ -656,22 +655,6 @@ onMounted(loadSearches);
     background: #fff7ed;
     color: #c2410c;
     font-size: 10px;
-  }
-  .hot-status-approved {
-    color: #166534;
-    background: #dcfce7;
-  }
-  .hot-status-pending {
-    color: #92400e;
-    background: #fef3c7;
-  }
-  .hot-status-blocked {
-    color: #991b1b;
-    background: #fee2e2;
-  }
-  .hot-status-hidden {
-    color: #475569;
-    background: #e2e8f0;
   }
   .checkbox-field {
     display: flex;

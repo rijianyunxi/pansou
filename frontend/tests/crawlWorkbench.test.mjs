@@ -11,26 +11,6 @@ test("crawl main only mounts one tab and one primary overlay", async () => {
   assert.ok(!page.includes("JSON.stringify(previewData"));
   assert.match(page, /v-else-if="messageChannel"/);
 });
-test("messages retain sheet navigation and stored resources without original or preview", async () => {
-  const sheet = await read("components/admin/crawl/CrawlMessagesSheet.vue");
-  const detail = await read("components/admin/crawl/CrawlMessageDetail.vue");
-  assert.match(sheet, /AdminDialog/);
-  assert.match(sheet, /drawer/);
-  assert.match(sheet, /scrollRegion/);
-  assert.match(detail, /返回消息列表/);
-  assert.ok(!detail.includes("v-html"));
-  assert.match(detail, /CrawlResultCards/);
-  assert.match(detail, /这条消息没有已存资源/);
-  assert.match(detail, /role="alert"/);
-  for (const removed of ["/preview", "rawHtml", "rawText", "Textarea", "TabsTrigger", "规则预览"]) {
-    assert.ok(!detail.includes(removed), removed);
-  }
-  assert.ok(!sheet.includes("m.summary"));
-  const types = await read("types/crawl.ts");
-  for (const removed of ["ParsePreview", "rawHtml", "rawText", "summary:"]) {
-    assert.ok(!types.includes(removed), removed);
-  }
-});
 test("message preview fixture is read-only and cannot forward real API requests", async () => {
   const fixture = await read("tests/fixtures/crawl-messages-preview.html");
   assert.match(fixture, /CrawlMessagesSheet/);
@@ -87,15 +67,6 @@ test("crawl settings only configure scheduling and load failure blocks saves", a
     assert.ok(!channel.includes(removed), removed);
   }
 });
-test("durable enqueue key and timezone date filters are wired to shadcn forms", async () => {
-  for (const file of ["CrawlMessagesSheet"]) {
-    const text = await read("components/admin/crawl/" + file + ".vue");
-    assert.match(text, /datetime-local/);
-    assert.match(text, /crawlFilterDate/);
-  }
-  assert.match(await read("components/admin/crawl/CrawlMessageDetail.vue"), /crawlTime\(data.publishedAt\)/);
-});
-
 test("node selection exposes only checkboxes and weights, including direct", async () => {
   const editor = await read("components/admin/OutboundPolicyEditor.vue");
   assert.match(editor, /AdminCheckbox/);
@@ -166,7 +137,7 @@ test("channel task states keep distinct tones and paused overrides stale job err
  assert.equal(channelTaskState({...channel,latestJob:{...queued,attempts:1}},now).text,"退避等待");
  assert.equal(channelTaskState({...channel,latestJob:{...queued,nextRunAt:"2026-09-30T23:59:59Z"}},now).text,"等待执行");
  const source=await read("components/admin/crawl/CrawlChannelsTab.vue");
- for(const state of ["running","waiting","idle","paused","failed"]) assert.match(source,new RegExp("\\.state-"+state+"\\{"));
+ assert.match(source, /<AdminStatusBadge[^>]*:state="channelTaskState\(c\).state"/);
  assert.match(source,/aria-hidden="true"/);
 });
 
@@ -184,12 +155,12 @@ test("channel labels distinguish normal page waiting, capacity queue and error b
 });
 
 test("task state text has readable contrast in both badge palettes", async () => {
- const source=await read("components/admin/crawl/CrawlChannelsTab.vue");
+ const source=await read("components/admin/AdminStatusBadge.vue");
  const luminance=(hex)=>{
   const rgb=hex.match(/\w\w/g).map(v=>parseInt(v,16)/255).map(v=>v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4);
   return rgb[0]*0.2126+rgb[1]*0.7152+rgb[2]*0.0722;
  };
- const palettes=[...source.matchAll(/--state-fg:#([a-f\d]{6});--state-bg:#([a-f\d]{6})/g)];
+ const palettes=[...source.matchAll(/--status-fg:\s*#([a-f\d]{6});\s*--status-bg:\s*#([a-f\d]{6})/g)];
  assert.equal(palettes.length,10);
  for(const [,fg,bg] of palettes){
   const a=luminance(fg),b=luminance(bg);
@@ -216,9 +187,9 @@ test("compact channel columns preserve exact counts and accessible full informat
  for(const icon of ["History","Timer","Files","AlertTriangle"]) assert.ok(source.includes(icon));
  assert.ok(!source.includes("MessageSquare"));assert.ok(!source.includes("ListChecks"));
  for(const count of ["historyPages","resourceCount","failedMessageCount"]) assert.ok(source.includes(count+".toLocaleString('zh-CN')"));
- assert.ok(source.includes("入库资源"));assert.ok(source.includes("失败记录"));
+ assert.ok(source.includes("入库资源"));assert.ok(source.includes("未处理失败"));
  assert.match(source,/CrawlHint/);assert.match(source,/tabindex="0"/);
- assert.match(source,/emit\('messages',c\.id\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
+ assert.match(source,/emit\('messages',c\.id,'all','today'\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
  const hint=await read("components/admin/crawl/CrawlHint.vue");assert.match(hint,/TooltipTrigger as-child :aria-label="label"/);assert.match(hint,/TooltipContent/);
 });
 

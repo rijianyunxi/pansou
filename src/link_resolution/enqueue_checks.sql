@@ -3,11 +3,11 @@ WITH cursor AS MATERIALIZED (
 ), due AS MATERIALIZED (
  -- Separate cursor/no-cursor paths allow the composite B-tree to seek directly.
  SELECT batch.* FROM cursor s CROSS JOIN LATERAL (
-  (SELECT c.id,c.input_version,c.next_check_at FROM link_catalog c
+  (SELECT c.id,c.input_version,c.next_check_at FROM resource_links c
    WHERE c.provider=s.provider AND s.next_check_at IS NULL AND c.next_check_at<=now()
    ORDER BY c.next_check_at,c.id LIMIT 256)
   UNION ALL
-  (SELECT c.id,c.input_version,c.next_check_at FROM link_catalog c
+  (SELECT c.id,c.input_version,c.next_check_at FROM resource_links c
    WHERE c.provider=s.provider AND s.next_check_at IS NOT NULL AND c.next_check_at<=now()
     AND (c.next_check_at,c.id)>(s.next_check_at,s.link_id)
    ORDER BY c.next_check_at,c.id LIMIT 256)

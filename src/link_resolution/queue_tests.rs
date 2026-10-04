@@ -1,5 +1,5 @@
-use super::*;
 use super::delivery::ProviderPolicy;
+use super::*;
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
@@ -18,7 +18,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
     // them only inside this rolled-back transaction so FIFO assertions exercise
     // this fixture, not previously enqueued high-priority user requests.
     sqlx::query(
-        "UPDATE link_catalog SET next_check_at=now()+interval '1 day' WHERE provider='quark'",
+        "UPDATE resource_links SET next_check_at=now()+interval '1 day' WHERE provider='quark'",
     )
     .execute(&mut *tx)
     .await
@@ -26,12 +26,12 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
     sqlx::query("UPDATE link_check_jobs SET run_after=now()+interval '1 day' WHERE provider='quark' AND status IN('queued','running')")
         .execute(&mut *tx).await.unwrap();
     let prefix = Uuid::new_v4().to_string();
-    let ids: Vec<Uuid> = sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,next_check_at) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/fixture'||i,$1||i,now()-interval '100 days'+make_interval(secs=>i) FROM generate_series(1,700) i RETURNING id")
+    let ids: Vec<Uuid> = sqlx::query_scalar("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint,next_check_at) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/fixture'||i,$1||i,now()-interval '100 days'+make_interval(secs=>i) FROM generate_series(1,700) i RETURNING id")
         .bind(&prefix).fetch_all(&mut *tx).await.unwrap();
     sqlx::query("UPDATE link_check_enqueue_cursors SET next_check_at=NULL,link_id=NULL WHERE provider='quark'")
         .execute(&mut *tx).await.unwrap();
     // The first window is already queued. It must not permanently starve later rows.
-    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind) SELECT id,1,'original' FROM link_catalog WHERE id=ANY($1) ORDER BY next_check_at,id LIMIT 256")
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind) SELECT id,1,'original' FROM resource_links WHERE id=ANY($1) ORDER BY next_check_at,id LIMIT 256")
         .bind(&ids).execute(&mut *tx).await.unwrap();
     let count_sql = "SELECT count(*) FROM link_check_jobs WHERE link_id=ANY($1)";
     for expected in [256i64, 512, 700, 700, 700, 700] {
@@ -50,7 +50,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         );
     }
     let ordered: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM link_catalog WHERE id=ANY($1) ORDER BY next_check_at,id",
+        "SELECT id FROM resource_links WHERE id=ANY($1) ORDER BY next_check_at,id",
     )
     .bind(&ids)
     .fetch_all(&mut *tx)
@@ -63,7 +63,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("UPDATE link_catalog SET next_check_at=now()+interval '1 day' WHERE id=$1")
+    sqlx::query("UPDATE resource_links SET next_check_at=now()+interval '1 day' WHERE id=$1")
         .bind(future)
         .execute(&mut *tx)
         .await
@@ -88,7 +88,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
     assert_eq!(claimed.get::<Uuid, _>("link_id"), urgent);
     let job_id = claimed.get::<i64, _>("id");
     // Expired lease recovery consults the latest catalog due time, not the old job.
-    sqlx::query("UPDATE link_catalog SET next_check_at=now()+interval '2 days' WHERE id=$1")
+    sqlx::query("UPDATE resource_links SET next_check_at=now()+interval '2 days' WHERE id=$1")
         .bind(urgent)
         .execute(&mut *tx)
         .await
@@ -114,7 +114,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
     assert!(recovered.get::<bool, _>("future"));
     assert_eq!(sqlx::query("UPDATE link_check_jobs SET status='completed' WHERE id=$1 AND status='running' AND lease_token=$2")
         .bind(job_id).bind(token).execute(&mut *tx).await.unwrap().rows_affected(), 0);
-    sqlx::query("UPDATE link_catalog SET next_check_at=now()-interval '1 day' WHERE id=$1")
+    sqlx::query("UPDATE resource_links SET next_check_at=now()-interval '1 day' WHERE id=$1")
         .bind(urgent)
         .execute(&mut *tx)
         .await
@@ -225,7 +225,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
 
     // Two actual transactions must not claim the same work. These committed fixture
     // rows are removed explicitly below; all larger fixtures above were rolled back.
-    let concurrent: Vec<Uuid> = sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,next_check_at) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/concurrent'||i,$1||i,now()-interval '200 days' FROM generate_series(1,2) i RETURNING id")
+    let concurrent: Vec<Uuid> = sqlx::query_scalar("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint,next_check_at) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/concurrent'||i,$1||i,now()-interval '200 days' FROM generate_series(1,2) i RETURNING id")
         .bind(Uuid::new_v4().to_string()).fetch_all(&pool).await.unwrap();
     sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT unnest($1::uuid[]),1,'original',10")
         .bind(&concurrent).execute(&pool).await.unwrap();
@@ -265,7 +265,7 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         .unwrap();
     let id: Uuid = job.get("link_id");
     let lease = (job.get("id"), token);
-    let fact_sql = "SELECT validity FROM link_catalog WHERE id=$1";
+    let fact_sql = "SELECT validity FROM resource_links WHERE id=$1";
     record_with_lease(
         &state,
         id,
@@ -327,9 +327,101 @@ async fn queue_sweep_order_rescheduling_leases_and_bounded_retention() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM link_catalog WHERE id=ANY($1)")
+    sqlx::query("DELETE FROM resource_links WHERE id=ANY($1)")
         .bind(&concurrent)
         .execute(&pool)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn disabled_checks_discard_bounded_background_work_and_rebuild_when_enabled() {
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(
+        url::Url::parse(&database)
+            .unwrap()
+            .path()
+            .ends_with("_test")
+    );
+    let pool = crate::db::connect(&database).await.unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE link_check_jobs SET priority=10 WHERE status='queued'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE resource_links SET next_check_at=now()+interval '1 day'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE policy_settings SET value_json='{\"enabled\":false}' WHERE key='link-check'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let prefix = Uuid::new_v4().to_string();
+    let ids:Vec<Uuid>=sqlx::query_scalar("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint,next_check_at,validity,valid_until) SELECT gen_random_uuid(),'quark',$1||i,'https://pan.quark.cn/s/'||$1||i,$1||i,now(),1,now()+interval '1 day' FROM generate_series(1,1004) i RETURNING id")
+        .bind(&prefix).fetch_all(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT id,1,'original',1 FROM unnest($1::uuid[]) id")
+        .bind(&ids[..1002]).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) VALUES($1,1,'original',10)")
+        .bind(ids[1002]).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority,status,lease_token,lease_until) VALUES($1,1,'original',1,'running',gen_random_uuid(),now()+interval '90 seconds')")
+        .bind(ids[1003]).execute(&mut *tx).await.unwrap();
+    sqlx::query(include_str!("discard_disabled_checks.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE link_id=ANY($1) AND priority<10 AND status='queued'")
+        .bind(&ids).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(remaining, 2, "cleanup is bounded to 1000 jobs");
+    sqlx::query(
+        "UPDATE policy_settings SET value_json='{\"enabled\":true}' WHERE key='link-check'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(include_str!("discard_disabled_checks.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let preserved: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE link_id=ANY($1)")
+            .bind(&ids)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(preserved, 4, "enabled checks must not be discarded");
+    sqlx::query(
+        "UPDATE policy_settings SET value_json='{\"enabled\":false}' WHERE key='link-check'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(include_str!("discard_disabled_checks.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let protected:i64=sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE link_id=ANY($1) AND (priority=10 OR status='running')").bind(&ids).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(protected, 2, "interactive requests and leases survive");
+    sqlx::query(include_str!("enqueue_checks.sql"))
+        .bind("quark")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let rebuilt:i64=sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE link_id=ANY($1) AND priority<10 AND status='queued'").bind(&ids).fetch_one(&mut *tx).await.unwrap();
+    assert!(
+        (254..=256).contains(&rebuilt),
+        "the catalog sweep recreates queued work"
+    );
+    let facts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM resource_links WHERE id=ANY($1) AND validity=1")
+            .bind(&ids)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(facts, 1004, "cleanup does not discard observations");
+    tx.rollback().await.unwrap();
 }

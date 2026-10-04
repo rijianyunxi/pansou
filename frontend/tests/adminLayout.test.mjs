@@ -213,5 +213,5 @@ test("resource columns remain bounded and row actions stay reachable", async () 
     /\.admin-root \.source-table\.resource-table \.action-column\s*\{[^}]*position:\s*sticky/s,
   );
   const page = await read("components/admin/AdminResourcesPage.vue");
-  assert.ok(page.includes('<strong :title="item.name">'));
+  assert.match(page, /<button[^>]*class="resource-name-button"[^>]*:title="item\.name"[^>]*@click="openLinks\(item\)"[^>]*>\{\{ item\.name \}\}<\/button>/);
 });

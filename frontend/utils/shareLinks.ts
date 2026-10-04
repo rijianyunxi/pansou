@@ -15,3 +15,17 @@ export function guangyaBrowserUrl(value: { url?: string; password?: string | nul
     return url.toString();
   } catch { return; }
 }
+
+/** Xunlei carries its extraction code in pwd; copying extra prose breaks address-bar pastes. */
+export function xunleiBrowserUrl(value: { url?: string; password?: string | null }): string | undefined {
+  if (!value.url) return;
+  try {
+    const url = new URL(value.url);
+    if (!['http:', 'https:'].includes(url.protocol)
+      || url.hostname !== 'pan.xunlei.com'
+      || url.username || url.password || url.port
+      || !/^\/s\/[\w-]+\/?$/.test(url.pathname)) return;
+    if (value.password) url.searchParams.set('pwd', value.password);
+    return url.toString();
+  } catch { return; }
+}

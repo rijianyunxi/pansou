@@ -51,6 +51,8 @@ pub async fn connect(url: &str) -> Result<PgPool> {
 }
 
 pub async fn init_db(pool: &PgPool) -> Result<()> {
+    // Normalize existing links before the one-time SQL migration consumes them.
+    crate::resource_links::prepare_migration(pool).await?;
     sqlx::migrate!("./migrations")
         .run(pool)
         .await

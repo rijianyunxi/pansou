@@ -25,11 +25,8 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      SQLX_OFFLINE: 'true'
       PANSOU_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/pansou_test
       PANSOU_TEST_REDIS_URL: redis://localhost:6379/15
-      # Disposable test-only encryption key; never a deployment credential.
-      PANSOU_CLOUD_CREDENTIAL_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

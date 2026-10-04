@@ -5,8 +5,7 @@ WITH facts AS (
        ELSE -1 END::smallint AS validity,
   MAX(c.checked_at) AS checked
  FROM unnest($1::text[]) AS ids(resource_id)
- LEFT JOIN resource_link_bindings b ON b.resource_id=ids.resource_id AND b.scope_key='managed'
- LEFT JOIN link_catalog c ON c.id=b.link_id
+ LEFT JOIN resource_links c ON c.resource_id=ids.resource_id
  GROUP BY ids.resource_id
 )
 UPDATE managed_resources r SET

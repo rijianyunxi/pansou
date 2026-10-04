@@ -81,7 +81,11 @@ pub async fn admin_resources_get(
     let offset = (page - 1) * limit;
     let needle = q.get("q").cloned().unwrap_or_default();
     let cloud_type = q.get("cloudType").cloned().unwrap_or_default();
-    let cursor_filters = vec![needle.clone(), cloud_type.clone()];
+    let channel = q.get("channel").cloned().unwrap_or_default();
+    let mut cursor_filters = vec![needle.clone(), cloud_type.clone()];
+    if !channel.is_empty() {
+        cursor_filters.push(channel.clone());
+    }
     let cursor = PageCursor::parse(
         q.get("before").map(String::as_str),
         "resources",
@@ -94,6 +98,7 @@ pub async fn admin_resources_get(
         "WITH page AS MATERIALIZED (SELECT id,updated_at FROM managed_resources",
     );
     crate::admin_stats::resource_filters(&mut query, &needle, &cloud_type);
+    channel_resource_filter(&mut query, &channel);
     if let Some(cursor) = &cursor {
         query
             .push(" AND (updated_at,id)<(")
@@ -108,7 +113,7 @@ pub async fn admin_resources_get(
     if cursor.is_none() {
         query.push(" OFFSET ").push_bind(offset);
     }
-    query.push(") SELECT p.updated_at,r.id,r.name,r.description,r.datetime,resource_cloud_types(r.links_json) AS cloud_types_json,r.links_json,r.tags_json,r.images_json,r.enabled FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
+    query.push(") SELECT p.updated_at,r.id,r.name,r.description,r.datetime,resource_link_types(r.id) AS cloud_types_json,resource_links_json(r.id) AS links_json,r.images_json,r.enabled FROM page p JOIN managed_resources r ON r.id=p.id ORDER BY p.updated_at DESC,p.id DESC");
     let mut rows = query.build().fetch_all(&state.pool).await?;
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);
@@ -127,24 +132,52 @@ pub async fn admin_resources_get(
     } else {
         Value::Null
     };
-    let total = state
-        .admin_stats
-        .resource_total(&state.pool, &needle, &cloud_type)
-        .await?;
+    let total = if channel.is_empty() {
+        state
+            .admin_stats
+            .resource_total(&state.pool, &needle, &cloud_type)
+            .await?
+    } else if needle.is_empty() && cloud_type.is_empty() {
+        state
+            .admin_stats
+            .channels(&state.pool, &[channel.clone()])
+            .await?
+            .get(&channel)
+            .map(|counts| counts.resource_count)
+            .unwrap_or(0)
+    } else {
+        let mut count = sqlx::QueryBuilder::new("SELECT count(*) FROM managed_resources");
+        crate::admin_stats::resource_filters(&mut count, &needle, &cloud_type);
+        channel_resource_filter(&mut count, &channel);
+        count
+            .build_query_scalar::<i64>()
+            .fetch_one(&state.pool)
+            .await?
+    };
     let mut resources = rows.into_iter().map(|r| json!({
         "id": r.get::<String,_>("id"), "name": r.get::<String,_>("name"),
         "description": r.get::<Option<String>,_>("description"), "datetime": r.get::<Option<String>,_>("datetime"),
         "cloud_types": r.get::<Value,_>("cloud_types_json"), "links": r.get::<Value,_>("links_json"),
-        "tags": r.get::<Value,_>("tags_json"), "images": r.get::<Value,_>("images_json"),
+        "images": r.get::<Value,_>("images_json"),
         "enabled": r.get::<bool,_>("enabled")
     })).collect::<Vec<_>>();
     crate::link_resolution::admin_resource_observations(&state, &mut resources).await?;
-    let cloud_types: Vec<String> = sqlx::query_scalar(
-        "SELECT cloud_type FROM resource_cloud_type_counts WHERE resource_count>0 ORDER BY cloud_type",
-    ).fetch_all(&state.pool).await?;
+    let cloud_types = state.admin_stats.cloud_types(&state.pool).await?;
     Ok(ok(
         json!({"items":resources,"resources":resources,"cloudTypes":cloud_types,"page":page,"pageSize":limit,"limit":limit,"total":total,"hasMore":has_more,"nextCursor":next_cursor}),
     ))
+}
+
+fn channel_resource_filter<'a>(
+    query: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>,
+    channel: &'a str,
+) {
+    if !channel.is_empty() {
+        query
+            .push(" AND enabled AND source_channel_ids @> ARRAY[")
+            .push_bind(channel)
+            .push("]::text[]");
+    }
 }
 
 pub async fn admin_resources_post(
@@ -178,9 +211,14 @@ pub async fn admin_resources_post(
         }
     }
     let raw_links = body.get("links").cloned().unwrap_or_else(|| json!([]));
-    let links: Vec<crate::models::Link> = serde_json::from_value(raw_links).map_err(|_| {
+    let mut links: Vec<crate::models::Link> = serde_json::from_value(raw_links).map_err(|_| {
         ApiError::BadRequest("links 必须是包含 type、url 和可选 password 的数组".into())
     })?;
+    for link in &mut links {
+        if let Some(provider) = crate::resource_clean::cloud_type(&link.url) {
+            link.r#type = provider.into();
+        }
+    }
     let cloud_types = json!(
         links
             .iter()
@@ -192,13 +230,21 @@ pub async fn admin_resources_post(
     // never become a second persisted copy of catalog check facts.
     let links = json!(links);
     let description = body.get("description").and_then(Value::as_str);
-    let tags = body.get("tags").cloned().unwrap_or_else(|| json!([]));
     let images = body.get("images").cloned().unwrap_or_else(|| json!([]));
     let datetime = body.get("datetime").and_then(Value::as_str);
-    sqlx::query("INSERT INTO managed_resources(id,name,description,datetime,links_json,tags_json,images_json,search_text,enabled,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,datetime=excluded.datetime,links_json=excluded.links_json,tags_json=excluded.tags_json,images_json=excluded.images_json,search_text=excluded.search_text,manual_override=true,updated_at=now()")
-        .bind(&id).bind(&name).bind(description).bind(datetime).bind(&links).bind(&tags).bind(&images).bind(name.to_owned()).execute(&state.pool).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("INSERT INTO managed_resources(id,name,description,datetime,images_json,enabled,updated_at) VALUES($1,$2,$3,$4,$5,true,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,datetime=excluded.datetime,images_json=excluded.images_json,updated_at=now()")
+        .bind(&id).bind(&name).bind(description).bind(datetime).bind(&images).execute(&mut *tx).await?;
+    crate::resource_links::replace(
+        &mut tx,
+        &id,
+        &serde_json::from_value::<Vec<crate::models::Link>>(links.clone())
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+    )
+    .await?;
+    tx.commit().await?;
     state.admin_stats.invalidate().await;
-    let mut resource = json!({"id":id,"name":name,"description":description,"datetime":datetime,"cloud_types":cloud_types,"links":links,"tags":tags,"images":images,"enabled":true});
+    let mut resource = json!({"id":id,"name":name,"description":description,"datetime":datetime,"cloud_types":cloud_types,"links":links,"images":images,"enabled":true});
     crate::link_resolution::admin_resource_observations(
         &state,
         std::slice::from_mut(&mut resource),
@@ -793,7 +839,7 @@ pub async fn admin_resources_enabled(
         .ok_or_else(|| ApiError::BadRequest("enabled 必须是布尔值".into()))?;
     let ids = string_list(&payload, "ids");
     let count =
-        sqlx::query("UPDATE managed_resources SET enabled=$1,manual_override=true,updated_at=now() WHERE id = ANY($2)")
+        sqlx::query("UPDATE managed_resources SET enabled=$1,updated_at=now() WHERE id = ANY($2)")
             .bind(enabled)
             .bind(&ids)
             .execute(&state.pool)
@@ -812,7 +858,7 @@ pub async fn admin_resources_batch_delete(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let ids = string_list(&payload, "ids");
-    let count = sqlx::query("WITH hidden AS (UPDATE managed_resources SET enabled=false,manual_override=true,deleted_at=now(),updated_at=now() WHERE id=ANY($1) AND origin='telegram' RETURNING id), removed AS (DELETE FROM managed_resources WHERE id=ANY($1) AND origin<>'telegram' RETURNING id) SELECT id FROM hidden UNION ALL SELECT id FROM removed")
+    let count = sqlx::query("DELETE FROM managed_resources WHERE id=ANY($1)")
         .bind(&ids)
         .execute(&state.pool)
         .await?
@@ -844,7 +890,7 @@ pub async fn admin_resource_get(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    let row = sqlx::query("SELECT id,name,description,datetime,resource_cloud_types(links_json) AS cloud_types_json,links_json,tags_json,images_json,enabled FROM managed_resources WHERE id=$1 AND deleted_at IS NULL")
+    let row = sqlx::query("SELECT id,name,description,datetime,resource_link_types(id) AS cloud_types_json,resource_links_json(id) AS links_json,images_json,enabled FROM managed_resources WHERE id=$1")
         .bind(id)
         .fetch_optional(&state.pool)
         .await?;
@@ -852,7 +898,7 @@ pub async fn admin_resource_get(
         "id":row.get::<String,_>("id"),"name":row.get::<String,_>("name"),
         "description":row.get::<Option<String>,_>("description"),"datetime":row.get::<Option<String>,_>("datetime"),
         "cloud_types":row.get::<Value,_>("cloud_types_json"),"links":row.get::<Value,_>("links_json"),
-        "tags":row.get::<Value,_>("tags_json"),"images":row.get::<Value,_>("images_json"),
+        "images":row.get::<Value,_>("images_json"),
         "enabled":row.get::<bool,_>("enabled")
     }));
     if let Some(resource) = resource.as_mut() {
@@ -882,7 +928,7 @@ pub async fn admin_resource_delete(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    sqlx::query("WITH hidden AS (UPDATE managed_resources SET enabled=false,manual_override=true,deleted_at=now(),updated_at=now() WHERE id=$1 AND origin='telegram') DELETE FROM managed_resources WHERE id=$1 AND origin<>'telegram'")
+    sqlx::query("DELETE FROM managed_resources WHERE id=$1")
         .bind(id)
         .execute(&state.pool)
         .await?;

@@ -20,21 +20,19 @@ pub(super) async fn create_search_log(
     let source_ids = req.source_ids.clone().unwrap_or_default();
     // Both JSON and SSE (including cache hits) record one accepted search here.
     // Keep the log and popularity increment atomic without changing moderation settings.
-    sqlx::query_file_scalar!(
-        "src/queries/create_search_log.sql",
-        session.token,
-        session.user_id,
-        keyword,
-        ip.to_string(),
-        scope,
-        json!(channels),
-        json!(source_ids),
-        keyword.to_lowercase(),
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|error| tracing::warn!(%error, "search log create failed"))
-    .ok()
+    sqlx::query_scalar::<_, i64>(include_str!("../../queries/create_search_log.sql"))
+        .bind(&session.token)
+        .bind(session.user_id)
+        .bind(keyword)
+        .bind(ip.to_string())
+        .bind(scope)
+        .bind(json!(channels))
+        .bind(json!(source_ids))
+        .bind(keyword.to_lowercase())
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|error| tracing::warn!(%error, "search log create failed"))
+        .ok()
 }
 
 pub(super) async fn complete_search_log(state: &AppState, log_id: i64, output: &SearchResponse) {

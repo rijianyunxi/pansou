@@ -49,9 +49,9 @@ pub async fn cleanup_jobs(
     if let Some(provider) = provider {
         crate::cloud_drive::Provider::from_name(provider)?;
     }
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN link_catalog c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2)")
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN resource_links c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2)")
         .bind(status).bind(provider).fetch_one(&state.pool).await?;
-    let rows = sqlx::query("SELECT j.*,s.cleanup_after,s.target_account_key,s.target_dir,s.owned_dir_id,s.owned_dir_path,s.ownership_manifest_json,s.upstream_share_ids_json,s.state artifact_state,c.provider,c.original_url FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN link_catalog c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2) ORDER BY j.updated_at DESC,j.id DESC LIMIT $3 OFFSET $4")
+    let rows = sqlx::query("SELECT j.*,s.cleanup_after,s.target_account_key,s.target_dir,s.owned_dir_id,s.owned_dir_path,s.ownership_manifest_json,s.upstream_share_ids_json,s.state artifact_state,c.provider,c.original_url FROM link_cleanup_jobs j JOIN link_share_cache s ON s.id=j.share_cache_id JOIN resource_links c ON c.id=s.link_id WHERE ($1='all' OR $1='attention' AND (j.status IN('failed','blocked') OR j.status='queued' AND j.last_error_code IS NOT NULL) OR j.status=$1) AND ($2::text IS NULL OR c.provider=$2) ORDER BY j.updated_at DESC,j.id DESC LIMIT $3 OFFSET $4")
         .bind(status).bind(provider).bind(page_size).bind((page-1)*page_size).fetch_all(&state.pool).await?;
     let items: Vec<Value> = rows.into_iter().map(|r| {
         let manifest: Value = r.get("ownership_manifest_json");
@@ -120,7 +120,10 @@ pub async fn ignore_cleanup(
             "任务不存在或未处于阻塞状态，不能忽略".into(),
         ));
     }
-    Ok(response(StatusCode::OK, json!({"id":id,"status":"ignored"})))
+    Ok(response(
+        StatusCode::OK,
+        json!({"id":id,"status":"ignored"}),
+    ))
 }
 
 #[cfg(test)]

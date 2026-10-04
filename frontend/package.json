@@ -1,6 +1,6 @@
 {
   "name": "pansou-web",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,6 +26,7 @@
     "@types/node": "^26.6.3",
     "@vitejs/plugin-vue": "^6.0.1",
     "tailwindcss": "^4.3.3",
+    "terser": "^5.51.2",
     "typescript": "^5.9.2",
     "vite": "^7.3.1",
     "vue-tsc": "^3.0.6"

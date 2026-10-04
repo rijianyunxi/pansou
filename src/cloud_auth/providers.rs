@@ -98,9 +98,11 @@ pub fn expires_at(raw: &str) -> Option<DateTime<Utc>> {
 }
 pub fn refreshable(provider: Provider, raw: &str) -> bool {
     provider.token_auth()
-        && serde_json::from_str::<Value>(raw)
-            .ok()
-            .is_some_and(|v| !scalar(&v["refresh_token"]).is_empty() && (provider!=Provider::Xunlei || !field(&v,&["client_id","clientId","x-client-id"],"").is_empty()))
+        && serde_json::from_str::<Value>(raw).ok().is_some_and(|v| {
+            !scalar(&v["refresh_token"]).is_empty()
+                && (provider != Provider::Xunlei
+                    || !field(&v, &["client_id", "clientId", "x-client-id"], "").is_empty())
+        })
 }
 fn token_update(previous: &Value, response: &Value) -> Result<Value, AuthFailure> {
     if scalar(&response["access_token"]).is_empty() {
@@ -272,7 +274,9 @@ impl<'a> Http<'a> {
         let parsed = parse_json(&text);
         if parsed.is_none() && official.path() == "/v3/login/main/qrbdusslogin" {
             // Shape and parser offsets only: the body may contain credentials.
-            let body = text.find('(').zip(text.rfind(')'))
+            let body = text
+                .find('(')
+                .zip(text.rfind(')'))
                 .filter(|(left, right)| left < right)
                 .map(|(left, right)| &text[left + 1..right]);
             let repaired = body.and_then(repair_quasi_json);
@@ -291,7 +295,7 @@ impl<'a> Http<'a> {
         }
         let value = parsed.unwrap_or(Value::Null);
         if status.as_u16() == 501 {
-            tracing::warn!(host, status=501, "auth upstream returned 501");
+            tracing::warn!(host, status = 501, "auth upstream returned 501");
             return Err(AuthFailure::Protocol);
         }
         if status.is_server_error() {
@@ -418,7 +422,8 @@ fn repair_quasi_json(text: &str) -> Option<String> {
                         let limit = if *first <= b'3' { 3 } else { 2 };
                         let mut end = index + 1;
                         let mut value = 0u8;
-                        while end < bytes.len() && end < index + 1 + limit
+                        while end < bytes.len()
+                            && end < index + 1 + limit
                             && matches!(bytes[end], b'0'..=b'7')
                         {
                             value = value * 8 + (bytes[end] - b'0');
@@ -440,8 +445,9 @@ fn repair_quasi_json(text: &str) -> Option<String> {
                         // JS NonEscapeCharacter: \& -> &, \q -> q, \8 -> 8.
                         // Copy the character on the next iteration, so UTF-8 is
                         // preserved. A quoted delimiter cannot enter this arm.
-                        if bytes.get(index + 1..index + 4).is_some_and(|v|
-                            v == b"\xe2\x80\xa8" || v == b"\xe2\x80\xa9")
+                        if bytes
+                            .get(index + 1..index + 4)
+                            .is_some_and(|v| v == b"\xe2\x80\xa8" || v == b"\xe2\x80\xa9")
                         {
                             index += 4;
                         } else {
@@ -490,10 +496,7 @@ fn repair_quasi_json(text: &str) -> Option<String> {
                 }
                 let close = bytes[index + 1..].iter().position(|b| *b == b'\'')?;
                 let name = &bytes[index + 1..index + 1 + close];
-                if name.is_empty()
-                    || !name
-                        .iter()
-                        .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                if name.is_empty() || !name.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
                 {
                     return None;
                 }
@@ -521,35 +524,69 @@ fn repair_quasi_json(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 fn number(value: &Value) -> Option<i64> {
-    value.as_i64().or_else(||value.as_str()?.parse().ok())
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
-fn baidu_login_url(raw: &str) -> Result<Url,AuthFailure> {
-    let url=checked_url(raw)?;
+fn baidu_login_url(raw: &str) -> Result<Url, AuthFailure> {
+    let url = checked_url(raw)?;
     // The post-login hand-off must stay on Baidu's own hosts. It normally lands
     // on pan.baidu.com, but the chain may hop through wappass.baidu.com, so match
     // the domain rather than two fixed host names.
-    if !url.host_str().is_some_and(|host|host=="baidu.com"||host.ends_with(".baidu.com")) {return Err(AuthFailure::Protocol);}
+    if !url
+        .host_str()
+        .is_some_and(|host| host == "baidu.com" || host.ends_with(".baidu.com"))
+    {
+        return Err(AuthFailure::Protocol);
+    }
     Ok(url)
 }
-enum BaiduScan {Waiting,Scanned,Denied,Ticket(String)}
-fn baidu_scan(value: &Value) -> Result<BaiduScan,AuthFailure> {
+enum BaiduScan {
+    Waiting,
+    Scanned,
+    Denied,
+    Ticket(String),
+}
+fn baidu_scan(value: &Value) -> Result<BaiduScan, AuthFailure> {
     match number(&value["errno"]) {
-        Some(1)=>return Ok(BaiduScan::Waiting),
-        Some(0)=>{},
-        other=>{tracing::warn!(errno=?other, "baidu unicast errno rejected");return Err(AuthFailure::Protocol)},
+        Some(1) => return Ok(BaiduScan::Waiting),
+        Some(0) => {}
+        other => {
+            tracing::warn!(errno=?other, "baidu unicast errno rejected");
+            return Err(AuthFailure::Protocol);
+        }
     }
-    let info:Value=if value["channel_v"].is_object(){value["channel_v"].clone()}else{serde_json::from_str(&scalar(&value["channel_v"])).map_err(|_|{tracing::warn!("baidu channel_v is not parseable");AuthFailure::Protocol})?};
-    let info=if info["msg"].is_object(){&info["msg"]}else{&info};
+    let info: Value = if value["channel_v"].is_object() {
+        value["channel_v"].clone()
+    } else {
+        serde_json::from_str(&scalar(&value["channel_v"])).map_err(|_| {
+            tracing::warn!("baidu channel_v is not parseable");
+            AuthFailure::Protocol
+        })?
+    };
+    let info = if info["msg"].is_object() {
+        &info["msg"]
+    } else {
+        &info
+    };
     Ok(match number(&info["status"]) {
-        Some(0)=>{let ticket=scalar(&info["v"]);if ticket.is_empty(){tracing::warn!("baidu confirm state has no ticket");return Err(AuthFailure::Protocol);}BaiduScan::Ticket(ticket)},
-        Some(1)=>BaiduScan::Scanned,
-        Some(2)=>BaiduScan::Denied,
-        Some(_)=>BaiduScan::Waiting,
-        None=>{tracing::warn!("baidu channel_v status missing");return Err(AuthFailure::Protocol)},
+        Some(0) => {
+            let ticket = scalar(&info["v"]);
+            if ticket.is_empty() {
+                tracing::warn!("baidu confirm state has no ticket");
+                return Err(AuthFailure::Protocol);
+            }
+            BaiduScan::Ticket(ticket)
+        }
+        Some(1) => BaiduScan::Scanned,
+        Some(2) => BaiduScan::Denied,
+        Some(_) => BaiduScan::Waiting,
+        None => {
+            tracing::warn!("baidu channel_v status missing");
+            return Err(AuthFailure::Protocol);
+        }
     })
 }
-fn baidu_exchange_url(value: &Value)->Result<String,AuthFailure>{
-    if number(&value["errInfo"]["no"])!=Some(0){
+fn baidu_exchange_url(value: &Value) -> Result<String, AuthFailure> {
+    if number(&value["errInfo"]["no"]) != Some(0) {
         tracing::warn!(no=?number(&value["errInfo"]["no"]),
             json=value.is_object(),
             has_data=value.get("data").is_some(),
@@ -557,26 +594,45 @@ fn baidu_exchange_url(value: &Value)->Result<String,AuthFailure>{
             "baidu qr exchange rejected");
         return Err(AuthFailure::Protocol);
     }
-    let url=scalar(&value["data"]["u"]);
+    let url = scalar(&value["data"]["u"]);
     baidu_login_url(&url)?;
     Ok(url)
 }
-fn baidu_account_data(value:&Value)->Result<&Value,AuthFailure>{
+fn baidu_account_data(value: &Value) -> Result<&Value, AuthFailure> {
     match number(&value["errno"]) {
-        Some(0)=>{},Some(-6)=>return Err(AuthFailure::Reauthorize),
-        _=>return Err(AuthFailure::Protocol),
+        Some(0) => {}
+        Some(-6) => return Err(AuthFailure::Reauthorize),
+        _ => return Err(AuthFailure::Protocol),
     }
-    let data=&value["result"];
-    if !valid_id(&scalar(&data["uk"]),false){return Err(AuthFailure::Protocol);}
+    let data = &value["result"];
+    if !valid_id(&scalar(&data["uk"]), false) {
+        return Err(AuthFailure::Protocol);
+    }
     Ok(data)
 }
-async fn baidu_finish(http:&mut Http<'_>,raw:&str)->Result<(),AuthFailure>{
-    let mut url=baidu_login_url(raw)?;
+async fn baidu_finish(http: &mut Http<'_>, raw: &str) -> Result<(), AuthFailure> {
+    let mut url = baidu_login_url(raw)?;
     for hop in 0..6 {
-        let(_,location)=http.call(Method::GET,url.as_str(),None,None,HeaderMap::new()).await?;
-        tracing::info!(provider="baidu", hop, redirect=location.is_some(), "baidu login finish hop");
-        let Some(location)=location else{return Ok(())};
-        url=baidu_login_url(url.join(&location).map_err(|_|{tracing::warn!("baidu finish location invalid");AuthFailure::Protocol})?.as_str())?;
+        let (_, location) = http
+            .call(Method::GET, url.as_str(), None, None, HeaderMap::new())
+            .await?;
+        tracing::info!(
+            provider = "baidu",
+            hop,
+            redirect = location.is_some(),
+            "baidu login finish hop"
+        );
+        let Some(location) = location else {
+            return Ok(());
+        };
+        url = baidu_login_url(
+            url.join(&location)
+                .map_err(|_| {
+                    tracing::warn!("baidu finish location invalid");
+                    AuthFailure::Protocol
+                })?
+                .as_str(),
+        )?;
     }
     tracing::warn!("baidu finish exceeded redirect budget");
     Err(AuthFailure::Protocol)
@@ -685,19 +741,23 @@ pub async fn start(state: &AppState, provider: Provider) -> Result<LoginStart, A
             let device_sign = format!("wdi10.{device}{}", uuid::Uuid::new_v4().simple());
             let previous = json!({"device_id":device,"device_sign":device_sign,"client_id":"aMe-8VSlkrbQXpUR"});
             let value = http
-                .call(Method::POST,
+                .call(
+                    Method::POST,
                     "https://account.guangyapan.com/v1/auth/device/code",
-                    Some(json!({"client_id":"aMe-8VSlkrbQXpUR","scope":"user"})),None,
-                    crate::cloud_drive::guangya_auth_headers(&previous.to_string()).map_err(|_|AuthFailure::Protocol)?,
+                    Some(json!({"client_id":"aMe-8VSlkrbQXpUR","scope":"user"})),
+                    None,
+                    crate::cloud_drive::guangya_auth_headers(&previous.to_string())
+                        .map_err(|_| AuthFailure::Protocol)?,
                 )
-                .await?.0;
+                .await?
+                .0;
             let code = scalar(&value["device_code"]);
             let qr = guangya_verification_url(&value);
             if code.is_empty() || qr.is_empty() {
                 return Err(oauth_failure(&value));
             }
             http.context.data = previous;
-            http.context.data["device_code"]=json!(code);
+            http.context.data["device_code"] = json!(code);
             (
                 qr,
                 value["expires_in"].as_i64().unwrap_or(300).clamp(30, 600),
@@ -849,17 +909,28 @@ pub async fn poll(
                         return Err(AuthFailure::Protocol);
                     }
                     let previous = json!({"refresh_token":token,"device_id":uuid::Uuid::new_v4().simple().to_string()});
-                    Poll::Ready(refresh(state, provider, &previous.to_string()).await.map_err(exchange_failure)?)
+                    Poll::Ready(
+                        refresh(state, provider, &previous.to_string())
+                            .await
+                            .map_err(exchange_failure)?,
+                    )
                 }
                 _ => return Err(AuthFailure::Protocol),
             }
         }
         Provider::Guangya => {
             let value=http.call(Method::POST,"https://account.guangyapan.com/v1/auth/token",Some(json!({"client_id":context.data["client_id"],"device_code":context.data["device_code"],"grant_type":"urn:ietf:params:oauth:grant-type:device_code"})),None,crate::cloud_drive::guangya_auth_headers(&context.data.to_string()).map_err(|_|AuthFailure::Protocol)?).await.map_err(exchange_failure)?.0;
-            match scalar(&value["error"]).as_str(){
-                "authorization_pending"=>Poll::Waiting,"slow_down"=>Poll::Slower,"expired_token"=>Poll::Expired,"access_denied"=>Poll::Denied,
-                ""=>{let mut previous=context.data.clone();previous.as_object_mut().unwrap().remove("device_code");Poll::Ready(token_update(&previous,&value)?.to_string())},
-                _=>return Err(oauth_failure(&value)),
+            match scalar(&value["error"]).as_str() {
+                "authorization_pending" => Poll::Waiting,
+                "slow_down" => Poll::Slower,
+                "expired_token" => Poll::Expired,
+                "access_denied" => Poll::Denied,
+                "" => {
+                    let mut previous = context.data.clone();
+                    previous.as_object_mut().unwrap().remove("device_code");
+                    Poll::Ready(token_update(&previous, &value)?.to_string())
+                }
+                _ => return Err(oauth_failure(&value)),
             }
         }
         Provider::Baidu => {
@@ -877,27 +948,29 @@ pub async fn poll(
                 ))
                 .await?;
             match baidu_scan(&value)? {
-                BaiduScan::Waiting=>Poll::Waiting,
-                BaiduScan::Scanned=>Poll::Scanned,
-                BaiduScan::Denied=>Poll::Denied,
-                BaiduScan::Ticket(ticket)=>{
-                    let exchanged=http.get(&url_with(
-                        "https://passport.baidu.com/v3/login/main/qrbdusslogin",
-                        &[
-                            ("bduss", ticket),
-                            ("u", "https://pan.baidu.com/disk/main".into()),
-                            ("alg", "v3".into()),
-                            ("apiver", "v3".into()),
-                            ("time", Utc::now().timestamp().to_string()),
-                            ("tt", Utc::now().timestamp_millis().to_string()),
-                            ("v", Utc::now().timestamp_millis().to_string()),
-                            ("callback", scalar(&context.data["callback"])),
-                            ("loginVersion", "v4".into()),
-                            ("qrcode", "1".into()),
-                            ("tpl", "netdisk".into()),
-                        ],
-                    ))
-                    .await.map_err(exchange_failure)?;
+                BaiduScan::Waiting => Poll::Waiting,
+                BaiduScan::Scanned => Poll::Scanned,
+                BaiduScan::Denied => Poll::Denied,
+                BaiduScan::Ticket(ticket) => {
+                    let exchanged = http
+                        .get(&url_with(
+                            "https://passport.baidu.com/v3/login/main/qrbdusslogin",
+                            &[
+                                ("bduss", ticket),
+                                ("u", "https://pan.baidu.com/disk/main".into()),
+                                ("alg", "v3".into()),
+                                ("apiver", "v3".into()),
+                                ("time", Utc::now().timestamp().to_string()),
+                                ("tt", Utc::now().timestamp_millis().to_string()),
+                                ("v", Utc::now().timestamp_millis().to_string()),
+                                ("callback", scalar(&context.data["callback"])),
+                                ("loginVersion", "v4".into()),
+                                ("qrcode", "1".into()),
+                                ("tpl", "netdisk".into()),
+                            ],
+                        ))
+                        .await
+                        .map_err(exchange_failure)?;
                     // The bdusslogin body is the argument of a JSONP script a
                     // browser evaluates as JavaScript, not JSON: any JS-only
                     // syntax (trailing commas, quoted keys, JS string escapes)
@@ -906,27 +979,51 @@ pub async fn poll(
                     // handed out with the response; the identity check rejects
                     // an anonymous jar before anything is stored.
                     match baidu_exchange_url(&exchanged) {
-                        Ok(finish)=>baidu_finish(&mut http,&finish).await.map_err(exchange_failure)?,
-                        Err(error)=>{
-                            let jar=http.cookie("pan.baidu.com");
-                            let has_session=!crate::cloud_drive::transport::cookie_value(&jar,"BDUSS").is_empty()
-                                ||!crate::cloud_drive::transport::cookie_value(&jar,"BDUSS_BFESS").is_empty();
+                        Ok(finish) => baidu_finish(&mut http, &finish)
+                            .await
+                            .map_err(exchange_failure)?,
+                        Err(error) => {
+                            let jar = http.cookie("pan.baidu.com");
+                            let has_session =
+                                !crate::cloud_drive::transport::cookie_value(&jar, "BDUSS")
+                                    .is_empty()
+                                    || !crate::cloud_drive::transport::cookie_value(
+                                        &jar,
+                                        "BDUSS_BFESS",
+                                    )
+                                    .is_empty();
                             if !has_session {
                                 // A parsed rejection (no != 0) is a declined
                                 // login; an unparseable body without a session
                                 // cookie is indistinguishable from one here.
-                                return Err(if number(&exchanged["errInfo"]["no"]).is_some_and(|no|no!=0){AuthFailure::Reauthorize}else{error});
+                                return Err(
+                                    if number(&exchanged["errInfo"]["no"]).is_some_and(|no| no != 0)
+                                    {
+                                        AuthFailure::Reauthorize
+                                    } else {
+                                        error
+                                    },
+                                );
                             }
                             // Land on the pan origin once, like the browser's
                             // post-login redirect, so pan-only cookies are not
                             // missing later.
-                            baidu_finish(&mut http,"https://pan.baidu.com/").await.map_err(exchange_failure)?;
+                            baidu_finish(&mut http, "https://pan.baidu.com/")
+                                .await
+                                .map_err(exchange_failure)?;
                         }
                     }
                     let cookie = http.cookie("pan.baidu.com");
                     if crate::cloud_drive::transport::cookie_value(&cookie, "BDUSS").is_empty()
-                        && crate::cloud_drive::transport::cookie_value(&cookie, "BDUSS_BFESS").is_empty() {
-                        tracing::warn!(bduss=false, bfess=false, cookies=!cookie.is_empty(), "baidu finish produced no login cookie");
+                        && crate::cloud_drive::transport::cookie_value(&cookie, "BDUSS_BFESS")
+                            .is_empty()
+                    {
+                        tracing::warn!(
+                            bduss = false,
+                            bfess = false,
+                            cookies = !cookie.is_empty(),
+                            "baidu finish produced no login cookie"
+                        );
                         return Err(AuthFailure::Protocol);
                     }
                     Poll::Ready(cookie)
@@ -950,27 +1047,47 @@ pub async fn refresh(
         return Err(AuthFailure::Reauthorize);
     }
     let mut http = Http::new(state, Context::default());
-    let response=match provider {
-        Provider::Aliyun=>http.post("https://api.aliyundrive.com/v2/account/token",json!({"refresh_token":refresh_token,"grant_type":"refresh_token"})).await?,
-        Provider::Guangya=>{
-            let mut headers=crate::cloud_drive::guangya_auth_headers(raw).map_err(|_|AuthFailure::Protocol)?;
+    let response = match provider {
+        Provider::Aliyun => {
+            http.post(
+                "https://api.aliyundrive.com/v2/account/token",
+                json!({"refresh_token":refresh_token,"grant_type":"refresh_token"}),
+            )
+            .await?
+        }
+        Provider::Guangya => {
+            let mut headers =
+                crate::cloud_drive::guangya_auth_headers(raw).map_err(|_| AuthFailure::Protocol)?;
             // The official client marks refresh calls with x-action: 401 so the
             // account service rotates the token instead of answering with an
             // interactive re-authorisation challenge.
-            headers.insert("x-action",HeaderValue::from_static("401"));
+            headers.insert("x-action", HeaderValue::from_static("401"));
             http.call(Method::POST,"https://account.guangyapan.com/v1/auth/token",Some(json!({"refresh_token":refresh_token,"grant_type":"refresh_token","client_id":field(&value,&["client_id","clientId","x-client-id"],"aMe-8VSlkrbQXpUR")})),None,headers).await?.0
         }
-        Provider::Xunlei=>{
-            let client=field(&value,&["client_id","clientId","x-client-id"],"");
-            if client.is_empty(){return Err(AuthFailure::ClientConfiguration);}
-            let mut body=json!({"refresh_token":refresh_token,"grant_type":"refresh_token","client_id":client});
+        Provider::Xunlei => {
+            let client = field(&value, &["client_id", "clientId", "x-client-id"], "");
+            if client.is_empty() {
+                return Err(AuthFailure::ClientConfiguration);
+            }
+            let mut body = json!({"refresh_token":refresh_token,"grant_type":"refresh_token","client_id":client});
             // Client secret is an optional public-client field supplied by the
             // same official session; never borrow a different client's identity.
-            let secret=field(&value,&["client_secret","clientSecret"],"");
-            if !secret.is_empty(){body["client_secret"]=json!(secret);}
-            http.call(Method::POST,"https://xluser-ssl.xunlei.com/v1/auth/token",Some(body),None,crate::cloud_drive::extended_headers(provider,raw).map_err(|_|AuthFailure::Protocol)?).await?.0
+            let secret = field(&value, &["client_secret", "clientSecret"], "");
+            if !secret.is_empty() {
+                body["client_secret"] = json!(secret);
+            }
+            http.call(
+                Method::POST,
+                "https://xluser-ssl.xunlei.com/v1/auth/token",
+                Some(body),
+                None,
+                crate::cloud_drive::extended_headers(provider, raw)
+                    .map_err(|_| AuthFailure::Protocol)?,
+            )
+            .await?
+            .0
         }
-        _=>return Err(AuthFailure::Unsupported),
+        _ => return Err(AuthFailure::Unsupported),
     };
     Ok(token_update(&value, &response)?.to_string())
 }
@@ -983,7 +1100,11 @@ fn field(v: &Value, keys: &[&str], default: &str) -> String {
 fn exchange_failure(error: AuthFailure) -> AuthFailure {
     // A response timeout can happen after a one-use ticket/refresh token was
     // consumed. Do not retry that exchange as if it were a read-only poll.
-    if matches!(error, AuthFailure::Network) { AuthFailure::ExchangeUncertain } else { error }
+    if matches!(error, AuthFailure::Network) {
+        AuthFailure::ExchangeUncertain
+    } else {
+        error
+    }
 }
 pub fn stable_key(provider: Provider, subject: &str, scope: &str) -> String {
     format!(
@@ -1149,11 +1270,15 @@ pub async fn identity(
         return Err(AuthFailure::Reauthorize);
     }
     if provider == Provider::Aliyun {
-        let supplied=field(&value,&["user_id","userId","sub"],"");
-        if !supplied.is_empty() && supplied!=subject {return Err(AuthFailure::AccountMismatch);}
-        value["user_id"]=json!(subject);
-        if value["device_private_key"].is_string() || (scalar(&value["signature"]).is_empty() && scalar(&value["x-signature"]).is_empty()) {
-            register_ali_device(state,&mut value).await?;
+        let supplied = field(&value, &["user_id", "userId", "sub"], "");
+        if !supplied.is_empty() && supplied != subject {
+            return Err(AuthFailure::AccountMismatch);
+        }
+        value["user_id"] = json!(subject);
+        if value["device_private_key"].is_string()
+            || (scalar(&value["signature"]).is_empty() && scalar(&value["x-signature"]).is_empty())
+        {
+            register_ali_device(state, &mut value).await?;
         }
     }
     let name = field(
@@ -1182,7 +1307,9 @@ pub async fn identity(
             )
             .await?
             .0;
-        if !scalar(&drive["code"]).is_empty() && drive["code"]!=0 {return Err(oauth_failure(&drive));}
+        if !scalar(&drive["code"]).is_empty() && drive["code"] != 0 {
+            return Err(oauth_failure(&drive));
+        }
         let owner = if drive["owner"].is_object() {
             field(&drive["owner"], &["user_id", "id"], "")
         } else {
@@ -1234,9 +1361,11 @@ async fn register_ali_device(state: &AppState, value: &mut Value) -> Result<(), 
         &["device_id", "deviceId", "x-device-id"],
         &uuid::Uuid::new_v4().simple().to_string(),
     );
-    for alias in ["device_id","deviceId","x-device-id"] {
-        let other=scalar(&value[alias]);
-        if !other.is_empty() && other!=device {return Err(AuthFailure::Protocol);}
+    for alias in ["device_id", "deviceId", "x-device-id"] {
+        let other = scalar(&value[alias]);
+        if !other.is_empty() && other != device {
+            return Err(AuthFailure::Protocol);
+        }
     }
     let message = format!(
         "5dde4e1bdf9e4966b387ba58f4b3fdc3:{device}:{}:0",
@@ -1249,7 +1378,9 @@ async fn register_ali_device(state: &AppState, value: &mut Value) -> Result<(), 
     bytes.push(recovery.to_byte());
     value["signature"] = json!(hex(&bytes));
     value["device_id"] = json!(device);
-    for alias in ["x-device-id","deviceId","x-signature"] {value.as_object_mut().unwrap().remove(alias);}
+    for alias in ["x-device-id", "deviceId", "x-signature"] {
+        value.as_object_mut().unwrap().remove(alias);
+    }
     value["device_private_key"] = json!(STANDARD.encode(key.to_bytes()));
     let public = hex(key.verifying_key().to_encoded_point(false).as_bytes());
     let mut http = Http::new(state, Context::default());
@@ -1261,8 +1392,11 @@ async fn register_ali_device(state: &AppState, value: &mut Value) -> Result<(), 
     ali_device_registered(&response)?;
     Ok(())
 }
-fn ali_device_registered(response:&Value)->Result<(),AuthFailure>{
-    if response["result"]!=true{return Err(AuthFailure::Protocol);}Ok(())
+fn ali_device_registered(response: &Value) -> Result<(), AuthFailure> {
+    if response["result"] != true {
+        return Err(AuthFailure::Protocol);
+    }
+    Ok(())
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -1329,25 +1463,78 @@ mod tests {
     use super::*;
     #[test]
     fn baidu_states_and_exchange_destinations_are_not_guessed() {
-        for n in [json!(0),json!("0")] {
-            assert!(matches!(baidu_scan(&json!({"errno":n,"channel_v":{"status":"1"}})).unwrap(),BaiduScan::Scanned));
+        for n in [json!(0), json!("0")] {
+            assert!(matches!(
+                baidu_scan(&json!({"errno":n,"channel_v":{"status":"1"}})).unwrap(),
+                BaiduScan::Scanned
+            ));
         }
-        assert!(matches!(baidu_scan(&json!({"errno":"0","channel_v":"{\"status\":\"0\",\"v\":\"ticket\"}"})).unwrap(),BaiduScan::Ticket(t) if t=="ticket"));
-        assert!(matches!(baidu_scan(&json!({"errno":0,"channel_v":{"status":2}})).unwrap(),BaiduScan::Denied));
-        assert!(matches!(baidu_scan(&json!({"errno":0,"channel_v":{"status":99}})).unwrap(),BaiduScan::Waiting));
-        for v in [json!({}),json!({"errno":0,"channel_v":{}}),json!({"errno":0,"channel_v":{"status":0}})] {assert!(baidu_scan(&v).is_err());}
-        assert_eq!(baidu_exchange_url(&json!({"errInfo":{"no":"0"},"data":{"u":"https://pan.baidu.com/disk/main"}})).unwrap(),"https://pan.baidu.com/disk/main");
-        for u in ["http://pan.baidu.com/","https://pan.baidu.com.evil.test/","https://uop.quark.cn/","https://127.0.0.1/","https://pan.baidu.com:8080/"] {assert!(baidu_exchange_url(&json!({"errInfo":{"no":0},"data":{"u":u}})).is_err());}
-        assert!(baidu_exchange_url(&json!({"errInfo":{"no":5},"data":{"u":"https://pan.baidu.com/"}})).is_err());
-        assert!(matches!(baidu_account_data(&json!({"errno":-6})),Err(AuthFailure::Reauthorize)));
-        assert!(matches!(baidu_account_data(&json!({"errno":0,"result":{}})),Err(AuthFailure::Protocol)));
+        assert!(
+            matches!(baidu_scan(&json!({"errno":"0","channel_v":"{\"status\":\"0\",\"v\":\"ticket\"}"})).unwrap(),BaiduScan::Ticket(t) if t=="ticket")
+        );
+        assert!(matches!(
+            baidu_scan(&json!({"errno":0,"channel_v":{"status":2}})).unwrap(),
+            BaiduScan::Denied
+        ));
+        assert!(matches!(
+            baidu_scan(&json!({"errno":0,"channel_v":{"status":99}})).unwrap(),
+            BaiduScan::Waiting
+        ));
+        for v in [
+            json!({}),
+            json!({"errno":0,"channel_v":{}}),
+            json!({"errno":0,"channel_v":{"status":0}}),
+        ] {
+            assert!(baidu_scan(&v).is_err());
+        }
+        assert_eq!(
+            baidu_exchange_url(
+                &json!({"errInfo":{"no":"0"},"data":{"u":"https://pan.baidu.com/disk/main"}})
+            )
+            .unwrap(),
+            "https://pan.baidu.com/disk/main"
+        );
+        for u in [
+            "http://pan.baidu.com/",
+            "https://pan.baidu.com.evil.test/",
+            "https://uop.quark.cn/",
+            "https://127.0.0.1/",
+            "https://pan.baidu.com:8080/",
+        ] {
+            assert!(baidu_exchange_url(&json!({"errInfo":{"no":0},"data":{"u":u}})).is_err());
+        }
+        assert!(
+            baidu_exchange_url(&json!({"errInfo":{"no":5},"data":{"u":"https://pan.baidu.com/"}}))
+                .is_err()
+        );
+        assert!(matches!(
+            baidu_account_data(&json!({"errno":-6})),
+            Err(AuthFailure::Reauthorize)
+        ));
+        assert!(matches!(
+            baidu_account_data(&json!({"errno":0,"result":{}})),
+            Err(AuthFailure::Protocol)
+        ));
     }
     #[test]
     fn device_registration_and_one_use_exchanges_fail_closed() {
         assert!(ali_device_registered(&json!({"result":true})).is_ok());
-        for response in [Value::Null,json!({"result":false}),json!({"success":true}),json!({})] {assert!(ali_device_registered(&response).is_err());}
-        assert!(matches!(exchange_failure(AuthFailure::Network),AuthFailure::ExchangeUncertain));
-        assert!(matches!(exchange_failure(AuthFailure::RateLimited),AuthFailure::RateLimited));
+        for response in [
+            Value::Null,
+            json!({"result":false}),
+            json!({"success":true}),
+            json!({}),
+        ] {
+            assert!(ali_device_registered(&response).is_err());
+        }
+        assert!(matches!(
+            exchange_failure(AuthFailure::Network),
+            AuthFailure::ExchangeUncertain
+        ));
+        assert!(matches!(
+            exchange_failure(AuthFailure::RateLimited),
+            AuthFailure::RateLimited
+        ));
     }
     #[test]
     fn quark_account_envelope_is_not_the_cas_qr_envelope() {
@@ -1388,7 +1575,10 @@ mod tests {
         // Captured from a real scan: __pus/__kp/__kps/__ktd plus __uid.
         let captured = "__kp=a; __kps=b; __ktd=c; __pus=d; __uid=1234567890; ctoken=e";
         assert_eq!(quark_cookie_uid(captured).as_deref(), Some("1234567890"));
-        assert_eq!(quark_cookie_uid("__uid=1234567890").as_deref(), Some("1234567890"));
+        assert_eq!(
+            quark_cookie_uid("__uid=1234567890").as_deref(),
+            Some("1234567890")
+        );
         // A session without an account cookie, or with a placeholder id, must
         // not be mistaken for an identified account.
         for cookies in ["__pus=d", "", "__uid=", "__uid=0", "other=1"] {
@@ -1462,8 +1652,14 @@ mod tests {
         assert_eq!(value["data"]["name"], "O'Brien");
         assert_eq!(value["data"]["encoded"], "\"\\\0");
         assert_eq!(value["data"]["literal"], r"\x26");
-        assert_eq!(baidu_exchange_url(&value).unwrap(), "https://pan.baidu.com/disk/main?from=scan&ok=1");
-        assert_eq!(parse_json(r#"{"literal":"\\x26"}"#).unwrap()["literal"], r"\x26");
+        assert_eq!(
+            baidu_exchange_url(&value).unwrap(),
+            "https://pan.baidu.com/disk/main?from=scan&ok=1"
+        );
+        assert_eq!(
+            parse_json(r#"{"literal":"\\x26"}"#).unwrap()["literal"],
+            r"\x26"
+        );
         for response in [
             r#"cb({'data':{"u":"\xG0"}})"#,
             r#"cb({'data':{"u":"\x2"}})"#,
@@ -1479,12 +1675,22 @@ mod tests {
     fn jsonp_non_json_escapes_follow_javascript_string_rules() {
         let response = r#"cb({'data':{"u":"https:\/\/pan.baidu.com\/disk\/main\?from\=scan\&ok\=1","identity":"\q\8\9\中","control":"\v\0\123\377\400","literal":"\\&\\v\\0"}})"#;
         let value = parse_json(response).unwrap();
-        assert_eq!(value["data"]["u"], "https://pan.baidu.com/disk/main?from=scan&ok=1");
+        assert_eq!(
+            value["data"]["u"],
+            "https://pan.baidu.com/disk/main?from=scan&ok=1"
+        );
         assert_eq!(value["data"]["identity"], "q89中");
         assert_eq!(value["data"]["control"], "\u{000b}\0Sÿ 0");
         assert_eq!(value["data"]["literal"], r"\&\v\0");
-        assert_eq!(parse_json(r#"cb({"value":"\u{1f600}\u{d83d}\u{de00}\u{26}"})"#).unwrap()["value"], "😀😀&");
-        for response in [r#"cb({"value":"\u{}"})"#, r#"cb({"value":"\u{110000}"})"#, r#"cb({"value":"\u{ZZ}"})"#] {
+        assert_eq!(
+            parse_json(r#"cb({"value":"\u{1f600}\u{d83d}\u{de00}\u{26}"})"#).unwrap()["value"],
+            "😀😀&"
+        );
+        for response in [
+            r#"cb({"value":"\u{}"})"#,
+            r#"cb({"value":"\u{110000}"})"#,
+            r#"cb({"value":"\u{ZZ}"})"#,
+        ] {
             assert!(parse_json(response).is_none());
         }
         for continuation in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
@@ -1496,7 +1702,8 @@ mod tests {
         assert!(parse_json("cb({\"value\":\"a\\\u{0001}b\"})").is_none());
     }
     #[test]
-    fn diagnostic_tokens_are_truncated_before_logging() {        assert_eq!(truncate("OK", 32), "OK");
+    fn diagnostic_tokens_are_truncated_before_logging() {
+        assert_eq!(truncate("OK", 32), "OK");
         assert_eq!(truncate("AUTH_ERROR:50051", 32), "AUTH_ERROR:50051");
         assert_eq!(truncate(&"x".repeat(100), 32).len(), 32);
     }
@@ -1596,7 +1803,8 @@ mod tests {
         );
         assert!(checked_url(&url).is_ok());
         // Any other host the server advertises is left untouched.
-        let other = json!({"verification_uri_complete":"https://www.guangyapan.com/authorize?code=x"});
+        let other =
+            json!({"verification_uri_complete":"https://www.guangyapan.com/authorize?code=x"});
         assert_eq!(
             guangya_verification_url(&other),
             "https://www.guangyapan.com/authorize?code=x"

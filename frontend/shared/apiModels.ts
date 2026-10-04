@@ -7,4 +7,4 @@ export interface SearchResult { resultRef: string; dedupKey: string; refsExpireA
 export interface SearchResponse { total: number; results: SearchResult[]; }
 export interface SearchStreamResultData { results: SearchResult[]; }
 
-export type ManagedResource = Omit<SearchResult, 'links' | 'resultRef' | 'dedupKey' | 'refsExpireAt' | 'validity'> & { links: Link[]; tags?: string[] };
+export type ManagedResource = Omit<SearchResult, 'links' | 'resultRef' | 'dedupKey' | 'refsExpireAt' | 'validity'> & { links: Link[] };

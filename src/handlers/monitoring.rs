@@ -41,7 +41,6 @@ pub async fn runtime_worker_update(
         // Legacy links switch now pauses cleanup only, never local sync or click delivery.
         "links" | "cleanup" => "linkEnabled",
         "link-schedule" => "linkScheduleEnabled",
-        "link-sync" => "linkSyncEnabled",
         "link-check" => "linkCheckEnabled",
         runtime::LINK_MAINTENANCE => "linkMaintenanceEnabled",
         _ => return Err(ApiError::BadRequest("未知后台任务类型".into())),
@@ -49,7 +48,7 @@ pub async fn runtime_worker_update(
     // Merge only the selected switch, so simultaneous edits cannot overwrite the other.
     let mut tx = state.pool.begin().await?;
     sqlx::query("INSERT INTO policy_settings(key,value_json) VALUES('background-workers',$1) ON CONFLICT(key) DO UPDATE SET value_json=policy_settings.value_json || $2,updated_at=now()")
-        .bind(json!({"crawlEnabled":true,"linkEnabled":true,"linkScheduleEnabled":true,"linkSyncEnabled":true,"linkCheckEnabled":true,"linkMaintenanceEnabled":true,key:update.enabled}))
+        .bind(json!({"crawlEnabled":true,"linkEnabled":true,"linkScheduleEnabled":true,"linkCheckEnabled":true,"linkMaintenanceEnabled":true,key:update.enabled}))
         .bind(json!({key:update.enabled})).execute(&mut *tx).await?;
     // An explicit, confirmed activation is separate from resuming an existing lane.
     // Preserve budgets/cache policy; ordinary pauses and the global switch never enable it.
@@ -94,7 +93,6 @@ pub async fn monitor(
         state.redis.ping(),
     );
     link_worker["scheduleEnabled"] = json!(settings.link_schedule_enabled);
-    link_worker["syncEnabled"] = json!(settings.link_sync_enabled);
     link_worker["checkEnabled"] = json!(settings.link_check_enabled);
     link_worker["maintenanceEnabled"] = json!(settings.link_maintenance_enabled);
     let daily_allowed =
@@ -105,11 +103,6 @@ pub async fn monitor(
     let index = sqlx::query("SELECT (SELECT count(*) FROM crawl_channels) channels, (SELECT count(*) FROM crawl_channels WHERE enabled) active_channels, (SELECT count(*) FROM crawl_page_failures) review, (SELECT MAX(last_synced_at) FROM crawl_channels) last_sync, (SELECT count(*) FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND (c.last_synced_at IS NULL OR $1)) overdue_channels")
         .bind(daily_allowed).fetch_one(&state.pool).await?;
     let counts = state.admin_stats.monitor(&state.pool).await?;
-    let links = sqlx::query(
-        "SELECT count(*) sync_pending,min(updated_at) oldest_sync FROM link_sync_queue",
-    )
-    .fetch_one(&state.pool)
-    .await?;
     let link_queues = sqlx::query("SELECT 'checks' kind,status,count(*) count FROM link_check_jobs GROUP BY status UNION ALL SELECT 'cleanup',status,count(*) FROM link_cleanup_jobs GROUP BY status UNION ALL SELECT 'resolve',status,count(*) FROM link_resolve_requests GROUP BY status")
         .fetch_all(&state.pool).await?;
     let cleanup_due: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs WHERE status='queued' AND run_after<=now() OR status='running' AND lease_until<now()")
@@ -119,16 +112,16 @@ pub async fn monitor(
     )
     .fetch_one(&state.pool)
     .await?;
-    let ready_check_accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_account_settings WHERE provider IN('baidu','quark','aliyun','xunlei','guangya') AND (length(trim(credential))>0 OR credential_cipher IS NOT NULL) AND auth_status NOT IN('reauthorization_required','disconnected')")
+    let ready_check_accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_account_settings WHERE provider IN('baidu','quark','aliyun','xunlei','guangya') AND length(trim(credential))>0 AND auth_status NOT IN('reauthorization_required','disconnected')")
         .fetch_one(&state.pool).await?;
-    let recent_failures = sqlx::query("SELECT provider,identity,validity,failure_count,last_error_code,last_attempt_at,next_check_at FROM link_catalog WHERE failure_count>0 AND last_error_code IS NOT NULL ORDER BY last_attempt_at DESC,id LIMIT 8")
+    let recent_failures = sqlx::query("SELECT provider,identity,validity,failure_count,last_error_code,last_attempt_at,next_check_at FROM resource_links WHERE failure_count>0 AND last_error_code IS NOT NULL ORDER BY last_attempt_at DESC,id LIMIT 8")
         .fetch_all(&state.pool).await?.into_iter().map(|r|json!({
             "provider":r.get::<String,_>("provider"),"identity":r.get::<Option<String>,_>("identity"),
             "validity":r.get::<i16,_>("validity"),"failureCount":r.get::<i32,_>("failure_count"),
             "lastErrorCode":r.get::<Option<String>,_>("last_error_code"),
             "lastAttemptAt":r.get::<Option<DateTime<Utc>>,_>("last_attempt_at"),
             "nextCheckAt":r.get::<Option<DateTime<Utc>>,_>("next_check_at")})).collect::<Vec<_>>();
-    let recent_cleanup = sqlx::query("SELECT j.status,j.stage,j.last_error_code,j.attempts,j.updated_at,c.provider FROM link_cleanup_jobs j LEFT JOIN link_share_cache s ON s.id=j.share_cache_id LEFT JOIN link_catalog c ON c.id=s.link_id ORDER BY j.updated_at DESC LIMIT 8")
+    let recent_cleanup = sqlx::query("SELECT j.status,j.stage,j.last_error_code,j.attempts,j.updated_at,c.provider FROM link_cleanup_jobs j LEFT JOIN link_share_cache s ON s.id=j.share_cache_id LEFT JOIN resource_links c ON c.id=s.link_id ORDER BY j.updated_at DESC LIMIT 8")
         .fetch_all(&state.pool).await?.into_iter().map(|r|json!({
             "status":r.get::<String,_>("status"),"stage":r.get::<Option<String>,_>("stage"),
             "lastErrorCode":r.get::<Option<String>,_>("last_error_code"),"attempts":r.get::<i32,_>("attempts"),
@@ -168,7 +161,6 @@ pub async fn monitor(
     }
     let mut lanes = serde_json::Map::new();
     for kind in [
-        WorkerKind::LinkSync,
         WorkerKind::LinkCheck,
         WorkerKind::Links,
         WorkerKind::LinkMaintenance,
@@ -200,7 +192,7 @@ pub async fn monitor(
         "services":{"api":{"state":"online","startedAt":state.started_at},"postgres":{"state":"online","connections":state.pool.size(),"idle":state.pool.num_idle()},"redis":{"state":if redis.is_ok(){"online"}else{"unavailable"}}},
         "workers":{"crawl":crawl_worker,"links":link_worker},
         "crawl":{"queued":crawl.get::<i64,_>("queued"),"ready":crawl.get::<i64,_>("ready"),"running":crawl.get::<i64,_>("running"),"failed":crawl.get::<i64,_>("failed"),"paused":crawl.get::<i64,_>("paused"),"expired":crawl.get::<i64,_>("expired"),"lastActivityAt":crawl.get::<Option<DateTime<Utc>>,_>("last_activity"),"channels":index.get::<i64,_>("channels"),"activeChannels":index.get::<i64,_>("active_channels"),"overdueChannels":index.get::<i64,_>("overdue_channels"),"review":index.get::<i64,_>("review"),"resources":counts.resources,"lastSyncAt":index.get::<Option<DateTime<Utc>>,_>("last_sync"),"recentFailures":failures},
-        "links":{"aggregatePending":aggregate_pending,"syncPending":links.get::<i64,_>("sync_pending"),"oldestSyncAt":links.get::<Option<DateTime<Utc>>,_>("oldest_sync"),"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks,"readyAccounts":ready_check_accounts},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
+        "links":{"aggregatePending":aggregate_pending,"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks,"readyAccounts":ready_check_accounts},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
     })))
 }
 

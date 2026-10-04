@@ -94,7 +94,7 @@ async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() 
                 for lease in [None, Some(-60_i64), Some(0), Some(3600)] {
                     let link = Uuid::new_v4();
                     let failed = kind == "original" && lease != Some(3600);
-                    sqlx::query("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,failure_count) VALUES($1,$2,$3,'https://example.invalid/test',$3,$4)")
+                    sqlx::query("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint,failure_count) VALUES($1,$2,$3,'https://example.invalid/test',$3,$4)")
                         .bind(link).bind(provider).bind(link.to_string()).bind(i32::from(failed))
                         .execute(&mut *tx).await.unwrap();
                     let cache = if kind == "reshared" {
@@ -110,7 +110,7 @@ async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() 
                         .execute(&mut *tx).await.unwrap();
                     // Provider edits legitimately leave historical/running
                     // queue snapshots stale. Filtering must still use c.
-                    sqlx::query("UPDATE link_catalog SET provider=$2 WHERE id=$1")
+                    sqlx::query("UPDATE resource_links SET provider=$2 WHERE id=$1")
                         .bind(link)
                         .bind(if provider == "quark" {
                             "baidu"
@@ -124,7 +124,7 @@ async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() 
             }
         }
     }
-    let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE j.provider<>c.provider")
+    let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM link_check_jobs j JOIN resource_links c ON c.id=j.link_id WHERE j.provider<>c.provider")
         .fetch_one(&mut *tx).await.unwrap();
     assert!(stale > 0);
     let projection = "'id',j.id::text,'createdAt',j.created_at,'provider',c.provider,'status',j.status,'kind',j.kind";
@@ -143,7 +143,7 @@ async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() 
                 "failed",
             ] {
                 let reference: Vec<Value> = sqlx::query_scalar(&format!(
-                    "SELECT jsonb_build_object({projection}) FROM link_check_jobs j JOIN link_catalog c ON c.id=j.link_id WHERE ($1='' OR c.provider=$1) AND ($2='all' OR $2='attention' AND (j.status='failed' OR c.failure_count>0 OR j.status='running' AND j.lease_until<=now()) OR j.status=$2) ORDER BY j.created_at DESC,j.id DESC"))
+                    "SELECT jsonb_build_object({projection}) FROM link_check_jobs j JOIN resource_links c ON c.id=j.link_id WHERE ($1='' OR c.provider=$1) AND ($2='all' OR $2='attention' AND (j.status='failed' OR c.failure_count>0 OR j.status='running' AND j.lease_until<=now()) OR j.status=$2) ORDER BY j.created_at DESC,j.id DESC"))
                     .bind(provider).bind(status).fetch_all(&mut *tx).await.unwrap();
                 let mut q = TaskQuery {
                     provider: Some(provider.into()),
@@ -172,10 +172,9 @@ async fn check_task_queries_match_reference_with_overlaps_and_stale_providers() 
                         at: serde_json::from_value(last["createdAt"].clone()).unwrap(),
                         id: last["id"].as_str().unwrap().into(),
                     };
-                    let (total, actual) =
-                        check_task_page(&mut tx, &q, Some(&cursor), projection)
-                            .await
-                            .unwrap();
+                    let (total, actual) = check_task_page(&mut tx, &q, Some(&cursor), projection)
+                        .await
+                        .unwrap();
                     assert_eq!(total, reference.len() as i64);
                     assert_eq!(
                         actual,
@@ -261,14 +260,7 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
         .0,
         StatusCode::FORBIDDEN
     );
-    for kind in [
-        "crawl",
-        "sync",
-        "checks",
-        "resolve",
-        "operations",
-        "maintenance",
-    ] {
+    for kind in ["crawl", "checks", "resolve", "operations", "maintenance"] {
         assert_eq!(
             call(&router, "GET", &format!("/api/admin/tasks/{kind}"), None)
                 .await
@@ -290,7 +282,7 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
         .await
         .unwrap();
     let link = Uuid::new_v4();
-    sqlx::query("INSERT INTO link_catalog(id,provider,identity,original_url,input_fingerprint,next_check_at,failure_count,last_error_code) VALUES($1,'quark',$2,'https://pan.quark.cn/s/test',$2,now(),1,'check_failed')")
+    sqlx::query("INSERT INTO resource_links(id,provider,identity,original_url,input_fingerprint,next_check_at,failure_count,last_error_code) VALUES($1,'quark',$2,'https://pan.quark.cn/s/test',$2,now(),1,'check_failed')")
         .bind(link).bind(&unique).execute(&pool).await.unwrap();
     let check:i64=sqlx::query_scalar("INSERT INTO link_check_jobs(link_id,input_version,kind) VALUES($1,1,'original') RETURNING id").bind(link).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO link_resolve_requests(id,request_key,subject_key,request_fingerprint,link_id,authorization_json,status,delivery,reason_code,response_json,deadline_at) VALUES($1,$2,'private-subject',$3,$4,'{\"credential\":\"DO_NOT_EXPOSE\"}','completed','original','deadline_exceeded','{\"cookie\":\"DO_NOT_EXPOSE\"}',now())")
@@ -299,7 +291,7 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
         .bind(Uuid::new_v4()).bind(admin).execute(&pool).await.unwrap();
     crate::runtime::record_lane_run(
         &state,
-        "link-sync",
+        "link-check",
         std::time::Duration::from_millis(12),
         &Err(ApiError::Upstream("DO_NOT_EXPOSE".into())),
     )
@@ -327,13 +319,8 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
         .await
         .unwrap();
     assert_eq!(logged, 1);
-    crate::runtime::record_lane_run(
-        &state,
-        &lane,
-        std::time::Duration::from_millis(1),
-        &Ok(()),
-    )
-    .await;
+    crate::runtime::record_lane_run(&state, &lane, std::time::Duration::from_millis(1), &Ok(()))
+        .await;
     let logged: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_task_runs WHERE lane=$1")
         .bind(&lane)
         .fetch_one(&pool)
@@ -350,16 +337,8 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
     .await;
     let old:i64=sqlx::query_scalar("SELECT count(*) FROM worker_task_runs WHERE lane=$1 AND created_at<now()-interval '7 days'").bind(&lane).fetch_one(&pool).await.unwrap();
     assert_eq!(old, 0);
-    for kind in [
-        "crawl",
-        "sync",
-        "checks",
-        "resolve",
-        "operations",
-        "maintenance",
-    ] {
-        let (code, out) =
-            call(&router, "GET", &format!("/api/admin/tasks/{kind}"), token).await;
+    for kind in ["crawl", "checks", "resolve", "operations", "maintenance"] {
+        let (code, out) = call(&router, "GET", &format!("/api/admin/tasks/{kind}"), token).await;
         assert_eq!(code, StatusCode::OK, "{kind}: {out}");
         assert!(
             !out["data"]["items"].as_array().unwrap().is_empty(),
@@ -433,16 +412,21 @@ async fn task_center_lists_filters_paginates_and_fences_rechecks() {
         .unwrap();
     assert_eq!(call(&router, "POST", &retry, token).await.0, StatusCode::OK);
     assert_eq!(call(&router, "POST", &retry, token).await.0, StatusCode::OK);
-    let row =
-        sqlx::query("SELECT status,lease_token,priority FROM link_check_jobs WHERE id=$1")
-            .bind(check)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let row = sqlx::query("SELECT status,lease_token,priority FROM link_check_jobs WHERE id=$1")
+        .bind(check)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(row.get::<String, _>("status"), "queued");
     assert!(row.get::<Option<Uuid>, _>("lease_token").is_none());
     assert_eq!(row.get::<i32, _>("priority"), 10);
-    let n:i64=sqlx::query_scalar("SELECT count(*) FROM link_check_jobs WHERE link_id=$1 AND status IN('queued','running')").bind(link).fetch_one(&pool).await.unwrap();
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM link_check_jobs WHERE link_id=$1 AND status IN('queued','running')",
+    )
+    .bind(link)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(n, 1);
     assert_eq!(
         call(

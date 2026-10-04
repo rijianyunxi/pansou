@@ -2,41 +2,95 @@ use super::*;
 #[test]
 fn guangya_browser_url_uses_code_query_and_rejects_pasted_labels() {
     let base = "https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m";
-    for (suffix, expected) in [("", format!("{base}#/share")), ("?code=ewcc", format!("{base}?code=ewcc#/share"))] {
-        let parsed = ShareInput { url: format!("{base}{suffix}"), provider: Some(Provider::Guangya), password: None }.parse().unwrap();
+    for (suffix, expected) in [
+        ("", format!("{base}#/share")),
+        ("?code=ewcc", format!("{base}?code=ewcc#/share")),
+    ] {
+        let parsed = ShareInput {
+            url: format!("{base}{suffix}"),
+            provider: Some(Provider::Guangya),
+            password: None,
+        }
+        .parse()
+        .unwrap();
         assert_eq!(parsed.url, base);
         assert_eq!(parsed.browser_url(), expected);
     }
-    for suffix in ["提取码：ewcc", "%E6%8F%90%E5%8F%96%E7%A0%81%EF%BC%9Aewcc#/share"] {
-        assert!(ShareInput { url: format!("{base}{suffix}"), provider: Some(Provider::Guangya), password: None }.parse().is_err());
+    for suffix in [
+        "提取码：ewcc",
+        "%E6%8F%90%E5%8F%96%E7%A0%81%EF%BC%9Aewcc#/share",
+    ] {
+        assert!(
+            ShareInput {
+                url: format!("{base}{suffix}"),
+                provider: Some(Provider::Guangya),
+                password: None
+            }
+            .parse()
+            .is_err()
+        );
     }
 }
 #[test]
 fn extended_share_hosts_and_account_credentials_are_strict() {
-    for (provider, host) in [(Provider::Aliyun,"www.alipan.com"),(Provider::Xunlei,"pan.xunlei.com"),(Provider::Guangya,"www.guangyapan.com")] {
-        let reference=ShareInput{url:format!("https://{host}/s/share-123?pwd=p123"),provider:Some(provider),password:None}.parse().unwrap();
-        assert_eq!(reference.password,"p123");
-        assert_eq!(reference.provider,provider);
-        for url in [format!("https://{host}.evil.test/s/share-123"),format!("https://user@{host}/s/share-123"),format!("https://{host}:9000/s/share-123")] {
-            assert!(ShareInput{url,provider:Some(provider),password:None}.parse().is_err());
+    for (provider, host) in [
+        (Provider::Aliyun, "www.alipan.com"),
+        (Provider::Xunlei, "pan.xunlei.com"),
+        (Provider::Guangya, "www.guangyapan.com"),
+    ] {
+        let reference = ShareInput {
+            url: format!("https://{host}/s/share-123?pwd=p123"),
+            provider: Some(provider),
+            password: None,
         }
-        let valid=json!({"access_token":"old-token","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha","device_id":"device-1"});
-        assert!(validate_credential(provider,&valid.to_string()).is_ok());
-        let mut rotated=valid.clone();rotated["access_token"]=json!("new-token");
-        assert_eq!(credential_fingerprint(provider,&valid.to_string()),credential_fingerprint(provider,&rotated.to_string()));
-        rotated["user_id"]=json!("account-2");
-        assert_ne!(credential_fingerprint(provider,&valid.to_string()),credential_fingerprint(provider,&rotated.to_string()));
-        for invalid in [json!({"refresh_token":"not-access"}),json!({"access_token":"a","user_id":"../unsafe"}),json!({"access_token":"a\r\nx-evil: 1","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha"})] {
-            assert!(validate_credential(provider,&invalid.to_string()).is_err());
+        .parse()
+        .unwrap();
+        assert_eq!(reference.password, "p123");
+        assert_eq!(reference.provider, provider);
+        for url in [
+            format!("https://{host}.evil.test/s/share-123"),
+            format!("https://user@{host}/s/share-123"),
+            format!("https://{host}:9000/s/share-123"),
+        ] {
+            assert!(
+                ShareInput {
+                    url,
+                    provider: Some(provider),
+                    password: None
+                }
+                .parse()
+                .is_err()
+            );
         }
-        for field in ["base_url","apiHost","headers"] {
-            let mut invalid=valid.clone();invalid[field]=json!("https://evil.test");
-            assert!(validate_credential(provider,&invalid.to_string()).is_err());
+        let valid = json!({"access_token":"old-token","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha","device_id":"device-1"});
+        assert!(validate_credential(provider, &valid.to_string()).is_ok());
+        let mut rotated = valid.clone();
+        rotated["access_token"] = json!("new-token");
+        assert_eq!(
+            credential_fingerprint(provider, &valid.to_string()),
+            credential_fingerprint(provider, &rotated.to_string())
+        );
+        rotated["user_id"] = json!("account-2");
+        assert_ne!(
+            credential_fingerprint(provider, &valid.to_string()),
+            credential_fingerprint(provider, &rotated.to_string())
+        );
+        for invalid in [
+            json!({"refresh_token":"not-access"}),
+            json!({"access_token":"a","user_id":"../unsafe"}),
+            json!({"access_token":"a\r\nx-evil: 1","user_id":"account-1","drive_id":"drive-1","captcha_token":"captcha"}),
+        ] {
+            assert!(validate_credential(provider, &invalid.to_string()).is_err());
         }
-        let headers=extended::credential_headers(provider,&valid.to_string()).unwrap();
-        assert_eq!(headers.get("authorization").unwrap(),"Bearer old-token");
+        for field in ["base_url", "apiHost", "headers"] {
+            let mut invalid = valid.clone();
+            invalid[field] = json!("https://evil.test");
+            assert!(validate_credential(provider, &invalid.to_string()).is_err());
+        }
+        let headers = extended::credential_headers(provider, &valid.to_string()).unwrap();
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer old-token");
         assert!(headers.get("cookie").is_none());
-        assert!(validate_dir(provider,Some("../unsafe")).is_err());
+        assert!(validate_dir(provider, Some("../unsafe")).is_err());
     }
 }
 #[test]
@@ -267,15 +321,21 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
         .into_response();
     }
     let payload = match (path.as_str(), method.as_str()) {
-        ("/pan.quark.cn/account/info",_)=>json!({"success":true,"code":"OK","data":{"uid":if cookie.contains("fixture-switched"){"fixture-two"}else{"fixture-one"},"nickname":"fixture"}}),
-        ("/pan.baidu.com/api/gettemplatevariable",_)=>json!({"errno":0,"result":{"uk":if mock.own_share{2}else{3},"bdstoken":"fixture-bdstoken"}}),
+        ("/pan.quark.cn/account/info", _) => {
+            json!({"success":true,"code":"OK","data":{"uid":if cookie.contains("fixture-switched"){"fixture-two"}else{"fixture-one"},"nickname":"fixture"}})
+        }
+        ("/pan.baidu.com/api/gettemplatevariable", _) => {
+            json!({"errno":0,"result":{"uk":if mock.own_share{2}else{3},"bdstoken":"fixture-bdstoken"}})
+        }
         ("/qshare/share/sharepage/token", _) => match mock.dead_share {
             // Quark answers a cancelled share with HTTP 404 and a normal business body.
-            1 => return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status":404,"code":41012,"message":"好友已取消了分享"})),
-            )
-                .into_response(),
+            1 => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"status":404,"code":41012,"message":"好友已取消了分享"})),
+                )
+                    .into_response();
+            }
             2 => return (StatusCode::NOT_FOUND, "gone").into_response(),
             _ => json!({"code":0,"data":{"stoken":"fixture-token"}}),
         },
@@ -710,7 +770,7 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let mock = Mock::start().await;
     let mut state = AppState::new(pool.clone(), redis);
     state.cloud_test_bases = Some(mock.bases.clone());
-    state.cloud_auth_test_base=Some(mock.bases.baidu.as_str().to_owned());
+    state.cloud_auth_test_base = Some(mock.bases.baidu.as_str().to_owned());
     let state = Arc::new(state);
     let router = build_router(state.clone());
     let unique = uuid::Uuid::new_v4().simple().to_string();
@@ -719,9 +779,9 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let session = state.auth().login(&username, &unique).await.unwrap().0;
     let token = Some(session.token.as_str());
     let previous=sqlx::query("SELECT provider,credential FROM cloud_account_settings WHERE provider IN ('baidu','quark')").fetch_all(&pool).await.unwrap().into_iter().map(|r|(r.get::<String,_>("provider"),r.get::<String,_>("credential"))).collect::<Vec<_>>();
-    // Other integration fixtures exercise encrypted bindings. This fixture
+    // Other integration fixtures exercise account bindings. This fixture
     // explicitly starts disconnected before importing its own mock identities.
-    sqlx::query("UPDATE cloud_account_settings SET credential='',credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL WHERE provider IN('baidu','quark')")
+    sqlx::query("UPDATE cloud_account_settings SET credential='',account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_credential=NULL WHERE provider IN('baidu','quark')")
         .execute(&pool).await.unwrap();
     for path in [
         "check",
@@ -985,7 +1045,7 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let id = format!("cloud_resource_{unique}");
     let resource_link =
         json!([{"type":"quark","url":"https://pan.quark.cn/s/abc","password":"a1b2"}]);
-    sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,'原生网盘测试',$2)").bind(&id).bind(&resource_link).execute(&pool).await.unwrap();
+    crate::resource_links::fixture(&pool, &id, "原生网盘测试", resource_link.clone()).await;
     let checked = api(
         &router,
         "POST",
@@ -996,12 +1056,11 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     .await;
     assert_eq!(checked.0, StatusCode::OK);
     assert_eq!(checked.1["data"]["valid"], 1, "{}", checked.1);
-    let status: i16 =
-        sqlx::query_scalar("SELECT link_validity FROM managed_resources WHERE id=$1")
-            .bind(&id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let status: i16 = sqlx::query_scalar("SELECT link_validity FROM managed_resources WHERE id=$1")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(status, 1);
     let target = json!({"resourceId":id,"linkIndex":0});
     assert_eq!(
@@ -1084,7 +1143,7 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
         deletes_before + 1
     );
     let retained: Value =
-        sqlx::query_scalar("SELECT links_json FROM managed_resources WHERE id=$1")
+        sqlx::query_scalar("SELECT resource_links_json(id) FROM managed_resources WHERE id=$1")
             .bind(&id)
             .fetch_one(&pool)
             .await
@@ -1247,11 +1306,20 @@ async fn quark_rejects_non_owner_entries_even_when_share_id_matches() {
 
 #[tokio::test]
 async fn baidu_cached_identity_reads_current_membership_without_html() {
-    use axum::{Router, body::Body, extract::State, http::Request, response::IntoResponse, routing::any};
+    use axum::{
+        Router, body::Body, extract::State, http::Request, response::IntoResponse, routing::any,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Default)]
-    struct Fixture { mode: AtomicUsize, html: AtomicUsize, lists: AtomicUsize }
-    async fn upstream(State(state): State<Arc<Fixture>>, request: Request<Body>) -> axum::response::Response {
+    struct Fixture {
+        mode: AtomicUsize,
+        html: AtomicUsize,
+        lists: AtomicUsize,
+    }
+    async fn upstream(
+        State(state): State<Arc<Fixture>>,
+        request: Request<Body>,
+    ) -> axum::response::Response {
         match request.uri().path() {
             "/share/verify" => axum::Json(json!({"errno":0,"randsk":"fixture"})).into_response(),
             "/s/1fixture" => {
@@ -1263,8 +1331,8 @@ async fn baidu_cached_identity_reads_current_membership_without_html() {
                 let file = |id| json!({"fs_id":id,"server_filename":format!("file{id}.mp4"),"size":42,"isdir":0});
                 let files = match state.mode.load(Ordering::SeqCst) {
                     1 => vec![],
-                    2 => vec![file(2),file(2)],
-                    _ => vec![file(2),file(3)],
+                    2 => vec![file(2), file(2)],
+                    _ => vec![file(2), file(3)],
                 };
                 axum::Json(json!({"errno":0,"list":files})).into_response()
             }
@@ -1273,25 +1341,62 @@ async fn baidu_cached_identity_reads_current_membership_without_html() {
     }
     let fixture = Arc::new(Fixture::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
-    let app = Router::new().fallback(any(upstream)).with_state(fixture.clone());
-    let task = tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
-    let mut drive = Drive::new(transport::http_client(),Provider::Baidu,"BDUSS=fixture".into());
-    drive.baidu.base=base;
-    let reference=ShareInput{url:"https://pan.baidu.com/s/1fixture".into(),provider:Some(Provider::Baidu),password:Some("1234".into())}.parse().unwrap();
+    let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let app = Router::new()
+        .fallback(any(upstream))
+        .with_state(fixture.clone());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut drive = Drive::new(
+        transport::http_client(),
+        Provider::Baidu,
+        "BDUSS=fixture".into(),
+    );
+    drive.baidu.base = base;
+    let reference = ShareInput {
+        url: "https://pan.baidu.com/s/1fixture".into(),
+        provider: Some(Provider::Baidu),
+        password: Some("1234".into()),
+    }
+    .parse()
+    .unwrap();
     // Legacy caches contain old files; ignore them and use the current membership.
-    let cached=json!({"shareId":"123","owner":"456","files":[{"id":"1","name":"removed.mp4","size":42,"isDir":false}]});
-    let context=drive.resolve_cached(&reference,Some(&cached)).await.unwrap();
-    assert_eq!(context.files.iter().map(|f|f.id.as_str()).collect::<Vec<_>>(),vec!["2","3"]);
-    assert_eq!(fixture.html.load(Ordering::SeqCst),0);
-    assert_eq!(fixture.lists.load(Ordering::SeqCst),1);
-    fixture.mode.store(1,Ordering::SeqCst);
-    assert!(drive.resolve_cached(&reference,Some(&cached)).await.unwrap().files.is_empty());
-    fixture.mode.store(2,Ordering::SeqCst);
-    assert!(drive.resolve_cached(&reference,Some(&cached)).await.is_err());
-    fixture.mode.store(0,Ordering::SeqCst);
-    let without_cache=drive.resolve_cached(&reference,Some(&json!({"shareId":"broken","owner":"456"}))).await.unwrap();
-    assert_eq!(without_cache.files.len(),2);
-    assert_eq!(fixture.html.load(Ordering::SeqCst),1);
+    let cached = json!({"shareId":"123","owner":"456","files":[{"id":"1","name":"removed.mp4","size":42,"isDir":false}]});
+    let context = drive
+        .resolve_cached(&reference, Some(&cached))
+        .await
+        .unwrap();
+    assert_eq!(
+        context
+            .files
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2", "3"]
+    );
+    assert_eq!(fixture.html.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.lists.load(Ordering::SeqCst), 1);
+    fixture.mode.store(1, Ordering::SeqCst);
+    assert!(
+        drive
+            .resolve_cached(&reference, Some(&cached))
+            .await
+            .unwrap()
+            .files
+            .is_empty()
+    );
+    fixture.mode.store(2, Ordering::SeqCst);
+    assert!(
+        drive
+            .resolve_cached(&reference, Some(&cached))
+            .await
+            .is_err()
+    );
+    fixture.mode.store(0, Ordering::SeqCst);
+    let without_cache = drive
+        .resolve_cached(&reference, Some(&json!({"shareId":"broken","owner":"456"})))
+        .await
+        .unwrap();
+    assert_eq!(without_cache.files.len(), 2);
+    assert_eq!(fixture.html.load(Ordering::SeqCst), 1);
     task.abort();
 }

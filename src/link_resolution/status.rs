@@ -1,6 +1,6 @@
 //! Batched validity reads. Every result capability is authorized once per request.
 use super::capability::snapshot_with_policy;
-use super::{FACT_COLUMNS, Fact, LinkRef, aggregate, fingerprint, response};
+use super::{Fact, LinkRef, aggregate, response};
 use crate::{app::AppState, error::ApiError, models::Link};
 use axum::{
     Json,
@@ -11,7 +11,6 @@ use axum::{
 use futures::{StreamExt, stream};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::{collections::HashMap, sync::Arc};
 
 async fn snapshots(
@@ -40,29 +39,17 @@ async fn snapshots(
 
 async fn facts(
     state: &AppState,
-    links: impl Iterator<Item = &Link>,
-) -> Result<HashMap<String, Fact>, ApiError> {
-    let mut keys: Vec<_> = links.map(fingerprint).collect();
-    keys.sort();
-    keys.dedup();
-    if keys.is_empty() {
-        return Ok(HashMap::new());
+    snaps: &HashMap<String, Result<super::Snapshot, u16>>,
+) -> Result<super::Facts, ApiError> {
+    let mut owners = Vec::new();
+    let mut keys = Vec::new();
+    for snap in snaps.values().filter_map(|s| s.as_ref().ok()) {
+        if snap.source.is_none() {
+            owners.push(snap.resource_id.clone());
+        }
+        keys.extend(snap.links.values().map(super::fingerprint));
     }
-    let rows = sqlx::query(&format!(
-        "SELECT input_fingerprint,{FACT_COLUMNS} FROM link_catalog WHERE input_fingerprint=ANY($1)"
-    ))
-    .bind(keys)
-    .fetch_all(&state.pool)
-    .await?;
-    rows.iter()
-        .map(|row| {
-            Ok((
-                row.try_get("input_fingerprint")?,
-                sqlx::FromRow::from_row(row)?,
-            ))
-        })
-        .collect::<Result<_, sqlx::Error>>()
-        .map_err(Into::into)
+    super::load_facts(state, &owners, &keys).await
 }
 fn public_fact(fact: Option<&Fact>, link: &Link, link_ref: &str) -> Value {
     let mut value = fact.map(Fact::public).unwrap_or_else(|| json!({"validity":-1,"checkedAt":null,"lastAttemptAt":null,"stale":false,"reasonCode":null,"createdAt":null,"checkStatus":"unchecked","checkMessage":null}));
@@ -91,20 +78,25 @@ pub async fn statuses(
         input.items.iter().map(|item| item.result_ref.clone()),
     )
     .await?;
-    let catalog = facts(
-        &state,
-        snapshots
-            .values()
-            .filter_map(|s| s.as_ref().ok())
-            .flat_map(|s| s.links.values()),
-    )
-    .await?;
+    let catalog = facts(&state, &snapshots).await?;
     let results: Vec<_> = input
         .items
         .iter()
         .map(|item| match &snapshots[&item.result_ref] {
             Ok(snap) => match snap.links.get(&item.link_ref) {
-                Some(link) => public_fact(catalog.get(&fingerprint(link)), link, &item.link_ref),
+                Some(link) => public_fact(
+                    super::scoped_fact(
+                        &catalog,
+                        if snap.source.is_none() {
+                            Some(snap.resource_id.as_str())
+                        } else {
+                            None
+                        },
+                        link,
+                    ),
+                    link,
+                    &item.link_ref,
+                ),
                 None => json!({"linkRef":item.link_ref,"errorCode":404}),
             },
             Err(code) => json!({"linkRef":item.link_ref,"errorCode":code}),
@@ -128,18 +120,11 @@ pub async fn resource_statuses(
         return Err(ApiError::BadRequest("每次最多50条".into()));
     }
     let snapshots = snapshots(&state, &session, input.result_refs.iter().cloned()).await?;
-    let catalog = facts(
-        &state,
-        snapshots
-            .values()
-            .filter_map(|s| s.as_ref().ok())
-            .flat_map(|s| s.links.values()),
-    )
-    .await?;
+    let catalog = facts(&state, &snapshots).await?;
     let results: Vec<_> = input.result_refs.iter().map(|reference| match &snapshots[reference] {
         Err(code) => json!({"resultRef":reference,"errorCode":code}),
         Ok(snap) => {
-            let values: Vec<_> = snap.links.iter().map(|(key, link)| public_fact(catalog.get(&fingerprint(link)), link, key)).collect();
+            let values: Vec<_> = snap.links.iter().map(|(key, link)| public_fact(super::scoped_fact(&catalog,if snap.source.is_none(){Some(snap.resource_id.as_str())}else{None},link), link, key)).collect();
             json!({"resultRef":reference,"validity":aggregate(values.iter().map(|v|v["validity"].as_i64().unwrap_or(-1) as i16)),"checkedAt":values.iter().filter_map(|v|v["checkedAt"].as_str()).min()})
         }
     }).collect();

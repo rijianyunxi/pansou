@@ -47,7 +47,7 @@ async fn reference(state: &AppState, target: &Target) -> Result<Reference, ApiEr
         .link_index
         .ok_or_else(|| ApiError::BadRequest("需要 linkIndex".into()))?;
     let links = sqlx::query_scalar::<_, Value>(
-        "SELECT links_json FROM managed_resources WHERE id=$1 AND deleted_at IS NULL",
+        "SELECT resource_links_json(id) FROM managed_resources WHERE id=$1",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -131,6 +131,7 @@ pub async fn cloud_check(
             password: Some(r.password.clone()).filter(|s| !s.is_empty()),
         },
         &value,
+        target.resource_id.as_deref(),
     )
     .await?;
     Ok(ok(value))
@@ -466,7 +467,7 @@ pub async fn resources_check(
     ids.sort();
     ids.dedup();
     let rows = sqlx::query(
-        "SELECT id,links_json FROM managed_resources WHERE id=ANY($1) AND deleted_at IS NULL",
+        "SELECT id,resource_links_json(id) AS links_json FROM managed_resources WHERE id=ANY($1)",
     )
     .bind(&ids)
     .fetch_all(&state.pool)
@@ -483,9 +484,7 @@ pub async fn resources_check(
     let mut credentials = std::collections::HashMap::new();
     for p in Provider::ALL {
         if let Ok(Some(account)) = crate::cloud_auth::credentials(&state, p).await {
-            if let Ok(raw) = account.raw(p) {
-                credentials.insert(p.name().to_owned(), raw);
-            }
+            credentials.insert(p.name().to_owned(), account.credential.clone());
         }
     }
     let credentials = Arc::new(credentials);
@@ -559,7 +558,7 @@ async fn check_resource(
                 url: input.url.clone(),
                 password: input.password.clone(),
             };
-            crate::link_resolution::record_check(&state, &original, &result).await?;
+            crate::link_resolution::record_check(&state, &original, &result, Some(&id)).await?;
             statuses.push(result);
         }
         if links.as_array().is_some_and(|a| a.len() > 20) {
@@ -593,7 +592,7 @@ async fn check_resource(
             vec![],
         ),
     };
-    let changed = sqlx::query("UPDATE managed_resources SET link_validity=CASE $2 WHEN 'valid' THEN 1 WHEN 'invalid' THEN 0 ELSE -1 END,link_validity_updated_at=now() WHERE id=$1 AND deleted_at IS NULL AND links_json=$3")
+    let changed = sqlx::query("UPDATE managed_resources SET link_validity=CASE $2 WHEN 'valid' THEN 1 WHEN 'invalid' THEN 0 ELSE -1 END,link_validity_updated_at=now() WHERE id=$1 AND resource_links_json(id)=$3")
         .bind(&id).bind(&status).bind(&links).execute(&state.pool).await?;
     Ok(
         json!({"id":id,"status":if changed.rows_affected()==1{status.as_str()}else{"unknown"},"message":if changed.rows_affected()==1{message.as_str()}else{"资源链接已改变，请重新检测"},"links":links_result}),

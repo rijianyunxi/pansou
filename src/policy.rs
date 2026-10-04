@@ -1,6 +1,6 @@
 use crate::error::ApiError;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sqlx::{PgPool, Row};
 
 pub const POLICY_KEYS: [&str; 23] = [
@@ -27,13 +27,6 @@ pub const POLICY_KEYS: [&str; 23] = [
     "anonymousSearchConcurrency",
     "loggedSearchConcurrency",
     "globalSearchConcurrency",
-];
-
-const LEGACY_KEYS: [&str; 4] = [
-    "anonymous_custom_channels",
-    "show_hot_search",
-    "show_auth_buttons",
-    "home_search_placeholder",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -197,20 +190,6 @@ impl UserPolicy {
     }
 }
 
-fn canonical_key(key: &str) -> Option<&'static str> {
-    POLICY_KEYS
-        .iter()
-        .copied()
-        .find(|candidate| *candidate == key)
-        .or(match key {
-            "anonymous_custom_channels" => Some("anonymousCustomChannels"),
-            "show_hot_search" => Some("showHotSearch"),
-            "show_auth_buttons" => Some("showAuthButtons"),
-            "home_search_placeholder" => Some("homeSearchPlaceholder"),
-            _ => None,
-        })
-}
-
 fn merge_values(current: UserPolicy, input: &Value) -> Result<UserPolicy, ApiError> {
     let input = input
         .as_object()
@@ -230,34 +209,17 @@ fn merge_values(current: UserPolicy, input: &Value) -> Result<UserPolicy, ApiErr
         .validate()
 }
 
-pub async fn load(pool: &PgPool) -> Result<UserPolicy, ApiError> {
-    let rows = sqlx::query("SELECT key,value_json FROM policy_settings ORDER BY updated_at,key")
-        .fetch_all(pool)
-        .await?;
+fn decode_policy(rows: Vec<sqlx::postgres::PgRow>) -> Result<UserPolicy, ApiError> {
     let mut values = serde_json::to_value(UserPolicy::default())
         .map_err(|error| ApiError::Internal(error.to_string()))?
         .as_object()
         .cloned()
         .unwrap_or_default();
-    let mut canonical_values = Map::new();
-    let mut legacy_values = Map::new();
     for row in rows {
         let key: String = row.try_get("key")?;
-        let value: Value = row.try_get("value_json")?;
-        let Some(canonical) = canonical_key(&key) else {
-            continue;
-        };
         if POLICY_KEYS.contains(&key.as_str()) {
-            canonical_values.insert(canonical.into(), value);
-        } else {
-            legacy_values.insert(canonical.into(), value);
+            values.insert(key, row.try_get::<Value, _>("value_json")?);
         }
-    }
-    for (key, value) in legacy_values {
-        values.insert(key, value);
-    }
-    for (key, value) in canonical_values {
-        values.insert(key, value);
     }
     serde_json::from_value::<UserPolicy>(Value::Object(values))
         .map_err(|error| ApiError::Internal(format!("读取策略配置失败：{error}")))?
@@ -268,42 +230,45 @@ pub async fn load(pool: &PgPool) -> Result<UserPolicy, ApiError> {
         })
 }
 
-pub async fn save(pool: &PgPool, input: &Value) -> Result<UserPolicy, ApiError> {
-    let next = merge_values(load(pool).await?, input)?;
-    let serialized =
-        serde_json::to_value(&next).map_err(|error| ApiError::Internal(error.to_string()))?;
-    let object = serialized
-        .as_object()
-        .ok_or_else(|| ApiError::Internal("策略序列化失败".into()))?;
-    let mut transaction = pool.begin().await?;
-    for key in POLICY_KEYS {
-        let value = object
-            .get(key)
-            .cloned()
-            .ok_or_else(|| ApiError::Internal(format!("缺少策略字段 {key}")))?;
-        sqlx::query(
-            "INSERT INTO policy_settings(key,value_json,updated_at) VALUES($1,$2,now())\n             ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=now()",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&mut *transaction)
-        .await?;
-    }
-    sqlx::query("DELETE FROM policy_settings WHERE key = ANY($1)")
-        .bind(LEGACY_KEYS.as_slice())
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query(
-        "UPDATE system_settings SET default_concurrency=$1,request_timeout_ms=$2,cache_ttl_minutes=$3,updated_at=now() WHERE id=1",
+pub async fn load(pool: &PgPool) -> Result<UserPolicy, ApiError> {
+    decode_policy(
+        sqlx::query("SELECT key,value_json FROM policy_settings WHERE key=ANY($1)")
+            .bind(POLICY_KEYS.as_slice())
+            .fetch_all(pool)
+            .await?,
     )
-    .bind(next.default_concurrency as i32)
-    .bind(next.request_timeout_ms as i32)
-    .bind(next.cache_ttl_minutes as i32)
-    .execute(&mut *transaction)
-    .await?;
-    sqlx::query("UPDATE search_settings SET concurrency=NULL,updated_at=now() WHERE id=1")
+}
+
+pub async fn save(pool: &PgPool, input: &Value) -> Result<UserPolicy, ApiError> {
+    let mut transaction = pool.begin().await?;
+    // Serialize partial updates before reading, including first writes of missing keys.
+    sqlx::query("SELECT pg_advisory_xact_lock(734810, 1)")
         .execute(&mut *transaction)
         .await?;
+    let current = decode_policy(
+        sqlx::query("SELECT key,value_json FROM policy_settings WHERE key=ANY($1)")
+            .bind(POLICY_KEYS.as_slice())
+            .fetch_all(&mut *transaction)
+            .await?,
+    )?;
+    let next = merge_values(current.clone(), input)?;
+    let before =
+        serde_json::to_value(current).map_err(|error| ApiError::Internal(error.to_string()))?;
+    let after =
+        serde_json::to_value(&next).map_err(|error| ApiError::Internal(error.to_string()))?;
+    let mut changed = false;
+    for key in POLICY_KEYS {
+        if before[key] == after[key] {
+            continue;
+        }
+        sqlx::query("INSERT INTO policy_settings(key,value_json,updated_at) VALUES($1,$2,clock_timestamp()) ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=EXCLUDED.updated_at")
+            .bind(key).bind(&after[key]).execute(&mut *transaction).await?;
+        changed = true;
+    }
+    if changed {
+        sqlx::query("INSERT INTO policy_settings(key,value_json,updated_at) VALUES('search-settings-meta','{}',clock_timestamp()) ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at")
+            .execute(&mut *transaction).await?;
+    }
     transaction.commit().await?;
     Ok(next)
 }
@@ -339,6 +304,9 @@ mod tests {
         for key in POLICY_KEYS {
             assert!(value.get(key).is_some(), "missing policy key: {key}");
         }
-        assert_eq!(value.as_object().map(Map::len), Some(POLICY_KEYS.len()));
+        assert_eq!(
+            value.as_object().map(|object| object.len()),
+            Some(POLICY_KEYS.len())
+        );
     }
 }

@@ -1,6 +1,6 @@
 import type { ResolvedLink } from '../shared/apiModels';
 import { usable } from './linkResolution.ts';
-import { guangyaBrowserUrl } from './shareLinks.ts';
+import { guangyaBrowserUrl, xunleiBrowserUrl } from './shareLinks.ts';
 
 export type LinkAction = 'open' | 'copy';
 interface LinkActionEffects {
@@ -17,8 +17,8 @@ export function invalidReason(value?: ResolvedLink): string {
 }
 function clipboardText(value: ResolvedLink): string {
   if (!usable(value) || invalidLink(value)) throw new Error('链接已失效');
-  const guangyaUrl = guangyaBrowserUrl(value);
-  if (guangyaUrl) return guangyaUrl;
+  const shareUrl = guangyaBrowserUrl(value) || xunleiBrowserUrl(value);
+  if (shareUrl) return shareUrl;
   return value.url + (value.password ? '\n提取码：' + value.password : '');
 }
 

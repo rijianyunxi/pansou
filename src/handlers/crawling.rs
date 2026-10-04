@@ -38,19 +38,6 @@ fn flag(q: &HashMap<String, String>, key: &str) -> Result<Option<bool>, ApiError
         _ => Err(ApiError::BadRequest(format!("{key} 必须为布尔值"))),
     }
 }
-fn date(
-    q: &HashMap<String, String>,
-    key: &str,
-) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
-    q.get(key)
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            chrono::DateTime::parse_from_rfc3339(s)
-                .map(|t| t.with_timezone(&chrono::Utc))
-                .map_err(|_| ApiError::BadRequest(format!("{key} 必须含时区")))
-        })
-        .transpose()
-}
 const CHANNEL_SELECT: &str = "SELECT c.* FROM crawl_channels c";
 async fn channels_data(
     state: &AppState,
@@ -96,7 +83,7 @@ async fn channels_data(
         let st = &stats[&id];
         let task = &task_states[&id];
         let p = by_channel.get(&id);
-        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":st.failed_count,"resourceCount":st.resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":p});
+        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":st.failed_count,"resourceCount":st.resource_count,"todayResourceCount":st.today_resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":p});
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
         }
@@ -238,10 +225,10 @@ pub async fn crawl_channel_delete(
         .await?
         .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     // Retain managed resources and their links. Only remove ingestion history;
-    // occurrence projections, statistics and outbound policies cascade away.
+    // tasks and outbound policies cascade away. Resource content remains stored.
     for statement in [
-        "DELETE FROM resource_occurrences WHERE channel_id=$1",
-        "DELETE FROM source_messages WHERE channel_id=$1",
+        "UPDATE managed_resources SET source_channel_ids=array_remove(source_channel_ids,$1) WHERE source_channel_ids @> ARRAY[$1]::text[]",
+        "DELETE FROM crawl_message_tasks WHERE channel_id=$1",
         "DELETE FROM crawl_page_failures WHERE channel_id=$1",
         "DELETE FROM crawl_jobs WHERE channel_id=$1",
         "UPDATE resource_sources SET channel_id=NULL WHERE channel_id=$1",
@@ -339,9 +326,6 @@ pub async fn crawl_job_retry(
     tx.commit().await?;
     Ok(ok(json!({"id":id})))
 }
-fn message(r: &PgRow) -> Value {
-    json!({"channelId":r.get::<String,_>("channel_id"),"messageId":r.get::<i64,_>("message_id"),"publishedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("published_at"),"status":r.get::<String,_>("parse_status"),"parseError":r.get::<Option<String>,_>("parse_error"),"parseVersion":r.get::<String,_>("parse_version")})
-}
 async fn message_list(
     pool: &PgPool,
     channel: &str,
@@ -349,42 +333,28 @@ async fn message_list(
 ) -> Result<Value, ApiError> {
     let size = number(&q, "pageSize", 20, 1, 100)?;
     let page = number(&q, "page", 1, 1, 1000000)?;
-    let status = q.get("status").cloned().unwrap_or_default();
-    let from = date(&q, "from")?;
-    let to = date(&q, "to")?;
-    let rows=sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version FROM source_messages WHERE channel_id=$1 AND ($2='' OR parse_status=$2) AND ($3::timestamptz IS NULL OR published_at>=$3) AND ($4::timestamptz IS NULL OR published_at<=$4) ORDER BY message_id DESC LIMIT $5 OFFSET $6").bind(channel).bind(&status).bind(from).bind(to).bind(size).bind((page-1)*size).fetch_all(pool).await?;
-    // Trigger-maintained totals answer instantly without a date window; with
-    // one, the aggregate scopes every count to that published_at range.
-    let counts = if from.is_none() && to.is_none() {
-        let r=sqlx::query("SELECT COALESCE(message_count,0) total,COALESCE(parsed_count,0) parsed,COALESCE(empty_count,0) empty,COALESCE(failed_count,0) failed FROM channel_statistics WHERE channel_id=$1").bind(channel).fetch_optional(pool).await?;
-        r.map(|r| {
-            (
-                r.get::<i64, _>("total"),
-                r.get::<i64, _>("parsed"),
-                r.get::<i64, _>("empty"),
-                r.get::<i64, _>("failed"),
-            )
-        })
-        .unwrap_or_default()
-    } else {
-        let r=sqlx::query("SELECT count(*) total,count(*) FILTER(WHERE parse_status='parsed') parsed,count(*) FILTER(WHERE parse_status='empty') empty,count(*) FILTER(WHERE parse_status='failed') failed FROM source_messages WHERE channel_id=$1 AND ($2::timestamptz IS NULL OR published_at>=$2) AND ($3::timestamptz IS NULL OR published_at<=$3)").bind(channel).bind(from).bind(to).fetch_one(pool).await?;
-        (
-            r.get::<i64, _>("total"),
-            r.get::<i64, _>("parsed"),
-            r.get::<i64, _>("empty"),
-            r.get::<i64, _>("failed"),
-        )
-    };
-    let total = match status.as_str() {
-        "parsed" => counts.1,
-        "empty" => counts.2,
-        "failed" => counts.3,
-        _ => counts.0,
-    };
-    Ok(
-        json!({"items":rows.iter().map(message).collect::<Vec<_>>(),"total":total,"page":page,"pageSize":size,"counts":{"all":counts.0,"parsed":counts.1,"empty":counts.2,"failed":counts.3}}),
-    )
+    let status = q.get("status").map(String::as_str).unwrap_or("all");
+    let scope = q.get("scope").map(String::as_str).unwrap_or("all");
+    if !matches!(status, "all" | "success" | "failed") || !matches!(scope, "all" | "today") {
+        return Err(ApiError::BadRequest("无效的任务筛选".into()));
+    }
+    let mut tx = pool.begin().await?;
+    crawl::prune_tasks(&mut tx, channel).await?;
+    let counts = sqlx::query("SELECT count(*) total,count(*) FILTER(WHERE status<>'failed') success,count(*) FILTER(WHERE status='failed') failed FROM crawl_message_tasks WHERE channel_id=$1 AND ($2='all' OR task_at >= (date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'))")
+        .bind(channel).bind(scope).fetch_one(&mut *tx).await?;
+    let rows = sqlx::query("SELECT t.message_id,t.task_at,t.status,t.error_message,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',r.id,'name',r.name) ORDER BY r.name,r.id) FROM managed_resources r WHERE r.id=ANY(t.resource_ids)),'[]'::jsonb) resources FROM crawl_message_tasks t WHERE t.channel_id=$1 AND ($2='all' OR ($2='success' AND t.status<>'failed') OR ($2='failed' AND t.status='failed')) AND ($3='all' OR t.task_at >= (date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai')) ORDER BY t.task_at DESC,t.message_id DESC LIMIT $4 OFFSET $5")
+        .bind(channel).bind(status).bind(scope).bind(size).bind((page-1)*size).fetch_all(&mut *tx).await?;
+    let total = counts.get::<i64, _>(match status {
+        "success" => "success",
+        "failed" => "failed",
+        _ => "total",
+    });
+    let items: Vec<_> = rows.iter().map(|r| json!({"messageId":r.get::<i64,_>("message_id"),"taskAt":r.get::<chrono::DateTime<chrono::Utc>,_>("task_at"),"status":r.get::<String,_>("status"),"errorMessage":r.get::<Option<String>,_>("error_message"),"resources":r.get::<Value,_>("resources")})).collect();
+    let result = json!({"items":items,"total":total,"page":page,"pageSize":size,"counts":{"all":counts.get::<i64,_>("total"),"success":counts.get::<i64,_>("success"),"failed":counts.get::<i64,_>("failed")}});
+    tx.commit().await?;
+    Ok(result)
 }
+
 pub async fn crawl_messages(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
@@ -417,6 +387,7 @@ pub async fn crawl_messages_action(
         ));
     }
     let mut tx = s.pool.begin().await?;
+    crawl::lock_index(&mut tx).await?;
     let enabled =
         sqlx::query_scalar::<_, bool>("SELECT enabled FROM crawl_channels WHERE id=$1 FOR UPDATE")
             .bind(&channel)
@@ -424,7 +395,7 @@ pub async fn crawl_messages_action(
             .await?
             .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     let targets = sqlx::query_scalar::<_, i64>(
-        "SELECT message_id FROM source_messages WHERE channel_id=$1 AND message_id=ANY($2) AND parse_status='failed' ORDER BY message_id DESC",
+        "SELECT message_id FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=ANY($2) AND status='failed' ORDER BY message_id DESC",
     )
     .bind(&channel)
     .bind(&ids)
@@ -466,38 +437,16 @@ pub async fn crawl_messages_action(
             jobs += 1;
         }
     } else {
-        // Failed rows carry no live occurrences; clear any stale ones first
-        // so the message delete cannot hit the occurrence foreign key.
-        sqlx::query("DELETE FROM resource_occurrences WHERE channel_id=$1 AND message_id=ANY($2)")
+        // Discard the failed task; resource provenance lives independently.
+        sqlx::query("DELETE FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=ANY($2) AND status='failed'")
             .bind(&channel)
             .bind(&ids)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM source_messages WHERE channel_id=$1 AND message_id=ANY($2) AND parse_status='failed'")
-            .bind(&channel)
-            .bind(&ids)
-            .execute(&mut *tx)
-            .await?;
+        crawl::prune_tasks(&mut tx, &channel).await?;
     }
     tx.commit().await?;
     Ok(ok(json!({"affected":ids.len(),"jobs":jobs})))
-}
-pub async fn crawl_message_get(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-    Path((channel, id)): Path<(String, i64)>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    let r = sqlx::query("SELECT channel_id,message_id,published_at,parse_status,parse_error,parse_version FROM source_messages WHERE channel_id=$1 AND message_id=$2")
-        .bind(&channel)
-        .bind(id)
-        .fetch_optional(&s.pool)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("消息不存在".into()))?;
-    let stored=sqlx::query("SELECT o.result_json,r.id,r.enabled,r.manual_override,r.deleted_at FROM resource_occurrences o JOIN managed_resources r ON r.id=o.resource_id WHERE o.channel_id=$1 AND o.message_id=$2").bind(&channel).bind(id).fetch_all(&s.pool).await?;
-    let mut data = message(&r);
-    data["stored"]=json!(stored.iter().map(|r|json!({"result":r.get::<Value,_>("result_json"),"enabled":r.get::<bool,_>("enabled"),"manualOverride":r.get::<bool,_>("manual_override"),"deleted":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("deleted_at").is_some()})).collect::<Vec<_>>());
-    Ok(ok(data))
 }
 pub async fn crawl_settings_get(
     State(s): State<Arc<AppState>>,

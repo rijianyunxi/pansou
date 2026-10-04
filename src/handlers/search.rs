@@ -438,10 +438,9 @@ pub async fn source_probe(
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::BadRequest("sourceId is required".into()))?;
     let kw = body.get("kw").and_then(Value::as_str).unwrap_or("test");
-    let source = sqlx::query_as!(Source,
+    let source = sqlx::query_as::<_, Source>(
         "SELECT id,name,description,url,method,format,priority,enabled,request_json AS request,transform FROM resource_sources WHERE id=$1",
-        id,
-    ).fetch_optional(&state.pool).await?
+    ).bind(id).fetch_optional(&state.pool).await?
         .ok_or_else(|| ApiError::NotFound("Unknown source".into()))?;
     let started = Instant::now();
     let policy = crate::policy::load(&state.pool).await?;

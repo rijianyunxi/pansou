@@ -78,7 +78,7 @@ async fn search_settings_payload(state: &AppState) -> Result<Value, ApiError> {
         .map(|row| row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at"))
         .max();
     let settings_update = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-        "SELECT updated_at FROM search_settings WHERE id=1",
+        "SELECT updated_at FROM policy_settings WHERE key='search-settings-meta'",
     )
     .fetch_one(&state.pool)
     .await?;
@@ -134,29 +134,9 @@ pub async fn settings_search_put(
         .bind(&selected)
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("DELETE FROM search_setting_sources WHERE source_id IN (SELECT id FROM resource_sources WHERE kind='live')")
-            .execute(&mut *transaction)
-            .await?;
-        for id in &selected {
-            sqlx::query(
-                "INSERT INTO search_setting_sources(source_id) VALUES($1) ON CONFLICT(source_id) DO NOTHING",
-            )
-            .bind(id)
-            .execute(&mut *transaction)
-            .await?;
-        }
-        sqlx::query(
-            "UPDATE search_settings SET concurrency=NULL,sources_configured=true,updated_at=now() WHERE id=1",
-        )
-        .execute(&mut *transaction)
-        .await?;
-    } else {
-        sqlx::query(
-            "UPDATE search_settings SET concurrency=NULL,sources_configured=false,updated_at=now() WHERE id=1",
-        )
-        .execute(&mut *transaction)
-        .await?;
     }
+    sqlx::query("INSERT INTO policy_settings(key,value_json,updated_at) VALUES('search-settings-meta','{}',clock_timestamp()) ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at")
+        .execute(&mut *transaction).await?;
     transaction.commit().await?;
     Ok(Json(search_settings_payload(&state).await?))
 }
@@ -298,8 +278,15 @@ pub async fn cloud_get(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let provider = uri.0.path().split('/').next_back().unwrap_or("");
-    let configured:bool=sqlx::query_scalar("SELECT credential<>'' OR credential_cipher IS NOT NULL FROM cloud_account_settings WHERE provider=$1").bind(provider).fetch_optional(&state.pool).await?.unwrap_or(false);
-    Ok(ok(json!({"provider":provider,"configured":configured,"cookieLength":0})))
+    let configured: bool =
+        sqlx::query_scalar("SELECT credential<>'' FROM cloud_account_settings WHERE provider=$1")
+            .bind(provider)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or(false);
+    Ok(ok(
+        json!({"provider":provider,"configured":configured,"cookieLength":0}),
+    ))
 }
 pub async fn cloud_put(
     State(state): State<Arc<AppState>>,
@@ -311,7 +298,11 @@ pub async fn cloud_put(
     admin_only(&headers, &state).await?;
     let provider = uri.0.path().split('/').next_back().unwrap_or("");
     let kind = crate::cloud_drive::Provider::from_name(provider)?;
-    let cookie = match body.get(if kind.token_auth() { "credential" } else { "cookie" }) {
+    let cookie = match body.get(if kind.token_auth() {
+        "credential"
+    } else {
+        "cookie"
+    }) {
         Some(Value::Null) => Some(String::new()),
         Some(Value::String(s)) if s.trim().is_empty() => None,
         Some(Value::String(s)) => Some(s.trim().to_owned()),
@@ -323,7 +314,9 @@ pub async fn cloud_put(
     };
     if let Some(cookie) = cookie {
         if cookie.len() > 16384
-            || (!kind.token_auth() && (cookie.chars().any(char::is_control) || (!cookie.is_empty() && !cookie.contains('='))))
+            || (!kind.token_auth()
+                && (cookie.chars().any(char::is_control)
+                    || (!cookie.is_empty() && !cookie.contains('='))))
         {
             return Err(ApiError::BadRequest(
                 "登录凭据格式不正确或超过长度限制".into(),
@@ -343,9 +336,15 @@ pub async fn cloud_put(
                 ));
             }
         }
-        let epoch=crate::cloud_auth::stored(&state,kind).await?.map(|s|s.binding_epoch).unwrap_or(0);
-        if cookie.is_empty(){crate::cloud_auth::disconnect(&state,kind,epoch).await?;}
-        else{crate::cloud_auth::import(&state,kind,&cookie,"reauthorize",epoch).await?;}
+        let epoch = crate::cloud_auth::stored(&state, kind)
+            .await?
+            .map(|s| s.binding_epoch)
+            .unwrap_or(0);
+        if cookie.is_empty() {
+            crate::cloud_auth::disconnect(&state, kind, epoch).await?;
+        } else {
+            crate::cloud_auth::import(&state, kind, &cookie, "reauthorize", epoch).await?;
+        }
     }
     cloud_get(State(state), uri, headers).await
 }
@@ -355,7 +354,7 @@ pub async fn wechat_get(
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
     let row = sqlx::query(
-        "SELECT app_id,qr_page,env_version,secret FROM wechat_mini_settings WHERE id=1",
+        "SELECT value_json->>'appId' AS app_id,value_json->>'qrPage' AS qr_page,value_json->>'envVersion' AS env_version,value_json->>'secret' AS secret FROM policy_settings WHERE key='wechat-mini'",
     )
     .fetch_optional(&state.pool)
     .await?;
@@ -382,7 +381,9 @@ pub async fn wechat_put(
         .and_then(Value::as_str)
         .unwrap_or("release");
     let secret = body.get("secret").and_then(Value::as_str).unwrap_or("");
-    sqlx::query("INSERT INTO wechat_mini_settings(id,app_id,secret,qr_page,env_version,updated_at) VALUES(1,$1,$2,$3,$4,now()) ON CONFLICT(id) DO UPDATE SET app_id=excluded.app_id,secret=CASE WHEN $2='' THEN wechat_mini_settings.secret ELSE excluded.secret END,qr_page=excluded.qr_page,env_version=excluded.env_version,updated_at=now()").bind(app_id).bind(secret).bind(qr).bind(env).execute(&state.pool).await?;
+    let config = json!({"appId":app_id,"secret":secret,"qrPage":qr,"envVersion":env});
+    sqlx::query("INSERT INTO policy_settings(key,value_json,updated_at) VALUES('wechat-mini',$1,clock_timestamp()) ON CONFLICT(key) DO UPDATE SET value_json=CASE WHEN $2='' THEN EXCLUDED.value_json || jsonb_build_object('secret',COALESCE(policy_settings.value_json->>'secret','')) ELSE EXCLUDED.value_json END,updated_at=EXCLUDED.updated_at")
+        .bind(config).bind(secret).execute(&state.pool).await?;
     wechat_get(State(state), headers).await
 }
 

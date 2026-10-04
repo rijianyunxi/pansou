@@ -1,5 +1,5 @@
 export type RuntimeState = 'online' | 'offline' | 'unknown' | 'unavailable';
-export interface WorkerStatus { state: RuntimeState; count: number | null; enabled: boolean; scheduleEnabled?: boolean; syncEnabled?: boolean; checkEnabled?: boolean; maintenanceEnabled?: boolean }
+export interface WorkerStatus { state: RuntimeState; count: number | null; enabled: boolean; scheduleEnabled?: boolean; checkEnabled?: boolean; maintenanceEnabled?: boolean }
 export const MONITOR_WORKERS = {
   crawl: { name: 'TG 采集', endpoint: 'crawl', path: '/admin/crawl' },
   links: { name: '链接任务', endpoint: 'link-schedule', path: '/admin/tasks' },
@@ -32,7 +32,7 @@ export interface MonitorData {
     recentFailures: Array<{ channel: string; kind: string; error: string | null; at: string }>;
   };
   links: {
-    syncPending: number; oldestSyncAt: string | null; catalog: number; valid: number; invalid: number; errors: number;
+ catalog: number; valid: number; invalid: number; errors: number;
     queues: { checks: QueueCounts; cleanup: QueueCounts; resolve: QueueCounts };
     cleanupDue: number; checksEnabled: boolean; deliveryEnabled: { baidu: boolean; quark: boolean; aliyun?: boolean; xunlei?: boolean; guangya?: boolean };
     deliveryStats?: { processing: number; transferred: number; reused: number; fallback: number; direct: number; unavailable: number };
@@ -73,8 +73,6 @@ export function sourceSuccessRate(source: LiveSource): string {
 export function monitorQueueRows(data: MonitorData) {
   return [
     { key: 'crawl', label: 'TG 采集', queued: data.crawl.queued, running: data.crawl.running, failed: data.crawl.failed, blocked: 0 },
-    // The sync queue exposes only its backlog. Resolve counts belong to click delivery, not local sync.
-    { key: 'sync', label: '资源链接同步', queued: data.links.syncPending, running: null, failed: null, blocked: 0 },
     { key: 'checks', label: '有效性检测', ...data.links.queues.checks, blocked: 0 },
     { key: 'cleanup', label: '到期清理', ...data.links.queues.cleanup, blocked: data.links.queues.cleanup.blocked ?? 0 },
     { key: 'resolve', label: '按需取链', ...data.links.queues.resolve, blocked: 0 },

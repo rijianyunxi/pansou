@@ -35,7 +35,6 @@ fn result(id: &str, name: &str) -> SearchResult {
             url: "https://pan.quark.cn/s/same-share".into(),
             password: None,
         }],
-        tags: None,
         images: None,
     }
 }
@@ -189,7 +188,6 @@ fn search_json_contract_matches_public_api_shape() {
             url: "https://pan.quark.cn/s/demo".into(),
             password: None,
         }],
-        tags: None,
         images: None,
     };
     let payload = search_json_payload(

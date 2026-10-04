@@ -124,14 +124,6 @@ fn build_result(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let tags = array_strings(get("tags"))
-        .into_iter()
-        .map(|tag| clean_text(&tag))
-        // `plugin:*` was internal source-runtime metadata in the old
-        // implementation. It is not part of the public SearchResult contract
-        // and must never leak through `/api/search` or `/api/search/json`.
-        .filter(|tag| !tag.is_empty() && !tag.to_ascii_lowercase().starts_with("plugin:"))
-        .collect::<Vec<_>>();
     let images = array_strings(get("images").or_else(|| get("image")));
     let result = crate::resource_clean::normalize(SearchResult {
         id,
@@ -140,7 +132,6 @@ fn build_result(
         datetime,
         cloud_types,
         links,
-        tags: (!tags.is_empty()).then_some(tags),
         images: (!images.is_empty()).then_some(images),
     });
     (!result.name.is_empty() && !result.links.is_empty()).then_some(result)

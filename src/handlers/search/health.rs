@@ -72,19 +72,21 @@ async fn update_snapshot(
         .execute(&mut *tx)
         .await?;
     // INSERT handles the first concurrent requests too: FOR UPDATE cannot lock a missing row.
-    sqlx::query!(
+    sqlx::query(
         "INSERT INTO source_health(source_id) VALUES($1) ON CONFLICT(source_id) DO NOTHING",
-        source.id,
     )
+    .bind(&source.id)
     .execute(&mut *tx)
     .await?;
-    let row = sqlx::query!(
-        "SELECT snapshot_json, clock_timestamp() AS \"observed_at!\" FROM source_health WHERE source_id=$1 FOR UPDATE",
-        source.id,
-    ).fetch_one(&mut *tx).await?;
-    let now = row.observed_at.timestamp_millis();
+    let (snapshot, observed_at) = sqlx::query_as::<_, (Value, chrono::DateTime<chrono::Utc>)>(
+        "SELECT snapshot_json, clock_timestamp() FROM source_health WHERE source_id=$1 FOR UPDATE",
+    )
+    .bind(&source.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let now = observed_at.timestamp_millis();
     let snapshot = reduce_snapshot(
-        row.snapshot_json,
+        snapshot,
         source,
         ok,
         result_count,
@@ -93,13 +95,11 @@ async fn update_snapshot(
         max_failures,
         now,
     );
-    sqlx::query!(
-        "UPDATE source_health SET snapshot_json=$2,updated_at=now() WHERE source_id=$1",
-        source.id,
-        snapshot,
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE source_health SET snapshot_json=$2,updated_at=now() WHERE source_id=$1")
+        .bind(&source.id)
+        .bind(snapshot)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await
 }
 
@@ -344,10 +344,10 @@ pub(super) async fn source_circuit_open(
     source_id: &str,
     max_failures: i64,
 ) -> bool {
-    let snapshot = sqlx::query_scalar!(
+    let snapshot = sqlx::query_scalar::<_, Value>(
         "SELECT snapshot_json FROM source_health WHERE source_id=$1",
-        source_id,
     )
+    .bind(source_id)
     .fetch_optional(&state.pool)
     .await;
     let snapshot = match snapshot {

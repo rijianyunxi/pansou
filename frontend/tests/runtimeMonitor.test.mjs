@@ -57,11 +57,10 @@ test('source health distinguishes failed, unknown, disabled and zero-result succ
   assert.equal(sourceSuccessRate({ enabled: true, health: { requestCount: 2 } }), '—');
   assert.equal(sourceSuccessRate({ enabled: true, health: { requestCount: 2, successCount: 3 } }), '100.0');
 });
-test('local link sync never borrows click-delivery queue statistics', () => {
+test('transactional links require no sync queue, delivery retains its own statistics', () => {
   const data = {
     crawl: { queued: 0, running: 0, failed: 0 },
     links: {
-      syncPending: 7,
       queues: {
         checks: { queued: 0, running: 0, failed: 0, completed: 12 },
         cleanup: { queued: 2, running: 1, failed: 3, completed: 4, blocked: 5 },
@@ -70,8 +69,8 @@ test('local link sync never borrows click-delivery queue statistics', () => {
     },
   };
   const rows = monitorQueueRows(data);
-  assert.equal(rows.length, 5);
-  assert.deepEqual(rows.find(row => row.key === 'sync'), { key: 'sync', label: '资源链接同步', queued: 7, running: null, failed: null, blocked: 0 });
+  assert.equal(rows.length, 4);
+  assert.equal(rows.find(row => row.key === 'sync'), undefined);
   assert.equal(rows.find(row => row.key === 'resolve').running, 9);
   assert.equal(rows.find(row => row.key === 'cleanup').blocked, 5);
 });
