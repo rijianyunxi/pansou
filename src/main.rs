@@ -1,8 +1,8 @@
 mod admin_stats;
 mod app;
 mod auth;
-mod cloud_drive;
 mod cloud_auth;
+mod cloud_drive;
 mod crawl;
 mod db;
 mod error;
@@ -15,16 +15,16 @@ mod outbound;
 mod policy;
 mod redis_store;
 mod resource_clean;
+#[cfg(test)]
+mod resource_schema_tests;
 mod runtime;
 mod search_cache;
 mod security;
+#[cfg(test)]
+mod sql_optimization_tests;
 mod telegram;
 #[cfg(test)]
 mod telegram_tests;
-#[cfg(test)]
-mod sql_optimization_tests;
-#[cfg(test)]
-mod resource_schema_tests;
 mod transform;
 
 use anyhow::{Context, Result};
@@ -51,7 +51,11 @@ async fn main() -> Result<()> {
         if let Some(parent) = std::path::Path::new(&path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             Ok(file) => {
                 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
                 tracing_subscriber::registry()
@@ -90,25 +94,41 @@ async fn main() -> Result<()> {
     let redis = RedisStore::connect(&redis_url).await?;
     let state = Arc::new(AppState::new(pool, redis));
 
-    if !matches!(mode.as_str(), "serve" | "worker" | "link-worker") {
-        anyhow::bail!("运行模式必须是 serve、worker、link-worker 或 migration-preflight");
+    if !matches!(
+        mode.as_str(),
+        "serve" | "worker" | "link-worker" | "auth-worker"
+    ) {
+        anyhow::bail!(
+            "运行模式必须是 serve、worker、link-worker、auth-worker 或 migration-preflight"
+        );
     }
     let mut workers = tokio::task::JoinSet::new();
     // Authentication is not controlled by crawling/link-delivery switches.
     // Database leases serialize it when API and link Worker run separately.
-    if mode=="serve"||mode=="link-worker" {
-        let auth_state=state.clone();
-        workers.spawn(async move {cloud_auth::worker(auth_state).await});
+    let auth_enabled = match env::var("PANSOU_AUTH_WORKER_ENABLED").as_deref() {
+        Ok("true" | "1") => true,
+        Ok("false" | "0") => false,
+        Err(_) => matches!(mode.as_str(), "serve" | "link-worker" | "auth-worker"),
+        Ok(_) => anyhow::bail!("PANSOU_AUTH_WORKER_ENABLED 必须是 true/false 或 1/0"),
+    };
+    if mode == "auth-worker" && !auth_enabled {
+        anyhow::bail!("auth-worker 模式不能禁用凭证维护");
+    }
+    if auth_enabled {
+        let auth_state = state.clone();
+        workers.spawn(async move { cloud_auth::worker(auth_state).await });
     }
     if mode != "serve" {
-        let worker_state = state.clone();
-        workers.spawn(async move {
-            if mode == "worker" {
-                crawl::worker(worker_state).await
-            } else {
-                link_resolution::worker(worker_state).await
-            }
-        });
+        if mode != "auth-worker" {
+            let worker_state = state.clone();
+            workers.spawn(async move {
+                if mode == "worker" {
+                    crawl::worker(worker_state).await
+                } else {
+                    link_resolution::worker(worker_state).await
+                }
+            });
+        }
         let result = tokio::select! {
             _ = runtime::shutdown_signal() => Ok(()),
             result = workers.join_next() => Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")),
@@ -152,11 +172,21 @@ async fn main() -> Result<()> {
             (Err(anyhow::anyhow!("后台 Worker 意外退出：{result:?}")), false)
         }
     };
+    state.resolutions.close();
     state.shutdown.cancel();
-    if !server_finished {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), &mut server).await;
-    }
-    drain_workers(&mut workers).await?;
+    // All producers have stopped admission. Drain HTTP, tracked resolutions and
+    // workers together so their budgets do not accumulate during shutdown.
+    let http_drain = async {
+        if !server_finished {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(30), &mut server).await;
+        }
+    };
+    let (_, (), workers_result) = tokio::join!(
+        http_drain,
+        state.resolutions.drain(),
+        drain_workers(&mut workers),
+    );
+    workers_result?;
     result
 }
 
@@ -164,12 +194,18 @@ async fn drain_workers(
     workers: &mut tokio::task::JoinSet<Result<(), error::ApiError>>,
 ) -> Result<()> {
     let drain = async {
+        let mut first_error = None;
         while let Some(result) = workers.join_next().await {
-            result??;
+            let result = result
+                .map_err(anyhow::Error::from)
+                .and_then(|r| r.map_err(anyhow::Error::from));
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok::<_, anyhow::Error>(())
+        first_error.map_or(Ok(()), Err)
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(45), drain).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(150), drain).await {
         Ok(result) => result,
         Err(_) => {
             tracing::warn!("shutdown deadline exceeded; durable job leases will recover");

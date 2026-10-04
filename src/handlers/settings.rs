@@ -291,48 +291,6 @@ pub async fn sources_import(
         json!({"code":0,"message":"imported","data":{"count":count}}),
     ))
 }
-pub async fn source_template_get(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&headers, &state).await?;
-    let row=sqlx::query("SELECT url_template,method,format,request_json,transform,version FROM source_template_settings WHERE id=1").fetch_optional(&state.pool).await?;
-    Ok(ok(row.map(|r|json!({"urlTemplate":r.get::<String,_>("url_template"),"method":r.get::<String,_>("method"),"format":r.get::<String,_>("format"),"request":r.get::<Option<Value>,_>("request_json"),"transform":r.get::<String,_>("transform"),"version":r.get::<i64,_>("version")})).unwrap_or(json!({"transform":"","version":0}))))
-}
-pub async fn source_template_put(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&headers, &state).await?;
-    let dsl = body
-        .get("transform")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::BadRequest("默认解析模板不能为空".into()))?;
-    crate::transform::validate(dsl)?;
-    let version = body
-        .get("version")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| ApiError::BadRequest("缺少解析模板版本，请重新加载".into()))?;
-    let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(773003)")
-        .execute(&mut *tx)
-        .await?;
-    let old = sqlx::query_scalar::<_, i64>(
-        "SELECT version FROM source_template_settings WHERE id=1 FOR UPDATE",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if old.unwrap_or(0) != version {
-        return Err(ApiError::Conflict(
-            "解析模板已被其他操作更新，请重新加载后保存".into(),
-        ));
-    }
-    sqlx::query("INSERT INTO source_template_settings(id,url_template,method,format,transform,updated_at) VALUES(1,'https://t.me/s/{{channel}}','GET','html',$1,now()) ON CONFLICT(id) DO UPDATE SET transform=excluded.transform,version=source_template_settings.version+1,updated_at=now()").bind(dsl).execute(&mut *tx).await?;
-    tx.commit().await?;
-    source_template_get(State(state), headers).await
-}
-
 pub async fn cloud_get(
     State(state): State<Arc<AppState>>,
     uri: OriginalUri,

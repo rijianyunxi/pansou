@@ -55,6 +55,24 @@ pub(super) fn normalize_monitor_health(mut health: Value) -> Value {
     let Some(object) = health.as_object_mut() else {
         return health;
     };
+    // Legacy snapshots stored the latest latency under both percentile names.
+    // Hide those values until a writer has computed and identified a real window.
+    if !object
+        .get("responseTimeWindow")
+        .is_some_and(Value::is_object)
+    {
+        object.insert("p50ResponseTime".into(), Value::Null);
+        object.insert("p95ResponseTime".into(), Value::Null);
+        object.insert("responseTimeWindow".into(), Value::Null);
+    }
+    if object.get("dimensionSchemaVersion").and_then(Value::as_i64) != Some(2) {
+        let dimensions = ["network", "http", "business", "parsing", "results"]
+            .into_iter()
+            .map(|name| (name.to_owned(), json!({"state":"unknown","passRate":null,"observedCount":0,"passCount":0,"recent":""})))
+            .collect::<serde_json::Map<String, Value>>();
+        object.insert("dimensions".into(), Value::Object(dimensions));
+        object.insert("parsingSuccessRate".into(), Value::Null);
+    }
     if !object.contains_key("healthy")
         && let Some(value) = object.remove("isHealthy")
     {

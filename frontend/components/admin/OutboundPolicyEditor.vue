@@ -17,12 +17,9 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ "update:modelValue": [policy: OutboundPolicy] }>();
 const nodes = ref<ProxyNode[]>([]),
-  defaults = ref<NodeWeight[]>([]),
   loading = ref(true),
   error = ref("");
-const members = computed(() =>
-  props.modelValue.inherit ? defaults.value : props.modelValue.nodes,
-);
+const members = computed(() => props.modelValue.nodes);
 const available = computed(() => [
   ...nodes.value,
   ...members.value
@@ -68,7 +65,6 @@ function update(next: NodeWeight[]) {
   emit("update:modelValue", {
     nodes: next,
     version: props.modelValue.version,
-    inherit: false,
   });
 }
 function toggle(id: string, on: boolean) {
@@ -94,15 +90,7 @@ async function load() {
         silentError: true,
       })
     ).data.nodes;
-    if (props.modelValue.inherit) {
-      defaults.value =
-        (
-          await apiFetch<{ data: { outbound: OutboundPolicy | null } }>(
-            "/api/admin/crawl/default-outbound",
-            { silentError: true },
-          )
-        ).data.outbound?.nodes || [];
-    }
+
   } catch (e) {
     error.value = apiErrorMessage(e);
   } finally {
@@ -116,9 +104,6 @@ onMounted(load);
     <p class="outbound-help">
       勾选节点并填写权重，每次请求按正权重加权随机选择，权重越大被选中的概率越高。
       权重 0 完全不参与，也不作为失败兜底；直连只有勾选且权重大于 0 才会使用。
-    </p>
-    <p v-if="modelValue.inherit" class="outbound-help">
-      当前使用 TG 默认节点。调整勾选或权重后，将独立保存当前频道的节点。
     </p>
     <p v-if="loading" role="status">正在加载节点…</p>
     <div v-else-if="error" class="outbound-error" role="alert">

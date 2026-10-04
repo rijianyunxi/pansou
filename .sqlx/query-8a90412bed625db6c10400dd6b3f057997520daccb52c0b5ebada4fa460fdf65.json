@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Fetch wide presentation JSON only after ranking the compact candidates.\nWITH matches AS (\n SELECT d.resource_id,d.manual_override,o.channel_id,o.message_id,o.published_at,\n CASE WHEN d.manual_override THEN d.name_lower ELSE o.name_lower END AS eff_name\n FROM resource_grams g\n JOIN resource_search_documents d ON d.resource_id=g.resource_id\n JOIN resource_search_occurrences o ON o.resource_id=d.resource_id\n WHERE g.gram=$2 AND d.active AND o.parsed AND o.channel_id=ANY($3)\n AND NOT EXISTS (\n  SELECT 1 FROM unnest($4::text[]) required(gram)\n  WHERE NOT EXISTS (SELECT 1 FROM resource_grams extra\n   WHERE extra.resource_id=d.resource_id AND extra.gram=required.gram)\n )\n AND strpos(CASE WHEN d.manual_override THEN d.name_lower ELSE o.name_lower END,$1)>0\n), picked AS (\n SELECT DISTINCT ON(resource_id) * FROM matches\n ORDER BY resource_id,published_at DESC NULLS LAST,channel_id,message_id DESC\n), ranked AS MATERIALIZED (\n SELECT * FROM picked\n ORDER BY (eff_name=$1) DESC,published_at DESC NULLS LAST,resource_id LIMIT 200\n)\nSELECT CASE WHEN p.manual_override THEN\n jsonb_build_object('id',r.id,'name',r.name,'description',r.description,'datetime',r.datetime,\n 'cloud_types',resource_cloud_types(r.links_json),'links',r.links_json,'tags',r.tags_json,'images',r.images_json)\n ELSE o.result_json || jsonb_build_object('id',p.resource_id) END AS item\nFROM ranked p\nJOIN managed_resources r ON r.id=p.resource_id\nJOIN resource_occurrences o ON o.resource_id=p.resource_id AND o.channel_id=p.channel_id AND o.message_id=p.message_id\nORDER BY (p.eff_name=$1) DESC,p.published_at DESC NULLS LAST,p.resource_id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "item",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8a90412bed625db6c10400dd6b3f057997520daccb52c0b5ebada4fa460fdf65"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gram, count(*) AS \"n!\" FROM resource_grams WHERE gram = ANY($1) GROUP BY gram",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "gram",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "5b09789f46fb5c615bd93f34f355d368f07e05cac4dec4c79b504695b27aad5f"
+}

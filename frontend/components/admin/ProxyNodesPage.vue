@@ -36,7 +36,6 @@ const references = ref<
         sourceId?: string;
         channelId?: string;
         name: string;
-        default: boolean;
       }[]
     | null
   >(null),
@@ -276,18 +275,16 @@ onMounted(load);
         <p v-else-if="!references.length">没有引用，可安全删除。</p>
         <article v-for="(r, i) in references" :key="i">
           <strong>{{
-            r.name || r.channelId || r.sourceId || "TG 默认策略"
+            r.name || r.channelId || r.sourceId
           }}</strong
           ><RouterLink
             :to="
               r.sourceId
                 ? '/admin/sources?edit=' + encodeURIComponent(r.sourceId)
-                : r.channelId
-                  ? '/admin/crawl?edit=' + encodeURIComponent(r.channelId)
-                  : '/admin/crawl?settings=1'
+                : '/admin/crawl?edit=' + encodeURIComponent(r.channelId || '')
             "
             >{{
-              r.sourceId ? "实时来源" : r.channelId ? "TG 频道" : "TG 默认策略"
+              r.sourceId ? "实时来源" : "TG 频道"
             }}
             →</RouterLink
           >

@@ -270,7 +270,7 @@ async fn extended_providers_transfer_reuse_timeout_cleanup_and_admin_retry() {
     assert_eq!(call(&router,&anon,"/api/admin/link-cleanup?status=all",Value::Null).await.0,StatusCode::FORBIDDEN);
     for provider in ["aliyun","xunlei","guangya"] {
         let credential=json!({"access_token":"fixture-access","user_id":"fixture-account","drive_id":"fixture-drive","x-captcha-token":"fixture-captcha","device_id":"fixture-device"}).to_string();
-        sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES($1,$2) ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential").bind(provider).bind(&credential).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES($1,$2) ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL").bind(provider).bind(&credential).execute(&pool).await.unwrap();
         assert_eq!(call(&router,&anon,&format!("/api/settings/{provider}"),json!({"credential":credential})).await.0,StatusCode::UNAUTHORIZED);
         assert_eq!(call(&router,&admin,&format!("/api/settings/{provider}"),json!({"credential":credential})).await.0,StatusCode::OK);
         assert_eq!(call(&router,&admin,"/api/admin/cloud-drive/ping",json!({"provider":provider})).await.0,StatusCode::OK);
@@ -415,7 +415,7 @@ async fn resolution_waits_beyond_http_budget_and_fences_expired_results() {
     let router = crate::app::build_router(state.clone());
     let session = state.auth().issue(true).await.unwrap();
     state.resolve_test_timeout_seconds.store(5, std::sync::atomic::Ordering::SeqCst);
-    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','timeout-fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential")
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','timeout-fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL")
         .execute(&pool).await.unwrap();
     sqlx::query("UPDATE cloud_provider_policies SET delivery_enabled=true,target_dir='project',retention_seconds=3600,delivery_min_remaining_seconds=5,platform_share_days=7 WHERE provider='quark'")
         .execute(&pool).await.unwrap();
@@ -609,7 +609,7 @@ async fn public_link_contracts_and_owned_cleanup() {
     let router = crate::app::build_router(state.clone());
     let session = state.auth().issue(true).await.unwrap();
     let other = state.auth().issue(true).await.unwrap();
-    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL").execute(&pool).await.unwrap();
     let link = Link {
         r#type: "quark".into(),
         url: format!("https://pan.quark.cn/s/original{}", Uuid::new_v4().simple()),
@@ -1073,7 +1073,7 @@ async fn admin_manual_check_targets_only_the_selected_link() {
         .bind(&username).bind(crate::auth::hash_password("fixture-password").unwrap()).execute(&pool).await.unwrap();
     let (admin, _) = state.auth().login(&username,"fixture-password").await.unwrap();
     let anon = state.auth().issue(true).await.unwrap();
-    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential) VALUES('quark','fixture=1') ON CONFLICT(provider) DO UPDATE SET credential=excluded.credential,credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL").execute(&pool).await.unwrap();
     let link = Link { r#type:"quark".into(),url:format!("https://pan.quark.cn/s/{}?pwd=1234",Uuid::new_v4().simple()),password:None ,
     };
     let sibling = Link { password:Some("different".into()),..link.clone() };

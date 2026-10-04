@@ -288,9 +288,9 @@ pub async fn admin_proxy_references(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&headers, &state).await?;
-    let rows=sqlx::query("SELECT p.source_id,p.channel_id,p.default_key,COALESCE(s.name,c.name,'TG 默认策略') name FROM outbound_policy_nodes m JOIN outbound_policies p ON p.id=m.policy_id LEFT JOIN resource_sources s ON s.id=p.source_id LEFT JOIN crawl_channels c ON c.id=p.channel_id WHERE m.node_id=$1 ORDER BY p.id").bind(id).fetch_all(&state.pool).await?;
+    let rows=sqlx::query("SELECT p.source_id,p.channel_id,COALESCE(s.name,c.name) name FROM outbound_policy_nodes m JOIN outbound_policies p ON p.id=m.policy_id LEFT JOIN resource_sources s ON s.id=p.source_id LEFT JOIN crawl_channels c ON c.id=p.channel_id WHERE m.node_id=$1 ORDER BY p.id").bind(id).fetch_all(&state.pool).await?;
     Ok(ok(
-        json!({"items":rows.iter().map(|r|json!({"sourceId":r.get::<Option<String>,_>("source_id"),"channelId":r.get::<Option<String>,_>("channel_id"),"name":r.get::<String,_>("name"),"default":r.get::<Option<String>,_>("default_key").is_some()})).collect::<Vec<_>>()}),
+        json!({"items":rows.iter().map(|r|json!({"sourceId":r.get::<Option<String>,_>("source_id"),"channelId":r.get::<Option<String>,_>("channel_id"),"name":r.get::<String,_>("name")})).collect::<Vec<_>>()}),
     ))
 }
 pub async fn admin_proxies_post(

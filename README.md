@@ -70,111 +70,122 @@ Vite 只负责前端开发和接口转发，代理目标固定为 `http://127.0.
 | 内容解析 | Serde JSON、scraper、regex、chrono | Rust 原生 JSON/HTML/TSON/Telegram 数据解析 |
 | 日志 | tracing、tower-http TraceLayer | 应用日志与 HTTP 请求日志 |
 
+关键搜索 SQL 使用 SQLx 查询宏，并保留 `.sqlx/` 离线类型元数据，发布构建无需连接数据库。当前覆盖来源加载与探测、健康统计、搜索日志创建及本地搜索；动态管理查询仍在运行时检查。更新元数据的方法见 [.sqlx/README.md](.sqlx/README.md)。
+
 ## 3. 项目目录
 
 ```text
 pansou/
-├─ Cargo.toml                    # Rust crate、依赖和 release 编译配置
-├─ Cargo.lock                    # Rust 依赖锁定
-├─ .env                          # 本机后端运行配置，不提交敏感信息
-├─ .env.example                  # 后端环境变量示例
-├─ docker-compose.yml            # PostgreSQL 18 + Redis 8
-├─ README.md
-│
-├─ migrations/
-│  ├─ 001_init.sql               # 初始 PostgreSQL 表、约束和基础索引
-│  ├─ 002_storage_optimizations.sql # pg_trgm 和查询优化索引
-│  ├─ 003_telegram_index.sql        # 频道、任务、消息、资源关联、grams 与缓存版本
-│  ├─ 004_crawl_scheduling.sql      # 增量与编辑复查调度；资源删除墓碑
-│  ├─ 005_crawl_single_channel.sql  # 多 worker 同频道单运行任务约束
-│  ├─ 006_crawl_workbench.sql       # 配置归属、出站策略、单条重解析
-│  ├─ 007_workbench_write_guards.sql # 模板版本、任务幂等标识
-│  ├─ 008_weighted_nodes_and_query_optimization.sql # 节点优先权重、差量索引
-│  └─ 009_name_only_search_index.sql # 仅标题匹配、标题索引重建
-│
+├─ Cargo.toml / Cargo.lock       # Rust 应用、依赖与编译配置
+├─ .env.example                 # 后端配置模板；本机 .env 不提交
+├─ .sqlx/                       # 已检查 SQL 的离线编译元数据
+├─ docker-compose.yml           # PostgreSQL + Redis
+├─ migrations/                  # 001–035；历史文件不可改写，见下面的迁移说明
+├─ docs/                        # 运行、部署、存储、SQL 和网盘设计说明
+├─ scripts/                     # 部署辅助脚本
+├─ .github/workflows/           # 多平台发布构建
 ├─ src/
-│  ├─ main.rs                    # 启动入口：配置、数据库、Redis、HTTP 监听
-│  ├─ app.rs                     # AppState、所有显式 Axum 路由、SPA 静态托管
-│  ├─ db.rs                      # PostgreSQL 连接池、migrations、初始管理员
-│  ├─ redis_store.rs             # Redis ConnectionManager、超时、重连、PING
-│  ├─ auth.rs                    # Cookie、匿名/登录会话、密码、会话撤销
-│  ├─ error.rs                   # API 错误到 HTTP/JSON 的统一映射
-│  ├─ models.rs                  # 搜索、来源、用户等 Rust 数据模型
-│  ├─ transform.rs               # Rust 原生 transform DSL 和来源解析器
-│  ├─ resource_clean.rs          # 共享字段清洗、分享身份、提取码与中文 grams
-│  ├─ telegram.rs                # 公开频道身份、消息、实际分页游标
-│  ├─ crawl.rs                   # 持久任务、代理采集、租约、幂等入库
-│  ├─ outbound.rs                # 唯一策略、节点调度、额度原子预留
-│  ├─ migration_preflight.rs     # 只读迁移预检
-│  ├─ local_index.rs             # 授权范围内批量 PostgreSQL 查询 + Redis 缓存
-│  ├─ telegram_tests.rs          # 需显式启用的隔离集成回归
-│  ├─ handlers.rs                # handler 模块声明与统一导出
-│  └─ handlers/
-│     ├─ common.rs               # 通用响应、管理员鉴权、公开策略映射
-│     ├─ public.rs               # health、热搜、运行监控、robots、sitemap
-│     ├─ account.rs              # 登录、退出、会话、个人资料、微信、频道
-│     ├─ settings.rs             # 搜索设置、资源源、模板、策略、云盘设置
-│     ├─ search.rs               # 搜索编排、代理选择、来源执行、SSE/JSON
-│     ├─ crawling.rs             # TG 采集管理、取消、重试和已存资源查看
-│     └─ admin.rs                # 后台资源、代理、日志、用户、热搜等接口
-│
+│  ├─ main.rs                   # serve / worker / link-worker / auth-worker / migration-preflight
+│  ├─ app.rs                    # 共享状态、显式路由与 SPA 托管
+│  ├─ db.rs / redis_store.rs    # 数据库、迁移和 Redis 连接
+│  ├─ auth.rs / security.rs     # 会话、鉴权、限流和并发许可
+│  ├─ policy.rs / runtime.rs    # 用户策略、后台开关、心跳和关闭信号
+│  ├─ models.rs / error.rs      # 业务模型与统一错误
+│  ├─ crawl.rs                  # TG 持久任务、租约、检查点与幂等入库
+│  ├─ crawl/schedule.rs         # 六段 cron、北京时间和日常采集时段
+│  ├─ telegram.rs              # TG 消息、频道身份和分页游标
+│  ├─ transform.rs              # 原生 JSON DSL、JSON 解析与统一结果构造
+│  ├─ transform/html.rs         # HTML / TG / PanSearch 解析
+│  ├─ resource_clean.rs         # 字段清洗、分享身份、提取码和中文 grams
+│  ├─ local_index.rs            # PostgreSQL 本地搜索与 Redis 缓存
+│  ├─ search_cache.rs           # 实时搜索的内存缓存与容量控制
+│  ├─ outbound.rs               # 出站策略、节点选择与额度预留
+│  ├─ admin_stats.rs            # 管理统计、持久计数与缓存
+│  ├─ migration_preflight.rs    # 只读迁移预检
+│  ├─ cloud_drive/              # 五家网盘适配、请求传输与业务操作
+│  ├─ cloud_auth/               # 扫码授权、凭证加密和续期维护
+│  ├─ link_resolution.rs        # 链接目录、按需解析与操作状态
+│  ├─ link_resolution/
+│  │  ├─ projection.rs          # 搜索结果引用与会话授权复核
+│  │  ├─ status.rs              # 链接与资源有效性查询
+│  │  ├─ delivery.rs            # 转存、自产分享复用与网盘配置
+│  │  ├─ management.rs          # 清理任务管理
+│  │  └─ worker.rs              # 同步、检测、到期清理和恢复
+│  ├─ handlers.rs               # handler 声明与导出
+│  ├─ handlers/
+│  │  ├─ common.rs              # 响应与权限辅助
+│  │  ├─ admin_paging.rs        # 管理列表分页辅助
+│  │  ├─ public.rs              # health、热搜、robots 和 sitemap
+│  │  ├─ account.rs             # 登录、个人资料、微信与频道偏好
+│  │  ├─ settings.rs            # 来源、解析规则和用户策略设置
+│  │  ├─ admin.rs               # 资源、代理、日志和用户管理
+│  │  ├─ crawling.rs            # TG 频道、任务、cron 校验预览与采集配置
+│  │  ├─ monitoring.rs          # 运行监控与后台开关
+│  │  ├─ tasks.rs               # 任务工作台与检测重试
+│  │  ├─ cloud_drive.rs         # 管理员网盘操作接口
+│  │  ├─ cloud_accounts.rs      # 网盘账号授权管理接口
+│  │  ├─ search.rs              # JSON / SSE 搜索接口与结果交付
+│  │  └─ search/
+│  │     ├─ sources.rs          # 系统来源与个人实时频道加载
+│  │     ├─ execution.rs        # HTTP 请求、代理重试和阶段观测
+│  │     ├─ health.rs           # 原子快照更新、分位数与熔断读取
+│  │     ├─ orchestration.rs    # 本地优先、实时来源并发与聚合
+│  │     ├─ cache.rs            # 实时搜索缓存键与容量策略
+│  │     └─ logging.rs          # 搜索日志与热搜计数
+│  ├─ queries/ / sql/           # 固定查询与共享 SQL
+│  └─ *_tests.rs / **/tests.rs  # 单元测试与显式启用的隔离集成测试
 ├─ frontend/
-│  ├─ package.json               # Vue/Vite 依赖与 npm scripts
-│  ├─ vite.config.ts             # Vue 插件、别名、开发接口代理
-│  ├─ index.html                 # SPA HTML 入口
-│  ├─ app.vue                    # 全局应用外壳、导航、弹层与公共状态
-│  ├─ src/
-│  │  ├─ main.ts                 # Vue 初始化和显式前端路由
-│  │  └─ appRuntime.ts           # 轻量运行时：配置、共享状态、API fetch、head
-│  ├─ pages/
-│  │  ├─ index/index.vue         # 搜索首页和展示状态编排
-│  │  ├─ copyright.vue
-│  │  └─ admin/                  # 后台管理各页面
-│  ├─ components/
-│  │  ├─ home/                   # 首页搜索区、结果区
-│  │  ├─ admin/                  # 后台通用组件
-│  │  ├─ monitor/                # 运行监控组件
-│  │  └─ sources/                # 实时来源编辑与调试组件
-│  ├─ composables/
-│  │  ├─ useAuth.ts              # 前端会话和用户状态
-│  │  ├─ useSearch.ts            # 搜索请求、SSE、暂停/继续、结果状态
-│  │  └─ useSettings.ts          # 搜索设置和自定义频道
-│  ├─ shared/                    # API 类型、云盘类型、公共常量
-│  ├─ utils/
-│  │  ├─ searchEventStream.ts    # SSE 字节流解析
-│  │  ├─ resultMerge.ts          # 按分享链接去重和合并
-│  │  ├─ resultDisplay.ts        # 多链接资源拆成单链接展示卡片
-│  │  └─ sourceAdapter.ts        # 云盘类型和 URL 识别辅助
-│  ├─ assets/                    # 样式
-│  └─ public/                    # favicon、OG 图片等静态资源
-│
-├─ logs/                         # 本地运行日志目录
-└─ target/                       # Cargo 编译产物
+│  ├─ package.json / vite.config.ts
+│  ├─ src/                     # Vue 启动、路由和 API 运行时
+│  ├─ pages/                   # 搜索、个人设置与管理页面
+│  ├─ components/              # 首页、后台、监控与来源配置组件
+│  ├─ composables/             # 会话、搜索和偏好状态
+│  ├─ shared/ / types/         # 公共契约与页面类型
+│  ├─ utils/                   # SSE、结果合并与展示辅助
+│  ├─ assets/ / public/        # 样式和静态资源
+│  └─ tests/                   # 前端验证脚本
+├─ miniprogram/                # 微信小程序客户端
+├─ logs/                       # 本地日志（生成目录）
+└─ target/                     # Rust 编译产物（生成目录）
 ```
 
 `target/`、`frontend/node_modules/`、`frontend/dist/` 都是生成目录，不属于业务源码。
+
+### 数据库迁移
+
+当前迁移文件连续编号为 **001–035**；文件清单以 `migrations/` 为准，运行时执行记录以数据库 `_sqlx_migrations` 为准。
+
+| 版本 | 主要演进 |
+| --- | --- |
+| 001–002 | 基础业务表、约束、pg_trgm 与查询索引 |
+| 003–009 | TG 索引、持久调度、同频道互斥、出站权重与标题匹配 |
+| 010–014 | 网盘原生操作、链接解析、频道调度、锁顺序和链接 worker |
+| 015–018 | 管理统计、增量频道计数、搜索交付契约与检测队列索引 |
+| 019–022 | 删除消息原文、热搜计数修复、扩展网盘与任务历史 |
+| 023–027 | 网盘账号授权、消息状态计数、并行重试、网盘策略与解析进度 |
+| 028–030 | 任务查询索引、资源链接存储单源化与管理日志分页 |
+| 031 | 清理任务忽略状态 |
+| 032 | 移除 TG 默认出站策略与默认解析模板，已有继承配置落到频道 |
+| 033 | 日常 cron 配置与 PostgreSQL 任务唤醒通知 |
+| 034 | 强制六段 cron、一次性升级旧配置并删除采集间隔列 |
+| 035 | worker 调度、派生有效性 outbox、运行指标与配置通知 |
+
+新库执行完整迁移链；升级只执行未应用的版本。已执行的 SQL 不能修改、删除或重新编号，后续变更新增迁移。启动自动迁移不意味着能够直接降级：涉及删表、删列或数据变换时，需要与目标程序版本匹配的数据库恢复方案。
+
+升级到 034 时应先停止旧 API 和 worker，再启动新程序应用迁移，最后恢复独立 worker。迁移约定见 [migrations/README.md](migrations/README.md)。
 
 ## 4. Rust 服务启动流程
 
 `cargo run` 后，`src/main.rs` 按以下顺序启动：
 
-1. 读取项目根目录 `.env`。
-2. 初始化 `tracing` 日志。
-3. 读取 `PANSOU_DATABASE_URL` 和 `PANSOU_REDIS_URL`。
-4. 创建 PostgreSQL 连接池：
-   - 设置 `application_name=pansou-api`；
-   - 配置最小/最大连接数；
-   - 配置 acquire、idle、max lifetime；
-   - 借出连接前执行健康检查。
-5. 通过 `sqlx::migrate!("./migrations")` 自动执行未应用的 migrations。
-6. 检查管理员账号；不存在时创建 `admin`。
-7. 创建 Redis `ConnectionManager`，执行 `PING` 验证连接。
-8. 创建共享 `AppState`：
-   - `PgPool`；
-   - `RedisStore`；
-   - 全局复用的 `reqwest::Client`。
-9. 构造所有显式 Axum 路由。
-10. 监听 `PANSOU_API_HOST:PANSOU_API_PORT`，默认端口为 `3666`。
+1. 读取 `.env`，初始化日志和数据库连接池。
+2. 读取运行模式；`migration-preflight` 执行只读预检后退出，不应用迁移。
+3. 其他模式通过 `sqlx::migrate!("./migrations")` 执行未应用迁移，初始化管理员，再连接 Redis。
+4. 创建共享 `AppState`，复用数据库连接池、Redis、HTTP 客户端、缓存与并发控制器。
+5. `worker` 运行 TG 采集；`link-worker` 运行链接后台任务和账号凭证维护。两者都不监听 HTTP。
+6. `serve` 构造 API 和 SPA 路由，默认监听 `0.0.0.0:3666`，并运行账号凭证维护。
+7. `serve` 默认内嵌 TG 与链接 worker；设置 `PANSOU_EMBEDDED_WORKERS=false` 后可独立部署这两类 worker。
+8. 收到关闭信号时取消共享运行状态，停止领取新任务并等待后台任务退出。
 
 服务启动时 PostgreSQL 或 Redis 不可用会直接启动失败，不会带着残缺依赖继续运行。
 
@@ -182,20 +193,31 @@ pansou/
 
 ```mermaid
 flowchart TD
-    MAIN[src/main.rs] --> DB[src/db.rs]
-    MAIN --> REDIS[src/redis_store.rs]
-    MAIN --> APP[src/app.rs]
-
-    APP --> AUTH[src/auth.rs]
-    APP --> HANDLERS[src/handlers/*]
-    HANDLERS --> MODELS[src/models.rs]
-    HANDLERS --> PG[(PostgreSQL)]
-    HANDLERS --> AUTH
-    HANDLERS --> SEARCH[handlers/search.rs]
-    SEARCH --> TRANSFORM[src/transform.rs]
-    SEARCH --> HTTP[Reqwest Client]
-    AUTH --> REDISDB[(Redis)]
-    AUTH --> PG
+    MAIN[main.rs] --> APP[app.rs / AppState]
+    MAIN --> DB[db.rs / migrations]
+    MAIN --> REDIS[redis_store.rs]
+    MAIN --> CRAWL[crawl.rs / cron]
+    MAIN --> LINKS[link_resolution / worker]
+    MAIN --> CLOUD_AUTH[cloud_auth / 凭证维护]
+    APP --> HANDLERS[handlers / HTTP 接口]
+    HANDLERS --> SEARCH[search / 编排与来源执行]
+    HANDLERS --> ADMIN_STATS[admin_stats / 管理统计]
+    HANDLERS --> SECURITY[auth / security / policy]
+    SEARCH --> LOCAL[local_index / 本地查询]
+    SEARCH --> CACHE[search_cache / 实时缓存]
+    SEARCH --> TRANSFORM[transform / resource_clean]
+    SEARCH --> OUTBOUND[outbound / 出站请求]
+    CRAWL --> TRANSFORM
+    CRAWL --> OUTBOUND
+    SEARCH --> LINKS
+    LINKS --> CLOUD[cloud_drive / 网盘适配]
+    CLOUD_AUTH --> CLOUD
+    HANDLERS --> RUNTIME[runtime / 心跳与开关]
+    LOCAL --> PG[(PostgreSQL)]
+    CRAWL --> PG
+    LINKS --> PG
+    SECURITY --> PG
+    APP --> REDISDB[(Redis)]
 ```
 
 ### `AppState`
@@ -204,9 +226,12 @@ flowchart TD
 
 ```text
 AppState
-├─ PgPool              PostgreSQL 连接池
-├─ RedisStore          可克隆的 Redis ConnectionManager
-└─ reqwest::Client     外部来源请求客户端
+├─ PgPool / RedisStore                 数据库连接与临时状态
+├─ http / crawl_http / cloud_http      各业务复用的 HTTP 客户端
+├─ search_cache / admin_stats          有容量或有效期限制的共享缓存
+├─ local_search_slots / locks          本地查询并发预算与相同查询合并
+├─ cloud_slots / custom_link_refs      网盘并发与个人实时频道引用
+└─ security / shutdown / started_at    安全配置、关闭信号与服务起始时间
 ```
 
 不会为每次请求重新创建数据库连接池、Redis Client 或 HTTP Client。
@@ -232,10 +257,9 @@ AppState
 | 表 | 用途 |
 | --- | --- |
 | `resource_sources` | 外部资源源 URL、请求配置、transform DSL、优先级和启停状态 |
-| `source_template_settings` | TG 默认解析模板及乐观版本 |
 | `source_health` | 来源成功率、耗时、失败次数、最近执行结果 |
 | `proxy_nodes` | 代理节点、额度、熔断和最近状态 |
-| `outbound_policies` | 实时来源 / TG 频道 / TG 默认策略的唯一配置和版本 |
+| `outbound_policies` | 实时来源 / TG 频道各自的节点配置和版本 |
 | `outbound_policy_nodes` | 节点勾选和随机分配权重；节点删除受引用保护 |
 | `users` | 用户、管理员、角色、状态、自定义频道 |
 | `auth_identities` | 微信等外部身份与本地用户的绑定 |
@@ -357,10 +381,10 @@ ORDER BY priority, id
 
 如果传入 `source_ids`，则只选择指定且已启用的来源。
 
-自定义频道模式还会读取 `source_template_settings`，使用模板中的 Rust DSL，并使用规范公开频道 URL，为每个频道生成一个本地查询来源（不会在搜索时联网）：
+用户自定义频道搜索使用内置 TG 解析规则和规范公开频道 URL，实时请求频道页面；不登记采集任务，也不依赖系统频道解析配置。每个频道生成一个临时实时来源：
 
 ```text
-channel:{channel_name}
+custom:{channel_name}
 ```
 
 ### 7.5 并发执行来源
@@ -373,7 +397,7 @@ buffer_unordered(concurrency)
 
 并发执行多个来源。默认并发数由 `user-policy.defaultConcurrency` 决定（默认 `4`），单次执行最大 `32`。
 
-来源先划分为 TG 本地查询和非 TG 实时查询。TG 一次批量查 PostgreSQL/Redis，非 TG 由 `execute_source()` 并发执行；两条结果流合并，谁先完成谁先推送。非 TG 单源失败不阻断其他来源；本地数据库故障返回明确错误，不悄悄回退联网。
+来源先划分为 TG 本地查询和非 TG 实时查询。TG 一次批量查 PostgreSQL/Redis，先返回本地结果，再启动并发的实时来源请求并按完成顺序推送。非 TG 单源失败不阻断其他来源；本地数据库故障返回明确错误，不悄悄回退联网。
 
 以下请求构造与代理步骤只用于非 TG 实时搜索和后台采集。
 
@@ -406,7 +430,7 @@ Rust 会：
 ### 7.7 业务对象出站策略
 
 ```text
-实时来源 / TG 频道 / TG 默认配置
+实时来源 / TG 频道独立配置
     -> outbound_policies（唯一所有者）
         -> outbound_policy_nodes（按正权重随机分配）
             -> proxy_nodes（全局健康、额度）
@@ -522,9 +546,13 @@ HTML 来源示例：
 - 成功和失败次数；
 - 连续失败次数；
 - 零结果次数；
-- 平均响应时间；
+- 累计平均响应时间，以及最近最多 100 次请求耗时的真实 p50 / p95（nearest-rank 算法）；
 - 最近执行结果；
 - 最近错误信息。
+
+同一来源的快照在数据库事务中先确保记录存在，再 `SELECT ... FOR UPDATE`，最后更新提交；支持首次并发写入及多进程部署。读取或锁定失败只记录日志，不以空快照覆盖已有数据。统计写入设置锁等待和语句超时，避免阻塞搜索。
+
+每次完整来源执行计为一个请求，代理重试不增加请求数。维度描述最后一次实际请求：网络为请求与响应读取，HTTP 为成功状态码，解析为 DSL 执行，结果为成功解析后是否有结果。未执行的阶段不计入该维度分母；目前没有独立业务成功断言，`business` 保持未知，`passRate=null`。旧快照中的伪分位数和伪维度通过率在监控接口中显示为未知；维度计数在首次新请求时重建，已有总请求数保留。`responseTimeWindow` 标明分位数窗口与样本数，历史桶只保留当前及此前 23 个钟点。
 
 后台运行监控页面通过管理员接口 `/api/monitor` 展示 API / PostgreSQL / Redis 状态、TG 与链接服务心跳、任务队列、最近 24 小时点击交付结果和实时来源统计。TG 搜索身份不再混入实时来源健康统计。TG 调度与到期清理可以分别暂停，开关存入 PostgreSQL `policy_settings.background-workers`，默认启用；暂停在当前批次完成后生效，重启保留。兼容旧字段 `linkEnabled`，但其含义现仅为到期清理应急开关（接口 `/api/admin/runtime/workers/cleanup`）；资源链接同步、状态汇总与按需取链不受该清理独立开关影响。链接任务总调度开关 `linkScheduleEnabled` 则同时控制资源链接同步、定期检测、到期清理和过期与超时处理；暂停后项目、搜索和用户复制/打开仍可运行，按需转存仍按网盘配置执行，后台清理会延后。旧的显式暂停不会被自动恢复。
 
@@ -536,21 +564,11 @@ HTML 来源示例：
 
 ### 7.10 后端聚合和去重
 
-所有来源完成后，后端：
+所有来源完成后，后端保留本地优先的结果顺序，按来源 `priority` 排序统计信息，并记录未做跨来源去重的总结果数。采集入库时处理本地资源去重；跨来源展示去重由前端完成。
 
-1. 收集所有来源结果。
-2. 以排序、去重后的规范分享身份集合生成跨来源去重键；保留移动云盘有效 hash。
-3. 没有链接时使用结果 ID。
-4. 保留第一次出现的结果。
-5. 按来源 `priority` 排序统计信息。
-6. 生成总结果数和来源统计。
-7. 更新 `search_logs`：
-   - `status=completed`；
-   - `result_count`；
-   - `has_results`；
-   - 每个来源结果数；
-   - 实际来源 ID；
-   - `completed_at`。
+链接交付层按规范分享身份生成会话绑定的 `dedupKey`，没有链接时使用来源与结果 ID。前端按键合并卡片，同时保留完整的引用及链接授权快照，避免混用不同结果的授权信息。
+
+随后更新 `search_logs` 的完成状态、结果数、是否有结果、各来源结果数、实际来源 ID 和完成时间。
 
 如果搜索主流程返回错误，则把日志状态更新为 `failed`。
 
@@ -955,7 +973,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pansou
 ```
 
-日常更新：下载新的 `pansou-linux-amd64.tar.gz`，`tar xzf pansou-linux-amd64.tar.gz -C /opt/pansou` 覆盖二进制与静态文件，然后 `sudo systemctl restart pansou`。数据库迁移在启动时自动执行（`sqlx::migrate!` 嵌于二进制内）；回滚时解压上一版 tar 包再重启即可。
+日常更新：下载新的 `pansou-linux-amd64.tar.gz`，`tar xzf pansou-linux-amd64.tar.gz -C /opt/pansou` 覆盖二进制与静态文件，然后 `sudo systemctl restart pansou`。数据库迁移在启动时自动执行（`sqlx::migrate!` 嵌于二进制内）；降级前需检查迁移兼容性；发生不兼容的结构或数据变更时，应恢复匹配版本的数据库备份，再运行旧程序。
 
 ## 14. 测试与质量检查
 
@@ -1002,16 +1020,32 @@ cargo run -- serve
 
 独立部署时设置 `PANSOU_EMBEDDED_WORKERS=false`，分别运行 `pansou-api serve`、`pansou-api worker`、`pansou-api link-worker`。请勿同时重复运行内嵌和独立 Worker。后台任务不监听 HTTP 端口，各进程共用根目录后端配置。Vue 开发服务器仍在 frontend 中执行 npm run dev。
 
+### 日常 cron 与空闲等待
+
+采集设置支持六段 cron（`秒 分 时 日 月 周`），固定使用北京时间，服务器所在时区不会改变执行时间。无需额外时间窗口：
+
+- `0 */10 * * * *`：全天每 10 分钟执行一次。
+- `0 */10 8-21 * * *`：每天 08:00–21:50 每 10 分钟执行一次，22:00 起停止领取日常增量页。
+- `0 */10 8-21 * * MON-FRI`：工作日白天每 10 分钟执行一次。
+
+秒、分钟字段决定增量任务触发点；小时、日期字段限制日常任务后续分页，页间继续使用“每页等待时间”。超出允许时段时，已执行的页完成提交，剩余增量进度保留至下一次 cron。首次最新页及历史全量回填不受日常计划限制；失败页的手动重试也是独立任务。任务尚未完成时不会按每个 cron 点重复创建，重启后最多继续一个到期任务，不补建错过的所有触发点。下次执行时间为增量完成后的下个 cron 匹配时刻。
+
+空闲 worker 使用 PostgreSQL `LISTEN/NOTIFY`、最近到期时间和本进程页面完成通知等待；每 60 秒做一次兜底检查，不再每秒按并发槽位创建空任务。配置保存、频道启停、新任务及租约变化在事务提交后唤醒所有独立 worker。通知连接临时失效时仍按到期时间/兜底检查恢复，数据库任务和租约始终是执行依据。
+
+界面手动输入六段 cron，停止输入后自动调用只读预览接口 `/api/admin/crawl/settings/preview`，用与 Worker 相同的解析器校验并计算未来 5 次北京时间；下方展示中文计划含义。预览不修改配置、不创建任务；只有当前输入校验通过后才能保存。
+
+迁移 `033` 新增任务通知触发器；`034` 将已有五段 cron 一次性补充秒字段，未配置者设置为 `0 */10 * * * *`，删除旧间隔列。接口和运行时只接受六段 cron，缺失、null、五段及旧间隔参数均拒绝。升级需停止旧 API / worker，运行新版本应用迁移，再启动独立 worker。
+
 ### 采集流程
 
 1. 管理员在 TG 工作台直接维护频道；公共来源身份绑定保留原 source ID。用户保存自定义频道时幂等登记采集意向，不再通过来源列表或定时全表发现同步配置。
-2. worker 优先采最新页，默认每 300 秒增量同步。采完最新页后自动启动最多 500 页的首次历史回填。
+2. worker 优先采最新页，随后连续补齐首次历史，无总页数限制。日常增量支持六段 cron（北京时间）；推荐每 10 分钟一次。
 3. 直接读取公开页的 data-post 消息身份和 tme_messages_more 游标，不假定消息 ID 连续，也不携带用户搜索关键词抓取。
-4. worker 使用频道唯一出站策略与统一调度服务；新用户频道可继承显式 TG 默认策略，缺失则阻止网络采集，不能借其他频道策略。任务记录实际节点、耗时及版本。403/404明确失败；429按Retry-After退避，不换代理绕过限制。
+4. worker 使用频道唯一出站策略与统一调度服务；每个采集频道独立选择节点和权重，缺失则阻止网络采集，不能借其他频道策略。任务记录实际节点、耗时及版本。403/404明确失败；429按Retry-After退避，不换代理绕过限制。
 5. 原始消息 HTML、hash、发布时间存入 source_messages。同一 Rust transform DSL 提取并清洗标题、简介、网盘链接、密码、标签和时间；不执行 JavaScript。多段明确标题分开解析；高歧义大量链接聚合帖隔离为待复核。
 6. 按规范分享集合去重到统一 managed_resources，用 resource_occurrences 保存消息/频道关系，resource_links 保存分享身份，resource_grams 提供中文单字/双字候选索引。
 7. 页面资源、关系、解析状态、任务进度、数据库缓存版本在同一事务提交。重复页面不重复造资源；编辑时尽量保留资源 ID；管理员 override 不被后续采集覆盖。
-8. 首次自动全量历史采集，无总页数限制，完成后不周期重抓；历史与日常增量游标独立，到期增量穿插执行。全局并发频道数、每页等待、日常间隔可配置；同频道仅一个执行页，租约过期恢复。
+8. 首次自动全量历史采集，无总页数限制，完成后不周期重抓；历史与日常增量游标独立，到期增量穿插执行。全局并发频道数、每页等待、日常六段 cron可配置；同频道仅一个执行页，租约过期恢复。
 
 ### 搜索流程与契约
 
@@ -1019,17 +1053,17 @@ Session/权限/限流/并发校验 → 服务端计算可见来源 → TG 一次
 
 - 系统 TG 搜索不访问 t.me，未命中不回退联网。用户自定义频道搜索与采集完全独立，仅对本次提交频道实时 HTTP 搜索并使用通用 transform，不查询资源库/结果缓存。
 - Redis 正结果 60 秒、空结果 10 秒；key 包含关键词、授权来源集合和 PostgreSQL 索引版本。版本与数据同事务更新，管理员修改/下架立即失效。
-- 标题精确命中 > 标题包含 > 简介/标签包含，同级按消息发布时间降序；返回上限 200，SQL 5 秒超时。total 仍是本次返回且去重后的数量，不是全库计数。
+- 仅按标题匹配，标题精确命中优先，其余按消息发布时间降序；本地返回上限 200，SQL 5 秒超时。total 是 API 本次返回的记录数，包含跨来源重复结果，不是全库计数。
 - 共享资源从本次允许频道的 occurrence 取展示文本，不泄漏其他个人频道的标题/简介。
 - 仅查询缓存失败可回源 PostgreSQL；Redis 会话/安全校验失败仍拒绝请求，不匿名放行。
 - /api/search 仍为 start/result/complete/error。纯本地查询通常快速返回；混合查询本地结果不等慢来源。
 - /api/search/json 仍仅管理员，返回 total/results/sources/searchLogId；results 为本地优先的扁平资源数组，sources 仅保留外部实时来源统计，TG 不再返回来源 priority 或执行统计。历史采集代理记录只在采集管理展示。
-- 前后端只合并完全相同的分享集合，避免合集“桥接”误合并单资源。移动云盘不同 hash 是不同分享。API 仍是一资源多个 links，前端仍拆链接卡片。
+- 采集入库和前端展示只合并完全相同的分享集合，避免合集“桥接”误合并单资源。移动云盘不同 hash 是不同分享。API 仍是一资源多个 links，前端仍拆链接卡片。
 - 人工创建的旧资源不自动公开到 TG 搜索；TG 资源删除是软下架，保留采集溯源，避免下次爬取又恢复。
 
 ### 后台管理
 
-访问 /admin/crawl，在频道行内查看任务和失败页、勾选批量重抓/忽略，设置三个全局调度参数、暂停/继续采集，并查看消息解析状态和已存资源。采集原文只在解析过程中临时使用，不长期保存；消息原文、摘要和规则预览已删除。接口全部为显式 Axum 路由并要求管理员权限。
+访问 /admin/crawl，在频道行内查看任务和失败页、勾选批量重抓/忽略，设置全局调度参数、暂停/继续采集，并查看消息解析状态和已存资源。采集原文只在解析过程中临时使用，不长期保存；消息原文、摘要和规则预览已删除。接口全部为显式 Axum 路由并要求管理员权限。
 
 ~~~text
 GET  /api/admin/crawl/channels
@@ -1061,11 +1095,11 @@ cargo test telegram_ingestion_search_and_admin_contracts -- --ignored --nocaptur
 - 自定义频道只对本次提交频道实时 HTTP 搜索，不登记采集、不使用系统资源源或本地资源缓存。保存偏好与采集没有关联。
 - 当前没有日期范围回填、全量快照重解析发布审批，也没有百万资源规模的性能验收。小样本功能测试不代表生产吞吐量。
 - 增量追到上次检查点后结束；历史直到上游可访问边界后标记完成。规则变更只影响后续处理及失败页重新抓取。
-- transform 只接受 Rust 原生 JSON DSL；新接口须在 src/app.rs 显式注册并补测试。完整设计及待扩展项见 docs/telegram-local-index-requirements.md。
+- transform 只接受 Rust 原生 JSON DSL；新接口须在 src/app.rs 显式注册并补测试。当前采集与搜索行为见本文第 15 节。
 
 ## 管理后台界面
 
-管理端使用 shadcn-vue / Reka UI，所有 `/admin/**` 页面共用一个布局和侧栏。后台组件、局部样式和权限门禁与首页搜索隔离；开发约定和验证方式见 [后台 UI 架构](docs/admin-ui.md)。
+管理端使用 shadcn-vue / Reka UI，所有 `/admin/**` 页面共用一个布局和侧栏。后台组件、局部样式和权限门禁与首页搜索隔离。
 
 ## TG 工作台与出站策略（2026-09-30）
 
@@ -1076,21 +1110,21 @@ cargo test telegram_ingestion_search_and_admin_contracts -- --ignored --nocaptur
 | `/admin/crawl` | 系统采集频道，行内任务/失败页、批量重试/忽略、暂停/继续、DSL 与出站策略 |
 | `/admin/crawl` → 任务 | 按频道、状态、类型、创建时间查询；独立抽屉查看诊断、取消和重试 |
 | `/admin/crawl` → 待复核 | 跨频道浏览解析失败/待复核消息；进入同一消息抽屉 |
-| TG 采集 → 采集设置 | 全局并发频道数、每页等待、日常间隔；默认出站和通用 transform |
+| TG 采集 → 采集设置 | 全局并发频道数、每页等待、日常六段 cron |
 
 消息使用 Sheet，只展示消息元数据、解析错误和已存资源，不提供原文、摘要或规则预览。修改 DSL 不自动重写历史；失败页重试重新请求上游并使用当前规则。迁移 019 删除旧原文列；现有数据库的空间回收步骤见 [原文存储清理](docs/source-message-storage-cleanup.md)。
 
-系统采集频道自动进入本地索引，暂停不隐藏已入库资源。用户自定义频道独立实时搜索。具体编排、数据库迁移和失败页语义见 [TG 新方案](docs/tg-channel-scheduling.md)。
+系统采集频道自动进入本地索引，暂停不隐藏已入库资源。用户自定义频道独立实时搜索。采集编排、cron 与失败页语义见本文第 15 节。
 
 ### 出站和保存语义
 
-- 直连 / 代理；TG 频道可继承默认。默认缺失时拒绝请求，不隐式直连。
+- 直连 / 代理；每个 TG 频道独立配置，未配置节点时拒绝请求。
 - 按正权重加权随机选择，重试不重复节点；版本与节点成员同一快照读取。
 - 直连是内置可选节点，勾选且权重大于 0 才参与；权重 0 不参与、不兜底。
 - 每个来源/频道独占策略；被引用节点不能删除。节点引用入口只读。
 - 节点额度全局共享，请求前原子预留；半开探测有过期租约。429 不轮换代理绕过限制。
 - POST只发送一次。GET的可恢复失败继续下一节点，各次共用总超时预算。
-- 频道、默认策略、默认解析模板使用版本检查，并发覆盖返回409。
+- 频道和节点策略使用版本检查，并发覆盖返回409。频道解析规则留空使用内置 TG 解析规则。
 - 任务 requestKey 防止响应丢失后重复创建；同一 key 不可提交不同参数。
 
 ### 升级与启动
@@ -1102,7 +1136,7 @@ cargo test telegram_ingestion_search_and_admin_contracts -- --ignored --nocaptur
 
 006迁移旧组/路由并检查冲突；008再删除复杂策略字段，保留原代理权重，原本允许直连的配置转为勾选 direct（权重0），原纯直连转为仅选 direct。2026-10-01 执行语义改为加权随机，现有权重数值不变；权重0的旧直连配置不再兜底，如需直连参与须显式设置正权重。原 position 不再使用。009只重建派生标题索引，不删除资源、描述、消息或关联关系。
 
-012 迁移移除旧用户频道采集登记、公共身份及弃用任务；历史预算结束的旧任务继续，已完成不重抓。管理员应在采集设置显式保存默认策略，否则新继承频道会显示待配置。
+012 迁移移除旧用户频道采集登记、公共身份及弃用任务；历史预算结束的旧任务继续，已完成不重抓。032 迁移将旧默认节点和解析模板复制为已有继承频道的独立配置，然后移除默认配置表、继承字段和接口。新增频道独立选择节点；解析规则留空使用内置规则。用户个人频道搜索固定使用内置规则。升级时需停止旧 API 和 worker，再启动新版本。
 
 隔离集成测试配置专用 `PANSOU_TEST_DATABASE_URL`（库名以 _test 结尾）和 `PANSOU_TEST_REDIS_URL`，串行运行：
 
@@ -1115,16 +1149,36 @@ npm test
 npm run build
 ```
 
-测试会改变测试库配置，禁止指向业务库；不要清空生产 Redis。实施说明见 docs/tg-workbench-implementation.md。
+测试会改变测试库配置，禁止指向业务库；不要清空生产 Redis。
 
 ### 仅按名称匹配与慢 SQL 优化
 
 本地资源搜索只匹配当前可见资源的 name，不用 description 或 tags 命中；描述/标签仍正常保存和展示。后台资源列表同样只按name筛选。缓存标识使用 name-only-v1，升级递增索引版本，旧描述匹配缓存不会复用。
 
-频道统计和策略批量读取，消除逐频道N+1；新增覆盖/关系索引。TG资源和链接/gram只差量更新，不再由触发器和Rust重复全量重建。标题gram覆盖所有可用来源关系的名称，不把其他频道的标题泄露为当前频道展示。实测与验收见 [节点简化和SQL优化](docs/node-selection-and-sql-optimization.md)。
+频道统计和策略批量读取，消除逐频道N+1；新增覆盖/关系索引。TG资源和链接/gram只差量更新，不再由触发器和Rust重复全量重建。标题gram覆盖所有可用来源关系的名称，不把其他频道的标题泄露为当前频道展示。
 
 ## 原生网盘工具（百度 / 夸克）
 
 后台「网盘资源 → 网盘工具」支持分享检测、按文件去重转存、创建新分享，以及按自己的分享链接删除云端资源；每条链接旁也能进入工具。凭证在「系统 → 网盘账号」管理，仅 Rust 后端解密读取。删除必须预检并核对条目，写操作使用持久化 requestKey 幂等，响应丢失只查询，不自动重做。
 
-完全使用 Rust / reqwest，不依赖 wangpan 分支的 Node 服务。010 只新增操作/确认记录表，不清空资源或 TG 索引。能力、接口和验收边界见 [原生网盘实现](docs/native-cloud-drive.md)。
+完全使用 Rust / reqwest，不依赖 wangpan 分支的 Node 服务。010 只新增操作/确认记录表，不清空资源或 TG 索引。能力、接口和验收边界见 [网盘交付与清理管理](docs/cloud-drive-providers.md)。
+
+### 后台任务容量与关停（035）
+
+迁移 `035_worker_runtime.sql` 增加派生有效性刷新队列、跨实例调度时间槽和 lane 累计指标。升级应停止旧 API/worker，启动新版本执行迁移，再恢复服务；旧版本的 provider 独占锁与新版本共享锁不可作为长期混合部署方案。
+
+- 点击取链在数据库短事务内执行原子准入：集群最多 32 个未到期请求、每 subject 最多 4 个；每进程最多登记 16 个取链任务，另保留 30 次/分钟的 subject 限频。容量不足返回 429。
+- 取链任务进入进程任务集合。收到关闭信号后停止准入，已开始的云盘操作继续保存回执，最多等待 150 秒；HTTP 优雅关闭窗口为 30 秒，后台 worker 也有 150 秒上限；三个等待阶段并行执行。部署管理器应提供至少 180 秒的正常关停宽限。
+- 同一 provider 最多同时执行 4 个 delivery/cleanup 写工作流（数据库锁跨实例生效）；同一账号、同一链接仍串行。账号变更、管理员任意文件写操作及交付策略变更使用 provider 独占锁，与所有交付/清理互斥。进程内先排队，跨实例锁竞争采用指数退避和抖动。
+- 同步、检测与过期更新不再获取采集的全局索引锁。链接观察与聚合刷新任务在同一数据库事务提交；资源繁忙时，列表中的派生有效性允许短暂延迟，后续 sync lane 会继续刷新。状态接口直接批量读取链接事实。暂停 sync lane 会延迟这类派生汇总。
+- sync/cleanup 有积压时继续处理，空闲时等待；check 按 provider 并发处理，继续遵守 Redis 全局间隔、熔断和每日预算。入队扫描跨实例每 30 秒领取一次，仍采用索引游标分页。采集 schedule/recover 扫描跨实例每秒最多领取一次，实际任务领取仍保留数据库全局容量保护。maintenance 每次最多追赶 20 批，再交还执行机会。
+- lane 的 tick panic 被隔离并记录，数据库/Redis 故障会指数退避。配置有进程内短 TTL 缓存及 PostgreSQL 通知失效；通知不是执行依据，丢失通知由 TTL 补偿。
+- `/api/monitor` 的 `workers.links.lanes` 提供各 lane 心跳、累计处理次数/执行次数/失败次数、最近执行时长和成功/错误时间；`links.aggregatePending` 提供派生汇总积压。累计 processed 表示处理尝试，不等同于外部操作成功量，可由相邻采样计算处理速率。
+- custom 搜索引用使用带 TTL 的 Redis 能力快照，后续请求可落到任意 API 实例。不会写入资源目录，但生成和读取引用需要 Redis 可用。
+- 采集页面先解析，再逐消息短事务落库，最后推进页面游标。中途崩溃会重放未完成页面，依靠消息幂等性避免丢失；已提交的部分消息可先被搜索到。
+
+新增 `pansou-api auth-worker` 可单独运行凭证维护。`PANSOU_AUTH_WORKER_ENABLED=true/false` 可显式控制任意模式的凭证维护；默认兼容原行为：serve/link-worker 开启，worker 关闭。独立 auth-worker 必须开启。需要恰好一个凭证维护进程时，在 serve/link-worker 设置 false，仅启动一个 auth-worker；数据库 refresh lease 继续保护意外重复部署。
+
+不可确认的外部写不会因恢复而盲目重放。resolve 到期后批量完成为原链接或不可用结果，并提前调度该请求独占且未曾交付的产物清理；损坏的授权快照也会安全完成，避免堵住恢复分页。产物仍交由持久清理任务核实；无法证明归属时保留人工核实状态。check、cleanup、crawl 继续使用各自的租约，保持其不同的重试和副作用语义。
+
+后端 CI 使用隔离 PostgreSQL 与 Redis DB 15，执行 `cargo test --locked -- --include-ignored --test-threads=1`，包含原来默认忽略的数据库锁、租约、清理和采集回归。测试环境需提供专用的 `PANSOU_CLOUD_CREDENTIAL_KEY`，禁止复用部署密钥。

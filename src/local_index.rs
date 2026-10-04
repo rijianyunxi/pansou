@@ -2,11 +2,10 @@ use crate::{app::AppState, error::ApiError, models::SearchResult, resource_clean
 use redis::AsyncCommands;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 use std::{
     collections::HashMap,
     sync::{Arc, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 
@@ -63,17 +62,14 @@ async fn pick_entry_gram(
     grams: &[String],
     fallback: String,
 ) -> String {
-    let counts: HashMap<String, i64> = match sqlx::query(
-        "SELECT gram, count(*) AS n FROM resource_grams WHERE gram = ANY($1) GROUP BY gram",
+    let counts: HashMap<String, i64> = match sqlx::query!(
+        "SELECT gram, count(*) AS \"n!\" FROM resource_grams WHERE gram = ANY($1) GROUP BY gram",
+        grams,
     )
-    .bind(grams)
     .fetch_all(tx)
     .await
     {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|row| (row.get::<String, _>("gram"), row.get::<i64, _>("n")))
-            .collect(),
+        Ok(rows) => rows.into_iter().map(|row| (row.gram, row.n)).collect(),
         Err(_) => return fallback,
     };
     rarest_gram(grams, &counts)
@@ -108,10 +104,42 @@ fn results(rows: Vec<Value>) -> Result<Vec<SearchResult>, ApiError> {
 
 async fn revision(state: &AppState) -> Result<i64, ApiError> {
     Ok(
-        sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
+        sqlx::query_scalar!("SELECT revision FROM config_revisions WHERE scope='local-index'")
             .fetch_one(&state.pool)
             .await?,
     )
+}
+
+/// Phase timings for one local query; zero means that phase was skipped.
+#[derive(Default, Clone, Copy)]
+struct LocalSearchTiming {
+    lock_ms: u64,
+    slot_ms: u64,
+    sql_ms: u64,
+}
+
+/// One line per local query, so the phase breakdown is visible in production
+/// logs without attaching a profiler. Timings are wall-clock and include any
+/// queueing, so `cache` is what distinguishes the three exit paths.
+fn log_local_search(
+    keyword: &str,
+    channels: usize,
+    cache: &'static str,
+    started: Instant,
+    timing: LocalSearchTiming,
+    rows: usize,
+) {
+    tracing::info!(
+        keyword,
+        channels,
+        cache,
+        lock_ms = timing.lock_ms,
+        slot_ms = timing.slot_ms,
+        sql_ms = timing.sql_ms,
+        total_ms = started.elapsed().as_millis() as u64,
+        rows,
+        "local search"
+    );
 }
 
 pub async fn query(
@@ -119,6 +147,7 @@ pub async fn query(
     channels: &[String],
     keyword: &str,
 ) -> Result<Vec<SearchResult>, ApiError> {
+    let started = Instant::now();
     let keyword = keyword.trim().to_lowercase();
     if channels.is_empty() {
         return Ok(vec![]);
@@ -128,6 +157,14 @@ pub async fn query(
     scope.dedup();
     let key = cache_key(&keyword, &scope, revision(state).await?);
     if let Some(rows) = cached(state, &key).await {
+        log_local_search(
+            &keyword,
+            scope.len(),
+            "hit",
+            started,
+            LocalSearchTiming::default(),
+            rows.len(),
+        );
         return results(rows);
     }
     // Coalesce before acquiring a scarce DB execution slot. Revision changes do
@@ -136,17 +173,33 @@ pub async fn query(
         .local_search_locks
         .for_key(&cache_key(&keyword, &scope, 0))
         .await;
+    let lock_started = Instant::now();
     let _refresh = tokio::time::timeout(Duration::from_secs(6), lock.lock())
         .await
         .map_err(|_| ApiError::Unavailable("本地搜索繁忙，请稍后重试".into()))?;
+    let lock_ms = lock_started.elapsed().as_millis() as u64;
     let key = cache_key(&keyword, &scope, revision(state).await?);
     if let Some(rows) = cached(state, &key).await {
+        log_local_search(
+            &keyword,
+            scope.len(),
+            "hit-after-lock",
+            started,
+            LocalSearchTiming {
+                lock_ms,
+                ..Default::default()
+            },
+            rows.len(),
+        );
         return results(rows);
     }
+    let slot_started = Instant::now();
     let _slot = tokio::time::timeout(Duration::from_secs(2), state.local_search_slots.acquire())
         .await
         .map_err(|_| ApiError::Unavailable("本地搜索繁忙，请稍后重试".into()))?
         .map_err(|_| ApiError::Unavailable("本地搜索正在关闭".into()))?;
+    let slot_ms = slot_started.elapsed().as_millis() as u64;
+    let sql_started = Instant::now();
     let mut tx = state.pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
@@ -163,34 +216,38 @@ pub async fn query(
         .execute(&mut *tx)
         .await?;
     let snapshot_revision: i64 =
-        sqlx::query_scalar("SELECT revision FROM config_revisions WHERE scope='local-index'")
+        sqlx::query_scalar!("SELECT revision FROM config_revisions WHERE scope='local-index'")
             .fetch_one(&mut *tx)
             .await?;
     let grams = search_grams(&keyword);
     let rows = if grams.is_empty() {
-        sqlx::query(include_str!("queries/telegram_search.sql"))
-            .bind(&keyword)
-            .bind(None::<&str>)
-            .bind(&scope)
-            .fetch_all(&mut *tx)
-            .await?
+        sqlx::query_file_scalar!(
+            "src/queries/telegram_search.sql",
+            keyword,
+            None::<&str>,
+            &scope,
+        )
+        .fetch_all(&mut *tx)
+        .await?
     } else {
-        let entry = pick_entry_gram(&mut *tx, &grams, grams[0].clone()).await;
-        let required: Vec<String> =
-            grams.iter().filter(|g| *g != &entry).cloned().collect();
-        sqlx::query(include_str!("queries/telegram_search_gram.sql"))
-            .bind(&keyword)
-            .bind(&entry)
-            .bind(&scope)
-            .bind(&required)
-            .fetch_all(&mut *tx)
-            .await?
+        let entry = pick_entry_gram(&mut tx, &grams, grams[0].clone()).await;
+        let required: Vec<String> = grams.iter().filter(|g| *g != &entry).cloned().collect();
+        sqlx::query_file_scalar!(
+            "src/queries/telegram_search_gram.sql",
+            keyword,
+            entry,
+            &scope,
+            &required,
+        )
+        .fetch_all(&mut *tx)
+        .await?
     };
     let values = rows
         .into_iter()
-        .map(|r| r.get::<Value, _>("item"))
-        .collect::<Vec<_>>();
+        .map(|item| item.ok_or_else(|| ApiError::Internal("资源搜索投影为空".into())))
+        .collect::<Result<Vec<Value>, ApiError>>()?;
     tx.commit().await?;
+    let sql_ms = sql_started.elapsed().as_millis() as u64;
     drop(_slot);
     // Result/version were read from one snapshot. Redis is never awaited while
     // the SQL transaction/connection is held, even during a cache fill.
@@ -205,6 +262,18 @@ pub async fn query(
         )
         .await;
     }
+    log_local_search(
+        &keyword,
+        scope.len(),
+        "miss",
+        started,
+        LocalSearchTiming {
+            lock_ms,
+            slot_ms,
+            sql_ms,
+        },
+        values.len(),
+    );
     results(values)
 }
 
@@ -257,5 +326,63 @@ mod tests {
         drop(second);
         let _other = locks.for_key("other").await;
         assert_eq!(locks.entries.lock().await.len(), 1);
+    }
+
+    #[test]
+    fn local_search_log_exposes_every_phase_and_the_cache_outcome() {
+        use std::io::Write;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Capture {
+            type Writer = Capture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_local_search(
+                "兰香如故",
+                9,
+                "miss",
+                Instant::now(),
+                LocalSearchTiming {
+                    lock_ms: 1,
+                    slot_ms: 2,
+                    sql_ms: 3,
+                },
+                42,
+            );
+        });
+
+        let output = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        for expected in [
+            "local search",
+            "keyword=\"兰香如故\"",
+            "channels=9",
+            "cache=\"miss\"",
+            "lock_ms=1",
+            "slot_ms=2",
+            "sql_ms=3",
+            "rows=42",
+        ] {
+            assert!(output.contains(expected), "missing {expected} in {output}");
+        }
     }
 }

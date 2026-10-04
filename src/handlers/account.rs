@@ -128,9 +128,7 @@ pub async fn channels_get(
     let session = state.auth().session(&headers).await?;
     let policy = crate::policy::load(&state.pool).await?;
     if session.user_id.is_none() && !policy.anonymous_custom_channels {
-        return Err(ApiError::Forbidden(
-            "自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。".into(),
-        ));
+        return Err(ApiError::Forbidden("未登录不可使用".into()));
     }
     let channels = if let Some(user_id) = session.user_id {
         sqlx::query_scalar::<_, Value>("SELECT custom_channels_json FROM users WHERE id=$1")
@@ -168,9 +166,7 @@ pub async fn channels_put(
         )));
     }
     if session.user_id.is_none() && !policy.anonymous_custom_channels {
-        return Err(ApiError::Forbidden(
-            "自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。".into(),
-        ));
+        return Err(ApiError::Forbidden("未登录不可使用".into()));
     }
     let mut normalized = body
         .channels
@@ -228,9 +224,7 @@ pub async fn channels_validate(
             .await?
             .anonymous_custom_channels
     {
-        return Err(ApiError::Forbidden(
-            "验证自定义频道需要登录，或由管理员开启匿名频道。".into(),
-        ));
+        return Err(ApiError::Forbidden("未登录不可使用".into()));
     }
     Ok(Json(
         json!({"ok":true,"channel":channel,"message":"频道格式有效；公开访问状态由采集任务确认"}),

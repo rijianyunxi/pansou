@@ -8,6 +8,18 @@
 - 数据迁移不能通过复制最终 DDL 来代替；初始配置也不能从应用数据库导出后当作通用默认值。
 - 新库仍执行完整迁移链。未来若引入压缩基线，需要同时设计新库初始化、默认数据、旧库迁移记录兼容与后续升级路径，并验证两种路径结构一致。
 
+## 当前迁移链（034）
+
+当前目录包含连续的 001–034。031 增加清理忽略状态；032 移除 TG 默认策略与解析模板；033 增加 cron 与任务通知；034 强制六段 cron 并删除旧间隔列。实际已执行版本请查询 `_sqlx_migrations`，不要以历史审计日期判断当前库版本。
+
+升级至 034 时先停止旧 API / worker，运行新程序应用迁移，然后启动独立 worker；旧程序不能继续写入已删除的间隔及默认配置字段。
+
+## 历史审计（030）
+
+以下结论只适用于当时的 030 结构，不包含后续迁移。
+
 2026-10-03 检查：001–030 连续，当前库 30 项全部成功，文件 SHA-384 与 SQLx 记录全部一致。空库重放生成的结构与当前库相同。
 
-完整审计见 [迁移检查记录](../docs/database/migration-audit-v030.md)。合并后的当前结构见 [schema-v030-reference.sql](../docs/database/schema-v030-reference.sql)，仅供结构查阅，不能替换这些迁移。
+完整审计见 [迁移检查记录](../docs/database/migration-audit-v030.md)。当时的结构参考见 [schema-v030-reference.sql](../docs/database/schema-v030-reference.sql)，仅供结构查阅，不能替换这些迁移。
+
+- **035_worker_runtime.sql**：增加 `link_aggregate_queue`、`worker_schedule_slots`、`worker_lane_metrics`，链接事实更新原子入队派生汇总；缩小配置唤醒范围并新增 worker 配置通知。切换前停止旧进程。新 worker 的 provider 写锁使用共享配置锁、链接互斥锁及 4 个跨实例写槽位；回滚应用前先停止新进程，保留新增表/触发器不会删除业务数据。

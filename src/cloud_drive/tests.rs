@@ -719,6 +719,10 @@ async fn native_cloud_routes_contracts_and_durable_idempotency() {
     let session = state.auth().login(&username, &unique).await.unwrap().0;
     let token = Some(session.token.as_str());
     let previous=sqlx::query("SELECT provider,credential FROM cloud_account_settings WHERE provider IN ('baidu','quark')").fetch_all(&pool).await.unwrap().into_iter().map(|r|(r.get::<String,_>("provider"),r.get::<String,_>("credential"))).collect::<Vec<_>>();
+    // Other integration fixtures exercise encrypted bindings. This fixture
+    // explicitly starts disconnected before importing its own mock identities.
+    sqlx::query("UPDATE cloud_account_settings SET credential='',credential_cipher=NULL,account_key=NULL,subject_id=NULL,storage_scope='',auth_status='unverified',refreshable=false,token_revision=0,binding_epoch=0,refresh_lease=NULL,refresh_lease_until=NULL,pending_refresh_cipher=NULL WHERE provider IN('baidu','quark')")
+        .execute(&pool).await.unwrap();
     for path in [
         "check",
         "save",

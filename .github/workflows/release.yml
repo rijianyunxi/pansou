@@ -71,6 +71,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
+        env:
+          SQLX_OFFLINE: "true"
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package

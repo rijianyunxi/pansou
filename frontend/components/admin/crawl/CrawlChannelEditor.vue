@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useAdminConfirm } from "@/composables/admin/useAdminConfirm";
 import { apiFetch, apiErrorMessage } from "@/src/appRuntime";
-import { directPolicy, inheritedPolicy } from "@/types/outbound";
+import { directPolicy } from "@/types/outbound";
 import type { CrawlChannel } from "@/types/crawl";
 import AdminDialog from "../AdminDialog.vue";
 import OutboundPolicyEditor from "../OutboundPolicyEditor.vue";
@@ -18,15 +18,13 @@ const tab = ref("basic"),
   loading = ref(!!props.id),
   busy = ref(false),
   loaded = ref(false),
-  error = ref(""),
-  template = ref("");
+  error = ref("");
 const form = ref({
   id: props.id || "",
   name: "",
   description: "",
   enabled: true,
   transform: "",
-  inheritTemplate: true,
   outbound: directPolicy(),
   expectedVersion: 0,
 });
@@ -43,14 +41,6 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const requests = [
-      apiFetch<{ data: { transform?: string } }>(
-        "/api/settings/source-template",
-        { silentError: true },
-      ),
-    ];
-    const tmpl = await requests[0];
-    template.value = tmpl.data.transform || "";
     if (props.id) {
       const c = (
         await apiFetch<{ data: CrawlChannel }>(
@@ -64,8 +54,7 @@ async function load() {
         description: c.description,
         enabled: c.enabled,
         transform: c.transform || "",
-        inheritTemplate: c.transform == null,
-        outbound: c.outbound || inheritedPolicy(),
+        outbound: c.outbound || directPolicy(),
         expectedVersion: c.version,
       };
     }
@@ -99,7 +88,7 @@ async function save() {
           name: f.name,
           description: f.description,
           enabled: f.enabled,
-          transform: f.inheritTemplate ? null : f.transform,
+          transform: f.transform.trim() ? f.transform : null,
           outbound: f.outbound,
           expectedVersion: f.expectedVersion,
         },
@@ -157,29 +146,19 @@ onMounted(load);
               ><AdminCheckbox v-model="form.enabled" />允许采集</label
             ><OutboundPolicyEditor
               v-model="form.outbound"
-              allow-inherit
               :disabled="busy"
             />
           </section>
           <section v-else class="channel-editor-fields">
-            <label class="channel-check"
-              ><AdminCheckbox v-model="form.inheritTemplate" />继承 TG
-              默认解析模板</label
-            ><label
-              >Rust transform DSL<Textarea
-                v-if="!form.inheritTemplate"
+            <label>Rust transform DSL<Textarea
                 v-model="form.transform"
                 rows="15"
                 spellcheck="false"
-                class="channel-code" /><Textarea
-                v-else
-                :model-value="template"
-                readonly
-                rows="15"
+                placeholder="留空使用内置 TG 解析规则"
                 class="channel-code"
             /></label>
             <p class="channel-help">
-              修改规则仅影响后续采集；失败页重试会重新抓取并使用当前规则解析。
+              留空使用内置 TG 解析规则。此配置仅用于当前频道；修改规则仅影响后续采集；失败页重试会重新抓取并使用当前规则解析。
             </p>
           </section></template
         >

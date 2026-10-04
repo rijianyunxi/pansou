@@ -66,18 +66,28 @@ async fn channels_data(
         .map(|r| r.get::<String, _>("id"))
         .collect::<Vec<_>>();
     let stats = state.admin_stats.channels(pool, &ids).await?;
-    let policies=sqlx::query(&format!("SELECT p.channel_id,p.default_key,{} FROM outbound_policies p WHERE p.channel_id=ANY($1) OR p.default_key='telegram'",outbound::POLICY_COLUMNS)).bind(&ids).fetch_all(pool).await?;
+    let policies = sqlx::query(&format!(
+        "SELECT p.channel_id,{} FROM outbound_policies p WHERE p.channel_id=ANY($1)",
+        outbound::POLICY_COLUMNS
+    ))
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let daily_allowed =
+        crawl::DailySchedule::new(&crawl::settings(pool).await?)?.allows_pages(chrono::Utc::now());
     let task_states = sqlx::query(include_str!("../sql/channel_task_states.sql"))
-        .bind(&ids).fetch_all(pool).await?
-        .into_iter().map(|r| (r.get::<String, _>("id"), r)).collect::<HashMap<_, _>>();
+        .bind(&ids)
+        .bind(daily_allowed)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| (r.get::<String, _>("id"), r))
+        .collect::<HashMap<_, _>>();
     let mut by_channel = HashMap::new();
-    let mut default = None;
     for r in policies {
         let p = outbound::from_row(&r)?;
         if let Some(id) = r.get::<Option<String>, _>("channel_id") {
             by_channel.insert(id, p);
-        } else {
-            default = Some(p);
         }
     }
     let mut items = Vec::with_capacity(rows.len());
@@ -86,12 +96,7 @@ async fn channels_data(
         let st = &stats[&id];
         let task = &task_states[&id];
         let p = by_channel.get(&id);
-        let effective = if p.is_some_and(|p| p.inherit) {
-            default.as_ref()
-        } else {
-            p
-        };
-        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":st.failed_count,"resourceCount":st.resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":effective});
+        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":st.failed_count,"resourceCount":st.resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":p});
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
         }
@@ -251,31 +256,6 @@ pub async fn crawl_channel_delete(
     Ok(ok(json!({"id":id})))
 }
 
-pub async fn crawl_default_get(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    Ok(ok(
-        json!({"outbound":outbound::read(&s.pool,Owner::Default).await?,"inheritors":sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbound_policies p JOIN crawl_channels c ON c.id=p.channel_id WHERE p.inherit").fetch_one(&s.pool).await?}),
-    ))
-}
-pub async fn crawl_default_put(
-    State(s): State<Arc<AppState>>,
-    h: HeaderMap,
-    Json(p): Json<Policy>,
-) -> Result<Json<Value>, ApiError> {
-    admin_only(&h, &s).await?;
-    let mut tx = s.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(773002)")
-        .execute(&mut *tx)
-        .await?;
-    outbound::save(&mut tx, Owner::Default, &p).await?;
-    tx.commit().await?;
-    Ok(ok(
-        json!({"outbound":outbound::read(&s.pool,Owner::Default).await?}),
-    ))
-}
 pub async fn crawl_overview(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
@@ -293,6 +273,8 @@ pub async fn crawl_overview(
             .await
             .ok(),
     };
+    let scheduling = crawl::settings(&s.pool).await?;
+    let daily_allowed = crawl::DailySchedule::new(&scheduling)?.allows_pages(chrono::Utc::now());
     let jobs = sqlx::query(&format!(
         "WITH channel_states AS ({}) SELECT
          count(*) FILTER(WHERE task_state='queued') queued,
@@ -303,13 +285,13 @@ pub async fn crawl_overview(
         include_str!("../sql/channel_task_states.sql"),
     ))
     .bind(Option::<Vec<String>>::None)
+    .bind(daily_allowed)
     .fetch_one(&s.pool)
     .await?;
     let review = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_page_failures")
         .fetch_one(&s.pool)
         .await?;
     let worker_enabled = crate::runtime::settings(&s).await?.crawl_enabled;
-    let scheduling = crawl::settings(&s.pool).await?;
     Ok(ok(
         json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"backoff":jobs.get::<i64,_>("backoff"),"fetching":jobs.get::<i64,_>("fetching"),"failed":jobs.get::<i64,_>("failed"),"review":review,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
     ))
@@ -375,10 +357,23 @@ async fn message_list(
     // one, the aggregate scopes every count to that published_at range.
     let counts = if from.is_none() && to.is_none() {
         let r=sqlx::query("SELECT COALESCE(message_count,0) total,COALESCE(parsed_count,0) parsed,COALESCE(empty_count,0) empty,COALESCE(failed_count,0) failed FROM channel_statistics WHERE channel_id=$1").bind(channel).fetch_optional(pool).await?;
-        r.map(|r| (r.get::<i64, _>("total"), r.get::<i64, _>("parsed"), r.get::<i64, _>("empty"), r.get::<i64, _>("failed"))).unwrap_or_default()
+        r.map(|r| {
+            (
+                r.get::<i64, _>("total"),
+                r.get::<i64, _>("parsed"),
+                r.get::<i64, _>("empty"),
+                r.get::<i64, _>("failed"),
+            )
+        })
+        .unwrap_or_default()
     } else {
         let r=sqlx::query("SELECT count(*) total,count(*) FILTER(WHERE parse_status='parsed') parsed,count(*) FILTER(WHERE parse_status='empty') empty,count(*) FILTER(WHERE parse_status='failed') failed FROM source_messages WHERE channel_id=$1 AND ($2::timestamptz IS NULL OR published_at>=$2) AND ($3::timestamptz IS NULL OR published_at<=$3)").bind(channel).bind(from).bind(to).fetch_one(pool).await?;
-        (r.get::<i64, _>("total"), r.get::<i64, _>("parsed"), r.get::<i64, _>("empty"), r.get::<i64, _>("failed"))
+        (
+            r.get::<i64, _>("total"),
+            r.get::<i64, _>("parsed"),
+            r.get::<i64, _>("empty"),
+            r.get::<i64, _>("failed"),
+        )
     };
     let total = match status.as_str() {
         "parsed" => counts.1,
@@ -422,13 +417,12 @@ pub async fn crawl_messages_action(
         ));
     }
     let mut tx = s.pool.begin().await?;
-    let enabled = sqlx::query_scalar::<_, bool>(
-        "SELECT enabled FROM crawl_channels WHERE id=$1 FOR UPDATE",
-    )
-    .bind(&channel)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
+    let enabled =
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM crawl_channels WHERE id=$1 FOR UPDATE")
+            .bind(&channel)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     let targets = sqlx::query_scalar::<_, i64>(
         "SELECT message_id FROM source_messages WHERE channel_id=$1 AND message_id=ANY($2) AND parse_status='failed' ORDER BY message_id DESC",
     )
@@ -514,29 +508,77 @@ pub async fn crawl_settings_get(
         serde_json::to_value(crawl::settings(&s.pool).await?).unwrap()
     ))
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CrawlCronPreview {
+    daily_cron: String,
+}
+
+pub async fn crawl_cron_preview(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Json(f): Json<CrawlCronPreview>,
+) -> Result<Json<Value>, ApiError> {
+    admin_only(&h, &s).await?;
+    if f.daily_cron.len() > 200 {
+        return Err(ApiError::BadRequest("cron 表达式最多 200 个字符".into()));
+    }
+    let expression = f
+        .daily_cron
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let plan = crawl::DailySchedule::from_expression(&expression)?;
+    let observed: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&s.pool)
+        .await?;
+    let mut cursor = observed;
+    let mut times = Vec::with_capacity(5);
+    for _ in 0..5 {
+        cursor = plan.next_after(cursor)?;
+        times.push(cursor);
+    }
+    Ok(ok(
+        json!({"dailyCron":expression,"timeZone":"Asia/Shanghai","nextRuns":times,"observedAt":observed}),
+    ))
+}
+
 pub async fn crawl_settings_put(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
-    Json(f): Json<crawl::Settings>,
+    Json(mut f): Json<crawl::Settings>,
 ) -> Result<Json<Value>, ApiError> {
     admin_only(&h, &s).await?;
-    if !(1..=32).contains(&f.concurrent_channels)
-        || !(0..=3600).contains(&f.page_delay_seconds)
-        || !(60..=86400).contains(&f.daily_interval_seconds)
-    {
-        return Err(ApiError::BadRequest(
-            "并发1～32，等待0～3600秒，日常间隔60～86400秒".into(),
-        ));
+    if !(1..=32).contains(&f.concurrent_channels) || !(0..=3600).contains(&f.page_delay_seconds) {
+        return Err(ApiError::BadRequest("并发1～32，等待0～3600秒".into()));
     }
     let mut tx = s.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(773012)")
         .execute(&mut *tx)
         .await?;
-    let n=sqlx::query("UPDATE crawl_settings SET concurrent_channels=$1,page_delay_seconds=$2,daily_interval_seconds=$3,version=version+1 WHERE id=1 AND version=$4").bind(f.concurrent_channels).bind(f.page_delay_seconds).bind(f.daily_interval_seconds).bind(f.version).execute(&mut *tx).await?.rows_affected();
+    f.daily_cron = f
+        .daily_cron
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let plan = crawl::DailySchedule::new(&f)?;
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let next = plan.next_after(now)?;
+    let old = sqlx::query_scalar::<_, String>("SELECT daily_cron FROM crawl_settings WHERE id=1")
+        .fetch_one(&mut *tx)
+        .await?;
+    let n=sqlx::query("UPDATE crawl_settings SET concurrent_channels=$1,page_delay_seconds=$2,daily_cron=$3,version=version+1 WHERE id=1 AND version=$4").bind(f.concurrent_channels).bind(f.page_delay_seconds).bind(&f.daily_cron).bind(f.version).execute(&mut *tx).await?.rows_affected();
     if n == 0 {
         return Err(ApiError::Conflict("配置已更新，请重新加载".into()));
     }
-    sqlx::query("UPDATE crawl_channels SET next_sync_at=COALESCE(last_synced_at,now())+make_interval(secs=>$1::double precision)").bind(f.daily_interval_seconds as f64).execute(&mut *tx).await?;
+    sqlx::query("UPDATE crawl_channels SET next_sync_at=CASE WHEN last_synced_at IS NULL THEN now() ELSE $1 END")
+        .bind(next).execute(&mut *tx).await?;
+    if old != f.daily_cron {
+        sqlx::query("UPDATE crawl_jobs j SET next_run_at=CASE WHEN c.last_synced_at IS NULL OR $1 THEN now() ELSE $2 END FROM crawl_channels c WHERE c.id=j.channel_id AND j.kind='sync' AND j.status='queued' AND j.attempts=0")
+            .bind(plan.allows_pages(now)).bind(next).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(ok(
         serde_json::to_value(crawl::settings(&s.pool).await?).unwrap()

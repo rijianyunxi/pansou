@@ -39,7 +39,7 @@ export interface CrawlChannel {
   resourceCount: number;
   latestJob: CrawlJob | null;
   taskState?: 'running' | 'queued' | 'backoff' | 'idle' | 'paused' | 'failed';
-  taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | null;
+  taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | 'cron_wait' | null;
   taskStateAt?: string;
   outbound: OutboundPolicy | null;
   effectiveOutbound: OutboundPolicy | null;
@@ -113,6 +113,7 @@ export function crawlCompactTime(value?: string | null, now = Date.now()) {
 }
 
 export function compactChannelTaskLabel(channel: CrawlChannel) {
+  if (channel.taskPhase === "cron_wait" && channel.enabled) return "待同步";
   const state = channelTaskState(channel).state;
   if (state === 'running') return '采集中';
   if (channel.taskState === 'backoff') return '退避中';
@@ -152,6 +153,7 @@ type ChannelTaskState = "running" | "waiting" | "idle" | "paused" | "failed";
 export function channelTaskState(channel: CrawlChannel, now = Date.now()): { state: ChannelTaskState; text: string } {
   if (channel.taskState) {
     if (channel.taskState === 'paused') return { state: 'paused', text: '已暂停' };
+    if (channel.taskPhase === 'cron_wait') return { state: 'idle', text: '等待 cron 日常采集' };
     if (channel.taskState === 'running') {
       const phase = channel.taskPhase === 'page_wait' ? '等待下一页' : channel.taskPhase === 'ready' ? '等待调度' : '正在处理页面';
       return { state: 'running', text: crawlKind(channel.latestJob?.kind || '') + '中 · ' + phase };
@@ -178,4 +180,4 @@ export function crawlFilterDate(value: string): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-export interface CrawlSettingsValue { concurrentChannels: number; pageDelaySeconds: number; dailyIntervalSeconds: number; version: number }
+export interface CrawlSettingsValue { concurrentChannels: number; pageDelaySeconds: number; dailyCron: string; version: number }

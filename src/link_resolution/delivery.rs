@@ -93,8 +93,7 @@ impl ProviderPolicy {
                 || ![1, 7, 30].contains(&self.platform_share_days)
             {
                 return Err(ApiError::BadRequest(
-                    "保留期须在60秒至30天内，临期窗口须小于保留期，平台分享期限为1/7/30天"
-                        .into(),
+                    "保留期须在60秒至30天内，临期窗口须小于保留期，平台分享期限为1/7/30天".into(),
                 ));
             }
             let dir = self.target_dir.as_deref().unwrap_or("");
@@ -123,25 +122,68 @@ pub(super) async fn load_provider(
 async fn lock(
     state: &AppState,
     drive: &Drive,
+    link_id: Uuid,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, ApiError> {
-    try_lock(state, drive).await?.ok_or_else(|| ApiError::Conflict("网盘正在执行其他写操作".into()))
+    try_lock(state, drive, link_id)
+        .await?
+        .ok_or_else(|| ApiError::Conflict("网盘正在执行其他写操作".into()))
 }
 async fn try_lock(
     state: &AppState,
     drive: &Drive,
+    link_id: Uuid,
 ) -> Result<Option<sqlx::Transaction<'static, sqlx::Postgres>>, ApiError> {
     let mut tx = state.pool.begin().await?;
-    let acquired: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
-            .bind(format!("pansou:cloud-write:{}", drive.wire.provider.name()))
-            .fetch_one(&mut *tx)
-            .await?;
-    if !acquired {
+    if !acquire_write_locks(&mut tx, drive.wire.provider.name(), &drive.account, link_id).await? {
         return Ok(None);
     }
     drive.ensure_current_account(&mut tx).await?;
     Ok(Some(tx))
 }
+async fn acquire_write_locks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    provider: &str,
+    account: &str,
+    link_id: Uuid,
+) -> Result<bool, ApiError> {
+    let acquired: bool =
+        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1,0))")
+            .bind(format!("pansou:cloud-write:{}", provider))
+            .fetch_one(&mut **tx)
+            .await?;
+    if !acquired {
+        return Ok(false);
+    }
+    // Admin/account mutations retain the exclusive provider lock. Independent
+    // links may write concurrently, but one link and its cleanup remain serial.
+    let link_locked: bool =
+        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!(
+                "pansou:cloud-link:{}:{}:{link_id}",
+                provider, account
+            ))
+            .fetch_one(&mut **tx)
+            .await?;
+    if !link_locked {
+        return Ok(false);
+    }
+    let mut slot = false;
+    for index in 0..4 {
+        if sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("pansou:cloud-slot:{}:{index}", provider))
+            .fetch_one(&mut **tx)
+            .await?
+        {
+            slot = true;
+            break;
+        }
+    }
+    if !slot {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn directory_key(provider: Provider, file: &File) -> String {
     if provider == Provider::Baidu {
         file.path.clone()
@@ -179,7 +221,9 @@ pub(super) async fn manifest_from_listing(
         };
         for file in files {
             if entries.len() >= 5000 {
-                return Err(ApiError::Conflict("文件树过大或结构异常，需人工核实".into()));
+                return Err(ApiError::Conflict(
+                    "文件树过大或结构异常，需人工核实".into(),
+                ));
             }
             if file.is_dir {
                 pending.push((directory_key(drive.wire.provider, &file), depth + 1));
@@ -373,7 +417,10 @@ pub(super) async fn deliver(
     .bind(key)
     .fetch_one(&state.pool)
     .await?;
-    drive.wire.write_deadline_ms.store(deadline.timestamp_millis(), std::sync::atomic::Ordering::SeqCst);
+    drive.wire.write_deadline_ms.store(
+        deadline.timestamp_millis(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
     if !p.enabled && p.target_dir.as_deref().is_none_or(str::is_empty) {
         let _ = original_context(state, &drive, link, deadline).await;
         return Ok(fallback(
@@ -385,12 +432,24 @@ pub(super) async fn deliver(
     }
     p.validate(provider)?;
     super::progress(state, session, key, "queued").await?;
+    let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
+    let _local_write = tokio::time::timeout(
+        remaining,
+        crate::runtime::provider_write_slot(state, provider.name()),
+    )
+    .await
+    .map_err(|_| ApiError::Unavailable("网盘写入排队超时".into()))??;
+    let mut retry_ms = 100u64;
     let _lock = loop {
-        match lock(state, &drive).await {
+        match lock(state, &drive, link_id).await {
             Ok(tx) => break tx,
             Err(ApiError::Conflict(_)) if Utc::now() < deadline => {
                 authorize_write(state, session, key).await?;
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(
+                    retry_ms + rand::random::<u64>() % 100,
+                ))
+                .await;
+                retry_ms = (retry_ms * 2).min(2000);
             }
             Err(_) => return Ok(fallback(key, link, fact, "account_unavailable")),
         }
@@ -578,8 +637,11 @@ pub(super) async fn deliver(
                 let confirmed = drive.wire.confirmed_file_ids.lock().await.clone();
                 if !confirmed.is_empty() {
                     let files = drive.list(&target).await.map_err(|e| e.api())?;
-                    if files.len() == confirmed.len() && files.iter().all(|f| confirmed.contains(&f.id)) {
-                        let tree = manifest_from_listing(&drive, &target, Some(files.clone())).await?;
+                    if files.len() == confirmed.len()
+                        && files.iter().all(|f| confirmed.contains(&f.id))
+                    {
+                        let tree =
+                            manifest_from_listing(&drive, &target, Some(files.clone())).await?;
                         sqlx::query("UPDATE link_share_cache SET state='saved',target_files_json=$2,ownership_manifest_json=ownership_manifest_json || $3,updated_at=now() WHERE id=$1")
                             .bind(id).bind(json!(files)).bind(json!({"tree":tree,"stage":"saved"})).execute(&state.pool).await?;
                     }
@@ -641,14 +703,17 @@ pub(super) async fn retire_timed_out_artifacts(
     key: Uuid,
 ) -> Result<(), ApiError> {
     sqlx::query(include_str!("retire_timed_out_artifacts.sql"))
-        .bind(subject(session)).bind(key).execute(&state.pool).await?;
+        .bind(subject(session))
+        .bind(key)
+        .execute(&state.pool)
+        .await?;
     Ok(())
 }
 
-pub(super) async fn cleanup_tick(state: &AppState) -> Result<(), ApiError> {
+pub(super) async fn cleanup_tick(state: &AppState) -> Result<usize, ApiError> {
     let token = Uuid::new_v4();
     let row=sqlx::query("UPDATE link_cleanup_jobs SET status='running',lease_token=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1 WHERE id=(SELECT id FROM link_cleanup_jobs WHERE (status='queued' AND run_after<=now()) OR (status='running' AND lease_until<now()) ORDER BY run_after,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *").bind(token).fetch_optional(&state.pool).await?;
-    let Some(job) = row else { return Ok(()) };
+    let Some(job) = row else { return Ok(0) };
     let job_id: i64 = job.get("id");
     let id: Uuid = job.get("share_cache_id");
     let result =
@@ -662,14 +727,22 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<(), ApiError> {
             Ok(Ok(())) => String::new(),
         };
         tracing::warn!(job=job_id, detail=%detail, "cleanup attempt failed");
-        let waiting_auth=matches!(&result,Ok(Err(ApiError::CloudAuthRequired(_))));
+        let waiting_auth = matches!(&result, Ok(Err(ApiError::CloudAuthRequired(_))));
         let busy = matches!(&result, Ok(Err(ApiError::Unavailable(message))) if message == "网盘正在执行其他写操作，稍后重试清理"||message=="网盘凭证已更新，稍后重试当前任务");
-        let blocked = waiting_auth || matches!(result, Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_))))
+        let blocked = waiting_auth
+            || matches!(
+                result,
+                Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_)))
+            )
             || (!busy && job.get::<i32, _>("attempts") >= 5);
         let reason = match &result {
             _ if waiting_auth => "waiting_auth",
-            Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_))) => "ownership_verification_required",
-            Ok(Err(ApiError::BadRequest(_) | ApiError::Unauthorized(_))) => "cleanup_credentials_or_permissions",
+            Ok(Err(ApiError::Conflict(_) | ApiError::Forbidden(_))) => {
+                "ownership_verification_required"
+            }
+            Ok(Err(ApiError::BadRequest(_) | ApiError::Unauthorized(_))) => {
+                "cleanup_credentials_or_permissions"
+            }
             Err(_) => "cleanup_timeout",
             _ if busy => "cleanup_busy",
             _ => "cleanup_retry",
@@ -680,7 +753,7 @@ pub(super) async fn cleanup_tick(state: &AppState) -> Result<(), ApiError> {
         sqlx::query("UPDATE link_cleanup_jobs SET status=$3,last_error_code=$4,lease_until=NULL,run_after=now()+make_interval(secs=>$5),attempts=attempts-CASE WHEN $6 THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now()")
             .bind(job_id).bind(token).bind(if blocked{"blocked"}else{"queued"}).bind(reason).bind(if busy { 10.0f64 } else { 1800.0 }).bind(busy||waiting_auth).execute(&state.pool).await?;
     }
-    Ok(())
+    Ok(1)
 }
 async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result<(), ApiError> {
     let row=sqlx::query("SELECT s.*,c.provider,s.cleanup_after>clock_timestamp() AS cleanup_not_due FROM link_share_cache s JOIN link_catalog c ON c.id=s.link_id WHERE s.id=$1").bind(id).fetch_one(&state.pool).await?;
@@ -693,7 +766,8 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
     }
     let provider = Provider::from_name(&row.get::<String, _>("provider"))?;
     let drive = Drive::load(state, provider).await?;
-    let _lock = try_lock(state, &drive).await?
+    let _lock = try_lock(state, &drive, row.get("link_id"))
+        .await?
         .ok_or_else(|| ApiError::Unavailable("网盘正在执行其他写操作，稍后重试清理".into()))?;
     // Credential migration can rewrite an old Cookie fingerprint before this
     // lock was acquired. Compare the current artifact, not the pre-lock snapshot.
@@ -702,7 +776,10 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         return Err(ApiError::Conflict("账号已变化".into()));
     }
     let lease = cleanup_checkpoint(state, job_id, token, "verify").await?;
-    drive.wire.write_deadline_ms.store(lease.timestamp_millis(), std::sync::atomic::Ordering::SeqCst);
+    drive.wire.write_deadline_ms.store(
+        lease.timestamp_millis(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
     sqlx::query("UPDATE link_share_cache SET state='cleaning',updated_at=now() WHERE id=$1")
         .bind(id)
         .execute(&state.pool)
@@ -720,7 +797,8 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         let reconcilable = matches!(
             evidence["stage"].as_str(),
             Some("directory_created" | "directory_intent" | "transfer_intent")
-        ) && match serde_json::from_value::<File>(evidence["directory"].clone()) {
+        ) && match serde_json::from_value::<File>(evidence["directory"].clone())
+        {
             Ok(owned) => drive
                 .list(&directory_key(provider, &owned))
                 .await
@@ -730,7 +808,7 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
         };
         if !reconcilable {
             tracing::warn!(
-                stage=evidence["stage"].as_str().unwrap_or(""),
+                stage = evidence["stage"].as_str().unwrap_or(""),
                 "cleanup refuses an artifact whose write state is not reconcilable"
             );
             return Err(ApiError::Conflict("产物写入状态不确定".into()));
@@ -795,7 +873,11 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
     }
     let mut tx = state.pool.begin().await?;
     let finished = sqlx::query("UPDATE link_cleanup_jobs SET status='completed',stage='verify_deleted',completed_at=now(),lease_until=NULL WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now()").bind(job_id).bind(token).execute(&mut *tx).await?;
-    if finished.rows_affected() != 1 { return Err(ApiError::Conflict("清理任务租约已失效，未覆盖新任务状态".into())); }
+    if finished.rows_affected() != 1 {
+        return Err(ApiError::Conflict(
+            "清理任务租约已失效，未覆盖新任务状态".into(),
+        ));
+    }
     sqlx::query("UPDATE link_share_cache SET state='deleted',deleted_at=now(),share_validity=0,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
@@ -803,7 +885,12 @@ async fn cleanup(state: &AppState, id: Uuid, job_id: i64, token: Uuid) -> Result
 
 // Fence every new cloud mutation against the live job generation. Admin retry
 // or lease reclamation must never let a stale worker continue issuing deletes.
-pub(super) async fn cleanup_checkpoint(state: &AppState, job_id: i64, token: Uuid, stage: &str) -> Result<DateTime<Utc>, ApiError> {
+pub(super) async fn cleanup_checkpoint(
+    state: &AppState,
+    job_id: i64,
+    token: Uuid,
+    stage: &str,
+) -> Result<DateTime<Utc>, ApiError> {
     sqlx::query_scalar("UPDATE link_cleanup_jobs SET stage=$3,updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now() RETURNING lease_until")
         .bind(job_id).bind(token).bind(stage).fetch_optional(&state.pool).await?
         .ok_or_else(|| ApiError::Conflict("清理任务租约已失效，停止后续云端写操作".into()))
@@ -830,7 +917,22 @@ pub async fn put_cloud_provider(
     super::admin(&state, &headers).await?;
     let p = Provider::from_name(&provider)?;
     policy.validate(p)?;
-    let dir = policy.target_dir.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    let dir = policy
+        .target_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let mut tx = state.pool.begin().await?;
+    let unlocked: bool =
+        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("pansou:cloud-write:{provider}"))
+            .fetch_one(&mut *tx)
+            .await?;
+    if !unlocked {
+        return Err(ApiError::Conflict(
+            "网盘正在执行写操作，请稍后更新策略".into(),
+        ));
+    }
     let saved: ProviderPolicy = sqlx::query_as(&format!(
         "UPDATE cloud_provider_policies SET delivery_enabled=$2,target_dir=$3,target_dir_name=$4,retention_seconds=$5,delivery_min_remaining_seconds=$6,platform_share_days=$7,check_interval_seconds=$8,check_valid_seconds=$9,check_invalid_seconds=$10,check_daily_budget=$11,revision=revision+1,updated_at=now() WHERE provider=$1 RETURNING {POLICY_COLUMNS}"
     ))
@@ -845,8 +947,9 @@ pub async fn put_cloud_provider(
     .bind(policy.check_valid_seconds)
     .bind(policy.check_invalid_seconds)
     .bind(policy.check_daily_budget)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(response(StatusCode::OK, json!(saved)))
 }
 /// Clear the delivery half of a provider row (switch, directory, retention) while
@@ -858,11 +961,89 @@ pub async fn clear_cloud_provider_delivery(
 ) -> Result<Response, ApiError> {
     super::admin(&state, &headers).await?;
     Provider::from_name(&provider)?;
+    let mut tx = state.pool.begin().await?;
+    let unlocked: bool =
+        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("pansou:cloud-write:{provider}"))
+            .fetch_one(&mut *tx)
+            .await?;
+    if !unlocked {
+        return Err(ApiError::Conflict(
+            "网盘正在执行写操作，请稍后更新策略".into(),
+        ));
+    }
     let saved: ProviderPolicy = sqlx::query_as(&format!(
         "UPDATE cloud_provider_policies SET delivery_enabled=false,target_dir=NULL,target_dir_name='',retention_seconds=NULL,revision=revision+1,updated_at=now() WHERE provider=$1 RETURNING {POLICY_COLUMNS}"
     ))
     .bind(&provider)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(response(StatusCode::OK, json!(saved)))
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn cloud_write_slots_allow_independent_links_but_fence_cleanup_and_admin() {
+        let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(6)
+            .connect(&url)
+            .await
+            .unwrap();
+        let provider = format!("fixture-{}", Uuid::new_v4());
+        let first = Uuid::new_v4();
+        let mut writers = Vec::new();
+        for id in [first, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()] {
+            let mut tx = pool.begin().await.unwrap();
+            assert!(
+                acquire_write_locks(&mut tx, &provider, "account", id)
+                    .await
+                    .unwrap()
+            );
+            writers.push(tx);
+        }
+        let mut blocked = pool.begin().await.unwrap();
+        assert!(
+            !acquire_write_locks(&mut blocked, &provider, "account", Uuid::new_v4())
+                .await
+                .unwrap()
+        );
+        blocked.rollback().await.unwrap();
+        let mut same_link = pool.begin().await.unwrap();
+        assert!(
+            !acquire_write_locks(&mut same_link, &provider, "account", first)
+                .await
+                .unwrap()
+        );
+        same_link.rollback().await.unwrap();
+        let mut admin = pool.begin().await.unwrap();
+        let exclusive: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("pansou:cloud-write:{provider}"))
+                .fetch_one(&mut *admin)
+                .await
+                .unwrap();
+        assert!(!exclusive);
+        for writer in writers {
+            writer.rollback().await.unwrap();
+        }
+        let exclusive: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("pansou:cloud-write:{provider}"))
+                .fetch_one(&mut *admin)
+                .await
+                .unwrap();
+        assert!(exclusive);
+        let mut delivery = pool.begin().await.unwrap();
+        assert!(
+            !acquire_write_locks(&mut delivery, &provider, "account", first)
+                .await
+                .unwrap()
+        );
+    }
 }

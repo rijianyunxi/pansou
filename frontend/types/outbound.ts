@@ -18,13 +18,9 @@ export interface NodeWeight {
 export interface OutboundPolicy {
   nodes: NodeWeight[];
   version: number;
-  inherit?: boolean;
 }
 export function directPolicy(): OutboundPolicy {
   return { nodes: [{ nodeId: "direct", weight: 10 }], version: 0 };
-}
-export function inheritedPolicy(): OutboundPolicy {
-  return { nodes: [], version: 0, inherit: true };
 }
 export function sortedNodes(nodes: readonly NodeWeight[]): NodeWeight[] {
   // Display order only; the server selects randomly by positive weight.
@@ -44,9 +40,7 @@ export function weightedShares(nodes: readonly NodeWeight[]) {
 export function policyLabel(policy?: OutboundPolicy | null): string {
   return !policy
     ? "未配置节点"
-    : policy.inherit
-      ? "使用 TG 默认节点"
-      : weightedShares(policy.nodes)
+    : weightedShares(policy.nodes)
           .map(
             (n) => (n.nodeId === "direct" ? "直连" : "代理") + " " +
               (n.weight > 0 ? n.percent.toFixed(1) + "%" : "不参与"),

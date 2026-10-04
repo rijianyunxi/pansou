@@ -1,5 +1,5 @@
-use super::*;
 use super::delivery::{ProviderPolicy, load_provider};
+use super::*;
 use crate::cloud_drive::{Drive, ShareInput};
 
 async fn check(
@@ -21,7 +21,6 @@ async fn check(
     let policy = load_provider(state, reference.provider).await?;
     if !allow_check(state, reference.provider, &policy, false).await? {
         let mut tx = state.pool.begin().await?;
-        crate::crawl::lock_index(&mut tx).await?;
         if !lock_check_lease(&mut tx, lease).await? {
             tx.rollback().await?;
             return Ok(());
@@ -34,7 +33,9 @@ async fn check(
         return Ok(());
     }
     let drive = Drive::load(state, reference.provider).await?;
-    let value = drive.check(&reference).await;
+    let value = tokio::time::timeout(Duration::from_secs(20), drive.check(&reference))
+        .await
+        .unwrap_or_else(|_| json!({"status":"unknown","errorKind":"upstream"}));
     record_with_lease(state, id, &value, &policy, Some(lease)).await
 }
 
@@ -94,10 +95,9 @@ async fn record_with_lease(
         policy.check_invalid_seconds as i64
     }
     .clamp(60, 2592000);
-    // Keep observations and their resource aggregates atomic, with the same lock order
-    // as ingestion/synchronization/expiry. Concurrent checks cannot publish stale facts.
+    // Observations atomically enqueue aggregate refreshes. Cloud checks never
+    // acquire the crawl index lock; the durable outbox survives any interruption.
     let mut tx = state.pool.begin().await?;
-    crate::crawl::lock_index(&mut tx).await?;
     // Fence observations as well as completion: an old worker returning after
     // lease recovery must not overwrite the current owner's validity/backoff.
     if let Some(lease) = lease
@@ -114,8 +114,12 @@ async fn record_with_lease(
             .bind(id).bind(reason).execute(&mut *tx).await?;
     }
     // Persist the observation first; Redis failure must never leave an old 0/1 behind.
-    refresh_bound_aggregates(&mut tx, id).await?;
     tx.commit().await?;
+    if let Err(error) = refresh_pending_aggregates(state).await {
+        // The fact is already committed; an unavailable projection must not
+        // turn a successful check into an unknown observation on retry.
+        tracing::warn!(%error, "aggregate refresh deferred to durable queue");
+    }
     if validity == -1 && matches!(reason, "account_unavailable" | "rate_limited") {
         let provider: String = sqlx::query_scalar("SELECT provider FROM link_catalog WHERE id=$1")
             .bind(id)
@@ -141,51 +145,61 @@ async fn record_with_lease(
     Ok(())
 }
 
-async fn refresh_bound_aggregates(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    id: Uuid,
-) -> Result<(), ApiError> {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT DISTINCT resource_id FROM resource_link_bindings WHERE link_id=$1 AND scope_key='managed'")
-        .bind(id).fetch_all(&mut **tx).await?;
-    sqlx::query(include_str!("refresh_resources.sql"))
-        .bind(&ids)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-async fn refresh_aggregates(state: &AppState) -> Result<(), ApiError> {
-    // Fast indexed no-op when checks are disabled or every observation is unknown.
-    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM link_catalog WHERE validity IN(0,1) AND valid_until IS NOT NULL AND valid_until<=now())")
-        .fetch_one(&state.pool).await?;
-    if !due {
-        return Ok(());
-    }
+async fn refresh_pending_aggregates(state: &AppState) -> Result<usize, ApiError> {
     let mut tx = state.pool.begin().await?;
-    crate::crawl::lock_index(&mut tx).await?;
-    let expired: Vec<Uuid> = sqlx::query_scalar("UPDATE link_catalog SET validity=-1,valid_until=NULL,updated_at=now() WHERE id IN (SELECT id FROM link_catalog WHERE validity IN(0,1) AND valid_until IS NOT NULL AND valid_until<=now() ORDER BY valid_until,id LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING id")
+    // Lock resources before queue rows (ingestion uses the same order). SKIP
+    // LOCKED keeps unrelated resources moving while a crawl page commits.
+    let ids: Vec<String> = sqlx::query_scalar("SELECT r.id FROM managed_resources r JOIN link_aggregate_queue q ON q.resource_id=r.id ORDER BY r.id FOR NO KEY UPDATE OF r SKIP LOCKED LIMIT 100")
         .fetch_all(&mut *tx).await?;
-    let ids: Vec<String> = sqlx::query_scalar("SELECT DISTINCT resource_id FROM resource_link_bindings WHERE link_id=ANY($1) AND scope_key='managed'")
-        .bind(&expired).fetch_all(&mut *tx).await?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    sqlx::query("SELECT resource_id FROM link_aggregate_queue WHERE resource_id=ANY($1) ORDER BY resource_id FOR UPDATE")
+        .bind(&ids).fetch_all(&mut *tx).await?;
+    // Read facts after obtaining queue locks: a concurrent observation either
+    // precedes this snapshot or enqueues another refresh after this commit.
     sqlx::query(include_str!("refresh_resources.sql"))
         .bind(&ids)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM link_aggregate_queue WHERE resource_id=ANY($1)")
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(ids.len())
+}
+
+async fn refresh_aggregates(state: &AppState) -> Result<usize, ApiError> {
+    // Fast indexed no-op when checks are disabled or every observation is unknown.
+    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM link_catalog WHERE validity IN(0,1) AND valid_until IS NOT NULL AND valid_until<=now())")
+        .fetch_one(&state.pool).await?;
+    if !due {
+        return Ok(0);
+    }
+    let mut tx = state.pool.begin().await?;
+    let expired: Vec<Uuid> = sqlx::query_scalar("WITH candidates AS MATERIALIZED (SELECT id FROM link_catalog WHERE validity IN(0,1) AND valid_until IS NOT NULL AND valid_until<=now() ORDER BY valid_until,id LIMIT 100), locked AS MATERIALIZED (SELECT c.id FROM link_catalog c JOIN candidates d ON d.id=c.id ORDER BY c.input_fingerprint FOR UPDATE OF c SKIP LOCKED) UPDATE link_catalog SET validity=-1,valid_until=NULL,updated_at=now() WHERE id IN(SELECT id FROM locked) AND validity IN(0,1) AND valid_until<=now() RETURNING id")
+        .fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+    refresh_pending_aggregates(state).await?;
+    Ok(expired.len())
 }
 
 /// The outbox is locked while its snapshot is bound, so concurrent edits cannot be lost.
-async fn sync_batch(state: &AppState) -> Result<(), ApiError> {
-    // Bound both batch size and duty cycle; release the crawl commit lock per resource.
+async fn sync_batch(state: &AppState) -> Result<usize, ApiError> {
+    // Bound batch duration for pause responsiveness; busy lanes immediately continue.
     let started = std::time::Instant::now();
+    let mut processed = 0;
     for _ in 0..50 {
         if state.shutdown.is_cancelled() || started.elapsed() >= Duration::from_millis(200) {
             break;
         }
         let mut tx = state.pool.begin().await?;
-        crate::crawl::lock_index(&mut tx).await?;
-        let Some(id)=sqlx::query_scalar::<_,String>("SELECT resource_id FROM link_sync_queue ORDER BY updated_at,resource_id FOR UPDATE SKIP LOCKED LIMIT 1").fetch_optional(&mut *tx).await? else {break};
+        let Some(id)=sqlx::query_scalar::<_,String>("SELECT r.id FROM managed_resources r JOIN link_sync_queue q ON q.resource_id=r.id ORDER BY q.updated_at,r.id FOR NO KEY UPDATE OF r SKIP LOCKED LIMIT 1").fetch_optional(&mut *tx).await? else {break};
+        sqlx::query("SELECT resource_id FROM link_sync_queue WHERE resource_id=$1 FOR UPDATE")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?;
         let row =
             sqlx::query("SELECT links_json,links_revision FROM managed_resources WHERE id=$1")
                 .bind(&id)
@@ -208,50 +222,71 @@ async fn sync_batch(state: &AppState) -> Result<(), ApiError> {
             .map(|((_, key), (link_id, _))| (key.clone(), *link_id))
             .collect();
         let mut seen = std::collections::HashSet::new();
-        let mut active_catalog = std::collections::HashSet::new();
-        for (scope, links) in scopes {
-            for link in serde_json::from_value::<Vec<Link>>(links).unwrap_or_default() {
-                let key = fingerprint(&link);
-                if !seen.insert((scope.clone(), key.clone())) {
-                    continue;
-                }
-                let link_id = if let Some(link_id) = catalog.get(&key) {
-                    *link_id
-                } else {
-                    // Repeated occurrences of a share must not generate repeated catalog writes.
-                    let inserted: Option<Uuid> = sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,original_password,input_fingerprint,next_check_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(input_fingerprint) DO NOTHING RETURNING id")
+        let mut changed_scopes = Vec::new();
+        let mut changed_keys = Vec::new();
+        let mut changed_catalog = Vec::new();
+        // Catalog inserts can contend across resources. Acquire fingerprint
+        // conflicts in one order even when source links arrived in reverse order.
+        let mut scoped_links: Vec<_> = scopes
+            .into_iter()
+            .flat_map(|(scope, links)| {
+                serde_json::from_value::<Vec<Link>>(links)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |link| (scope.clone(), link))
+            })
+            .collect();
+        scoped_links.sort_by_cached_key(|(_, link)| fingerprint(link));
+        for (scope, link) in scoped_links {
+            let key = fingerprint(&link);
+            if !seen.insert((scope.clone(), key.clone())) {
+                continue;
+            }
+            let link_id = if let Some(link_id) = catalog.get(&key) {
+                *link_id
+            } else {
+                // Repeated occurrences of a share must not generate repeated catalog writes.
+                let inserted: Option<Uuid> = sqlx::query_scalar("INSERT INTO link_catalog(id,provider,identity,original_url,original_password,input_fingerprint,next_check_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(input_fingerprint) DO NOTHING RETURNING id")
                         .bind(Uuid::new_v4()).bind(&link.r#type).bind(resource_clean::link_identity(&link.url)).bind(&link.url).bind(&link.password).bind(&key).fetch_optional(&mut *tx).await?;
-                    let link_id = match inserted {
-                        Some(link_id) => link_id,
-                        None => {
-                            sqlx::query_scalar(
-                                "SELECT id FROM link_catalog WHERE input_fingerprint=$1",
-                            )
+                let link_id = match inserted {
+                    Some(link_id) => link_id,
+                    None => {
+                        sqlx::query_scalar("SELECT id FROM link_catalog WHERE input_fingerprint=$1")
                             .bind(&key)
                             .fetch_one(&mut *tx)
                             .await?
-                        }
-                    };
-                    if crate::cloud_drive::Provider::from_name(&link.r#type).is_ok() {
-                        // Disabled checks should not create an ever-growing dormant queue.
-                        // The bounded catalog sweep compensates when checks are enabled later.
-                        sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',1 FROM link_catalog c WHERE c.id=$1 AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT DO NOTHING").bind(link_id).execute(&mut *tx).await?;
                     }
-                    catalog.insert(key.clone(), link_id);
-                    link_id
                 };
-                active_catalog.insert(link_id);
-                if existing.remove(&(scope.clone(), key.clone())) != Some((link_id, revision)) {
-                    sqlx::query("INSERT INTO resource_link_bindings(resource_id,scope_key,link_key,link_id,links_revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(resource_id,scope_key,link_key) DO UPDATE SET link_id=excluded.link_id,links_revision=excluded.links_revision,updated_at=now()")
-                        .bind(&id).bind(&scope).bind(&key).bind(link_id).bind(revision).execute(&mut *tx).await?;
+                if crate::cloud_drive::Provider::from_name(&link.r#type).is_ok() {
+                    // Disabled checks should not create an ever-growing dormant queue.
+                    // The bounded catalog sweep compensates when checks are enabled later.
+                    sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT c.id,c.input_version,'original',1 FROM link_catalog c WHERE c.id=$1 AND EXISTS(SELECT 1 FROM policy_settings WHERE key='link-check' AND value_json->>'enabled'='true') ON CONFLICT DO NOTHING").bind(link_id).execute(&mut *tx).await?;
                 }
+                catalog.insert(key.clone(), link_id);
+                link_id
+            };
+            // Serialize a new binding with observations of its catalog row.
+            // Otherwise a check could miss an uncommitted binding and its
+            // outbox notification while sync reads the older observation.
+            sqlx::query("SELECT id FROM link_catalog WHERE id=$1 FOR SHARE")
+                .bind(link_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if existing.remove(&(scope.clone(), key.clone())) != Some((link_id, revision)) {
+                changed_scopes.push(scope);
+                changed_keys.push(key);
+                changed_catalog.push(link_id);
             }
         }
-        sqlx::query("UPDATE link_catalog SET last_seen_at=now() WHERE id=ANY($1) AND last_seen_at<now()-interval '1 hour'")
-            .bind(active_catalog.into_iter().collect::<Vec<_>>()).execute(&mut *tx).await?;
-        for ((scope, key), _) in existing {
-            sqlx::query("DELETE FROM resource_link_bindings WHERE resource_id=$1 AND scope_key=$2 AND link_key=$3")
-                .bind(&id).bind(scope).bind(key).execute(&mut *tx).await?;
+        if !changed_scopes.is_empty() {
+            sqlx::query("INSERT INTO resource_link_bindings(resource_id,scope_key,link_key,link_id,links_revision) SELECT $1,b.scope,b.key,b.link_id,$5 FROM unnest($2::text[],$3::text[],$4::uuid[]) AS b(scope,key,link_id) ON CONFLICT(resource_id,scope_key,link_key) DO UPDATE SET link_id=excluded.link_id,links_revision=excluded.links_revision,updated_at=now()")
+                .bind(&id).bind(changed_scopes).bind(changed_keys).bind(changed_catalog).bind(revision)
+                .execute(&mut *tx).await?;
+        }
+        if !existing.is_empty() {
+            let (scopes, keys): (Vec<_>, Vec<_>) = existing.into_keys().unzip();
+            sqlx::query("DELETE FROM resource_link_bindings b USING unnest($2::text[],$3::text[]) AS stale(scope,key) WHERE b.resource_id=$1 AND b.scope_key=stale.scope AND b.link_key=stale.key")
+                .bind(&id).bind(scopes).bind(keys).execute(&mut *tx).await?;
         }
         // New bindings can point at an already-checked link; refresh in this same transaction.
         sqlx::query(include_str!("refresh_resources.sql"))
@@ -263,28 +298,66 @@ async fn sync_batch(state: &AppState) -> Result<(), ApiError> {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        processed += 1;
     }
-    Ok(())
+    Ok(processed + refresh_pending_aggregates(state).await?)
 }
-async fn check_tick(state: &AppState) -> Result<(), ApiError> {
+async fn check_tick(state: &AppState) -> Result<usize, ApiError> {
     let enabled:bool=sqlx::query_scalar("SELECT COALESCE((value_json->>'enabled')::boolean,false) FROM policy_settings WHERE key='link-check'").fetch_one(&state.pool).await?;
     if !enabled {
-        return Ok(());
+        return Ok(0);
     }
     let providers: Vec<String> = sqlx::query_scalar("SELECT provider FROM cloud_account_settings WHERE provider IN('baidu','quark','aliyun','xunlei','guangya') AND (length(trim(credential))>0 OR credential_cipher IS NOT NULL) AND auth_status NOT IN('reauthorization_required','disconnected') ORDER BY provider")
         .fetch_all(&state.pool).await?;
     if providers.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
-    sqlx::query(include_str!("recover_checks.sql"))
-        .execute(&state.pool)
-        .await?;
-    for provider in &providers {
-        sqlx::query(include_str!("enqueue_checks.sql"))
-            .bind(provider)
-            .execute(&state.pool)
-            .await?;
+    if crate::runtime::schedule_slot(state, "check-enqueue", 30).await? {
+        for _ in 0..20 {
+            let recovered = sqlx::query(include_str!("recover_checks.sql"))
+                .execute(&state.pool)
+                .await?
+                .rows_affected();
+            if recovered < 100 || state.shutdown.is_cancelled() {
+                break;
+            }
+        }
+        for provider in &providers {
+            sqlx::query(include_str!("enqueue_checks.sql"))
+                .bind(provider)
+                .execute(&state.pool)
+                .await?;
+        }
     }
+    // One concurrent job per provider; the Redis gate continues to enforce the
+    // cluster-wide provider rate/budget. Do not claim work while a gate is closed.
+    use futures::{StreamExt, stream};
+    let completed: Vec<Result<usize, ApiError>> =
+        stream::iter(providers.into_iter().map(|provider| async move {
+            let mut redis = state.redis.connection()?;
+            let busy: i64 = redis::cmd("EXISTS")
+                .arg(format!("pansou:link-check:gate:{provider}"))
+                .arg(format!("pansou:link-check:breaker:{provider}"))
+                .query_async(&mut redis)
+                .await
+                .map_err(|_| ApiError::Unavailable("检测调度暂不可用".into()))?;
+            if busy > 0 {
+                return Ok(0);
+            }
+            check_provider(state, provider).await
+        }))
+        .buffer_unordered(5)
+        .collect()
+        .await;
+    // Wait for every claimed check. A sibling error must not drop another
+    // provider's in-flight observation and leave its job running until recovery.
+    completed
+        .into_iter()
+        .try_fold(0, |total, result| result.map(|n| total + n))
+}
+
+async fn check_provider(state: &AppState, provider: String) -> Result<usize, ApiError> {
+    let providers = vec![provider];
     let token = Uuid::new_v4();
     let row = sqlx::query(include_str!("claim_check.sql"))
         .bind(&providers)
@@ -320,33 +393,50 @@ async fn check_tick(state: &AppState) -> Result<(), ApiError> {
             }
         }
         sqlx::query("UPDATE link_check_jobs SET status='completed',lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND status='running' AND lease_token=$2").bind(row.get::<i64,_>("id")).bind(token).execute(&state.pool).await?;
+        return Ok(1);
     }
-    Ok(())
+    Ok(0)
 }
 
-async fn housekeeping(state: &AppState) -> Result<(), ApiError> {
-    let rows = sqlx::query("SELECT id,subject_key,request_key,link_id,authorization_json FROM link_resolve_requests WHERE status IN('queued','running') AND deadline_at<=now() ORDER BY deadline_at LIMIT 100").fetch_all(&state.pool).await?;
+async fn housekeeping(state: &AppState) -> Result<usize, ApiError> {
+    let rows = sqlx::query("SELECT r.id,r.subject_key,r.request_key,r.authorization_json,to_jsonb(c) AS catalog FROM link_resolve_requests r LEFT JOIN link_catalog c ON c.id=r.link_id WHERE r.status IN('queued','running') AND r.deadline_at<=now() ORDER BY r.deadline_at,r.id LIMIT 100")
+        .fetch_all(&state.pool).await?;
+    let count = rows.len();
+    let mut ids = Vec::with_capacity(count);
+    let mut responses = Vec::with_capacity(count);
     for row in rows {
+        let key: Uuid = row.get("request_key");
+        ids.push(row.get::<Uuid, _>("id"));
         let auth: Value = row.get("authorization_json");
         let link: Option<Link> = auth["linkRef"]
             .as_str()
             .and_then(|r| serde_json::from_value(auth["snapshot"]["links"][r].clone()).ok());
-        if let Some(link) = link {
-            let value = fallback(
-                row.get("request_key"),
-                &link,
-                &fact(state, row.get("link_id")).await?,
-                "deadline_exceeded",
-            );
-            complete_resolution(
-                state,
-                &row.get::<String, _>("subject_key"),
-                row.get("request_key"),
-                &value,
-                false,
-            )
+        let fact: Option<Fact> = row
+            .get::<Option<Value>, _>("catalog")
+            .and_then(|v| serde_json::from_value(v).ok());
+        let value = match (link, fact) {
+            (Some(link), Some(fact)) => fallback(key, &link, &fact, "deadline_exceeded"),
+            // A malformed snapshot must not pin the first recovery page forever.
+            _ => {
+                json!({"requestKey":key,"status":"unavailable","delivery":null,"validity":-1,"reasonCode":"authorization_unavailable"})
+            }
+        };
+        responses
+            .push(json!({"subject":row.get::<String,_>("subject_key"),"key":key,"result":value}));
+    }
+    if !responses.is_empty() {
+        let mut tx = state.pool.begin().await?;
+        sqlx::query(include_str!("finalize_expired_resolves.sql"))
+            .bind(json!(responses))
+            .execute(&mut *tx)
             .await?;
-        }
+        // Persist completion and accelerate owned-artifact cleanup together.
+        // The per-link cloud lock keeps cleanup from racing an acknowledgement.
+        sqlx::query(include_str!("retire_expired_resolves.sql"))
+            .bind(ids)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
     }
     sqlx::query(include_str!("cleanup_resolves.sql"))
         .execute(&state.pool)
@@ -354,35 +444,76 @@ async fn housekeeping(state: &AppState) -> Result<(), ApiError> {
     sqlx::query(include_str!("cleanup_checks.sql"))
         .execute(&state.pool)
         .await?;
-    Ok(())
+    Ok(count)
+}
+
+async fn maintenance(state: &AppState) -> Result<usize, ApiError> {
+    if !crate::runtime::schedule_slot(state, "link-maintenance", 30).await? {
+        return Ok(0);
+    }
+    let mut processed = 0;
+    for _ in 0..20 {
+        if state.shutdown.is_cancelled() {
+            break;
+        }
+        let expired = refresh_aggregates(state).await?;
+        let resolved = housekeeping(state).await?;
+        processed += expired + resolved;
+        if expired < 100 && resolved < 100 {
+            return Ok(processed);
+        }
+    }
+    // A bounded pass releases its reservation early when the backlog continues.
+    sqlx::query("UPDATE worker_schedule_slots SET next_run_at=now() WHERE task='link-maintenance'")
+        .execute(&state.pool)
+        .await?;
+    Ok(processed)
 }
 
 pub async fn run(state: Arc<AppState>) -> Result<(), ApiError> {
-    tracing::info!("link worker started; delivery/check policies control upstream access");
-    let _heartbeat =
-        crate::runtime::Heartbeat::start(state.clone(), crate::runtime::WorkerKind::LinkSchedule);
-    // Separate lanes keep slow upstream cleanup from starving ingestion synchronization/checks.
-    use crate::runtime::{WorkerKind, lane};
+    use crate::runtime::{Heartbeat, WorkerKind, lane};
+    let heartbeat = Heartbeat::start(state.clone(), WorkerKind::LinkSchedule);
+    let sync = Heartbeat::start(state.clone(), WorkerKind::LinkSync);
+    let check = Heartbeat::start(state.clone(), WorkerKind::LinkCheck);
+    let cleanup = Heartbeat::start(state.clone(), WorkerKind::Links);
+    let upkeep = Heartbeat::start(state.clone(), WorkerKind::LinkMaintenance);
     tokio::join!(
-        lane(&state, WorkerKind::LinkSync, "link-sync", 2, || {
-            sync_batch(&state)
-        }),
-        lane(&state, WorkerKind::LinkCheck, "link-check", 2, || {
-            check_tick(&state)
-        }),
-        lane(&state, WorkerKind::Links, "link-cleanup", 2, || {
-            delivery::cleanup_tick(&state)
-        }),
+        crate::runtime::settings_listener(&state),
+        lane(
+            &state,
+            WorkerKind::LinkSync,
+            WorkerKind::LinkSync.name(),
+            2,
+            || sync_batch(&state)
+        ),
+        lane(
+            &state,
+            WorkerKind::LinkCheck,
+            WorkerKind::LinkCheck.name(),
+            2,
+            || check_tick(&state)
+        ),
+        lane(
+            &state,
+            WorkerKind::Links,
+            WorkerKind::Links.name(),
+            2,
+            || delivery::cleanup_tick(&state)
+        ),
         lane(
             &state,
             WorkerKind::LinkMaintenance,
-            "link-maintenance",
+            WorkerKind::LinkMaintenance.name(),
             30,
-            || async {
-                refresh_aggregates(&state).await?;
-                housekeeping(&state).await
-            }
+            || maintenance(&state)
         ),
+    );
+    tokio::join!(
+        sync.finish(),
+        check.finish(),
+        cleanup.finish(),
+        upkeep.finish(),
+        heartbeat.finish()
     );
     Ok(())
 }
@@ -440,12 +571,22 @@ mod tests {
             sqlx::query("INSERT INTO managed_resources(id,name,links_json) VALUES($1,'worker performance fixture',$2)").bind(id).bind(links).execute(&pool).await.unwrap();
         }
         // Existing observations must propagate when a resource is first associated.
-        record(&state, first_id, &json!({"status":"invalid"}), &ProviderPolicy::default())
-            .await
-            .unwrap();
-        record(&state, second_id, &json!({"status":"valid"}), &ProviderPolicy::default())
-            .await
-            .unwrap();
+        record(
+            &state,
+            first_id,
+            &json!({"status":"invalid"}),
+            &ProviderPolicy::default(),
+        )
+        .await
+        .unwrap();
+        record(
+            &state,
+            second_id,
+            &json!({"status":"valid"}),
+            &ProviderPolicy::default(),
+        )
+        .await
+        .unwrap();
         sync_batch(&state).await.unwrap();
         let validity = async |id: &str| {
             sqlx::query_scalar::<_, i16>("SELECT link_validity FROM managed_resources WHERE id=$1")
@@ -596,3 +737,7 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "concurrency_tests.rs"]
+mod concurrency_tests;

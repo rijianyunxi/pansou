@@ -41,6 +41,7 @@ function request(path, { method = 'GET', data, authenticated = true } = {}) {
         '微信小程序登录未配置 AppID/Secret': '微信小程序登录尚未配置，请联系管理员',
         '无法连接微信登录服务，请稍后重试': '无法连接微信登录服务，请稍后重试',
         '微信登录过于频繁，请稍后重试': '微信登录过于频繁，请稍后重试',
+        '未登录不可使用': '未登录不可使用',
         'External identity is not linked': '该微信尚未开通账号，请联系管理员。',
         'Account unavailable': '账号已停用，请联系管理员。',
         'Administrator must use the admin password login': '管理员请从管理后台使用账号密码登录。',

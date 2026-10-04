@@ -44,7 +44,6 @@ test("policies are owned by source or channel and use shared editor", async () =
   for (const file of [
     "components/sources/SourceEditor.vue",
     "components/admin/crawl/CrawlChannelEditor.vue",
-    "components/admin/crawl/CrawlSettings.vue",
   ]) {
     assert.match(await read(file), /OutboundPolicyEditor/);
   }
@@ -73,16 +72,20 @@ test("new crawl forms keep action footers outside scrollable fields", async () =
   }
 });
 
-test("default settings keep separate dirty baselines and load failure blocks saves", async () => {
+test("crawl settings only configure scheduling and load failure blocks saves", async () => {
   const settings = await read("components/admin/crawl/CrawlSettings.vue");
-  assert.match(settings, /baselinePolicy/);
-  assert.match(settings, /baselineTransform/);
-  assert.match(settings, /templateVersion/);
+  assert.match(settings, /baselineSchedule/);
+  assert.match(settings, /\/api\/admin\/crawl\/settings/);
+  for (const removed of ["OutboundPolicyEditor", "source-template", "default-outbound", "TabsTrigger"]) {
+    assert.ok(!settings.includes(removed), removed);
+  }
   assert.match(settings, /!loaded/);
-  assert.match(
-    await read("components/admin/crawl/CrawlChannelEditor.vue"),
-    /!loaded/,
-  );
+  const channel = await read("components/admin/crawl/CrawlChannelEditor.vue");
+  assert.match(channel, /!loaded/);
+  assert.match(channel, /留空使用内置 TG 解析规则/);
+  for (const removed of ["source-template", "inheritTemplate", "inheritedPolicy", "allow-inherit"]) {
+    assert.ok(!channel.includes(removed), removed);
+  }
 });
 test("durable enqueue key and timezone date filters are wired to shadcn forms", async () => {
   for (const file of ["CrawlMessagesSheet"]) {
@@ -145,7 +148,7 @@ test("channel list retries interrupted jobs inline without a task drawer",async(
  const editor=await read("components/admin/crawl/CrawlChannelEditor.vue");
  for(const removed of ["公共搜索身份","bindings","publish","intervalSeconds"]) assert.ok(!editor.includes(removed));
  const settings=await read("components/admin/crawl/CrawlSettings.vue");
- for(const key of ["concurrentChannels","pageDelaySeconds","dailyIntervalSeconds"]) assert.match(settings,new RegExp(key));
+ for(const key of ["concurrentChannels","pageDelaySeconds","dailyCron"]) assert.match(settings,new RegExp(key));
 });
 
 test("channel task states keep distinct tones and paused overrides stale job errors", async () => {
@@ -217,4 +220,28 @@ test("compact channel columns preserve exact counts and accessible full informat
  assert.match(source,/CrawlHint/);assert.match(source,/tabindex="0"/);
  assert.match(source,/emit\('messages',c\.id\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
  const hint=await read("components/admin/crawl/CrawlHint.vue");assert.match(hint,/TooltipTrigger as-child :aria-label="label"/);assert.match(hint,/TooltipContent/);
+});
+
+
+test("daily cron config uses one expression and waiting pages have an idle label", async () => {
+ const source=await read("components/admin/crawl/CrawlSettings.vue");
+ const editor=await read("components/admin/crawl/CrawlCronEditor.vue");
+ assert.match(source,/schedule.dailyCron/);
+ assert.match(source,/CrawlCronEditor/);
+ assert.ok(!source.includes("dailyIntervalSeconds"));
+ assert.ok(editor.includes("0 */10 8-21 * * *"));
+ assert.match(editor,/settings\/preview/);
+ assert.match(editor,/formatter/);
+ assert.match(editor,/北京时间/);
+ assert.ok(editor.includes("<Input"));
+ assert.ok(!editor.includes("CronLight"));
+ assert.match(editor,/AbortController/);
+ assert.match(editor,/nextRuns/);
+ assert.match(source,/首次全量和历史回填不受日常计划限制/);
+ assert.ok(!source.includes('type="time"'));
+ const {channelTaskState,compactChannelTaskLabel}=await import("../types/crawl.ts");
+ const channel={enabled:true,historyComplete:true,taskState:"idle",taskPhase:"cron_wait",latestJob:{status:"queued",kind:"sync",attempts:0}};
+ assert.deepEqual(channelTaskState(channel),{state:"idle",text:"等待 cron 日常采集"});
+ assert.equal(compactChannelTaskLabel(channel),"待同步");
+ assert.equal(channelTaskState({...channel,enabled:false,taskState:"paused"}).state,"paused");
 });

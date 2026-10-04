@@ -8,6 +8,13 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
+    #[error("{message}")]
+    Crawl {
+        message: String,
+        terminal: bool,
+        retry_after: i64,
+        retry_node: bool,
+    },
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
@@ -47,7 +54,7 @@ impl ApiError {
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Gone(_) => StatusCode::GONE,
             Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
-            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+            Self::Upstream(_) | Self::Crawl { .. } => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -79,7 +86,7 @@ impl IntoResponse for ApiError {
             Self::Conflict(_) => "CONFLICT",
             Self::Gone(_) => "REF_EXPIRED",
             Self::TooManyRequests(_) => "RATE_LIMITED",
-            Self::Upstream(_) => "UPSTREAM_ERROR",
+            Self::Upstream(_) | Self::Crawl { .. } => "UPSTREAM_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
         };
         (

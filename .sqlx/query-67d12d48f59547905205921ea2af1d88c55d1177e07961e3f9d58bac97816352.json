@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT snapshot_json, clock_timestamp() AS \"observed_at!\" FROM source_health WHERE source_id=$1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot_json",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "observed_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "67d12d48f59547905205921ea2af1d88c55d1177e07961e3f9d58bac97816352"
+}

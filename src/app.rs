@@ -35,11 +35,11 @@ pub struct AppState {
     // Expensive DB searches have a separate budget from outbound HTTP requests.
     pub local_search_slots: Arc<tokio::sync::Semaphore>,
     pub local_search_locks: Arc<crate::local_index::SearchLocks>,
-    pub custom_link_refs: Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<String, (chrono::DateTime<chrono::Utc>, String)>,
-        >,
-    >,
+    pub resolutions: Arc<crate::runtime::ResolutionTasks>,
+    pub worker_settings:
+        Arc<tokio::sync::Mutex<Option<(std::time::Instant, crate::runtime::WorkerSettings)>>>,
+    pub provider_writes:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>>,
     pub search_cache: Arc<tokio::sync::Mutex<SearchCache>>,
     pub security: SecurityConfig,
 }
@@ -73,7 +73,9 @@ impl AppState {
             cloud_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             local_search_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             local_search_locks: Arc::new(crate::local_index::SearchLocks::default()),
-            custom_link_refs: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            resolutions: Arc::new(crate::runtime::ResolutionTasks::default()),
+            worker_settings: Arc::new(tokio::sync::Mutex::new(None)),
+            provider_writes: Arc::new(std::sync::Mutex::new(Default::default())),
             search_cache: Arc::new(tokio::sync::Mutex::new(SearchCache::default())),
             security: SecurityConfig::from_env(),
         }
@@ -89,18 +91,45 @@ impl AppState {
 
 fn api_router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/admin/cloud-accounts",get(handlers::cloud_accounts))
-        .route("/admin/cloud-accounts/{provider}/login-sessions",post(handlers::cloud_account_start))
-        .route("/admin/cloud-accounts/{provider}/login-sessions/{id}",get(handlers::cloud_account_session).delete(handlers::cloud_account_cancel))
-        .route("/admin/cloud-accounts/{provider}/import",post(handlers::cloud_account_import))
-        .route("/admin/cloud-accounts/{provider}/check",post(handlers::cloud_account_check))
-        .route("/admin/cloud-accounts/{provider}/connection",axum::routing::delete(handlers::cloud_account_disconnect))
+        .route("/admin/cloud-accounts", get(handlers::cloud_accounts))
+        .route(
+            "/admin/cloud-accounts/{provider}/login-sessions",
+            post(handlers::cloud_account_start),
+        )
+        .route(
+            "/admin/cloud-accounts/{provider}/login-sessions/{id}",
+            get(handlers::cloud_account_session).delete(handlers::cloud_account_cancel),
+        )
+        .route(
+            "/admin/cloud-accounts/{provider}/import",
+            post(handlers::cloud_account_import),
+        )
+        .route(
+            "/admin/cloud-accounts/{provider}/check",
+            post(handlers::cloud_account_check),
+        )
+        .route(
+            "/admin/cloud-accounts/{provider}/connection",
+            axum::routing::delete(handlers::cloud_account_disconnect),
+        )
         .route("/admin/tasks/{kind}", get(handlers::background_tasks))
-        .route("/admin/tasks/checks/{id}/retry", post(handlers::background_check_retry))
+        .route(
+            "/admin/tasks/checks/{id}/retry",
+            post(handlers::background_check_retry),
+        )
         .route("/links/resolve", post(crate::link_resolution::resolve))
-        .route("/admin/link-cleanup", get(crate::link_resolution::cleanup_jobs))
-        .route("/admin/link-cleanup/{id}/retry", post(crate::link_resolution::retry_cleanup))
-        .route("/admin/link-cleanup/{id}/ignore", post(crate::link_resolution::ignore_cleanup))
+        .route(
+            "/admin/link-cleanup",
+            get(crate::link_resolution::cleanup_jobs),
+        )
+        .route(
+            "/admin/link-cleanup/{id}/retry",
+            post(crate::link_resolution::retry_cleanup),
+        )
+        .route(
+            "/admin/link-cleanup/{id}/ignore",
+            post(crate::link_resolution::ignore_cleanup),
+        )
         .route(
             "/settings/cloud-providers",
             get(crate::link_resolution::get_cloud_providers),
@@ -145,10 +174,6 @@ fn api_router() -> Router<Arc<AppState>> {
             axum::routing::put(handlers::runtime_worker_update),
         )
         .route(
-            "/admin/crawl/default-outbound",
-            get(handlers::crawl_default_get).put(handlers::crawl_default_put),
-        )
-        .route(
             "/admin/crawl/channels",
             get(handlers::crawl_channels).post(handlers::crawl_channel_create),
         )
@@ -181,6 +206,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/admin/crawl/settings",
             get(handlers::crawl_settings_get).put(handlers::crawl_settings_put),
+        )
+        .route(
+            "/admin/crawl/settings/preview",
+            post(handlers::crawl_cron_preview),
         )
         .route(
             "/admin/crawl/channels/{channel}/failures",
@@ -238,10 +267,6 @@ fn api_router() -> Router<Arc<AppState>> {
             post(handlers::source_disable),
         )
         .route(
-            "/settings/source-template",
-            get(handlers::source_template_get).put(handlers::source_template_put),
-        )
-        .route(
             "/settings/user-policy",
             get(handlers::user_policy_get).put(handlers::user_policy_put),
         )
@@ -253,9 +278,18 @@ fn api_router() -> Router<Arc<AppState>> {
             "/settings/quark",
             get(handlers::cloud_get).put(handlers::cloud_put),
         )
-        .route("/settings/aliyun", get(handlers::cloud_get).put(handlers::cloud_put))
-        .route("/settings/xunlei", get(handlers::cloud_get).put(handlers::cloud_put))
-        .route("/settings/guangya", get(handlers::cloud_get).put(handlers::cloud_put))
+        .route(
+            "/settings/aliyun",
+            get(handlers::cloud_get).put(handlers::cloud_put),
+        )
+        .route(
+            "/settings/xunlei",
+            get(handlers::cloud_get).put(handlers::cloud_put),
+        )
+        .route(
+            "/settings/guangya",
+            get(handlers::cloud_get).put(handlers::cloud_put),
+        )
         .route(
             "/settings/wechat",
             get(handlers::wechat_get).put(handlers::wechat_put),
@@ -394,8 +428,18 @@ async fn private_link_responses(
 ) -> axum::response::Response {
     let private = request.uri().path().starts_with("/api/links/")
         || request.uri().path() == "/api/resources/status"
-        || request.uri().path().starts_with("/api/admin/cloud-accounts")
-        || ["/api/settings/baidu","/api/settings/quark","/api/settings/aliyun","/api/settings/xunlei","/api/settings/guangya"].contains(&request.uri().path());
+        || request
+            .uri()
+            .path()
+            .starts_with("/api/admin/cloud-accounts")
+        || [
+            "/api/settings/baidu",
+            "/api/settings/quark",
+            "/api/settings/aliyun",
+            "/api/settings/xunlei",
+            "/api/settings/guangya",
+        ]
+        .contains(&request.uri().path());
     let mut response = next.run(request).await;
     if private {
         response.headers_mut().insert(

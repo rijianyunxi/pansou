@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH search_log AS (\n    INSERT INTO search_logs (\n        session_id, user_id, keyword, ip, search_scope,\n        channels_json, source_ids_json, status, created_at\n    )\n    VALUES ($1, $2, $3, $4, $5, $6, $7, 'started', now())\n    RETURNING id, keyword, created_at\n), hot_search AS (\n    INSERT INTO hot_searches (term, normalized_term, score, last_searched, updated_at)\n    SELECT keyword, $8, 1, created_at, created_at FROM search_log\n    ON CONFLICT (term) DO UPDATE SET\n        score = hot_searches.score + 1,\n        last_searched = GREATEST(hot_searches.last_searched, excluded.last_searched),\n        updated_at = GREATEST(hot_searches.updated_at, excluded.updated_at)\n)\nSELECT id FROM search_log;\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b8718d722f648a2703d6e5cda8f10e69d303d7d9516df4d32ab3737864fcb72e"
+}

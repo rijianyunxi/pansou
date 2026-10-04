@@ -35,6 +35,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
 uuid = { version = "1.18", features = ["v4", "serde"] }
+croner = { version = "4.0.1", features = ["chrono"] }
 
 [profile.release]
 lto = "thin"

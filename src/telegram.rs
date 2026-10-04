@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use scraper::{Html, Selector};
 use url::Url;
 
+/// Built-in parser for public TG pages; channel rules can override it.
+pub const BUILTIN_TRANSFORM: &str = r#"{"kind":"html","item_selector":".tgme_widget_message","fields":{"name":".tgme_widget_message_text","description":".tgme_widget_message_text","datetime":"time::datetime","links":".tgme_widget_message_text a::href"}}"#;
+
 pub const PARSER_VERSION: &str = "tg-native-5";
 
 pub fn normalize_channel(raw: &str) -> Option<String> {

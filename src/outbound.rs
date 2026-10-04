@@ -4,6 +4,19 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::HashSet;
+pub(crate) fn encode_proxy_target(target: &str) -> String {
+    target
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 pub const DIRECT: &str = "direct";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,11 +31,6 @@ pub struct Policy {
     pub nodes: Vec<NodeWeight>,
     #[serde(default)]
     pub version: i64,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub inherit: bool,
-}
-fn is_false(v: &bool) -> bool {
-    !*v
 }
 impl Policy {
     pub fn direct() -> Self {
@@ -32,18 +40,9 @@ impl Policy {
                 weight: 10,
             }],
             version: 0,
-            inherit: false,
         }
     }
-    pub fn validate(&self, channel: bool) -> Result<(), ApiError> {
-        if self.inherit {
-            if !channel || !self.nodes.is_empty() {
-                return Err(ApiError::BadRequest(
-                    "默认节点仅供频道继承，不能同时选择独立节点".into(),
-                ));
-            }
-            return Ok(());
-        }
+    pub fn validate(&self) -> Result<(), ApiError> {
         if self.nodes.is_empty() || self.nodes.len() > 50 {
             return Err(ApiError::BadRequest(
                 "请选择1～50个节点，直连也需明确勾选".into(),
@@ -69,36 +68,48 @@ impl Policy {
 pub enum Owner<'a> {
     Source(&'a str),
     Channel(&'a str),
-    Default,
 }
-fn ids(o: Owner<'_>) -> (Option<&str>, Option<&str>, Option<&str>) {
+fn ids(o: Owner<'_>) -> (Option<&str>, Option<&str>) {
     match o {
-        Owner::Source(s) => (Some(s), None, None),
-        Owner::Channel(c) => (None, Some(c), None),
-        Owner::Default => (None, None, Some("telegram")),
+        Owner::Source(s) => (Some(s), None),
+        Owner::Channel(c) => (None, Some(c)),
     }
 }
-pub const POLICY_COLUMNS: &str = "p.inherit,p.version,COALESCE((SELECT jsonb_agg(jsonb_build_object('nodeId',n.node_id,'weight',n.weight) ORDER BY n.weight DESC,n.node_id DESC) FROM outbound_policy_nodes n WHERE n.policy_id=p.id),'[]'::jsonb) members";
+pub const POLICY_COLUMNS: &str = "p.version,COALESCE((SELECT jsonb_agg(jsonb_build_object('nodeId',n.node_id,'weight',n.weight) ORDER BY n.weight DESC,n.node_id DESC) FROM outbound_policy_nodes n WHERE n.policy_id=p.id),'[]'::jsonb) members";
 pub fn from_row(r: &sqlx::postgres::PgRow) -> Result<Policy, ApiError> {
     Ok(Policy {
         nodes: serde_json::from_value(r.get::<serde_json::Value, _>("members"))
             .map_err(|e| ApiError::Internal(format!("节点配置损坏：{e}")))?,
         version: r.get("version"),
-        inherit: r.get("inherit"),
     })
 }
 pub async fn read(pool: &PgPool, owner: Owner<'_>) -> Result<Option<Policy>, ApiError> {
-    let (s, c, d) = ids(owner);
-    sqlx::query(&format!("SELECT {POLICY_COLUMNS} FROM outbound_policies p WHERE source_id=$1 OR channel_id=$2 OR default_key=$3")).bind(s).bind(c).bind(d).fetch_optional(pool).await?.as_ref().map(from_row).transpose()
+    let (s, c) = ids(owner);
+    sqlx::query(&format!(
+        "SELECT {POLICY_COLUMNS} FROM outbound_policies p WHERE source_id=$1 OR channel_id=$2"
+    ))
+    .bind(s)
+    .bind(c)
+    .fetch_optional(pool)
+    .await?
+    .as_ref()
+    .map(from_row)
+    .transpose()
 }
 pub async fn save(
     tx: &mut Transaction<'_, Postgres>,
     owner: Owner<'_>,
     p: &Policy,
 ) -> Result<(), ApiError> {
-    p.validate(matches!(owner, Owner::Channel(_)))?;
-    let (s, c, d) = ids(owner);
-    let row=sqlx::query("SELECT id,version FROM outbound_policies WHERE source_id=$1 OR channel_id=$2 OR default_key=$3 FOR UPDATE").bind(s).bind(c).bind(d).fetch_optional(&mut **tx).await?;
+    p.validate()?;
+    let (s, c) = ids(owner);
+    let row = sqlx::query(
+        "SELECT id,version FROM outbound_policies WHERE source_id=$1 OR channel_id=$2 FOR UPDATE",
+    )
+    .bind(s)
+    .bind(c)
+    .fetch_optional(&mut **tx)
+    .await?;
     let id = if let Some(r) = row {
         if p.version != r.get::<i64, _>("version") {
             return Err(ApiError::Conflict(
@@ -106,13 +117,22 @@ pub async fn save(
             ));
         }
         let id = r.get::<i64, _>("id");
-        sqlx::query("UPDATE outbound_policies SET inherit=$2,version=version+1,updated_at=now() WHERE id=$1").bind(id).bind(p.inherit).execute(&mut **tx).await?;
+        sqlx::query("UPDATE outbound_policies SET version=version+1,updated_at=now() WHERE id=$1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
         id
     } else {
         if p.version != 0 {
             return Err(ApiError::Conflict("节点配置版本已失效".into()));
         }
-        sqlx::query_scalar::<_,i64>("INSERT INTO outbound_policies(source_id,channel_id,default_key,inherit) VALUES($1,$2,$3,$4) RETURNING id").bind(s).bind(c).bind(d).bind(p.inherit).fetch_one(&mut **tx).await?
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO outbound_policies(source_id,channel_id) VALUES($1,$2) RETURNING id",
+        )
+        .bind(s)
+        .bind(c)
+        .fetch_one(&mut **tx)
+        .await?
     };
     let selected = p
         .nodes
@@ -169,12 +189,7 @@ impl Plan {
         let mut p = read(pool, owner)
             .await?
             .ok_or_else(|| ApiError::Upstream("未配置节点，拒绝隐式直连".into()))?;
-        if p.inherit {
-            p = read(pool, Owner::Default)
-                .await?
-                .ok_or_else(|| ApiError::Upstream("TG 默认节点未配置".into()))?;
-        }
-        p.validate(false)?;
+        p.validate()?;
         p.nodes.retain(|n| n.weight > 0);
         Ok(Self {
             version: p.version,
@@ -427,26 +442,22 @@ mod tests {
     #[test]
     fn selection_rejects_duplicates_empty_and_bad_weight() {
         let mut p = Policy::direct();
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         p.nodes.push(p.nodes[0].clone());
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.nodes.clear();
-        assert!(p.validate(false).is_err());
-        p.inherit = true;
-        assert!(p.validate(true).is_ok());
-        assert!(p.validate(false).is_err());
-        p.inherit = false;
+        assert!(p.validate().is_err());
         p.nodes.push(NodeWeight {
             node_id: DIRECT.into(),
             weight: -1,
         });
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.nodes[0].weight = 0;
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.nodes.push(NodeWeight {
             node_id: "proxy".into(),
             weight: 20,
         });
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
     }
 }

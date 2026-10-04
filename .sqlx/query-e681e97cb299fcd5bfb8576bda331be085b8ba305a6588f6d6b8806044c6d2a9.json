@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE source_health SET snapshot_json=$2,updated_at=now() WHERE source_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e681e97cb299fcd5bfb8576bda331be085b8ba305a6588f6d6b8806044c6d2a9"
+}

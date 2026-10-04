@@ -12,6 +12,11 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
+mod schedule;
+pub use schedule::DailySchedule;
+
+pub const SETTINGS_SELECT: &str = "SELECT concurrent_channels,page_delay_seconds,daily_cron,version FROM crawl_settings WHERE id=1";
+
 fn hash(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
@@ -78,7 +83,13 @@ pub async fn enqueue_request(
 }
 
 pub(crate) async fn source_for(pool: &PgPool, channel: &str) -> Result<Source, ApiError> {
-    let r=sqlx::query("SELECT c.id,c.name,c.description,COALESCE(c.transform,t.transform) AS transform FROM crawl_channels c LEFT JOIN source_template_settings t ON t.id=1 WHERE c.id=$1").bind(channel).fetch_optional(pool).await?.ok_or_else(||ApiError::NotFound("频道不存在".into()))?;
+    let r = sqlx::query(
+        "SELECT c.id,c.name,c.description,c.transform FROM crawl_channels c WHERE c.id=$1",
+    )
+    .bind(channel)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("频道不存在".into()))?;
     Ok(Source {
         id: format!("channel:{channel}"),
         name: r.get("name"),
@@ -91,7 +102,7 @@ pub(crate) async fn source_for(pool: &PgPool, channel: &str) -> Result<Source, A
         request: None,
         transform: r
             .try_get::<Option<String>, _>("transform")?
-            .ok_or_else(|| ApiError::BadRequest("频道解析模板未配置".into()))?,
+            .unwrap_or_else(|| telegram::BUILTIN_TRANSFORM.to_owned()),
     })
 }
 #[derive(serde::Serialize)]
@@ -183,10 +194,13 @@ pub async fn fetch_page(
             }
             Err(e) => {
                 let text = e.to_string();
-                let retry = text.contains("连接失败")
-                    || text.contains("HTTP 502")
-                    || text.contains("HTTP 503")
-                    || text.contains("HTTP 504");
+                let retry = matches!(
+                    &e,
+                    ApiError::Crawl {
+                        retry_node: true,
+                        ..
+                    }
+                );
                 if let Some(ref n) = node {
                     if retry || text.contains("超时") {
                         crate::outbound::record_failure(state, n, None, &text, &policy).await;
@@ -201,7 +215,12 @@ pub async fn fetch_page(
             }
         }
     }
-    Err(last.unwrap_or_else(|| ApiError::Upstream("选中的节点均不可用，未选择直连".into())))
+    Err(last.unwrap_or_else(|| ApiError::Crawl {
+        message: "选中的节点均不可用，未选择直连".into(),
+        terminal: true,
+        retry_after: 0,
+        retry_node: false,
+    }))
 }
 async fn fetch_page_once(
     state: &AppState,
@@ -220,7 +239,7 @@ async fn fetch_page_once(
             format!(
                 "{}/{}",
                 n.base_url.trim_end_matches('/'),
-                crate::handlers::search::encode_proxy_target(&target)
+                crate::outbound::encode_proxy_target(&target)
             )
         })
         .unwrap_or_else(|| target.clone());
@@ -260,10 +279,12 @@ async fn fetch_page_once(
         let response = match builder.send().await {
             Ok(r) => r,
             Err(e) => {
-                return Err(ApiError::Upstream(format!(
-                    "采集连接失败：{}",
-                    e.without_url()
-                )));
+                return Err(ApiError::Crawl {
+                    message: format!("采集连接失败：{}", e.without_url()),
+                    terminal: true,
+                    retry_after: 0,
+                    retry_node: true,
+                });
             }
         };
         let status = response.status();
@@ -299,11 +320,16 @@ async fn fetch_page_once(
                 })
                 .unwrap_or(300)
                 .clamp(1, 86400);
-            return Err(ApiError::Upstream(format!(
-                "采集 HTTP {}；Retry-After={}；未轮换代理绕过限制",
-                status.as_u16(),
-                retry
-            )));
+            return Err(ApiError::Crawl {
+                message: format!(
+                    "采集 HTTP {}；Retry-After={}；未轮换代理绕过限制",
+                    status.as_u16(),
+                    retry
+                ),
+                terminal: matches!(status.as_u16(), 403 | 404),
+                retry_after: retry,
+                retry_node: matches!(status.as_u16(), 502 | 503 | 504),
+            });
         }
         if response
             .content_length()
@@ -349,11 +375,23 @@ pub(crate) async fn bump(tx: &mut Transaction<'_, Postgres>) -> Result<(), ApiEr
     Ok(())
 }
 
+#[cfg(test)]
 pub async fn persist_message(
     tx: &mut Transaction<'_, Postgres>,
     channel: &str,
     message: &telegram::Message,
     source: &Source,
+) -> Result<(usize, bool), ApiError> {
+    let parsed = parse_message(source, channel, message);
+    persist_parsed_message(tx, channel, message, source, parsed).await
+}
+
+async fn persist_parsed_message(
+    tx: &mut Transaction<'_, Postgres>,
+    channel: &str,
+    message: &telegram::Message,
+    source: &Source,
+    parsed: ParsedMessage,
 ) -> Result<(usize, bool), ApiError> {
     lock_index(tx).await?;
     let version = format!("{}:{}", telegram::PARSER_VERSION, hash(&source.transform));
@@ -376,7 +414,6 @@ pub async fn persist_message(
         .await?;
         return Ok((0, false));
     }
-    let parsed = parse_message(source, channel, message);
     let items = parsed.results;
     let status = parsed.status.as_str();
     let error = parsed.error;
@@ -511,102 +548,208 @@ async fn refresh_resource(tx: &mut Transaction<'_, Postgres>, id: &str) -> Resul
 pub struct Settings {
     pub concurrent_channels: i32,
     pub page_delay_seconds: i32,
-    pub daily_interval_seconds: i32,
+    pub daily_cron: String,
     pub version: i64,
 }
 pub async fn settings(pool: &PgPool) -> Result<Settings, ApiError> {
-    Ok(sqlx::query_as("SELECT concurrent_channels,page_delay_seconds,daily_interval_seconds,version FROM crawl_settings WHERE id=1").fetch_one(pool).await?)
+    Ok(sqlx::query_as(SETTINGS_SELECT).fetch_one(pool).await?)
 }
+/// Wait on PostgreSQL notifications, page completion, or the nearest persisted
+/// deadline. A minute-long fallback handles missed notifications/reconnections.
 pub async fn worker(state: Arc<AppState>) -> Result<(), ApiError> {
-    let _heartbeat =
+    let heartbeat =
         crate::runtime::Heartbeat::start(state.clone(), crate::runtime::WorkerKind::Crawl);
+    // Dedicated pool: LISTEN must not occupy an execution slot indefinitely.
+    let listener_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(3))
+        .connect_lazy_with((*state.pool.connect_options()).clone());
+    let mut listener: Option<sqlx::postgres::PgListener> = None;
+    let mut reconnect_after = tokio::time::Instant::now();
     let mut tasks = tokio::task::JoinSet::new();
     while !state.shutdown.is_cancelled() {
         while let Some(result) = tasks.try_join_next() {
             if let Err(e) = result {
-                tracing::error!(%e,"crawl page panicked");
+                tracing::error!(%e, "crawl page panicked");
             }
         }
+        if listener.is_none() && tokio::time::Instant::now() >= reconnect_after {
+            let connect = async {
+                let mut connection =
+                    sqlx::postgres::PgListener::connect_with(&listener_pool).await?;
+                connection.listen("pansou_crawl_wakeup").await?;
+                Ok::<_, sqlx::Error>(connection)
+            };
+            tokio::select! {
+                _ = state.shutdown.cancelled() => break,
+                result = tokio::time::timeout(Duration::from_secs(3), connect) => {
+                    match result {
+                        Ok(Ok(connection)) => listener = Some(connection),
+                        _ => {
+                            reconnect_after = tokio::time::Instant::now() + Duration::from_secs(60);
+                            tracing::warn!("crawl notifications unavailable; using deadline fallback");
+                        }
+                    }
+                }
+            }
+        }
+        let mut wait = Duration::from_secs(60);
         if crate::runtime::enabled(&state, crate::runtime::WorkerKind::Crawl)
             .await
             .unwrap_or(false)
         {
-            match settings(&state.pool).await {
-                Ok(config) => {
-                    while tasks.len() < config.concurrent_channels as usize {
-                        let s = state.clone();
-                        tasks.spawn(async move {
-                            if let Err(e) = tick(&s).await {
-                                tracing::warn!(%e,"crawl tick failed");
-                            }
-                        });
+            let cycle = async {
+                // Scheduling scans are shared across instances; claiming stays
+                // independent and retains the cluster-wide capacity lock.
+                let scheduled = crate::runtime::schedule_slot(&state, "crawl-schedule", 1).await?;
+                let config = if scheduled {
+                    schedule_due(&state.pool).await?
+                } else {
+                    settings(&state.pool).await?
+                };
+                while tasks.len() < config.concurrent_channels as usize {
+                    if state.shutdown.is_cancelled() {
+                        break;
                     }
+                    let Some(job) = claim_job(&state.pool).await? else {
+                        break;
+                    };
+                    let s = state.clone();
+                    tasks.spawn(async move {
+                        if let Err(e) = execute_claimed(&s, job).await {
+                            tracing::warn!(%e, "crawl page failed to commit");
+                        }
+                    });
                 }
-                Err(e) => tracing::warn!(%e,"crawl settings unavailable"),
+                let delay = next_wake_delay(&state.pool).await?;
+                // A notification may arrive during the shared scan cooldown.
+                // Revisit when that slot opens even if the next cron deadline is
+                // hours away: a completed head page may need a new backfill job.
+                Ok::<_, ApiError>(if scheduled {
+                    delay
+                } else {
+                    delay.min(Duration::from_secs(1))
+                })
+            }
+            .await;
+            match cycle {
+                Ok(delay) => wait = delay,
+                Err(e) => tracing::warn!(%e, "crawl scheduling failed"),
             }
         }
-        tokio::select! {_=state.shutdown.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+        let notification = async {
+            match listener.as_mut() {
+                Some(connection) => connection.recv().await.map(|_| ()),
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = tokio::time::sleep(wait) => {},
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(Err(e)) = result { tracing::error!(%e, "crawl page panicked"); }
+            },
+            result = notification => {
+                if let Err(e) = result {
+                    tracing::warn!(%e, "crawl notification connection lost");
+                    listener = None;
+                    reconnect_after = tokio::time::Instant::now() + Duration::from_secs(60);
+                }
+            }
+        }
     }
     while tasks.join_next().await.is_some() {}
+    heartbeat.finish().await;
     Ok(())
 }
-/// Whether a failed crawl page goes straight to the failure record instead of
-/// burning the retry budget.
-///
-/// Exhausted outbound nodes (`选中的节点均不可用`) and failed proxy connections
-/// (`采集连接失败`) are infrastructure faults, not transient upstream blips:
-/// backing off only re-runs the same dead nodes, so the page is parked in
-/// `crawl_page_failures` for an explicit manual re-crawl. `HTTP 403/404` means
-/// the page itself is gone, and `attempts >= 6` is the general retry cap.
-fn is_terminal_failure(error: &str, attempts: i32) -> bool {
-    attempts >= 6
-        || error.contains("HTTP 403")
-        || error.contains("HTTP 404")
-        || error.contains("选中的节点均不可用")
-        || error.contains("采集连接失败")
+
+async fn next_wake_delay(pool: &PgPool) -> Result<Duration, ApiError> {
+    let row = sqlx::query("WITH capacity AS (SELECT (SELECT count(*) FROM crawl_jobs WHERE status='running')<concurrent_channels free FROM crawl_settings WHERE id=1), deadlines AS (SELECT lease_until due FROM crawl_jobs WHERE status='running' UNION ALL SELECT GREATEST(j.next_run_at,c.next_page_at) FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id CROSS JOIN capacity WHERE capacity.free AND j.status='queued' AND c.enabled AND NOT EXISTS(SELECT 1 FROM crawl_jobs r WHERE r.channel_id=c.id AND r.status='running') UNION ALL SELECT c.next_sync_at FROM crawl_channels c CROSS JOIN capacity WHERE capacity.free AND c.enabled AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='sync' AND j.status IN ('queued','running','paused','failed'))) SELECT min(due) due,now() observed FROM deadlines")
+        .fetch_one(pool).await?;
+    let Some(due) = row.get::<Option<DateTime<Utc>>, _>("due") else {
+        return Ok(Duration::from_secs(60));
+    };
+    Ok((due - row.get::<DateTime<Utc>, _>("observed"))
+        .to_std()
+        .unwrap_or_default()
+        .clamp(Duration::from_millis(100), Duration::from_secs(60)))
 }
 
-pub async fn tick(state: &AppState) -> Result<(), ApiError> {
-    // Serialize claim + global slot count across every worker process.
-    let mut tx = state.pool.begin().await?;
+async fn schedule_due(pool: &PgPool) -> Result<Settings, ApiError> {
+    let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(773012)")
         .execute(&mut *tx)
         .await?;
+    let config: Settings = sqlx::query_as(SETTINGS_SELECT).fetch_one(&mut *tx).await?;
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let plan = DailySchedule::new(&config)?;
+    let allowed = plan.allows_pages(now);
     sqlx::query("UPDATE crawl_jobs SET status='queued',lease_id=NULL,lease_until=NULL WHERE status='running' AND lease_until<now()").execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,stop_at) SELECT c.id,'sync',c.newest_message FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='sync' AND j.status IN ('queued','running','paused','failed')) ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+    if !allowed {
+        let next = plan.next_after(now)?;
+        sqlx::query("UPDATE crawl_channels SET next_sync_at=$1 WHERE enabled AND last_synced_at IS NOT NULL AND next_sync_at<=now()")
+            .bind(next).execute(&mut *tx).await?;
+        sqlx::query("UPDATE crawl_jobs j SET next_run_at=$1 FROM crawl_channels c WHERE c.id=j.channel_id AND c.enabled AND c.last_synced_at IS NOT NULL AND j.kind='sync' AND j.status='queued' AND j.next_run_at<$1")
+            .bind(next).execute(&mut *tx).await?;
+    }
+    sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,stop_at) SELECT c.id,'sync',c.newest_message FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND (c.last_synced_at IS NULL OR $1) AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='sync' AND j.status IN ('queued','running','paused','failed')) ON CONFLICT DO NOTHING")
+        .bind(allowed).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO crawl_jobs(channel_id,kind,cursor_before) SELECT c.id,'backfill',c.history_cursor FROM crawl_channels c WHERE c.enabled AND c.newest_message>0 AND NOT c.history_complete AND NOT EXISTS(SELECT 1 FROM crawl_jobs j WHERE j.channel_id=c.id AND j.kind='backfill' AND j.status IN ('queued','running','paused','failed')) ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(config)
+}
+
+async fn claim_job(pool: &PgPool) -> Result<Option<sqlx::postgres::PgRow>, ApiError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(773012)")
+        .execute(&mut *tx)
+        .await?;
+    let config: Settings = sqlx::query_as(SETTINGS_SELECT).fetch_one(&mut *tx).await?;
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let allowed = DailySchedule::new(&config)?.allows_pages(now);
     let count =
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_jobs WHERE status='running'")
             .fetch_one(&mut *tx)
             .await?;
-    let limit =
-        sqlx::query_scalar::<_, i32>("SELECT concurrent_channels FROM crawl_settings WHERE id=1")
-            .fetch_one(&mut *tx)
-            .await?;
-    if count >= limit as i64 {
-        return Ok(());
+    if count >= config.concurrent_channels as i64 {
+        return Ok(None);
     }
-    let lease = Uuid::new_v4();
-    let job=sqlx::query("UPDATE crawl_jobs SET status='running',lease_id=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1,updated_at=now() WHERE id=(SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.status='queued' AND j.next_run_at<=now() AND c.next_page_at<=now() AND c.enabled AND NOT EXISTS(SELECT 1 FROM crawl_jobs running WHERE running.channel_id=j.channel_id AND running.status='running') ORDER BY (j.kind='retry') DESC,(j.kind='sync') DESC,j.next_run_at,j.id FOR UPDATE OF j,c SKIP LOCKED LIMIT 1) RETURNING *").bind(lease).fetch_optional(&mut *tx).await?;
+    let job = sqlx::query("UPDATE crawl_jobs SET status='running',lease_id=$1,lease_until=now()+interval '180 seconds',attempts=attempts+1,updated_at=now() WHERE id=(SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.status='queued' AND j.next_run_at<=now() AND c.next_page_at<=now() AND c.enabled AND (j.kind<>'sync' OR c.last_synced_at IS NULL OR $2) AND NOT EXISTS(SELECT 1 FROM crawl_jobs running WHERE running.channel_id=j.channel_id AND running.status='running') ORDER BY (j.kind='retry') DESC,(j.kind='sync') DESC,j.next_run_at,j.id FOR UPDATE OF j,c SKIP LOCKED LIMIT 1) RETURNING *")
+        .bind(Uuid::new_v4()).bind(allowed).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
-    let Some(job) = job else {
-        return Ok(());
-    };
+    Ok(job)
+}
+
+/// Retry classification is independent of localized diagnostic text.
+fn is_terminal_failure(error: &ApiError, attempts: i32) -> bool {
+    attempts >= 6 || matches!(error, ApiError::Crawl { terminal: true, .. })
+}
+
+#[cfg(test)]
+pub async fn tick(state: &AppState) -> Result<(), ApiError> {
+    schedule_due(&state.pool).await?;
+    if let Some(job) = claim_job(&state.pool).await? {
+        execute_claimed(state, job).await?;
+    }
+    Ok(())
+}
+
+async fn execute_claimed(state: &AppState, job: sqlx::postgres::PgRow) -> Result<(), ApiError> {
+    let lease = job.get::<Uuid, _>("lease_id");
     let id = job.get::<i64, _>("id");
     let channel = job.get::<String, _>("channel_id");
     if let Err(error) = process_job(state, &job, lease).await {
-        let error = error.to_string();
         let attempts = job.get::<i32, _>("attempts");
         let terminal = is_terminal_failure(&error, attempts);
-        // An unrecognized HTML page may be a temporary upstream response.
-        // Speculative wording in a parser error must not bypass retry/backoff.
-        let retry_after = error
-            .split("Retry-After=")
-            .nth(1)
-            .and_then(|s| s.split('；').next())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0)
-            .clamp(0, 86400);
+        let retry_after = match &error {
+            ApiError::Crawl { retry_after, .. } => (*retry_after).clamp(0, 86400),
+            _ => 0,
+        };
+        let error = error.to_string();
         let delay = (60i64 * 2i64.pow(attempts.clamp(0, 6) as u32))
             .min(3600)
             .max(retry_after);
@@ -633,6 +776,27 @@ pub async fn tick(state: &AppState) -> Result<(), ApiError> {
         tracing::warn!(job=id,%error,"crawl page failed");
     }
     Ok(())
+}
+
+async fn lock_page_lease(
+    tx: &mut Transaction<'_, Postgres>,
+    channel: &str,
+    id: i64,
+    lease: Uuid,
+) -> Result<bool, ApiError> {
+    let channel_exists = sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
+        .bind(channel)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if channel_exists.is_none() {
+        return Ok(false);
+    }
+    let owned = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM (SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.id=$1 AND j.lease_id=$2 AND j.status='running' AND j.lease_until>clock_timestamp() AND c.enabled FOR UPDATE OF j) owned)")
+        .bind(id).bind(lease).fetch_one(&mut **tx).await?;
+    if !owned {
+        return Err(ApiError::Conflict("任务租约已失效，拒绝提交页面".into()));
+    }
+    Ok(true)
 }
 
 async fn process_job(
@@ -669,22 +833,21 @@ async fn process_job(
     } else {
         "accessible_history_end"
     };
-    let mut tx = state.pool.begin().await?;
-    lock_index(&mut tx).await?;
-    let channel_exists = sqlx::query("SELECT id FROM crawl_channels WHERE id=$1 FOR UPDATE")
-        .bind(&channel)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if channel_exists.is_none() {
-        return Ok(());
-    }
-    let owned=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM (SELECT j.id FROM crawl_jobs j JOIN crawl_channels c ON c.id=j.channel_id WHERE j.id=$1 AND j.lease_id=$2 AND j.status='running' AND j.lease_until>now() AND c.enabled FOR UPDATE OF j) owned)").bind(id).bind(lease).fetch_one(&mut *tx).await?;
-    if !owned {
-        return Err(ApiError::Conflict("任务租约已失效，拒绝提交页面".into()));
-    }
+    // Parse outside the index lock; commit one idempotent message at a time.
+    // The page cursor advances only after every message is durable. A crash can
+    // replay a partial page, but cannot skip its remaining messages.
+    let parsed: Vec<_> = messages
+        .iter()
+        .map(|message| parse_message(&source, &channel, message))
+        .collect();
     let mut resources = 0;
     let mut failures = 0;
-    for message in &messages {
+    for (message, parsed) in messages.iter().zip(parsed) {
+        let mut tx = state.pool.begin().await?;
+        lock_index(&mut tx).await?;
+        if !lock_page_lease(&mut tx, &channel, id, lease).await? {
+            return Ok(());
+        }
         if kind == "retry" {
             sqlx::query(
                 "UPDATE source_messages SET parse_version='' WHERE channel_id=$1 AND message_id=$2",
@@ -694,15 +857,27 @@ async fn process_job(
             .execute(&mut *tx)
             .await?;
         }
-        let (n, failed) = persist_message(&mut tx, &channel, message, &source).await?;
+        let (n, failed) =
+            persist_parsed_message(&mut tx, &channel, message, &source, parsed).await?;
         resources += n;
         failures += usize::from(failed);
+        tx.commit().await?;
+    }
+    let mut tx = state.pool.begin().await?;
+    lock_index(&mut tx).await?;
+    if !lock_page_lease(&mut tx, &channel, id, lease).await? {
+        return Ok(());
     }
     sqlx::query("UPDATE crawl_jobs SET status=$3,cursor_before=$4,head_message=$5,pages=$6,messages=messages+$7,resources=resources+$8,failures=failures+$9,lease_id=NULL,lease_until=NULL,next_run_at=now()+make_interval(secs=>(SELECT page_delay_seconds::double precision FROM crawl_settings WHERE id=1)),attempts=0,stop_reason=$10,diagnostics_json=$11,last_error=NULL,updated_at=now(),completed_at=CASE WHEN $3='completed' THEN now() ELSE NULL END WHERE id=$1 AND lease_id=$2")
         .bind(id).bind(lease).bind(if done{"completed"}else{"queued"}).bind(previous).bind(head).bind(pages).bind(messages.len() as i32).bind(resources as i32).bind(failures as i32).bind(if done{Some(reason)}else{None}).bind(diagnostics).execute(&mut *tx).await?;
+    let schedule_config: Settings = sqlx::query_as(SETTINGS_SELECT).fetch_one(&mut *tx).await?;
+    let observed: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let next_sync = DailySchedule::new(&schedule_config)?.next_after(observed)?;
     let checkpoint = if kind == "sync" && done { head } else { None };
-    sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),oldest_message=LEAST(oldest_message,$3),last_synced_at=CASE WHEN $4 THEN now() ELSE last_synced_at END,next_sync_at=CASE WHEN $4 THEN now()+make_interval(secs=>(SELECT daily_interval_seconds::double precision FROM crawl_settings WHERE id=1)) ELSE next_sync_at END,coverage=CASE WHEN $5 THEN $6 ELSE coverage END,last_error=NULL,updated_at=now() WHERE id=$1")
-        .bind(&channel).bind(checkpoint).bind(oldest).bind(kind=="sync" && done).bind(kind=="backfill").bind(if done {reason} else {"backfilling"}).execute(&mut *tx).await?;
+    sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),oldest_message=LEAST(oldest_message,$3),last_synced_at=CASE WHEN $4 THEN now() ELSE last_synced_at END,next_sync_at=CASE WHEN $4 AND (SELECT version FROM crawl_settings WHERE id=1)=$8 THEN $7 ELSE next_sync_at END,coverage=CASE WHEN $5 THEN $6 ELSE coverage END,last_error=NULL,updated_at=now() WHERE id=$1")
+        .bind(&channel).bind(checkpoint).bind(oldest).bind(kind=="sync" && done).bind(kind=="backfill").bind(if done {reason} else {"backfilling"}).bind(next_sync).bind(schedule_config.version).execute(&mut *tx).await?;
     sqlx::query("UPDATE crawl_channels SET next_page_at=now()+make_interval(secs=>(SELECT page_delay_seconds::double precision FROM crawl_settings WHERE id=1)),history_complete=CASE WHEN $2='backfill' THEN $3 ELSE history_complete END,history_cursor=CASE WHEN $2='backfill' THEN $4 ELSE history_cursor END,history_pages=history_pages+CASE WHEN $2='backfill' THEN 1 ELSE 0 END WHERE id=$1").bind(&channel).bind(&kind).bind(done).bind(previous).execute(&mut *tx).await?;
     if failures > 0 {
         let failure_kind = if kind == "retry" {
@@ -729,7 +904,7 @@ async fn process_job(
             if parent_kind == "backfill" {
                 sqlx::query("UPDATE crawl_channels SET history_cursor=$2,history_complete=$3,history_pages=history_pages+1,coverage=$4 WHERE id=$1").bind(&channel).bind(previous).bind(complete).bind(if complete {"accessible_history_end"}else{"backfilling"}).execute(&mut *tx).await?;
             } else if complete {
-                sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),last_synced_at=now(),next_sync_at=now()+make_interval(secs=>(SELECT daily_interval_seconds::double precision FROM crawl_settings WHERE id=1)) WHERE id=$1").bind(&channel).bind(parent_head).execute(&mut *tx).await?;
+                sqlx::query("UPDATE crawl_channels SET newest_message=GREATEST(newest_message,COALESCE($2,0)),last_synced_at=now(),next_sync_at=CASE WHEN (SELECT version FROM crawl_settings WHERE id=1)=$4 THEN $3 ELSE next_sync_at END WHERE id=$1").bind(&channel).bind(parent_head).bind(next_sync).bind(schedule_config.version).execute(&mut *tx).await?;
             }
         }
         sqlx::query("DELETE FROM crawl_page_failures WHERE id=$1")
@@ -753,29 +928,28 @@ async fn process_job(
 #[cfg(test)]
 mod tests {
     use super::is_terminal_failure;
+    use crate::error::ApiError;
 
     #[test]
-    fn exhausted_outbound_nodes_are_terminal_on_first_attempt() {
-        // Every configured node failed / none was eligible: park the page
-        // immediately instead of backing off against the same dead nodes.
-        assert!(is_terminal_failure("选中的节点均不可用，未选择直连", 1));
-        assert!(is_terminal_failure(
-            "采集连接失败：error sending request",
-            1
+    fn structured_failures_ignore_display_wording() {
+        let terminal = ApiError::Crawl {
+            message: "任意新文案".into(),
+            terminal: true,
+            retry_after: 0,
+            retry_node: false,
+        };
+        assert!(is_terminal_failure(&terminal, 1));
+        let retry = ApiError::Crawl {
+            message: "HTTP 403 appears in untrusted body".into(),
+            terminal: false,
+            retry_after: 120,
+            retry_node: false,
+        };
+        assert!(!is_terminal_failure(&retry, 1));
+        assert!(is_terminal_failure(&retry, 6));
+        assert!(!is_terminal_failure(
+            &ApiError::Upstream("无法识别频道页面结构".into()),
+            2
         ));
-    }
-
-    #[test]
-    fn gone_pages_and_retry_cap_are_terminal() {
-        assert!(is_terminal_failure("采集 HTTP 404", 1));
-        assert!(is_terminal_failure("采集 HTTP 403", 1));
-        assert!(is_terminal_failure("anything", 6));
-    }
-
-    #[test]
-    fn transient_upstream_errors_still_retry() {
-        assert!(!is_terminal_failure("采集 HTTP 429；Retry-After=120", 1));
-        assert!(!is_terminal_failure("采集总预算超时", 1));
-        assert!(!is_terminal_failure("无法识别频道页面结构", 2));
     }
 }

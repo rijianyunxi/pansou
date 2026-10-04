@@ -26,7 +26,6 @@ test("empty and all-zero previews have no allocation or NaN", () => {
   const nodes = [{ nodeId: "direct", weight: 0 }];
   assert.equal(weightedShares(nodes)[0].percent, 0);
   assert.equal(policyLabel({ nodes, version: 0 }), "直连 不参与");
-  assert.equal(policyLabel({ nodes: [], version: 0, inherit: true }), "使用 TG 默认节点");
 });
 
 test("positive direct weight participates in the same distribution", () => {

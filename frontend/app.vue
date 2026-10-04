@@ -127,7 +127,7 @@ function handleGlobalApiError(event: Event) {
 const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
 function openChannelSettings() {
   if (!canUseCustomChannels.value) {
-    showToast("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。", "info");
+    showToast("未登录不可使用", "info");
     return;
   }
   openSettings.value = true;
@@ -329,6 +329,10 @@ button {
 .nav-action-button:active:not(:disabled) { opacity: .78; }
 .nav-action-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 
+.toast.info .toast-icon { color: #ed652d; }
+.toast.success .toast-icon { color: #39815c; }
+.toast.error .toast-icon { color: #c74d35; }
+.toast { background: #fffaf3; color: #625449; font-weight: 400; }
 </style>
 
 <style scoped>
@@ -474,9 +478,9 @@ button {
   transform: translateX(-50%);
   width: max-content;
   padding: 12px 20px;
-  border-radius: var(--radius-md);
-  background: var(--bg-primary);
-  box-shadow: var(--shadow-xl);
+  border-radius: 14px;
+  background: #fffaf3;
+  box-shadow: 0 8px 28px #51361314;
   border: 1px solid var(--border-light);
   font-weight: 500;
   z-index: 1000;
@@ -504,18 +508,18 @@ button {
 }
 
 .toast.info {
-  color: var(--primary);
-  border-left: 4px solid var(--primary);
+  color: #625449;
+  border-color: #efd8c5;
 }
 
 .toast.success {
   color: var(--text-primary);
-  border-left: 4px solid var(--success);
+  border-color: #d6e6d6;
 }
 
 .toast.error {
   color: var(--text-primary);
-  border-left: 4px solid var(--error);
+  border-color: #efccc3;
 }
 
 /* 移动端优化 */
@@ -632,6 +636,10 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+.toast.info .toast-icon { color: #ed652d; }
+.toast.success .toast-icon { color: #39815c; }
+.toast.error .toast-icon { color: #c74d35; }
+.toast { background: #fffaf3; color: #625449; font-weight: 400; }
 </style>
 
 <style scoped>
@@ -645,4 +653,8 @@ button {
 .discovery-layout .main { max-width: 1168px; padding: 24px 24px 40px; }
 .discovery-layout .site-footer { border-top: 1px solid #eeebe4; padding: 22px 24px; font-size: 11px; }
 @media (max-width: 640px) { .discovery-layout .topnav { height: 66px; padding: 0 20px; } .brand-tagline { display: none; } .discovery-layout .main { padding: 16px 16px 32px; } .discovery-layout .brand-text { font-size: 22px; } }
+.toast.info .toast-icon { color: #ed652d; }
+.toast.success .toast-icon { color: #39815c; }
+.toast.error .toast-icon { color: #c74d35; }
+.toast { background: #fffaf3; color: #625449; font-weight: 400; }
 </style>

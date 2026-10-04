@@ -209,7 +209,7 @@ function handleOpenChannelSettings() {
   openChannelSettings();
 }
 function notifyCustomChannelsAccess() {
-  showToast("自定义频道需要在微信小程序中登录后使用，或由管理员开启「允许匿名用户使用自定义频道」。", "info");
+  showToast("未登录不可使用", "info");
 }
 watch(canUseCustomChannels, (allowed) => {
   if (!allowed && onlyUserChannels.value) onlyUserChannels.value = false;

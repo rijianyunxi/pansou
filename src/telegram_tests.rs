@@ -699,7 +699,6 @@ async fn telegram_ingestion_search_and_admin_contracts() {
         "search must not fetch TG"
     );
     // Saving user preferences never registers an ingestion channel.
-    sqlx::query("INSERT INTO source_template_settings(id,url_template,method,format,transform) VALUES(1,'https://t.me/s/{{channel}}','GET','html',$1) ON CONFLICT(id) DO UPDATE SET transform=EXCLUDED.transform").bind(DSL).execute(&pool).await.unwrap();
     let (_, saved) = call(
         &router,
         "POST",
@@ -1305,8 +1304,7 @@ async fn channel_scheduling_and_page_failures() {
             StatusCode::NOT_FOUND
         );
     }
-    // A custom search performs HTTP against submitted channels, does not ingest and uses RAM-only capabilities.
-    sqlx::query("INSERT INTO source_template_settings(id,url_template,method,format,transform) VALUES(1,'https://t.me/s/{{channel}}','GET','html',$1) ON CONFLICT(id) DO UPDATE SET transform=EXCLUDED.transform").bind(DSL).execute(&pool).await.unwrap();
+    // A custom search performs HTTP against submitted channels, does not ingest and uses shared, expiring Redis capabilities.
     let before = requests.load(Ordering::SeqCst);
     let (code, live) = call(
         &router,
@@ -1321,8 +1319,8 @@ async fn channel_scheduling_and_page_failures() {
     assert!(live.contains("custom:"));
     assert!(!live.contains("yun.139.com"));
     assert!(!live.contains("历史资源"));
-    // Search projection works with Redis disconnected; DB catalog facts are not required.
-    let isolated = AppState::new(pool.clone(), RedisStore::disconnected());
+    // A second API instance can create a capability that the first instance resolves.
+    let isolated = AppState::new(pool.clone(), state.redis.clone());
     let request: crate::models::SearchRequest =
         serde_json::from_value(json!({"kw":"x","channels":[channel]})).unwrap();
     let source = crawl::source_for(&pool, &channel).await.unwrap();
@@ -1344,6 +1342,11 @@ async fn channel_scheduling_and_page_failures() {
             .unwrap()
             .starts_with("custom:")
     );
+    let (status, body) = call(&router, "POST", "/api/links/status", Some(&session.token),
+        json!({"items":[{"resultRef":projected[0]["resultRef"],"linkRef":projected[0]["links"][0]["linkRef"]}]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(body["data"]["items"][0]["errorCode"].is_null(), "{body}");
     assert_eq!(
         count,
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM managed_resources")
@@ -1485,4 +1488,124 @@ async fn deleting_crawl_channel_preserves_resources_and_discards_inflight_page()
     state.auth().revoke_session(&session).await.unwrap();
     server.abort();
     pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn cron_defers_daily_pages_but_full_history_and_notifications_work() {
+    use chrono::Timelike;
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_channels SET enabled=false").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE status IN ('queued','running','paused')").execute(&pool).await.unwrap();
+    let observed: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT now()").fetch_one(&pool).await.unwrap();
+    let shanghai_hour = (observed.hour() + 8) % 24;
+    let closed_cron = format!("0 */10 {} * * *", (shanghai_hour + 2) % 24);
+    sqlx::query("UPDATE crawl_settings SET concurrent_channels=1,page_delay_seconds=0,daily_cron=$1,version=version+1")
+        .bind(&closed_cron).execute(&pool).await.unwrap();
+    let channel = format!("cron_{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let requests = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, Router::new().fallback(mock_page).with_state(Mock {
+        channel: channel.clone(), requests: requests.clone(),
+    })).into_future());
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,false,$2)")
+        .bind(&channel).bind(DSL).execute(&pool).await.unwrap();
+    let node = format!("node_{channel}");
+    sqlx::query("INSERT INTO proxy_nodes(id,name,base_url) VALUES($1,$1,$2)")
+        .bind(&node).bind(format!("http://{addr}")).execute(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    crate::outbound::save(&mut tx, crate::outbound::Owner::Channel(&channel), &crate::outbound::Policy {
+        nodes: vec![crate::outbound::NodeWeight { node_id: node, weight: 10 }],
+        ..crate::outbound::Policy::direct()
+    }).await.unwrap();
+    tx.commit().await.unwrap();
+    let redis_url = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert!(!matches!(url::Url::parse(&redis_url).unwrap().path(), "" | "/" | "/0"));
+    let state = Arc::new(AppState::new(pool.clone(), RedisStore::connect(&redis_url).await.unwrap()));
+    let worker_state = state.clone();
+    let worker = tokio::spawn(async move { crawl::worker(worker_state).await });
+    // With every channel disabled, the worker has no deadline before its 60s
+    // safety scan. A committed channel update must wake it immediately.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1").bind(&channel).execute(&pool).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if sqlx::query_scalar::<_,bool>("SELECT history_complete FROM crawl_channels WHERE id=$1")
+                .bind(&channel).fetch_one(&pool).await.unwrap() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("notification did not wake initial full collection outside cron hours");
+    assert_eq!(requests.load(Ordering::SeqCst), 3, "initial head and history both run outside daily cron");
+    state.shutdown.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(3), worker).await.unwrap().unwrap().unwrap();
+    let checkpoint: i64 = sqlx::query_scalar("SELECT newest_message FROM crawl_channels WHERE id=$1")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    let job = crawl::enqueue(&pool, &channel, "sync").await.unwrap();
+    sqlx::query("UPDATE crawl_jobs SET cursor_before=100,head_message=101,pages=1 WHERE id=$1").bind(job).execute(&pool).await.unwrap();
+    crawl::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 3, "daily pages cannot run outside cron hours");
+    let deferred = sqlx::query("SELECT status,next_run_at>now() deferred,cursor_before,attempts FROM crawl_jobs WHERE id=$1")
+        .bind(job).fetch_one(&pool).await.unwrap();
+    assert_eq!(deferred.get::<String,_>("status"), "queued");
+    assert!(deferred.get::<bool,_>("deferred"));
+    assert_eq!(deferred.get::<i32,_>("attempts"), 0);
+    assert_eq!(deferred.get::<Option<i64>,_>("cursor_before"), Some(100));
+    assert_eq!(checkpoint, sqlx::query_scalar::<_,i64>("SELECT newest_message FROM crawl_channels WHERE id=$1")
+        .bind(&channel).fetch_one(&pool).await.unwrap());
+    let task = sqlx::query(include_str!("sql/channel_task_states.sql"))
+        .bind(vec![channel.clone()]).bind(false).fetch_one(&pool).await.unwrap();
+    assert_eq!(task.get::<String,_>("task_state"), "idle");
+    assert_eq!(task.get::<String,_>("task_phase"), "cron_wait");
+    // Invalid cron cannot alter the stored version or existing checkpoints.
+    let username = format!("admin_{channel}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
+        .bind(&username).bind(auth::hash_password(&channel).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&username, &channel).await.unwrap().0;
+    let router = build_router(state.clone());
+    let stored = crawl::settings(&pool).await.unwrap();
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM crawl_jobs").fetch_one(&pool).await.unwrap();
+    let preview_request = json!({"dailyCron":"  30 */10 8-21 * * *  "});
+    assert_eq!(call(&router,"POST","/api/admin/crawl/settings/preview",None,preview_request.clone()).await.0,StatusCode::UNAUTHORIZED);
+    let (status, data) = call(&router,"POST","/api/admin/crawl/settings/preview",Some(&session.token),preview_request).await;
+    assert_eq!(status,StatusCode::OK,"{data}");
+    let data = serde_json::from_str::<Value>(&data).unwrap()["data"].clone();
+    assert_eq!(data["dailyCron"],"30 */10 8-21 * * *");
+    assert_eq!(data["timeZone"],"Asia/Shanghai");
+    let mut previous = data["observedAt"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
+    let times = data["nextRuns"].as_array().unwrap();
+    assert_eq!(times.len(),5);
+    for time in times {
+        let time = time.as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
+        assert!(time > previous);
+        assert_eq!(time.second(),30);
+        assert_eq!(time.minute()%10,0);
+        assert!((8..=21).contains(&((time.hour()+8)%24)));
+        previous = time;
+    }
+    for expression in ["0 0 8 30 2 *","*/10 8-21 * * *","invalid"] {
+        assert_eq!(call(&router,"POST","/api/admin/crawl/settings/preview",Some(&session.token),json!({"dailyCron":expression})).await.0,StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(crawl::settings(&pool).await.unwrap().version,stored.version);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM crawl_jobs").fetch_one(&pool).await.unwrap(),jobs_before);
+    let mut cfg = serde_json::to_value(&stored).unwrap();
+    cfg["dailyCron"] = json!("0 0 8 30 2 *");
+    assert_eq!(call(&router, "PUT", "/api/admin/crawl/settings", Some(&session.token), cfg.clone()).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(crawl::settings(&pool).await.unwrap().version, stored.version);
+    // Returning to all-day cron resumes the same persisted incremental job.
+    cfg["dailyCron"] = json!("0 */10 * * * *");
+    assert_eq!(call(&router, "PUT", "/api/admin/crawl/settings", Some(&session.token), cfg).await.0, StatusCode::OK);
+    crawl::tick(&state).await.unwrap();
+    let row = sqlx::query("SELECT status FROM crawl_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap();
+    assert_eq!(row.get::<String,_>("status"), "completed");
+    assert_eq!(requests.load(Ordering::SeqCst), 4);
+    let next: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT next_sync_at FROM crawl_channels WHERE id=$1")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(next.minute() % 10, 0);
+    assert_eq!(next.second(), 0);
+    sqlx::query("UPDATE crawl_settings SET daily_cron='0 */10 * * * *',page_delay_seconds=0").execute(&pool).await.unwrap();
+    server.abort();
 }

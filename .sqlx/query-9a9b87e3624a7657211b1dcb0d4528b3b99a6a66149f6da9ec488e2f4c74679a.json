@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO source_health(source_id) VALUES($1) ON CONFLICT(source_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9a9b87e3624a7657211b1dcb0d4528b3b99a6a66149f6da9ec488e2f4c74679a"
+}
