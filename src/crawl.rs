@@ -17,6 +17,12 @@ pub use schedule::DailySchedule;
 
 pub const SETTINGS_SELECT: &str = "SELECT concurrent_channels,page_delay_seconds,daily_cron,version FROM crawl_settings WHERE id=1";
 
+pub async fn failed_message_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM crawl_message_tasks WHERE status='failed'")
+        .fetch_one(pool)
+        .await
+}
+
 fn hash(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }

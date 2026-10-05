@@ -1395,6 +1395,112 @@ async fn channel_scheduling_and_page_failures() {
 
 #[tokio::test]
 #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn today_success_counts_match_records_without_resource_deduplication() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = db::connect(&url).await.unwrap();
+    db::init_db(&pool).await.unwrap();
+    let redis = RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
+        .await
+        .unwrap();
+    let state = Arc::new(AppState::new(pool.clone(), redis));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let channel = format!("today_{unique}");
+    let visible = format!("visible_{unique}");
+    let disabled = format!("disabled_{unique}");
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled) VALUES($1,$1,false)")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (resource, enabled) in [(&visible, true), (&disabled, false)] {
+        sqlx::query("INSERT INTO managed_resources(id,name,enabled,source_channel_ids) VALUES($1,$1,$2,ARRAY[$3::text])")
+            .bind(resource).bind(enabled).bind(&channel).execute(&pool).await.unwrap();
+    }
+    let start: chrono::DateTime<Utc> = sqlx::query_scalar(
+        "SELECT date_trunc('day',now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (id, status, resources, at) in [
+        (1i64, "parsed", vec![visible.clone()], start),
+        (2, "parsed", vec![visible.clone()], start),
+        (3, "parsed", vec![disabled.clone()], start),
+        (4, "parsed", vec![format!("deleted_{unique}")], start),
+        (5, "empty", vec![], start),
+        (6, "failed", vec![], start),
+        (
+            7,
+            "parsed",
+            vec![visible.clone()],
+            start - chrono::Duration::seconds(1),
+        ),
+        (8, "failed", vec![], start - chrono::Duration::seconds(1)),
+    ] {
+        sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,status,resource_ids,task_at,error_message) VALUES($1,$2,$3,$4,$5,CASE WHEN $3='failed' THEN 'test failure' END)")
+            .bind(&channel).bind(id).bind(status).bind(resources).bind(at).execute(&pool).await.unwrap();
+    }
+    let user = format!("admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
+        .bind(&user).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&user, &unique).await.unwrap().0;
+    let router = build_router(state.clone());
+    async fn read(router: &Router, path: &str, token: &str) -> Value {
+        let (status, body) = call(router, "GET", path, Some(token), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        serde_json::from_str::<Value>(&body).unwrap()["data"].clone()
+    }
+    let detail_path = format!("/api/admin/crawl/channels/{channel}");
+    let success_path = format!("{detail_path}/messages?scope=today&status=success");
+    let detail = read(&router, &detail_path, &session.token).await;
+    assert_eq!(detail["todaySuccessCount"], 5);
+    assert_eq!(detail["todayResourceCount"], 1);
+    assert_eq!(detail["failedMessageCount"], 2);
+    let messages = read(&router, &success_path, &session.token).await;
+    assert_eq!(detail["todaySuccessCount"], messages["counts"]["success"]);
+    assert_eq!(messages["total"], 5);
+    assert_eq!(messages["counts"], json!({"all":6,"success":5,"failed":1}));
+    let list = read(
+        &router,
+        &format!("/api/admin/crawl/channels?q={channel}"),
+        &session.token,
+    )
+    .await;
+    assert_eq!(list["items"][0]["todaySuccessCount"], messages["total"]);
+    // Simulate successful retry while the resource cache is still warm.
+    sqlx::query("UPDATE crawl_message_tasks SET status='empty',error_message=NULL WHERE channel_id=$1 AND message_id=6")
+        .bind(&channel).execute(&pool).await.unwrap();
+    let detail = read(&router, &detail_path, &session.token).await;
+    let messages = read(&router, &success_path, &session.token).await;
+    assert_eq!(detail["todaySuccessCount"], 6);
+    assert_eq!(detail["todaySuccessCount"], messages["total"]);
+    assert_eq!(detail["failedMessageCount"], 1);
+    // No rows must render zero even though resources and old failures remain.
+    sqlx::query("DELETE FROM crawl_message_tasks WHERE channel_id=$1 AND status<>'failed'")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let detail = read(&router, &detail_path, &session.token).await;
+    let messages = read(&router, &success_path, &session.token).await;
+    assert_eq!(detail["todaySuccessCount"], 0);
+    assert_eq!(messages["total"], 0);
+    state.auth().revoke_session(&session).await.unwrap();
+    sqlx::query("DELETE FROM crawl_channels WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM managed_resources WHERE id=ANY($1)")
+        .bind(vec![visible, disabled])
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
 async fn failed_message_actions_bulk_ignore_and_page_retry() {
     let url = std::env::var("PANSOU_TEST_DATABASE_URL").expect("test database URL");
     assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
@@ -1427,11 +1533,42 @@ async fn failed_message_actions_bulk_ignore_and_page_retry() {
         sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,status,error_message) VALUES($1,$2,$3,CASE WHEN $3='failed' THEN 'x' END)")
             .bind(&channel).bind(id).bind(status).execute(&pool).await.unwrap();
     }
+    // Page checkpoints have a different unit and may outlive resolved messages.
+    sqlx::query("INSERT INTO crawl_page_failures(channel_id,kind,page_number,last_error) VALUES($1,'sync',1,'old page failure')")
+        .bind(&channel).execute(&pool).await.unwrap();
     let user = format!("admin_{unique}");
     sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')").bind(&user).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
     let session = state.auth().login(&user, &unique).await.unwrap().0;
     let router = build_router(state.clone());
     let path = format!("/api/admin/crawl/channels/{channel}/messages/action");
+
+    async fn assert_failure_totals(router: &Router, token: &str, channel: &str, expected: i64) {
+        let mut replies = Vec::new();
+        for path in [
+            "/api/admin/crawl/overview".to_owned(),
+            "/api/admin/crawl/channels".to_owned(),
+            format!("/api/admin/crawl/channels/{channel}/messages?status=failed"),
+            "/api/monitor".to_owned(),
+        ] {
+            let (status, body) = call(router, "GET", &path, Some(token), Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            replies.push(serde_json::from_str::<Value>(&body).unwrap()["data"].clone());
+        }
+        assert_eq!(replies[0]["failedMessages"], expected);
+        assert_eq!(replies[0]["review"], 1);
+        let channel_total: i64 = replies[1]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["failedMessageCount"].as_i64().unwrap())
+            .sum();
+        assert_eq!(channel_total, expected);
+        assert_eq!(replies[2]["total"], expected);
+        assert_eq!(replies[2]["counts"]["failed"], expected);
+        assert_eq!(replies[3]["crawl"]["failedMessages"], expected);
+    }
+    // Warm the resource cache before mutating failures, then check without waiting for TTL.
+    assert_failure_totals(&router, &session.token, &channel, 3).await;
 
     assert_eq!(
         call(
@@ -1529,6 +1666,7 @@ async fn failed_message_actions_bulk_ignore_and_page_retry() {
     .await
     .unwrap();
     assert_eq!(left, vec![310, 500, 600]);
+    assert_failure_totals(&router, &session.token, &channel, 2).await;
     let resource_after: Value =
         sqlx::query_scalar("SELECT to_jsonb(r) FROM managed_resources r WHERE id=$1")
             .bind(&resource_id)
@@ -1584,6 +1722,23 @@ async fn failed_message_actions_bulk_ignore_and_page_retry() {
         .0,
         StatusCode::CONFLICT
     );
+    // A successful retry drops the total even while its old page checkpoint remains.
+    sqlx::query("UPDATE crawl_message_tasks SET status='empty',error_message=NULL WHERE channel_id=$1 AND message_id=310")
+        .bind(&channel).execute(&pool).await.unwrap();
+    assert_failure_totals(&router, &session.token, &channel, 1).await;
+    // Paused channels are included in the all-channel total too.
+    sqlx::query("UPDATE crawl_channels SET enabled=false WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_failure_totals(&router, &session.token, &channel, 1).await;
+    sqlx::query("DELETE FROM crawl_message_tasks WHERE channel_id=$1 AND status='failed'")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_failure_totals(&router, &session.token, &channel, 0).await;
     state.auth().revoke_session(&session).await.unwrap();
 }
 

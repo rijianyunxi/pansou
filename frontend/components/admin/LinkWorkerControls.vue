@@ -70,8 +70,10 @@ onBeforeUnmount(()=>{alive=false;controller?.abort();clearInterval(timer);docume
     <div class="worker-control-row">
       <div class="worker-control-title"><strong>后台调度</strong><TaskStatusBadge :state="error||worker?.scheduleEnabled==null?'uncertain':worker.scheduleEnabled?'completed':'paused'" :label="error||worker?.scheduleEnabled==null?'状态未知':worker.scheduleEnabled?'已启用':'已暂停'" /></div>
       <span class="worker-presence">{{worker?.state==='online'?`${worker.count ?? '—'} 个 Worker 在线`:worker?.state==='offline'?'Worker 离线':'Worker 状态未知'}}</span>
-      <Button variant="outline" :disabled="loading||!!busy||!!error||suspended||worker?.scheduleEnabled==null" @click="toggle('link-schedule')"><component :is="worker?.scheduleEnabled?Pause:Play" :size="16" aria-hidden="true" />{{busy==='link-schedule'?'提交中…':worker?.scheduleEnabled?'暂停调度':'恢复调度'}}</Button>
-      <Button variant="ghost" size="icon" title="刷新调度状态" aria-label="刷新调度状态" :disabled="loading||!!busy" @click="load()"><RefreshCw :size="15" :class="{ spinning: loading }" aria-hidden="true" /></Button>
+      <div class="worker-control-actions">
+        <Button variant="outline" :disabled="loading||!!busy||!!error||suspended||worker?.scheduleEnabled==null" @click="toggle('link-schedule')"><component :is="worker?.scheduleEnabled?Pause:Play" :size="16" aria-hidden="true" />{{busy==='link-schedule'?'提交中…':worker?.scheduleEnabled?'暂停调度':'恢复调度'}}</Button>
+        <Button variant="ghost" size="icon" title="刷新调度状态" aria-label="刷新调度状态" :disabled="loading||!!busy" @click="load()"><RefreshCw :size="15" :class="{ spinning: loading }" aria-hidden="true" /></Button>
+      </div>
     </div>
     <div class="lane-controls">
       <div v-for="lane in lanes" :key="lane.key" class="lane-control-row">
@@ -92,14 +94,14 @@ onBeforeUnmount(()=>{alive=false;controller?.abort();clearInterval(timer);docume
 
 <style scoped>
 @layer components {
-.worker-controls{border:1px solid var(--border);border-radius:10px;background:var(--card);min-width:0;font-size:12px;line-height:1.6;overflow:hidden}
+.worker-controls{border:1px solid var(--border);border-radius:10px;background:var(--card);min-width:0;font-size:12px;line-height:1.6;overflow:hidden;container-type:inline-size}
 .worker-control-row,.worker-control-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.worker-control-row{padding:14px 18px}.worker-control-title strong{font-size:14px;font-weight:600}.worker-presence{color:var(--muted-foreground);margin-right:auto;font-size:12px}
-.lane-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted) 35%,var(--card))}
+.worker-control-actions{display:flex;align-items:center;gap:10px;flex-shrink:0;margin-left:auto}
+.lane-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted) 35%,var(--card))}
 .lane-control-row{display:flex;flex-direction:column;align-items:flex-start;gap:12px;min-width:0;padding:16px 18px}.lane-control-row+.lane-control-row{border-left:1px solid var(--border)}.lane-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}.lane-heading strong{font-weight:500;font-size:13px}
-.control-footnote{display:flex;align-items:center;gap:6px;padding:10px 18px;color:var(--muted-foreground);font-size:11px}.control-hint{color:var(--muted-foreground)}.control-error{color:var(--destructive)}.worker-controls>p{overflow-wrap:anywhere;margin:0;padding:0 18px 12px}
+.control-footnote{display:flex;align-items:flex-start;gap:6px;padding:10px 18px;color:var(--muted-foreground);font-size:11px}.control-footnote>svg{flex-shrink:0;margin-top:2px}.control-hint{color:var(--muted-foreground)}.control-error{color:var(--destructive)}.worker-controls>p{overflow-wrap:anywhere;margin:0;padding:0 18px 12px}
 .spinning{animation:worker-spin 1s linear infinite}@keyframes worker-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spinning{animation:none}}
-@media(max-width:1100px){.lane-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.lane-control-row:nth-child(3){border-left:0}.lane-control-row:nth-child(n+3){border-top:1px solid var(--border)}}
-@media(max-width:600px){.worker-control-row{gap:8px;padding:12px}.worker-control-title{margin-right:auto}.worker-presence{order:3;flex-basis:100%}.lane-control-row{padding:12px}.control-footnote{padding:10px 12px;font-size:11px}}
+@container(max-width:640px){.lane-controls{grid-template-columns:minmax(0,1fr)}.lane-control-row+.lane-control-row{border-left:0;border-top:1px solid var(--border)}.worker-control-row{gap:8px;padding:12px}.worker-control-title{flex-basis:100%}.worker-control-actions{gap:8px}.lane-control-row{padding:12px}.control-footnote{padding:10px 12px;font-size:11px}}
 }
 </style>

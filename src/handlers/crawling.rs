@@ -53,6 +53,15 @@ async fn channels_data(
         .map(|r| r.get::<String, _>("id"))
         .collect::<Vec<_>>();
     let stats = state.admin_stats.channels(pool, &ids).await?;
+    // Task counts are live; resource summaries may retain their 30-second cache.
+    let task_counts =
+        sqlx::query_as::<_, (String, i64, i64)>(include_str!("../sql/channel_task_counts.sql"))
+            .bind(&ids)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(id, failed, today_success)| (id, (failed, today_success)))
+            .collect::<HashMap<_, _>>();
     let policies = sqlx::query(&format!(
         "SELECT p.channel_id,{} FROM outbound_policies p WHERE p.channel_id=ANY($1)",
         outbound::POLICY_COLUMNS
@@ -81,9 +90,10 @@ async fn channels_data(
     for r in rows {
         let id = r.get::<String, _>("id");
         let st = &stats[&id];
+        let (failed_count, today_success_count) = task_counts[&id];
         let task = &task_states[&id];
         let p = by_channel.get(&id);
-        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":st.failed_count,"resourceCount":st.resource_count,"todayResourceCount":st.today_resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":p});
+        let mut v = json!({"id":id,"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"version":r.get::<i64,_>("version"),"historyComplete":r.get::<bool,_>("history_complete"),"historyCursor":r.get::<Option<i64>,_>("history_cursor"),"historyPages":r.get::<i32,_>("history_pages"),"nextPageAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_page_at"),"newestMessage":r.get::<i64,_>("newest_message"),"oldestMessage":r.get::<Option<i64>,_>("oldest_message"),"lastSyncedAt":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_synced_at"),"nextSyncAt":r.get::<chrono::DateTime<chrono::Utc>,_>("next_sync_at"),"coverage":r.get::<String,_>("coverage"),"lastError":r.get::<Option<String>,_>("last_error"),"failedMessageCount":failed_count,"todaySuccessCount":today_success_count,"resourceCount":st.resource_count,"todayResourceCount":st.today_resource_count,"latestJob":task.get::<Option<Value>,_>("latest_job"),"taskState":task.get::<String,_>("task_state"),"taskStateAt":task.get::<chrono::DateTime<chrono::Utc>,_>("observed_at"),"outbound":p,"effectiveOutbound":p});
         if details {
             v["transform"] = json!(r.get::<Option<String>, _>("transform"));
         }
@@ -278,9 +288,10 @@ pub async fn crawl_overview(
     let review = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM crawl_page_failures")
         .fetch_one(&s.pool)
         .await?;
+    let failed_messages = crawl::failed_message_count(&s.pool).await?;
     let worker_enabled = crate::runtime::settings(&s).await?.crawl_enabled;
     Ok(ok(
-        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"backoff":jobs.get::<i64,_>("backoff"),"fetching":jobs.get::<i64,_>("fetching"),"failed":jobs.get::<i64,_>("failed"),"review":review,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
+        json!({"workerState":match workers{None=>"unknown",Some(0)=>"offline",Some(_)=>"online"},"workerCount":workers,"workerEnabled":worker_enabled,"queued":jobs.get::<i64,_>("queued"),"running":jobs.get::<i64,_>("running"),"backoff":jobs.get::<i64,_>("backoff"),"fetching":jobs.get::<i64,_>("fetching"),"failed":jobs.get::<i64,_>("failed"),"review":review,"failedMessages":failed_messages,"scheduling":scheduling,"serverTime":chrono::Utc::now()}),
     ))
 }
 pub async fn crawl_job_create(

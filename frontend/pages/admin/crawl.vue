@@ -36,7 +36,7 @@ const metrics = computed(() => [
   { key: 'queued', label: '排队中', value: overview.value?.queued, hint: '已可执行，但正在等待并发槽位的频道数' },
   { key: 'backoff', label: '退避中', value: overview.value?.backoff, hint: '请求异常或限频后，等待重试的频道数' },
   { key: 'failed', label: '已中断', value: overview.value?.failed, hint: '全局采集中断的频道数' },
-  { key: 'review', label: '待复核页', value: overview.value?.review, hint: '页面解析异常，待检查' },
+  { key: 'failedMessages', label: '失败任务', value: overview.value?.failedMessages, hint: '全部频道尚未处理的失败消息任务总数，与列表失败任务口径一致' },
 ]);
 function overlay(query: Record<string, string | number | undefined>) {
   const { edit, settings, messages, status, scope, ...rest } = route.query;
@@ -73,7 +73,7 @@ function saved() {
         }}
       </div>
       <dl class="crawl-metrics">
-        <div v-for="metric in metrics" :key="metric.key" class="crawl-metric" :title="metric.hint" :class="{ 'needs-attention': (metric.key === 'failed' || metric.key === 'review') && (metric.value ?? 0) > 0 }">
+        <div v-for="metric in metrics" :key="metric.key" class="crawl-metric" :title="metric.hint" :class="{ 'needs-attention': (metric.key === 'failed' || metric.key === 'failedMessages') && (metric.value ?? 0) > 0 }">
           <dt>{{ metric.label }}</dt>
           <dd :class="{ 'is-unavailable': metric.value == null }">{{ metric.value == null ? (overview ? '未提供' : '加载中') : metric.value.toLocaleString() }}</dd>
         </div>

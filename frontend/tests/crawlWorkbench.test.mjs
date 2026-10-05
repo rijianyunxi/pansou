@@ -189,7 +189,7 @@ test("compact channel columns preserve exact counts and accessible full informat
  for(const count of ["historyPages","resourceCount","failedMessageCount"]) assert.ok(source.includes(count+".toLocaleString('zh-CN')"));
  assert.ok(source.includes("入库资源"));assert.ok(source.includes("未处理失败"));
  assert.match(source,/CrawlHint/);assert.match(source,/tabindex="0"/);
- assert.match(source,/emit\('messages',c\.id,'all','today'\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
+ assert.match(source,/emit\('messages',c\.id,'success','today'\)/);assert.match(source,/emit\('messages',c\.id,'failed'\)/);
  const hint=await read("components/admin/crawl/CrawlHint.vue");assert.match(hint,/TooltipTrigger as-child :aria-label="label"/);assert.match(hint,/TooltipContent/);
 });
 

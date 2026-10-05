@@ -64,7 +64,7 @@ const queueTotals = computed(() => queueRows.value.reduce((total, row) => ({
 }), { queued: 0, running: 0, failed: 0 }));
 const attentionItems = computed(() => data.value ? [
   { key: 'crawl', name: 'TG 采集失败', count: data.value.crawl.failed, description: '检查最近失败任务与错误原因', path: '/admin/crawl', action: '管理采集任务', tone: 'error' },
-  { key: 'review', name: '解析消息待复核', count: data.value.crawl.review, description: '需要人工确认解析结果', path: '/admin/crawl', action: '采集工作台', tone: 'warning' },
+  { key: 'review', name: '采集消息失败', count: data.value.crawl.failedMessages, description: '尚未处理的失败消息任务，可按频道重试或忽略', path: '/admin/crawl', action: '采集工作台', tone: 'warning' },
   { key: 'checks', name: '链接检测异常', count: data.value.links.checkHealth?.failing ?? data.value.links.errors, description: '查看检测记录、退避原因与重新检测入口', path: '/admin/tasks?kind=checks&status=attention', action: '管理检测任务', tone: 'error' },
   { key: 'cleanup', name: '清理失败 / 阻塞', count: data.value.links.queues.cleanup.failed + (data.value.links.queues.cleanup.blocked ?? 0), description: '查看产物记录、核实原因并重试', path: '/admin/tasks?kind=cleanup&status=attention', action: '管理清理任务', tone: 'error' },
 ].filter((item) => item.count > 0) : []);

@@ -103,6 +103,7 @@ pub async fn monitor(
     let index = sqlx::query("SELECT (SELECT count(*) FROM crawl_channels) channels, (SELECT count(*) FROM crawl_channels WHERE enabled) active_channels, (SELECT count(*) FROM crawl_page_failures) review, (SELECT MAX(last_synced_at) FROM crawl_channels) last_sync, (SELECT count(*) FROM crawl_channels c WHERE c.enabled AND c.next_sync_at<=now() AND (c.last_synced_at IS NULL OR $1)) overdue_channels")
         .bind(daily_allowed).fetch_one(&state.pool).await?;
     let counts = state.admin_stats.monitor(&state.pool).await?;
+    let failed_messages = crate::crawl::failed_message_count(&state.pool).await?;
     let link_queues = sqlx::query("SELECT 'checks' kind,status,count(*) count FROM link_check_jobs GROUP BY status UNION ALL SELECT 'cleanup',status,count(*) FROM link_cleanup_jobs GROUP BY status UNION ALL SELECT 'resolve',status,count(*) FROM link_resolve_requests GROUP BY status")
         .fetch_all(&state.pool).await?;
     let cleanup_due: i64 = sqlx::query_scalar("SELECT count(*) FROM link_cleanup_jobs WHERE status='queued' AND run_after<=now() OR status='running' AND lease_until<now()")
@@ -191,7 +192,7 @@ pub async fn monitor(
         "generatedAt":Utc::now(),"sources":sources,
         "services":{"api":{"state":"online","startedAt":state.started_at},"postgres":{"state":"online","connections":state.pool.size(),"idle":state.pool.num_idle()},"redis":{"state":if redis.is_ok(){"online"}else{"unavailable"}}},
         "workers":{"crawl":crawl_worker,"links":link_worker},
-        "crawl":{"queued":crawl.get::<i64,_>("queued"),"ready":crawl.get::<i64,_>("ready"),"running":crawl.get::<i64,_>("running"),"failed":crawl.get::<i64,_>("failed"),"paused":crawl.get::<i64,_>("paused"),"expired":crawl.get::<i64,_>("expired"),"lastActivityAt":crawl.get::<Option<DateTime<Utc>>,_>("last_activity"),"channels":index.get::<i64,_>("channels"),"activeChannels":index.get::<i64,_>("active_channels"),"overdueChannels":index.get::<i64,_>("overdue_channels"),"review":index.get::<i64,_>("review"),"resources":counts.resources,"lastSyncAt":index.get::<Option<DateTime<Utc>>,_>("last_sync"),"recentFailures":failures},
+        "crawl":{"queued":crawl.get::<i64,_>("queued"),"ready":crawl.get::<i64,_>("ready"),"running":crawl.get::<i64,_>("running"),"failed":crawl.get::<i64,_>("failed"),"paused":crawl.get::<i64,_>("paused"),"expired":crawl.get::<i64,_>("expired"),"lastActivityAt":crawl.get::<Option<DateTime<Utc>>,_>("last_activity"),"channels":index.get::<i64,_>("channels"),"activeChannels":index.get::<i64,_>("active_channels"),"overdueChannels":index.get::<i64,_>("overdue_channels"),"review":index.get::<i64,_>("review"),"failedMessages":failed_messages,"resources":counts.resources,"lastSyncAt":index.get::<Option<DateTime<Utc>>,_>("last_sync"),"recentFailures":failures},
         "links":{"aggregatePending":aggregate_pending,"catalog":counts.catalog,"valid":counts.valid,"invalid":counts.invalid,"errors":counts.errors,"queues":queues,"cleanupDue":cleanup_due,"checksEnabled":checks_enabled,"deliveryEnabled":delivery_enabled,"deliveryStats":delivery_stats,"checkHealth":{"due":counts.check_due,"failing":counts.check_failing,"unknown":counts.check_unknown,"stuckJobs":stuck_checks,"readyAccounts":ready_check_accounts},"recentCheckFailures":recent_failures,"recentCleanup":recent_cleanup},
     })))
 }

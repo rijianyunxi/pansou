@@ -72,7 +72,6 @@ impl<K: Eq + Hash + Clone, V: Clone> StatsCache<K, V> {
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct ChannelCounts {
     pub id: String,
-    pub failed_count: i64,
     pub resource_count: i64,
     pub today_resource_count: i64,
 }
@@ -410,14 +409,7 @@ mod tests {
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-        assert_eq!(
-            (
-                row.resource_count,
-                row.today_resource_count,
-                row.failed_count
-            ),
-            (1, 1, 1)
-        );
+        assert_eq!((row.resource_count, row.today_resource_count), (1, 1));
         sqlx::query("DELETE FROM crawl_message_tasks WHERE channel_id=$1")
             .bind(&ch)
             .execute(&mut *tx)
@@ -428,14 +420,7 @@ mod tests {
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-        assert_eq!(
-            (
-                row.resource_count,
-                row.today_resource_count,
-                row.failed_count
-            ),
-            (1, 0, 0)
-        );
+        assert_eq!((row.resource_count, row.today_resource_count), (1, 0));
         sqlx::query("UPDATE managed_resources SET enabled=false WHERE id=$1")
             .bind(&visible)
             .execute(&mut *tx)

@@ -56,6 +56,7 @@ function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
   <AdminDialog :title="'@' + channel + (scope === 'today' ? ' 的今日采集' : ' 的采集记录')" drawer wide @close="emit('close')">
     <section class="task-drawer">
       <div class="task-toolbar">
+        <p v-if="scope === 'today'" class="task-scope-note">按北京时间处理日期统计，包含当天补采的历史消息；成功含已解析和无资源记录。</p>
         <Tabs v-model="status" aria-label="任务状态">
           <TabsList>
             <TabsTrigger value="all">全部<span v-if="data" class="tab-count">{{ data.counts.all.toLocaleString('zh-CN') }}</span></TabsTrigger>
@@ -99,6 +100,7 @@ function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
 </template>
 <style scoped>
 @layer components {
+.task-scope-note{flex-basis:100%;margin:0;font-size:12px;line-height:1.6;color:var(--muted-foreground)}
 .task-drawer{display:flex;flex-direction:column;min-height:0;height:100%}.task-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:20px 24px;border-bottom:1px solid var(--border)}
 .tab-count{color:var(--muted-foreground);font-size:12px;font-variant-numeric:tabular-nums}.task-actions{display:flex;align-items:center;gap:8px}.selection-count{margin-right:4px;font-size:12px;color:var(--muted-foreground)}
 .task-feedback{margin:0;padding:12px 24px;font-size:13px}.task-scroll{flex:1;min-height:0;overflow:auto}

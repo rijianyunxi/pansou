@@ -27,7 +27,7 @@ export interface MonitorData {
   workers: { crawl: WorkerStatus; links: WorkerStatus };
   crawl: {
     queued: number; ready: number; running: number; failed: number; paused: number; expired: number;
-    channels: number; activeChannels: number; overdueChannels: number; review: number; resources: number;
+    channels: number; activeChannels: number; overdueChannels: number; review: number; failedMessages: number; resources: number;
     lastActivityAt: string | null; lastSyncAt: string | null;
     recentFailures: Array<{ channel: string; kind: string; error: string | null; at: string }>;
   };

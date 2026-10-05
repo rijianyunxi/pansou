@@ -37,6 +37,7 @@ export interface CrawlChannel {
   failedMessageCount: number;
   resourceCount: number;
   todayResourceCount: number;
+  todaySuccessCount: number;
   latestJob: CrawlJob | null;
   taskState?: 'running' | 'queued' | 'backoff' | 'idle' | 'paused' | 'failed';
   taskPhase?: 'fetching' | 'page_wait' | 'ready' | 'backoff' | 'queued' | 'paused' | 'cron_wait' | null;
@@ -80,6 +81,7 @@ export interface CrawlOverview {
   scheduling?: { concurrentChannels: number; pageDelaySeconds: number };
   running: number;
   failed: number;
+  failedMessages: number;
   review: number;
   serverTime: string;
 }
