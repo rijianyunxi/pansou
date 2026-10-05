@@ -247,6 +247,16 @@ impl Wire {
             }
             bytes.extend_from_slice(&chunk);
         }
+        // Aliyun's anti-abuse gateway can answer HTTP 200 with an HTML page or
+        // {rgv587_flag,url}. Neither is an acknowledgement of a cloud write.
+        // Keep its challenge URL/cookies private and do not invalidate the token:
+        // file reads and transfers can still work while share creation is blocked.
+        if self.provider == Provider::Aliyun && response.headers().contains_key("bxpunish") {
+            return Err(self.error(
+                ErrorKind::Verification,
+                "阿里云盘拦截了服务器请求，需要安全验证；转存成功不代表分享已生成",
+            ));
+        }
         if status.as_u16() == 429 {
             return Err(self.error(ErrorKind::RateLimit, "网盘限制操作频率，请稍后再试"));
         }
@@ -404,6 +414,31 @@ pub fn http_client() -> Client {
 #[cfg(test)]
 mod cookie_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn aliyun_gateway_challenges_are_verification_errors_not_share_acknowledgements() {
+        for body in [
+            "<html><script>location='https://verify.example/?secret=fixture'</script></html>",
+            r#"{"rgv587_flag":"sm","url":"https://verify.example/?secret=fixture"}"#,
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url =
+                Url::parse(&format!("http://{}/share", listener.local_addr().unwrap())).unwrap();
+            let app = axum::Router::new().fallback(axum::routing::any(move || async move {
+                ([("bxpunish", "1")], body)
+            }));
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let wire = Wire::new(Client::new(), Provider::Aliyun, String::new());
+            let error = wire
+                .request(Method::POST, url, None, None, "share", true, false)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Verification);
+            assert!(!error.message.contains("fixture"));
+            assert!(!error.message.contains("verify.example"));
+            server.abort();
+        }
+    }
 
     #[test]
     fn merge_cookies_replays_updates_and_honors_deletions() {

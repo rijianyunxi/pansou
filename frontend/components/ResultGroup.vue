@@ -55,7 +55,7 @@
 <script setup lang="ts">
 import { computed, ref, reactive, inject, onBeforeUnmount } from "vue";
 import { resolveLink } from '~/utils/linkResolution';
-import { executeLinkAction, invalidLink, type LinkAction } from '~/utils/linkActions';
+import { executeLinkAction, invalidLink, originalFallbackMessage, type LinkAction } from '~/utils/linkActions';
 import ResourceDescription from "./ResourceDescription.vue";
 import type { SearchLink, ResolvedLink } from "~/shared/apiModels";
 import type { DisplaySearchResult } from "~/utils/resultDisplay";
@@ -210,13 +210,16 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
       failed: message => { if (!gone && !controller.signal.aborted) showToast(message, 'error'); },
     });
     if (!gone && !controller.signal.aborted && completed && !isInvalid(link)) {
+      const fallbackMessage = originalFallbackMessage(action, completed);
       if (action === 'copy') {
-        showToast(completed.password ? '链接和提取码已复制，可粘贴打开' : '链接已复制，可粘贴打开', 'success');
+        if (fallbackMessage) showToast(fallbackMessage, 'info');
+        else showToast(completed.password ? '链接和提取码已复制，可粘贴打开' : '链接已复制，可粘贴打开', 'success');
         copiedKey.value = ref;
         clearTimeout(copiedTimer);
         copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
       } else {
-        showToast('链接已就绪，已请求浏览器打开', 'success');
+        if (fallbackMessage) showToast(fallbackMessage, 'info');
+        else showToast('链接已就绪，已请求浏览器打开', 'success');
       }
     }
   } catch {

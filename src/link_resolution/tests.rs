@@ -232,6 +232,7 @@ struct ExtendedUpstream {
     wrong_account: bool,
     multi_file: bool,
     login_required: bool,
+    share_verification: bool,
 }
 fn extended_file(id: &str, name: &str, directory: bool) -> Value {
     json!({"id":id,"file_id":id,"fileId":id,"name":name,"fileName":name,"size":if directory{0}else{42},"fileSize":if directory{0}else{42},"type":if directory{"folder"}else{"file"},"kind":if directory{"drive#folder"}else{"drive#file"},"resType":if directory{2}else{1}})
@@ -239,7 +240,8 @@ fn extended_file(id: &str, name: &str, directory: bool) -> Value {
 async fn extended_mock(
     State(state): State<Arc<Mutex<ExtendedUpstream>>>,
     request: Request<Body>,
-) -> Json<Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     assert_eq!(
         request.headers().get("authorization").unwrap(),
         "Bearer fixture-access"
@@ -262,7 +264,10 @@ async fn extended_mock(
     let input: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut state = state.lock().await;
     if state.login_required {
-        return Json(json!({"code":"AccessTokenExpired"}));
+        return Json(json!({"code":"AccessTokenExpired"})).into_response();
+    }
+    if path == "/adrive/v2/share_link/create" && state.share_verification {
+        return ([("bxpunish", "1")], "<html>verification required</html>").into_response();
     }
     let value = match path.as_str() {
         "/v2/user/get"
@@ -377,7 +382,75 @@ async fn extended_mock(
         }
         _ => panic!("unexpected extended provider request {path}"),
     };
-    Json(value)
+    Json(value).into_response()
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn aliyun_share_verification_preserves_saved_files_and_retries_without_another_transfer() {
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(Url::parse(&database).unwrap().path().ends_with("_test"));
+    let redis = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert_ne!(Url::parse(&redis).unwrap().path(), "/0");
+    let pool = PgPoolOptions::new().connect(&database).await.unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let upstream = Arc::new(Mutex::new(ExtendedUpstream {
+        share_verification: true,
+        ..Default::default()
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let server = Router::new()
+        .fallback(any(extended_mock))
+        .with_state(upstream.clone());
+    let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let mut state = AppState::new(pool.clone(), RedisStore::connect(&redis).await.unwrap());
+    state.cloud_test_bases = Some(TestBases {
+        baidu: origin.clone(),
+        quark_pc: origin.clone(),
+        quark_share: origin,
+    });
+    let state = Arc::new(state);
+    let credential = json!({"access_token":"fixture-access","user_id":"fixture-account","drive_id":"fixture-drive","signature":"fixture-signature"}).to_string();
+    sqlx::query("INSERT INTO cloud_account_settings(provider,credential,auth_status) VALUES('aliyun',$1,'ready') ON CONFLICT(provider) DO UPDATE SET credential=$1,auth_status='ready'").bind(credential).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE cloud_provider_policies SET delivery_enabled=true,target_dir='project',retention_seconds=3600,delivery_min_remaining_seconds=5,platform_share_days=1 WHERE provider='aliyun'").execute(&pool).await.unwrap();
+    let session = state.auth().issue(true).await.unwrap();
+    let link = Link {
+        r#type: "aliyun".into(),
+        url: format!("https://www.alipan.com/s/source{}", Uuid::new_v4().simple()),
+        password: None,
+    };
+    let (out, id) = seed(&state, &session, link.clone()).await;
+    let router = crate::app::build_router(state.clone());
+    for _ in 0..2 {
+        let result = call(
+            &router,
+            &session,
+            "/api/links/resolve",
+            request(&out, Uuid::new_v4()),
+        )
+        .await;
+        assert_eq!(
+            result.1["data"]["reasonCode"], "share_verification_required",
+            "{result:?}"
+        );
+        assert_eq!(result.1["data"]["delivery"], "original");
+        let saved: (String,String,i64) = sqlx::query_as("SELECT state,ownership_manifest_json->>'stage',jsonb_array_length(target_files_json)::bigint FROM link_share_cache WHERE link_id=$1").bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(saved, ("saved".into(), "saved".into(), 1));
+        assert_eq!(upstream.lock().await.transfers, 1);
+    }
+    upstream.lock().await.share_verification = false;
+    let result = call(
+        &router,
+        &session,
+        "/api/links/resolve",
+        request(&out, Uuid::new_v4()),
+    )
+    .await;
+    assert_eq!(result.1["data"]["delivery"], "reshared", "{result:?}");
+    assert_eq!(result.1["data"]["url"], "https://www.alipan.com/s/ownshare");
+    assert_eq!(upstream.lock().await.transfers, 1);
+    task.abort();
 }
 
 #[tokio::test]

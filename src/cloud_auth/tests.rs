@@ -73,6 +73,8 @@ struct MockAuth {
     baidu_unparseable_exchange: bool,
     baidu_calls: usize,
     ali_device_failure: bool,
+    ali_resource_missing: bool,
+    ali_drive_list_calls: usize,
     qr_exchanges: usize,
 }
 async fn upstream(
@@ -180,7 +182,23 @@ async fn upstream(
         }
         "/api/list" => json!({"errno":0,"list":[]}),
         "/api.aliyundrive.com/v2/user/get" => {
-            json!({"user_id":"subject1","resource_drive_id":"drive1","nick_name":"Test account"})
+            json!({"user_id":"subject1","default_drive_id":"drive1","nick_name":"Test account"})
+        }
+        "/api.aliyundrive.com/v2/drive/list_my_drives" => {
+            mock.ali_drive_list_calls += 1;
+            let input: Value = serde_json::from_slice(
+                &axum::body::to_bytes(request.into_body(), 32768)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(input["limit"], 100);
+            if input["marker"] == "" {
+                json!({"items":[{"drive_id":"drive1","category":"backup","status":"enabled"},{"drive_id":"album1","category":"shared_album","status":"enabled"}],"next_marker":"resource-page"})
+            } else {
+                assert_eq!(input["marker"], "resource-page");
+                json!({"items":if mock.ali_resource_missing {json!([])} else {json!([{"drive_id":"resource1","category":"resource","status":"enabled"}])},"next_marker":""})
+            }
         }
         "/api.aliyundrive.com/v2/drive/get" => json!({"owner":"subject1"}),
         "/api.aliyundrive.com/users/v1/users/device/create_session" => {
@@ -414,7 +432,33 @@ async fn provider_qr_protocols_and_independent_polling_are_strict() {
     else {
         panic!("Ali fixture did not complete")
     };
-    verify(&state, Provider::Aliyun, &token).await.unwrap();
+    let identity = verify(&state, Provider::Aliyun, &token).await.unwrap();
+    assert_eq!(identity.scope, "resource1");
+    assert_eq!(
+        serde_json::from_str::<Value>(&identity.raw).unwrap()["drive_id"],
+        "resource1"
+    );
+    assert_eq!(mock.lock().await.ali_drive_list_calls, 2);
+    // A saved backup-space binding must survive account checks and token renewal.
+    let backup = json!({"access_token":"fixture-access","refresh_token":"fixture-refresh","user_id":"subject1","driveId":"drive1","signature":"fixture-signature"}).to_string();
+    let refreshed = providers::refresh(&state, Provider::Aliyun, &backup)
+        .await
+        .unwrap();
+    let identity = providers::identity(&state, Provider::Aliyun, &refreshed)
+        .await
+        .unwrap();
+    assert_eq!(identity.scope, "drive1");
+    assert_eq!(mock.lock().await.ali_drive_list_calls, 2);
+    // Accounts without an enabled resource library still use their default drive.
+    mock.lock().await.ali_resource_missing = true;
+    assert_eq!(
+        providers::identity(&state, Provider::Aliyun, &token)
+            .await
+            .unwrap()
+            .scope,
+        "drive1"
+    );
+    mock.lock().await.ali_resource_missing = false;
     let raw=json!({"access_token":"fixture-access","device_id":"fixture-device","x-device-id":"fixture-device","x-signature":"stale-signature","device_private_key":STANDARD.encode([9u8;32])}).to_string();
     let renewed = providers::identity(&state, Provider::Aliyun, &raw)
         .await

@@ -77,6 +77,7 @@ pub enum ErrorKind {
     InvalidLink,
     Password,
     Login,
+    Verification,
     RateLimit,
     Upstream,
     Network,
@@ -147,6 +148,7 @@ impl DriveError {
             }
             ErrorKind::Ownership => ApiError::Forbidden(self.message),
             ErrorKind::Login => ApiError::CloudAuthRequired(self.message),
+            ErrorKind::Verification => ApiError::CloudAuthRequired(self.message),
             ErrorKind::Limit => ApiError::Unavailable(self.message),
             _ => ApiError::Upstream(self.message),
         }

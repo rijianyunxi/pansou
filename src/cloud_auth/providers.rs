@@ -1097,6 +1097,63 @@ fn field(v: &Value, keys: &[&str], default: &str) -> String {
         .find(|s| !s.is_empty())
         .unwrap_or_else(|| default.into())
 }
+async fn ali_storage_scope(
+    http: &mut Http<'_>,
+    credential: &Value,
+    user: &Value,
+) -> Result<String, AuthFailure> {
+    // A stored/imported drive is part of the account binding and ownership key.
+    // Keep it during renewal, even if another space would be a better default.
+    let selected = field(credential, &["drive_id", "driveId"], "");
+    if !selected.is_empty() {
+        return Ok(selected);
+    }
+    let resource = field(user, &["resource_drive_id"], "");
+    if !resource.is_empty() {
+        return Ok(resource);
+    }
+    // The live /v2/user/get response only supplies default_drive_id, which can
+    // be the backup space. Discover the resource library before falling back.
+    let headers = crate::cloud_drive::extended_headers(Provider::Aliyun, &credential.to_string())
+        .map_err(|_| AuthFailure::Protocol)?;
+    let mut marker = String::new();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..50 {
+        let response = http
+            .call(
+                Method::POST,
+                "https://api.aliyundrive.com/v2/drive/list_my_drives",
+                Some(json!({"limit":100,"marker":marker})),
+                None,
+                headers.clone(),
+            )
+            .await?
+            .0;
+        if !scalar(&response["code"]).is_empty() && response["code"] != 0 {
+            return Err(oauth_failure(&response));
+        }
+        let drives = response["items"].as_array().ok_or(AuthFailure::Protocol)?;
+        if let Some(drive) = drives
+            .iter()
+            .find(|d| d["category"] == "resource" && d["status"] == "enabled")
+        {
+            let id = scalar(&drive["drive_id"]);
+            return if valid_id(&id, false) {
+                Ok(id)
+            } else {
+                Err(AuthFailure::Protocol)
+            };
+        }
+        marker = scalar(&response["next_marker"]);
+        if marker.is_empty() {
+            return Ok(field(user, &["default_drive_id"], ""));
+        }
+        if !seen.insert(marker.clone()) {
+            return Err(AuthFailure::Protocol);
+        }
+    }
+    Err(AuthFailure::Protocol)
+}
 fn exchange_failure(error: AuthFailure) -> AuthFailure {
     // A response timeout can happen after a one-use ticket/refresh token was
     // consumed. Do not retry that exchange as if it were a read-only poll.
@@ -1287,11 +1344,7 @@ pub async fn identity(
         "已连接账号",
     );
     let scope = if provider == Provider::Aliyun {
-        let scope = field(
-            &value,
-            &["drive_id", "driveId"],
-            &field(data, &["resource_drive_id", "default_drive_id"], ""),
-        );
+        let scope = ali_storage_scope(&mut http, &value, data).await?;
         if !valid_id(&scope, false) {
             return Err(AuthFailure::Protocol);
         }

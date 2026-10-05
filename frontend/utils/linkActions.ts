@@ -3,6 +3,13 @@ import { usable } from './linkResolution.ts';
 import { guangyaBrowserUrl, xunleiBrowserUrl } from './shareLinks.ts';
 
 export type LinkAction = 'open' | 'copy';
+export function originalFallbackMessage(action: LinkAction, value: ResolvedLink): string {
+  if (value.delivery !== 'original' || !['uncertain', 'share_failed', 'share_verification_required', 'transfer_failed', 'delivery_failed', 'deadline_exceeded', 'delivery_expired'].includes(value.reasonCode || '')) return '';
+  const result = action === 'copy' ? '已复制原链接' : '已打开原链接';
+  return value.reasonCode === 'share_verification_required'
+    ? `阿里云盘要求服务器请求完成安全验证，分享未生成；${result}`
+    : `转存分享未完成，${result}`;
+}
 interface LinkActionEffects {
   prepareOpen: () => { navigate: (url: string) => void; close: () => void };
   copy: (text: Promise<string>) => Promise<void>;

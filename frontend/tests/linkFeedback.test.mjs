@@ -89,6 +89,18 @@ test('copy without a password reports only the copied link', async () => {
   } finally { card.cleanup(); }
 });
 
+test('a blocked share explicitly reports that the original link was copied or opened', async () => {
+  for (const action of ['copy', 'open']) {
+    const card = await setupCard({ resolve: async () => ({ ...available, delivery: 'original', reasonCode: 'share_verification_required' }) });
+    try {
+      await card.component.act(action, resource, link);
+      assert.equal(card.feedback.toast.value.type, 'info');
+      assert.match(card.feedback.toast.value.message, /安全验证/);
+      assert.match(card.feedback.toast.value.message, action === 'copy' ? /已复制原链接/ : /已打开原链接/);
+      assert.ok(!card.messages.some(([, type]) => type === 'success'));
+    } finally { card.cleanup(); }
+  }
+});
 test('inline progress follows backend stages and is removed on completion', async () => {
   let finish, notify;
   const card = await setupCard({ resolve: (_r, _l, _k, _signal, _resume, onProgress) => {

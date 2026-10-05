@@ -274,8 +274,14 @@ async fn share_saved(
             Ok(share) => share,
             Err(error) => {
                 // Explicit business rejection means no share was created. Transport uncertainty does not.
-                if error.code.is_some() {
-                    sqlx::query("UPDATE link_share_cache SET state='saved',ownership_manifest_json=jsonb_set(ownership_manifest_json,'{stage}','\"saved\"'),last_error_code='share_failed' WHERE id=$1").bind(id).execute(&state.pool).await?;
+                if error.code.is_some() || error.kind == crate::cloud_drive::ErrorKind::Verification
+                {
+                    let reason = if error.kind == crate::cloud_drive::ErrorKind::Verification {
+                        "share_verification_required"
+                    } else {
+                        "share_failed"
+                    };
+                    sqlx::query("UPDATE link_share_cache SET state='saved',ownership_manifest_json=jsonb_set(ownership_manifest_json,'{stage}','\"saved\"'),last_error_code=$2 WHERE id=$1").bind(id).bind(reason).execute(&state.pool).await?;
                 }
                 return Err(error.api());
             }
@@ -544,7 +550,22 @@ pub(super) async fn deliver(
                     Ok(share) => return Ok(delivered(key, link, fact, &share, expires, true)),
                     Err(_) => {
                         retire_timed_out_artifacts(state, session, key).await?;
-                        return Ok(fallback(key, link, fact, "share_failed"));
+                        let verification_required = sqlx::query_scalar::<_, bool>(
+                            "SELECT last_error_code='share_verification_required' FROM link_share_cache WHERE id=$1",
+                        )
+                        .bind(id)
+                        .fetch_one(&state.pool)
+                        .await?;
+                        return Ok(fallback(
+                            key,
+                            link,
+                            fact,
+                            if verification_required {
+                                "share_verification_required"
+                            } else {
+                                "share_failed"
+                            },
+                        ));
                     }
                 }
             }
@@ -675,7 +696,7 @@ pub(super) async fn deliver(
             // An interrupted external write is never treated as safe to repeat.
             // A share rejected by the provider already recorded `share_failed`
             // on the row; keep that specific code instead of masking it.
-            sqlx::query("UPDATE link_share_cache SET state=CASE WHEN ownership_manifest_json->>'stage' IN('saved','share_created') THEN 'saved' ELSE $2 END,last_error_code=CASE WHEN last_error_code='share_failed' THEN 'share_failed' ELSE 'uncertain' END,updated_at=now() WHERE id=$1 AND state<>'ready'").bind(id).bind(if drive.wrote(){"uncertain"}else{"failed"}).execute(&state.pool).await?;
+            sqlx::query("UPDATE link_share_cache SET state=CASE WHEN ownership_manifest_json->>'stage' IN('saved','share_created') THEN 'saved' ELSE $2 END,last_error_code=CASE WHEN last_error_code IN('share_failed','share_verification_required') THEN last_error_code ELSE 'uncertain' END,updated_at=now() WHERE id=$1 AND state<>'ready'").bind(id).bind(if drive.wrote(){"uncertain"}else{"failed"}).execute(&state.pool).await?;
             if !drive.wrote() {
                 let mut tx = state.pool.begin().await?;
                 sqlx::query("UPDATE link_share_cache SET state='deleted',deleted_at=now(),last_error_code='no_cloud_write' WHERE id=$1").bind(id).execute(&mut *tx).await?;
@@ -683,11 +704,19 @@ pub(super) async fn deliver(
                 tx.commit().await?;
             }
             retire_timed_out_artifacts(state, session, key).await?;
+            let verification_required = sqlx::query_scalar::<_, bool>(
+                "SELECT last_error_code='share_verification_required' FROM link_share_cache WHERE id=$1",
+            )
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?;
             Ok(fallback(
                 key,
                 link,
                 &super::fact(state, link_id).await?,
-                if drive.wrote() {
+                if verification_required {
+                    "share_verification_required"
+                } else if drive.wrote() {
                     "uncertain"
                 } else {
                     "transfer_failed"
