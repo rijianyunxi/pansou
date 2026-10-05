@@ -220,6 +220,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/search", post(handlers::search_sse))
         .route("/search/json", get(handlers::search_json))
         .route("/account/session", get(handlers::account_session))
+        .route("/account/config", get(handlers::account_config))
         .route("/account/login", post(handlers::account_login))
         .route("/account/logout", post(handlers::account_logout))
         .route("/account/wechat/login", post(handlers::wechat_login))
@@ -470,6 +471,7 @@ mod tests {
     #[tokio::test]
     async fn registers_all_former_dynamic_api_routes_explicitly() {
         let routes = [
+            "/api/account/config",
             "/api/admin/resources/enabled",
             "/api/admin/resources/batch-delete",
             "/api/admin/resources/check",

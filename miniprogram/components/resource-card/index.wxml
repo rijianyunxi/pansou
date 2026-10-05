@@ -15,7 +15,7 @@
       <view class="link-icon">{{link.icon}}</view>
       <view class="link-main">
         <text class="link-provider {{link.type}}">{{link.label}}</text>
-        <text wx:if="{{resolved[link.key].password}}" class="password-badge">提取码 {{resolved[link.key].password}}</text>
+        <button wx:if="{{resolved[link.key].password}}" class="password-badge" size="mini" disabled="{{!!loading[link.key] || copyingPassword}}" data-key="{{link.key}}" bindtap="onCopyPassword" aria-label="复制提取码">提取码 {{resolved[link.key].password}} · 复制</button>
       </view>
       <view class="link-actions">
         <button size="mini" class="link-btn" hover-class="btn-hover" disabled="{{!!loading[link.key]}}" loading="{{loading[link.key] === 'copy'}}" data-key="{{link.key}}" bindtap="onCopy">{{loading[link.key] === 'copy' ? '正在复制' : copiedKey === link.key ? '已复制' : '复制链接'}}</button>

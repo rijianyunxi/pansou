@@ -13,8 +13,42 @@ test('Guangya links carry codes in one directly usable URL', () => {
   }
   assert.equal(clipboardText({ url: base }), base + '#/share');
   assert.equal(clipboardText({ url: base + '?code=ewcc#/share' }), base + '?code=ewcc#/share');
-  assert.equal(clipboardText({ url: 'https://pan.quark.cn/s/abc', password: 'own1' }), 'https://pan.quark.cn/s/abc\n提取码：own1');
+  assert.equal(clipboardText({ url: 'https://pan.quark.cn/s/abc', password: 'own1' }), 'https://pan.quark.cn/s/abc?pwd=own1');
+  assert.equal(clipboardText({ url: 'https://pan.baidu.com/s/1abc?pwd=own1', password: 'own1' }), 'https://pan.baidu.com/s/1abc?pwd=own1');
+  assert.equal(clipboardText({ url: 'https://example.test/share?pwd=other', password: 'own1' }), 'https://example.test/share?pwd=other');
   assert.equal(guangyaBrowserUrl({ url: 'https://www.guangyapan.com.evil.test/s/abc' }), null);
+});
+test('Baidu copies a single navigable URL with the resolved extraction code', () => {
+  const { clipboardText } = require('../utils/shareLinks');
+  const base = 'https://pan.baidu.com/s/1jzgJOGnGzpl0CoitZm_aKQ';
+  for (const [url, password, expected] of [
+    [base, 'z2m1', base + '?pwd=z2m1'],
+    [base + '?pwd=old', 'z2m1', base + '?pwd=z2m1'],
+    [base + '?from=search&pwd=old&pwd=other#files', 'z2m1', base + '?from=search&pwd=z2m1#files'],
+    [base + '?pwd=z2m1', null, base + '?pwd=z2m1'],
+    [base, null, base],
+    [base, 'a+b&', base + '?pwd=a%2Bb%26'],
+  ]) {
+    const text = clipboardText({ url, password });
+    assert.equal(text, expected);
+    assert.equal(new URL(text).href, expected);
+  }
+});
+test('other drive links keep query strings and mobile hash routes without appending password prose', () => {
+  const { clipboardText } = require('../utils/shareLinks');
+  for (const url of [
+    'https://www.alipan.com/s/abc',
+    'https://www.123pan.com/s/abc.html', 'https://cloud.189.cn/t/abc',
+    'https://yun.139.com/shareweb/#/w/i/abc', 'https://drive.uc.cn/s/abc',
+    'https://115cdn.com/s/abc?password=own1',
+  ]) {
+    assert.equal(clipboardText({ url, password: 'own1' }), url);
+  }
+});
+test('Quark copies its extraction code in pwd before the hash route', () => {
+  const { clipboardText } = require('../utils/shareLinks');
+  const url = 'https://pan.quark.cn/s/abc?from=search&pwd=old&pwd=other#/list/share';
+  assert.equal(clipboardText({ url, password: 'own1' }), 'https://pan.quark.cn/s/abc?from=search&pwd=own1#/list/share');
 });
 global.wx = {
   getStorageSync: () => stored,
@@ -32,6 +66,9 @@ test('anonymous session is stored, existing login is never overwritten', () => {
 });
 
 test('each new click revalidates the owned share despite historical original invalidity', async () => {
+  const feedback = require('../utils/feedback');
+  const originalToast = feedback.showToast;
+  feedback.showToast = () => {};
   const clipboard = require('../utils/clipboard');
   const originalResolve = links.resolveLink, originalCopy = clipboard.copyLink;
   const resolves = [], copied = [], opened = [];
@@ -51,14 +88,21 @@ test('each new click revalidates the owned share despite historical original inv
     const event = { currentTarget: { dataset: { key: 'l' } } };
     await card.onOpen(event); await card.onCopy(event);
     assert.deepEqual(opened, ['/pages/link/index', 'https://example.test/share']);
-    assert.deepEqual(copied, ['https://example.test/share\n提取码：own1']);
+    assert.deepEqual(copied, ['https://example.test/share']);
     assert.equal(resolves.length, 2);
     assert.notEqual(resolves[0].key, resolves[1].key);
     assert.equal(resolves[0].resume, false); assert.equal(resolves[1].resume, false);
     assert.equal(card.data.copiedKey, 'l');
+    await card.onCopyPassword(event);
+    assert.deepEqual(copied, ['https://example.test/share', 'own1']);
+    assert.equal(resolves.length, 2, 'copying the displayed code must not create a share');
+    card.data.resolved.l.deliveryExpiresAt = '2000-01-01';
+    await card.onCopyPassword(event);
+    assert.equal(copied.length, 2, 'expired codes must not be copied');
   } finally {
     spec.lifetimes.detached.call(card);
     links.resolveLink = originalResolve; clipboard.copyLink = originalCopy;
+    feedback.showToast = originalToast;
     delete global.Component; delete wx.navigateTo;
   }
 });
@@ -278,4 +322,40 @@ test('pause immediately notifies without request fail and ignores late stream ev
     assert.equal(updates, 0);
     assert.equal(completes, 0);
   } finally { auth.ensureSession = originalReady; wx.request = originalRequest; }
+});
+
+test('a session change while resolving discards the old-session response', async () => {
+  stored = { token: 'old-session' };
+  const original = auth.request;
+  auth.request = async () => {
+    stored = { token: 'fresh-session' };
+    return { statusCode: 200, data: { data: { status: 'completed', url: 'https://example.test/share' } } };
+  };
+  try {
+    await assert.rejects(links.resolveLink('result', 'link', 'key', {}, false), /重新搜索/);
+  } finally { auth.request = original; stored = null; }
+});
+
+test('malformed resolve responses fail promptly instead of polling until timeout', async () => {
+  stored = { token: 'session' };
+  const original = auth.request;
+  auth.request = async () => ({ statusCode: 200, data: { data: null } });
+  try {
+    await assert.rejects(links.resolveLink('result', 'link', 'key', {}, false), /返回格式异常/);
+  } finally { auth.request = original; stored = null; }
+});
+
+test('opening supported drive links includes the resolved extraction code', () => {
+  const opened = [];
+  wx.navigateTo = ({ success }) => success({ eventChannel: { emit: (_event, value) => opened.push(value.url) } });
+  let definition;
+  global.Component = value => { definition = value; };
+  delete require.cache[require.resolve('../components/resource-card/index')];
+  require('../components/resource-card/index');
+  try {
+    for (const url of ['https://pan.baidu.com/s/1abc', 'https://pan.quark.cn/s/abc', 'https://pan.xunlei.com/s/abc']) {
+      definition.methods.openResolvedLink({ url, password: 'own1' });
+      assert.equal(opened.pop(), url + '?pwd=own1');
+    }
+  } finally { delete wx.navigateTo; delete global.Component; }
 });

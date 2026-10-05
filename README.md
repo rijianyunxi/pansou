@@ -336,8 +336,8 @@ Cookie: pansou_session=...
 1. 通过 Redis 严格校验 `pansou_session`；缺失、过期或伪造的 Session 返回 HTTP `401` 和 `SESSION_REQUIRED`，搜索接口不会隐式创建 Session。
 2. 校验 `kw` 去除首尾空白后长度必须为 `1..=100` 个字符。
 3. 自定义频道模式从 PostgreSQL 或 Redis 重新读取当前会话已保存的频道，并执行匿名权限和频道数量校验。
-4. 按登录/匿名策略原子消费 Redis 中的 Session、IP 和网段搜索额度；任一额度超限返回 HTTP `401` 和 `SEARCH_LIMIT_EXCEEDED`。
-5. 获取 Session 级和全站搜索并发许可；Session 并发超限返回 HTTP `401` 和 `SEARCH_LIMIT_EXCEEDED`，全站并发超限返回 HTTP `503` 和 `SERVER_BUSY`。
+4. 按登录/匿名策略原子消费 Redis 中的 Session、IP 和网段搜索额度；任一额度超限返回 HTTP `429` 和 `SEARCH_LIMIT_EXCEEDED`。
+5. 获取 Session 级和全站搜索并发许可；Session 并发超限返回 HTTP `429` 和 `SEARCH_LIMIT_EXCEEDED`，全站并发超限返回 HTTP `503` 和 `SERVER_BUSY`。
 6. 向 PostgreSQL `search_logs` 插入 `started` 记录，包含：
    - session token；
    - user id；
@@ -589,7 +589,7 @@ SSE 对外字段与 `main` 分支保持一致：
 3. 收到 `start` 保存 `searchLogId`。
 4. 收到 `result` 把新结果合并到现有状态。
 5. 收到 `complete` 标记搜索完成。
-6. 处理 `401`、`403`、`503` 和普通错误；`SESSION_REQUIRED` 会触发一次 Session 重建，`SEARCH_LIMIT_EXCEEDED` 不会被误判成登录失效。
+6. 处理 `401`、`403`、`429`、`503` 和普通错误；`SESSION_REQUIRED` 会触发一次 Session 重建，`SEARCH_LIMIT_EXCEEDED` 不会被误判成登录失效。
 7. 使用 `AbortController` 支持取消、暂停和离开页面时中断请求。
 
 前端增量合并不是按来源 ID，也不是按结果 ID，而是按**分享链接 URL**：
@@ -765,8 +765,8 @@ GET /api/account/session
 
 POST /api/search
   -> 无有效 Session：401 SESSION_REQUIRED
-  -> Session/IP/网段搜索额度超限：401 SEARCH_LIMIT_EXCEEDED
-  -> Session 并发超限：401 SEARCH_LIMIT_EXCEEDED
+  -> Session/IP/网段搜索额度超限：429 SEARCH_LIMIT_EXCEEDED
+  -> Session 并发超限：429 SEARCH_LIMIT_EXCEEDED
   -> 全站并发超限：503 SERVER_BUSY
 
 GET /api/search/json
@@ -1182,3 +1182,5 @@ TG 资源内容统一保存在 `managed_resources`，来源频道和任务资源
 TG 采集顶部的“失败任务”与频道列表统一统计 `crawl_message_tasks` 中 `status=failed` 的消息记录，包含暂停频道，不随列表筛选改变。失败计数实时查询，忽略或重试成功后刷新即可同步；资源数量仍使用 30 秒缓存。失败页检查点 `crawl_page_failures` 按页统计，供采集恢复使用，不作为消息失败总数。050 为未处理失败消息增加局部索引，避免实时计数扫描成功任务。
 
 频道列表“今日成功任务”统计北京时间当天 `parsed` 和 `empty` 的消息记录数，与今日采集抽屉“成功”页签及分页总数一致，点击直接进入该页签。任务计数实时查询，不按资源去重、不受资源停用或删除影响；一条消息可有多个资源，多条消息也可引用同一资源，因此资源数与成功任务数分别计量。API 的 `todayResourceCount` 继续表示今日任务关联的去重可用资源数，`todaySuccessCount` 表示今日成功消息任务数。
+
+搜索频率及会话并发超限统一返回 HTTP 429、`SEARCH_LIMIT_EXCEEDED` 和 `Retry-After`，JSON 的 `statusCode` 为 429，`retryAfter` 与响应头秒数一致。频率超限按当前固定时间窗口的剩余秒数计算，不用从首次请求起算的 Redis TTL；会话并发超限建议 1 秒后重试。无效会话继续返回 401，会话限流不会触发前端会话重建；全站并发容量不足继续返回 503。429 响应禁止缓存，客户端不自动重试搜索。

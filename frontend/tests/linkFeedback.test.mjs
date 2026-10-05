@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as vue from 'vue';
 import { useToast } from '../composables/useToast.ts';
 import * as linkActions from '../utils/linkActions.ts';
+import { usable } from '../utils/linkResolution.ts';
 
 const available = { status: 'completed', validity: 1, url: 'https://example.test/share', password: '1234' };
 const resource = { resultRef: 'result' };
@@ -27,7 +28,7 @@ async function setupCard({ resolve = async () => available, copy = async () => {
   const require = name => {
     if (name === 'vue') return { ...vue, inject: () => showToast, onBeforeUnmount: hook => hooks.push(hook) };
     if (name.includes('linkActions')) return linkActions;
-    if (name.includes('linkResolution')) return { resolveLink: resolve };
+    if (name.includes('linkResolution')) return { resolveLink: resolve, usable };
     return {};
   };
   const module = { exports: {} };
@@ -59,7 +60,7 @@ test('processing feedback remains until the clipboard write succeeds', async () 
     finishCopy();
     await action;
     assert.equal(card.feedback.toast.value.type, 'success');
-    assert.match(card.feedback.toast.value.message, /链接和提取码已复制/);
+    assert.match(card.feedback.toast.value.message, /链接已复制；提取码可点击单独复制/);
     assert.equal(card.feedback.toast.value.show, true);
     assert.equal(card.component.copiedKey.value, 'link');
     assert.equal(card.component.loading.link, undefined);
@@ -88,7 +89,6 @@ test('copy without a password reports only the copied link', async () => {
     assert.equal(card.feedback.toast.value.message, '链接已复制，可粘贴打开');
   } finally { card.cleanup(); }
 });
-
 test('a blocked share explicitly reports that the original link was copied or opened', async () => {
   for (const action of ['copy', 'open']) {
     const card = await setupCard({ resolve: async () => ({ ...available, delivery: 'original', reasonCode: 'share_verification_required' }) });
@@ -101,6 +101,34 @@ test('a blocked share explicitly reports that the original link was copied or op
     } finally { card.cleanup(); }
   }
 });
+test('password copying preserves the code without another resolution, and rejects expired or invalid deliveries', async () => {
+  const copied = []; let resolves = 0;
+  const card = await setupCard({ resolve: async () => { resolves++; return available; }, copy: async text => { copied.push(text); } });
+  try {
+    await card.component.act('copy', resource, link);
+    await card.component.copyPassword('link');
+    assert.deepEqual(copied, [available.url, available.password]);
+    assert.equal(resolves, 1);
+    assert.equal(card.feedback.toast.value.message, '提取码已复制');
+    for (const value of [{ ...available, deliveryExpiresAt: '2000-01-01' }, { ...available, validity: 0 }]) {
+      card.component.resolved.link = value;
+      await card.component.copyPassword('link');
+      assert.equal(copied.length, 2);
+      assert.equal(card.feedback.toast.value.type, 'error');
+    }
+  } finally { card.cleanup(); }
+});
+test('password copy failures are reported without success', async () => {
+  const card = await setupCard({ copy: async () => { throw new DOMException('Denied', 'NotAllowedError'); } });
+  try {
+    card.component.resolved.link = available;
+    await card.component.copyPassword('link');
+    assert.equal(card.feedback.toast.value.type, 'error');
+    assert.equal(card.component.copyingPassword.value, '');
+    assert.ok(!card.messages.some(([, type]) => type === 'success'));
+  } finally { card.cleanup(); }
+});
+
 test('inline progress follows backend stages and is removed on completion', async () => {
   let finish, notify;
   const card = await setupCard({ resolve: (_r, _l, _k, _signal, _resume, onProgress) => {

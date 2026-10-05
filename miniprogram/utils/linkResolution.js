@@ -17,7 +17,9 @@ async function resolveLink(resultRef, linkRef, key, control, resume, onProgress)
       const response = await auth.request(poll ? `/api/links/resolve-operations/${key}` : '/api/links/resolve',
         poll ? {} : { method: 'POST', data: { resultRef, linkRef, requestKey: key } });
       if (control.stopped) return null;
+      if (!auth.getSession() || auth.getSession().token !== token) throw Object.assign(new Error('会话已变化，请重新搜索'), { statusCode: 409 });
       const value = response.data.data;
+      if (!value || typeof value.status !== 'string') throw Object.assign(new Error('取链接口返回格式异常，请重新搜索'), { statusCode: 502 });
       if (response.statusCode === 200 && ['completed','unavailable'].includes(value.status)) return value;
       if (onProgress) onProgress(value);
       interval = Math.max(500, Math.min(3000, value.pollAfterMs || 1500));

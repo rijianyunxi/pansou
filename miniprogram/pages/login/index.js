@@ -21,19 +21,19 @@ require('../../utils/theme').themedPage({
   onShow() {
     // Scanning the website code while this page is already open re-enters the
     // mini program without firing onLoad again, so read the enter options too.
-    if (this.data.scene) return;
     const enter = typeof wx.getEnterOptionsSync === 'function' ? wx.getEnterOptionsSync() : null;
     const scene = readScene(enter && enter.query && enter.query.scene);
-    if (scene) this.setData({ scene });
+    if (scene && scene !== this.data.scene) this.setData({ scene, confirmed: false, error: '' });
   },
 
   async onConfirmQr() {
     if (this.data.busy) return;
+    const scene = this.data.scene;
     this.setData({ busy: true, error: '' });
     try {
-      await auth.confirmQrLogin(this.data.scene);
-      this.setData({ confirmed: true });
-    } catch (error) { this.setData({ error: error.message }); }
+      await auth.confirmQrLogin(scene);
+      if (this.data.scene === scene) this.setData({ confirmed: true });
+    } catch (error) { if (this.data.scene === scene) this.setData({ error: error.message }); }
     finally { this.setData({ busy: false }); }
   },
 

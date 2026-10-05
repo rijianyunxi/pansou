@@ -17,8 +17,8 @@ function guangyaBrowserUrl(value) {
   }
   return 'https://' + match[1].toLowerCase() + '/s/' + match[2] + query + '#/share';
 }
-function xunleiBrowserUrl(value) {
-  const match = /^(https?:\/\/pan\.xunlei\.com\/s\/[\w-]+\/?)(\?[^#\s]*)?(#[^\s]*)?$/i.exec(value.url || '');
+function pwdBrowserUrl(value) {
+  const match = /^(https?:\/\/pan\.(?:(?:xunlei|baidu)\.com|quark\.cn)\/s\/[\w-]+\/?)(\?[^#\s]*)?(#[^\s]*)?$/i.exec(value.url || '');
   if (!match) return null;
   let query = match[2] || '';
   if (value.password) {
@@ -33,6 +33,7 @@ function xunleiBrowserUrl(value) {
   return match[1] + query + (match[3] || '');
 }
 function clipboardText(value) {
-  return guangyaBrowserUrl(value) || xunleiBrowserUrl(value) || value.url + (value.password ? '\n提取码：' + value.password : '');
+  // 提取码单独展示和复制，避免地址栏把说明文字当成 URL 的一部分。
+  return guangyaBrowserUrl(value) || pwdBrowserUrl(value) || value.url;
 }
 module.exports = { guangyaBrowserUrl, clipboardText };

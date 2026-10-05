@@ -26,11 +26,11 @@
             <div class="link-main" aria-live="polite">
               <span class="link-provider" :data-provider="link.type">{{ platformLabel(link.type) }}</span>
               <time v-if="resource.datetime" class="resource-date" :datetime="resource.datetime">{{ resource.datetime }}</time>
-              <span v-if="resolved[link.linkRef]?.password" class="password-badge">提取码 {{ resolved[link.linkRef]?.password }}</span>
+              <button v-if="resolved[link.linkRef]?.password" class="password-badge" type="button" :disabled="!!loading[link.linkRef] || !!copyingPassword" title="复制提取码" @click="copyPassword(link.linkRef)">提取码 {{ resolved[link.linkRef]?.password }} · 复制</button>
             </div>
             <div class="link-actions">
               <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在打开…' : '打开资源 ↗' }}</button>
-              <button class="copy-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'copy'" title="获取并复制链接及提取码" @click="act('copy', resource, link)">{{ loading[link.linkRef] === 'copy' ? '正在复制…' : copiedKey === link.linkRef ? '已复制' : '复制链接' }}</button>
+              <button class="copy-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'copy'" title="获取并复制链接" @click="act('copy', resource, link)">{{ loading[link.linkRef] === 'copy' ? '正在复制…' : copiedKey === link.linkRef ? '已复制' : '复制链接' }}</button>
             </div>
             <div v-if="loading[link.linkRef] && progress[link.linkRef]" class="link-progress" role="status" aria-live="polite">
               <div class="progress-caption"><span class="progress-spinner" aria-hidden="true"></span><span>{{ stageLabel(progress[link.linkRef]!.stage) }}</span><span class="progress-elapsed" aria-hidden="true">{{ Math.floor((now - progress[link.linkRef]!.startedAt) / 1000) }} 秒</span></div>
@@ -54,7 +54,7 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, inject, onBeforeUnmount } from "vue";
-import { resolveLink } from '~/utils/linkResolution';
+import { resolveLink, usable } from '~/utils/linkResolution';
 import { executeLinkAction, invalidLink, originalFallbackMessage, type LinkAction } from '~/utils/linkActions';
 import ResourceDescription from "./ResourceDescription.vue";
 import type { SearchLink, ResolvedLink } from "~/shared/apiModels";
@@ -100,6 +100,7 @@ function titleParts(title: string) {
 }
 
 const copiedKey = ref("");
+const copyingPassword = ref("");
 const resolved = reactive<Record<string, ResolvedLink>>({});
 const loading = reactive<Record<string, LinkAction | undefined>>({});
 const progress = reactive<Record<string, { stage: string; startedAt: number }>>({});
@@ -213,7 +214,7 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
       const fallbackMessage = originalFallbackMessage(action, completed);
       if (action === 'copy') {
         if (fallbackMessage) showToast(fallbackMessage, 'info');
-        else showToast(completed.password ? '链接和提取码已复制，可粘贴打开' : '链接已复制，可粘贴打开', 'success');
+        else showToast(completed.password ? '链接已复制；提取码可点击单独复制' : '链接已复制，可粘贴打开', 'success');
         copiedKey.value = ref;
         clearTimeout(copiedTimer);
         copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
@@ -225,6 +226,21 @@ async function act(action: LinkAction, resource: DisplaySearchResult, link: Sear
   } catch {
     if (!gone && !controller.signal.aborted) showToast('操作未能开始，请刷新页面后重试', 'error');
   } finally { dismissProgress(); loading[ref] = undefined; delete progress[ref]; controllers.delete(controller); }
+}
+async function copyPassword(ref: string) {
+  if (gone || loading[ref] || copyingPassword.value) return;
+  const value = resolved[ref];
+  if (!value?.password || !usable(value) || invalidLink(value)) {
+    showToast('请先重新获取可用链接', 'error');
+    return;
+  }
+  copyingPassword.value = ref;
+  try {
+    await copyDeferred(Promise.resolve(value.password));
+    if (!gone) showToast('提取码已复制', 'success');
+  } catch (error) {
+    if (!gone) showToast(error instanceof Error ? error.message : '提取码复制失败', 'error');
+  } finally { copyingPassword.value = ''; }
 }
 const visibleItems = computed(() => props.expanded ? props.items : props.items.slice(0, props.initialVisible));
 
@@ -306,6 +322,9 @@ const visibleItems = computed(() => props.expanded ? props.items : props.items.s
 .link-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; flex-wrap: wrap; }
 .link-provider { line-height: 20px; min-width: 0; max-width: 100%; color: var(--text-primary); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
 .password-badge { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 4px; color: var(--text-tertiary); font-size: 11px; overflow-wrap: anywhere; word-break: break-word; }
+.password-badge { padding: 4px 6px; border: 1px solid var(--border-light); border-radius: 6px; background: transparent; font-family: inherit; cursor: pointer; }
+.password-badge:disabled { opacity: .5; cursor: not-allowed; }
+.password-badge:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .link-actions { display: flex; align-items: center; min-width: 0; gap: 7px; flex: 0 1 auto; }
 .open-btn, .copy-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 88px; min-height: 44px; max-width: 100%; gap: 5px; padding: 7px 12px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-primary); color: var(--text-secondary); cursor: pointer; font-size: 12px; font-weight: 650; text-decoration: none; white-space: nowrap; }
 .open-btn:hover:not(:disabled), .copy-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }

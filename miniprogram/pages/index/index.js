@@ -2,7 +2,6 @@ const { createHistory } = require('../../utils/searchHistory');
 const historyStore = createHistory({ getItem: key => wx.getStorageSync(key), setItem: (key, value) => wx.setStorageSync(key, value), removeItem: key => wx.removeStorageSync(key) });
 const feedback = require('../../utils/feedback');
 const api = require('../../utils/api');
-const { DEFAULT_HOME_SEARCH_PLACEHOLDER } = require('../../utils/config');
 const { searchStream } = require('../../utils/searchStream');
 const { mergeResultsByLink, flattenResultsForDisplay } = require('../../utils/resultMerge');
 const { platformLabel, platformIcon, sortCloudTypes } = require('../../utils/cloudTypes');
@@ -56,8 +55,8 @@ function initialState() {
     keyword: '',
     scope: 'site',
     channelsCount: 0,
-    showHotSearch: true,
-    homeSearchPlaceholder: DEFAULT_HOME_SEARCH_PLACEHOLDER,
+    showHotSearch: false,
+    homeSearchPlaceholder: '',
     hotSearches: [],
     searched: false,
     loading: false,
@@ -122,6 +121,7 @@ require('../../utils/theme').themedPage({
   _startedAt: 0,
   _accumulated: 0,
   _flushTimer: null,
+  _flagsPromise: null,
 
   onLoad(options) {
     this.setData(Object.assign(getNavigationMetrics(), { searchHistory: historyStore.read() }));
@@ -137,6 +137,7 @@ require('../../utils/theme').themedPage({
   onShow() {
     // Re-read in case the device rotates or the page returns from another page.
     this.setData(Object.assign(getNavigationMetrics(), { searchHistory: historyStore.read() }));
+    this.loadSessionFlags();
     // Returning from the channels page may have changed the channel list.
     this.refreshChannelsCount();
   },
@@ -160,17 +161,21 @@ require('../../utils/theme').themedPage({
     if (show !== this.data.showBackTop) this.setData({ showBackTop: show });
   },
 
-  async loadSessionFlags() {
-    try {
-      const session = await api.fetchSession({ fresh: true });
-      this.setData({ showHotSearch: session.showHotSearch, homeSearchPlaceholder: session.homeSearchPlaceholder });
-      if (session.showHotSearch) this.loadHotSearches();
-    } catch (error) {
-      this.loadHotSearches();
-    }
+  loadSessionFlags() {
+    if (this._flagsPromise) return this._flagsPromise;
+    this._flagsPromise = api.fetchSession()
+      .then(async session => {
+        this.setData({ showHotSearch: session.showHotSearch, homeSearchPlaceholder: session.homeSearchPlaceholder });
+        if (session.showHotSearch && !this.data.searched) await this.loadHotSearches();
+        else if (!session.showHotSearch) this.setData({ hotSearches: [] });
+      })
+      .catch(() => { this.setData({ showHotSearch: false, hotSearches: [] }); })
+      .finally(() => { this._flagsPromise = null; });
+    return this._flagsPromise;
   },
 
   async loadHotSearches() {
+    if (!this.data.showHotSearch) return;
     try {
       const hotSearches = await api.fetchHotSearches(10);
       this.setData({
@@ -182,7 +187,11 @@ require('../../utils/theme').themedPage({
   refreshChannelsCount() {
     api.fetchSession()
       .then((session) => {
-        if (!session.authenticated && !session.anonymousCustomChannels) return;
+        if (!session.authenticated && !session.anonymousCustomChannels) {
+          this._userChannels = [];
+          this.setData({ channelsCount: 0, scope: 'site' });
+          return;
+        }
         return api.fetchChannels().then(({ channels }) => {
           this._userChannels = channels;
           this.setData({ channelsCount: channels.length });

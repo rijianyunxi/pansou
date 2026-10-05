@@ -3,14 +3,14 @@
 const { copyLink } = require('../../utils/clipboard');
 const { uuid, usable, resolveLink, stop } = require('../../utils/linkResolution');
 const feedback = require('../../utils/feedback');
-const { guangyaBrowserUrl, clipboardText } = require('../../utils/shareLinks');
+const { clipboardText } = require('../../utils/shareLinks');
 Component({
   properties: {
     theme: { type: String, value: 'classic' },
     item: { type: Object, value: {} },
   },
 
-  data: { descExpanded: false, copiedKey: '', resolved: {}, loading: {}, progress: {} },
+  data: { descExpanded: false, copiedKey: '', copyingPassword: false, resolved: {}, loading: {}, progress: {} },
   lifetimes: {
     attached() { this._gone = false; this._controls = {}; this._keys = {}; },
     detached() { this._gone = true; this.stopQueries(); clearTimeout(this._copyTimer); clearInterval(this._expiryTimer); },
@@ -81,7 +81,7 @@ Component({
             this.openResolvedLink(value);
           } else {
             const text = clipboardText(value);
-            if (await copyLink(text) && !control.stopped && !this._gone && this.data.item.id === item.id) {
+            if (await copyLink(text, { successMessage: value.password ? '链接已复制；提取码可点击单独复制' : undefined }) && !control.stopped && !this._gone && this.data.item.id === item.id) {
               clearTimeout(this._copyTimer);
               this.setData({ copiedKey: key });
               this._copyTimer = setTimeout(() => { if (!this._gone) this.setData({ copiedKey: '' }); }, 2400);
@@ -105,6 +105,19 @@ Component({
     },
 
     onCopy(event) { return this.runAction(event, 'copy'); },
+    async onCopyPassword(event) {
+      const key = event.currentTarget.dataset.key;
+      if (this._gone || this.data.loading[key] || this.data.copyingPassword) return;
+      this.expireLinks();
+      const value = this.data.resolved[key];
+      if (!value || !value.password || !usable(value) || value.status === 'unavailable' || value.validity === 0) {
+        feedback.showToast({ title: '请先重新获取可用链接', icon: 'error' });
+        return;
+      }
+      this.setData({ copyingPassword: true });
+      try { await copyLink(value.password, { successMessage: '提取码已复制' }); }
+      finally { if (!this._gone) this.setData({ copyingPassword: false }); }
+    },
     onOpen(event) { return this.runAction(event, 'open'); },
     openResolvedLink(value) {
       if (!/^https:\/\//i.test(value.url)) {
@@ -113,7 +126,7 @@ Component({
       }
       wx.navigateTo({
         url: '/pages/link/index',
-        success: result => result.eventChannel.emit('open-link', { url: guangyaBrowserUrl(value) || value.url }),
+        success: result => result.eventChannel.emit('open-link', { url: clipboardText(value) }),
         fail: () => feedback.showToast({ title: '打开失败，请稍后重试或使用复制链接', icon: 'error' }),
       });
     },

@@ -11,14 +11,11 @@ pub(crate) async fn replace(
     let entries: Vec<Value> = links
         .iter()
         .map(|link| {
-            let mut normalized = link.clone();
-            normalized.r#type = crate::resource_clean::cloud_type(&link.url)
-                .unwrap_or(&link.r#type)
-                .into();
+            let normalized = crate::resource_clean::normalize_link(link.clone());
             json!({
-                "provider":crate::resource_clean::cloud_type(&link.url).unwrap_or(&link.r#type),
-                "url":link.url,"password":link.password,
-                "identity":crate::resource_clean::link_identity(&link.url),
+                "provider":normalized.r#type,
+                "url":normalized.url,"password":normalized.password,
+                "identity":crate::resource_clean::link_identity(&normalized.url),
                 "linkKey":crate::link_resolution::fingerprint(&normalized)
             })
         })
@@ -79,6 +76,63 @@ pub(crate) async fn prepare_migration(pool: &sqlx::PgPool) -> anyhow::Result<()>
     Ok(())
 }
 
+/// One-time cleanup for rows registered before the extractor split glued
+/// extraction codes off the URL ("…aKQ提取码：z2m1" and its percent-encoded
+/// form, "?pwd=mckj（提取码：mckj）"). Rewrites url/password/identity and the
+/// input fingerprint with the same normalization the ingest uses, then
+/// reschedules the validity check. Idempotent: repaired URLs no longer match.
+pub(crate) async fn repair_password_suffixes(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    use sqlx::Row;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(734810,51)")
+        .execute(&mut *tx)
+        .await?;
+    let rows = sqlx::query(
+        "SELECT id,provider,original_url,original_password FROM resource_links \
+         WHERE original_url ~ '(?i)(提取码|密码|访问码|%E6%8F%90%E5%8F%96%E7%A0%81|%E5%AF%86%E7%A0%81|%E8%AE%BF%E9%97%AE%E7%A0%81|%EF%BC%88|%EF%BC%89|%28|%29)' \
+         OR original_password ~ '(?i)(提取码|密码|访问码|%E6%8F%90%E5%8F%96%E7%A0%81|%E5%AF%86%E7%A0%81|%E8%AE%BF%E9%97%AE%E7%A0%81)' ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut repaired = 0usize;
+    for row in rows {
+        let id: uuid::Uuid = row.get("id");
+        let provider: String = row.get("provider");
+        let url: String = row.get("original_url");
+        let stored: Option<String> = row.get("original_password");
+        let mut link = crate::resource_clean::normalize_link(Link {
+            r#type: provider,
+            url: url.clone(),
+            password: stored.clone(),
+        });
+        // Also remove dangling glue left by earlier cleanup rounds.
+        link.url = crate::resource_clean::trim_url_glue(&link.url).to_owned();
+        if link.url == url && link.password == stored {
+            continue;
+        }
+        sqlx::query("UPDATE resource_links SET original_url=$2,original_password=$3,identity=$4,input_fingerprint=$5,provider=$6,validity=-1,checked_at=NULL,valid_until=NULL,last_attempt_at=NULL,last_error_code=NULL,failure_count=0,next_check_at=now(),updated_at=now() WHERE id=$1")
+            .bind(&id)
+            .bind(&link.url)
+            .bind(&link.password)
+            .bind(crate::resource_clean::link_identity(&link.url))
+            .bind(crate::link_resolution::fingerprint(&link))
+            .bind(&link.r#type)
+            .execute(&mut *tx)
+            .await?;
+        repaired += 1;
+    }
+    if repaired > 0 {
+        sqlx::query("UPDATE config_revisions SET revision=revision+1 WHERE scope='local-index'")
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    if repaired > 0 {
+        tracing::info!(repaired, "reglued extraction-code URL suffixes repaired");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) async fn fixture(pool: &sqlx::PgPool, id: &str, name: &str, links: Value) {
     let mut tx = pool.begin().await.unwrap();
@@ -114,6 +168,147 @@ pub(crate) async fn fixture_replace(pool: &sqlx::PgPool, id: &str, links: Value)
 mod tests {
     use super::*;
     use sqlx::Row;
+    #[tokio::test]
+    #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+    async fn suffix_repair_preserves_ids_recovers_codes_and_resets_old_check_facts() {
+        let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+        assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+        let pool = crate::db::connect(&url).await.unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let run = uuid::Uuid::new_v4().simple().to_string();
+        for (provider, base, suffix, stored, code) in [
+            (
+                "123",
+                "https://www.123684.com/s/",
+                "?%E6%8F%90%E5%8F%96%E7%A0%81:JZMM",
+                Some(""),
+                "JZMM",
+            ),
+            (
+                "115",
+                "https://115cdn.com/s/",
+                "?password=yd45&#访问码：yd45",
+                Some("yd45"),
+                "yd45",
+            ),
+            (
+                "tianyi",
+                "https://cloud.189.cn/t/",
+                "访问码：w0aa",
+                None,
+                "w0aa",
+            ),
+            (
+                "xunlei",
+                "https://pan.xunlei.com/s/",
+                "#%ef%bc%88提取码：dexg",
+                None,
+                "dexg",
+            ),
+            (
+                "baidu",
+                "https://pan.baidu.com/s/1",
+                "?pwd=mckj（提取码：mckj）",
+                Some("mckj（提取码：mckj）"),
+                "mckj",
+            ),
+        ] {
+            let owner = format!("suffix-{provider}-{run}");
+            let dirty = format!("{base}{run}{suffix}");
+            fixture(
+                &pool,
+                &owner,
+                "suffix fixture",
+                json!([{ "type":provider,"url":dirty,"password":stored }]),
+            )
+            .await;
+            // The storage boundary cleans new input before it reaches the DB.
+            let expected = crate::resource_clean::normalize_link(Link {
+                r#type: provider.into(),
+                url: dirty.clone(),
+                password: stored.map(str::to_owned),
+            });
+            let row = sqlx::query(
+                "SELECT id,original_url,original_password FROM resource_links WHERE resource_id=$1",
+            )
+            .bind(&owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let id: uuid::Uuid = row.get("id");
+            assert_eq!(row.get::<String, _>("original_url"), expected.url);
+            assert_eq!(
+                row.get::<Option<String>, _>("original_password").as_deref(),
+                Some(code)
+            );
+            // Simulate a legacy dirty row and a previously invalid check.
+            sqlx::query("UPDATE resource_links SET original_url=$2,original_password=$3,identity=$2,input_fingerprint=$4,validity=0,checked_at=now(),valid_until=now()+interval '1 hour',last_error_code='original_invalid',failure_count=3,next_check_at=now()+interval '1 day' WHERE id=$1")
+                .bind(id).bind(&dirty).bind(stored).bind(format!("dirty-{provider}-{run}")).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO link_check_jobs(link_id,input_version,kind,priority) SELECT id,input_version,'original',1 FROM resource_links WHERE id=$1 ON CONFLICT DO NOTHING")
+                .bind(id).execute(&pool).await.unwrap();
+            let revision_before: i64 = sqlx::query_scalar(
+                "SELECT revision FROM config_revisions WHERE scope='local-index'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            repair_password_suffixes(&pool).await.unwrap();
+            let revision_after: i64 = sqlx::query_scalar(
+                "SELECT revision FROM config_revisions WHERE scope='local-index'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revision_after, revision_before + 1);
+            let row = sqlx::query("SELECT id,original_url,original_password,identity,input_fingerprint,validity,valid_until,last_error_code,failure_count,updated_at FROM resource_links WHERE resource_id=$1").bind(&owner).fetch_one(&pool).await.unwrap();
+            assert_eq!(row.get::<uuid::Uuid, _>("id"), id);
+            assert_eq!(row.get::<String, _>("original_url"), expected.url);
+            assert_eq!(
+                row.get::<Option<String>, _>("original_password").as_deref(),
+                Some(code)
+            );
+            assert_eq!(
+                row.get::<String, _>("identity"),
+                crate::resource_clean::link_identity(&expected.url)
+            );
+            assert_eq!(
+                row.get::<String, _>("input_fingerprint"),
+                crate::link_resolution::fingerprint(&expected)
+            );
+            assert_eq!(row.get::<i16, _>("validity"), -1);
+            assert!(
+                row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("valid_until")
+                    .is_none()
+            );
+            assert!(row.get::<Option<String>, _>("last_error_code").is_none());
+            assert_eq!(row.get::<i32, _>("failure_count"), 0);
+            let scheduled: bool = sqlx::query_scalar("SELECT bool_and(j.run_after=c.next_check_at) FROM link_check_jobs j JOIN resource_links c ON c.id=j.link_id WHERE c.id=$1 AND j.status='queued'")
+                .bind(id).fetch_one(&pool).await.unwrap();
+            assert!(scheduled);
+            let updated: chrono::DateTime<chrono::Utc> = row.get("updated_at");
+            repair_password_suffixes(&pool).await.unwrap();
+            let again: chrono::DateTime<chrono::Utc> =
+                sqlx::query_scalar("SELECT updated_at FROM resource_links WHERE id=$1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(updated, again);
+            let revision_again: i64 = sqlx::query_scalar(
+                "SELECT revision FROM config_revisions WHERE scope='local-index'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revision_again, revision_after);
+        }
+        sqlx::query("DELETE FROM link_check_jobs WHERE link_id IN(SELECT id FROM resource_links WHERE resource_id LIKE $1)").bind(format!("suffix-%-{run}")).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM managed_resources WHERE id LIKE $1")
+            .bind(format!("suffix-%-{run}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     #[tokio::test]
     #[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
     async fn owned_links_are_atomic_independent_and_preserve_ids_on_reorder() {

@@ -2,6 +2,48 @@ const { API_BASE } = require('./config');
 
 const STORAGE_KEY = 'panhub-auth';
 let pendingLogin;
+let stayAnonymous = false;
+let sessionInitialized = false;
+let configuration;
+let configurationExpiresAt = 0;
+let pendingConfiguration;
+const CONFIG_TTL_MS = 60000;
+
+function storeConfiguration(data) {
+  // An absent flag is unknown, never permission to request hot searches.
+  if (!data || typeof data.showHotSearch !== 'boolean') return;
+  configuration = {
+    showHotSearch: data.showHotSearch,
+    anonymousCustomChannels: !!data.anonymousCustomChannels,
+    homeSearchPlaceholder: data.homeSearchPlaceholder,
+  };
+  configurationExpiresAt = Date.now() + CONFIG_TTL_MS;
+}
+
+function ensureConfiguration() {
+  if (configuration && configurationExpiresAt > Date.now()) return Promise.resolve(configuration);
+  if (!pendingConfiguration) {
+    const session = getSession();
+    // The deployed API exposes UI flags on account/session. Reuse the Bearer
+    // token so this reads the current session instead of issuing another one.
+    pendingConfiguration = request('/api/account/session')
+      .then(({ data }) => {
+        if (!data || typeof data.showHotSearch !== 'boolean') throw new Error('未获取到首页配置');
+        const current = getSession();
+        if (data.sessionId && (current && current.token) === (session && session.token)) {
+          wx.setStorageSync(STORAGE_KEY, {
+            token: data.sessionId,
+            user: data.authenticated ? data.user || null : null,
+            expiresAt: current && data.sessionId === current.token ? current.expiresAt : undefined,
+          });
+        }
+        storeConfiguration(data);
+        return configuration;
+      })
+      .finally(() => { pendingConfiguration = undefined; });
+  }
+  return pendingConfiguration;
+}
 
 function getSession() {
   try {
@@ -33,7 +75,8 @@ function request(path, { method = 'GET', data, authenticated = true } = {}) {
     url: `${API_BASE}${path}`, method, data, header, timeout: 15000,
     success(response) {
       if (response.statusCode >= 200 && response.statusCode < 300) return resolve(response);
-      if (response.statusCode === 401 && authenticated) clearSession();
+      // A late response for an old token must not clear a newer login.
+      if (response.statusCode === 401 && authenticated && session && getSession() && getSession().token === session.token) clearSession();
       const detail = response.data && (response.data.statusMessage || response.data.message);
       const messages = {
         '微信登录凭证已失效，请重新点击登录': '微信登录凭证已失效，请重新点击登录',
@@ -85,6 +128,8 @@ function login() {
     if (!data.token || !data.user) throw new Error('微信登录未完成，请重试');
     const session = { token: data.token, expiresAt: data.expiresAt, user: data.user || null };
     wx.setStorageSync(STORAGE_KEY, session);
+    stayAnonymous = false;
+    storeConfiguration(data);
     return session.user;
   })().finally(() => { pendingLogin = undefined; });
   return pendingLogin;
@@ -98,7 +143,7 @@ function ensureLogin() {
 
 async function logout() {
   try { await request('/api/account/logout', { method: 'POST' }); }
-  finally { clearSession(); }
+  finally { clearSession(); stayAnonymous = true; }
 }
 
 /**
@@ -118,15 +163,23 @@ let pendingSession;
 function storeAnonymousSession(data) {
   if (data && !data.authenticated && data.sessionId && !hasValidSession()) {
     wx.setStorageSync(STORAGE_KEY, { token: data.sessionId, user: null });
+    storeConfiguration(data);
   }
 }
+async function anonymousSession() {
+  if (hasValidSession()) return;
+  const { data } = await request('/api/account/session', { authenticated: false });
+  if (!data.sessionId) throw new Error('未获取到匿名会话');
+  storeAnonymousSession(data);
+}
 function ensureSession() {
-  if (hasValidSession()) return Promise.resolve(getSession());
-  if (!pendingSession) pendingSession = login().catch(async () => {
-    const { data } = await request('/api/account/session', { authenticated: false });
-    if (!data.sessionId) throw new Error('未获取到匿名会话');
-    storeAnonymousSession(data);
-  }).then(() => getSession()).finally(() => { pendingSession = undefined; });
+  if (pendingSession) return pendingSession;
+  // Retry silent login once on a new launch even if the last launch fell back
+  // to an anonymous token. Within this launch all callers reuse that outcome.
+  if (hasValidSession() && (getSession().user || sessionInitialized || stayAnonymous)) return Promise.resolve(getSession());
+  sessionInitialized = true;
+  pendingSession = (stayAnonymous ? anonymousSession() : login().catch(anonymousSession))
+    .then(() => getSession()).finally(() => { pendingSession = undefined; });
   return pendingSession;
 }
-module.exports = { storeAnonymousSession, ensureSession, login, ensureLogin, logout, confirmQrLogin, request, getSession, clearSession, hasValidSession };
+module.exports = { storeAnonymousSession, ensureSession, ensureConfiguration, login, ensureLogin, logout, confirmQrLogin, request, getSession, clearSession, hasValidSession };

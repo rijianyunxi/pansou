@@ -177,6 +177,10 @@ fn errors_do_not_mark_login_or_network_as_invalid() {
         ErrorKind::InvalidLink
     );
     assert_eq!(
+        DriveError::from_code(Provider::Quark, 41011).kind,
+        ErrorKind::InvalidLink
+    );
+    assert_eq!(
         DriveError::from_code(Provider::Quark, 41012).kind,
         ErrorKind::InvalidLink
     );
@@ -204,6 +208,16 @@ struct MockData {
     business_error: bool,
     // 0 = live share, 1 = cancelled share (HTTP 404 + business code), 2 = plain 404.
     dead_share: u8,
+    // Baidu: a cancelled public share still passes verify; the share page then
+    // renders Baidu's "链接不存在" error document and the file list answers -21.
+    baidu_dead_share: bool,
+    // Some error documents carry no share identity at all; only the page
+    // markers distinguish them from an unreadable upstream response.
+    baidu_bare_error: bool,
+    // Token-provider share states exercised anonymously against the mock.
+    aliyun_dead: bool,
+    guangya_dead: bool,
+    xunlei_captcha: bool,
     changed: bool,
     paginated: bool,
     polls: usize,
@@ -240,14 +254,20 @@ impl Mock {
         }
     }
     fn drive(&self, p: Provider) -> Drive {
-        let mut drive = Drive::new(
-            transport::http_client(),
+        self.drive_with(
             p,
             "BDUSS=fixture; BAIDUID=fixture; STOKEN=fixture; __puus=fixture".into(),
-        );
+        )
+    }
+    fn anonymous_drive(&self, p: Provider) -> Drive {
+        self.drive_with(p, String::new())
+    }
+    fn drive_with(&self, p: Provider, cookie: String) -> Drive {
+        let mut drive = Drive::new(transport::http_client(), p, cookie);
         drive.baidu.base = self.bases.baidu.clone();
         drive.quark.pc_base = self.bases.quark_pc.clone();
         drive.quark.share_base = self.bases.quark_share.clone();
+        drive.extended.base = self.bases.baidu.clone();
         drive
     }
 }
@@ -337,6 +357,14 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
                     .into_response();
             }
             2 => return (StatusCode::NOT_FOUND, "gone").into_response(),
+            // Live-verified 2026-10-05: content removed by platform review.
+            3 => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"status":404,"code":41010,"message":"文件涉及违规内容"})),
+                )
+                    .into_response();
+            }
             _ => json!({"code":0,"data":{"stoken":"fixture-token"}}),
         },
         ("/qshare/share/sharepage/detail", _) => {
@@ -400,17 +428,33 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
         }
         ("/qpc/file/delete", _) => json!({"code":0,"data":{"task_resp":{"data":{"status":2}}}}),
         ("/share/verify", _) => {
-            return (
-                [("set-cookie", "BDCLND=fixture-sekey; Path=/")],
-                axum::Json(json!({"errno":0,"randsk":"fixture%2Bkey"})),
-            )
-                .into_response();
+            // Real Baidu only hands BDCLND to requests that already carry BAIDUID.
+            if cookie.contains("BAIDUID") {
+                return (
+                    [("set-cookie", "BDCLND=fixture-sekey; Path=/")],
+                    axum::Json(json!({"errno":0,"randsk":"fixture%2Bkey"})),
+                )
+                    .into_response();
+            }
+            json!({"errno":0,"randsk":"fixture%2Bkey"})
         }
         ("/s/1abc", _) => {
+            if mock.baidu_dead_share {
+                let body = if mock.baidu_bare_error {
+                    "<title>百度网盘-链接不存在</title>".to_owned()
+                } else {
+                    "<title>百度网盘-链接不存在</title><script>window.yunData={\"shareid\":\"99\",\"share_uk\":\"2\",\"share_page_type\":\"error\",\"errno\":145};</script>".to_owned()
+                };
+                return ([("content-type", "text/html; charset=utf-8")], body).into_response();
+            }
             return r#"window.yunData={"shareid":"99","share_uk":"2"};"#.into_response();
         }
         ("/share/list", _) => {
-            json!({"errno":0,"list":[bfile(9007199254740993,"a.mp4",42),bfile(9007199254740994,"b.mp4",43)]})
+            if mock.baidu_dead_share {
+                json!({"errno":-21,"list":[],"show_msg":"来晚啦，该分享已被取消"})
+            } else {
+                json!({"errno":0,"list":[bfile(9007199254740993,"a.mp4",42),bfile(9007199254740994,"b.mp4",43)]})
+            }
         }
         ("/api/gettemplatevariable", _) => {
             json!({"errno":0,"result":{"bdstoken":"fixture-bdstoken","uk":if mock.own_share{2}else{3}}})
@@ -438,6 +482,42 @@ async fn upstream(State(state): State<Arc<Mutex<MockData>>>, request: Request<Bo
             json!({"errno":0,"fs_id":102,"server_filename":"pansou-fixture","isdir":1,"path":"/project/pansou-fixture","size":0})
         }
         ("/share/cancel", _) => json!({"errno":0}),
+        // Token providers, exercised anonymously: share state arrives either as
+        // a string business code on a non-2xx status (Aliyun), as a code-200
+        // body without payload (Guangya), or as a captcha wall (Xunlei).
+        ("/v2/share_link/get_share_token", "POST") => {
+            if mock.aliyun_dead {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({"code":"ShareLink.Cancelled","message":"share_link is cancelled by the creator"})),
+                )
+                    .into_response();
+            }
+            json!({"share_token":"fixture-token","share_name":"fixture"})
+        }
+        ("/adrive/v2/file/list_by_share", "POST") => {
+            json!({"next_marker":"","items":[{"file_id":"a","name":"a.mp4","type":"file","size":42}]})
+        }
+        ("/nd.bizuserres.s/v1/get_share_access_token", "POST") => {
+            if mock.guangya_dead {
+                json!({"code":200,"msg":"分享链接错误"})
+            } else {
+                json!({"data":{"accessToken":"fixture-token"}})
+            }
+        }
+        ("/nd.bizuserres.s/v1/get_share_page_files_list", "POST") => {
+            json!({"msg":"success","data":{"total":1,"list":[{"fileId":"g1","fileName":"a.mp4","resType":1,"size":"42"}]}})
+        }
+        ("/drive/v1/share", _) => {
+            if mock.xunlei_captcha {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({"error":"captcha_invalid","error_code":9,"error_description":"验证码无效"})),
+                )
+                    .into_response();
+            }
+            json!({"error_code":0,"pass_code_token":"fixture-token"})
+        }
         ("/qpc/file", _) => {
             json!({"code":0,"data":{"fid":"own-dir","file_name":"pansou-fixture","dir":true,"size":0}})
         }
@@ -717,6 +797,133 @@ async fn cancelled_quark_share_on_http_404_is_invalid_not_unknown() {
     // A 404 without a business body is a provider-side signal we cannot trust.
     mock.data.lock().await.dead_share = 2;
     let result = mock.drive(Provider::Quark).check(&reference).await;
+    assert_eq!(result["status"], "unknown", "{result}");
+}
+#[tokio::test]
+async fn anonymous_baidu_check_resolves_a_cancelled_share_to_invalid() {
+    let mock = Mock::start().await;
+    mock.data.lock().await.baidu_dead_share = true;
+    let reference = share_input(Provider::Baidu).parse().unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Baidu)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "invalid", "{result}");
+    assert_eq!(result["code"], -21);
+    // The bare client installed the share cookie itself, in the encoded form.
+    let data = mock.data.lock().await;
+    let list = data
+        .calls
+        .iter()
+        .find(|(_, p, _, _)| p == "/share/list")
+        .unwrap();
+    assert!(
+        list.3.contains("BDCLND=fixture%2Bkey"),
+        "cookie: {}",
+        list.3
+    );
+}
+#[tokio::test]
+async fn anonymous_baidu_check_confirms_a_live_share_without_an_account() {
+    let mock = Mock::start().await;
+    let reference = share_input(Provider::Baidu).parse().unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Baidu)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "valid", "{result}");
+    assert_eq!(result["fileCount"], 2);
+}
+#[tokio::test]
+async fn anonymous_baidu_error_page_without_share_identity_is_still_invalid() {
+    let mock = Mock::start().await;
+    {
+        let mut data = mock.data.lock().await;
+        data.baidu_dead_share = true;
+        data.baidu_bare_error = true;
+    }
+    let reference = share_input(Provider::Baidu).parse().unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Baidu)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "invalid", "{result}");
+    let data = mock.data.lock().await;
+    assert!(
+        !data.calls.iter().any(|(_, p, _, _)| p == "/share/list"),
+        "a page without share identity must not reach the file list"
+    );
+}
+#[tokio::test]
+async fn quark_content_violation_removal_is_invalid_not_unknown() {
+    let mock = Mock::start().await;
+    let reference = share_input(Provider::Quark).parse().unwrap();
+    mock.data.lock().await.dead_share = 3;
+    let result = mock.drive(Provider::Quark).check(&reference).await;
+    assert_eq!(result["status"], "invalid", "{result}");
+    assert_eq!(result["code"], 41010);
+}
+#[tokio::test]
+async fn anonymous_aliyun_check_marks_a_cancelled_share_invalid() {
+    let mock = Mock::start().await;
+    let reference = ShareInput {
+        url: "https://www.alipan.com/s/abc?pwd=a1b2".into(),
+        provider: Some(Provider::Aliyun),
+        password: None,
+    }
+    .parse()
+    .unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Aliyun)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "valid", "{result}");
+    assert_eq!(result["fileCount"], 1);
+    mock.data.lock().await.aliyun_dead = true;
+    let result = mock
+        .anonymous_drive(Provider::Aliyun)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "invalid", "{result}");
+}
+#[tokio::test]
+async fn anonymous_guangya_check_marks_a_missing_share_invalid() {
+    let mock = Mock::start().await;
+    let reference = ShareInput {
+        url: "https://www.guangyapan.com/s/1953404474227400751_aeXCPJwocgzRgD8m".into(),
+        provider: Some(Provider::Guangya),
+        password: None,
+    }
+    .parse()
+    .unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Guangya)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "valid", "{result}");
+    assert_eq!(result["fileCount"], 1);
+    mock.data.lock().await.guangya_dead = true;
+    let result = mock
+        .anonymous_drive(Provider::Guangya)
+        .check(&reference)
+        .await;
+    assert_eq!(result["status"], "invalid", "{result}");
+}
+#[tokio::test]
+async fn xunlei_captcha_wall_stays_unknown_without_an_account() {
+    let mock = Mock::start().await;
+    mock.data.lock().await.xunlei_captcha = true;
+    let reference = ShareInput {
+        url: "https://pan.xunlei.com/s/VP28HTMeErvJWbZMiAdJC7tQA1?pwd=86wu".into(),
+        provider: Some(Provider::Xunlei),
+        password: None,
+    }
+    .parse()
+    .unwrap();
+    let result = mock
+        .anonymous_drive(Provider::Xunlei)
+        .check(&reference)
+        .await;
     assert_eq!(result["status"], "unknown", "{result}");
 }
 

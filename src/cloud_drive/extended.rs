@@ -339,26 +339,21 @@ impl Extended {
             }
             if code != "0" && !(wire.provider == Provider::Guangya && code == "200") {
                 tracing::warn!(provider=%wire.provider.name(), business_code=%code, "token drive call rejected by business code");
-                let kind = match code.as_str() {
-                    "AccessTokenInvalid"
-                    | "AccessTokenExpired"
-                    | "InvalidAccessToken"
-                    | "Unauthorized"
-                    | "401"
-                    | "DeviceSessionSignatureInvalid"
-                    | "DeviceSessionSignatureOffline"
-                    | "DeviceSessionNotFound" => ErrorKind::Login,
-                    "ShareLinkNotFound" | "ShareLinkExpired" | "ShareLinkCancelled" => {
-                        ErrorKind::InvalidLink
-                    }
-                    "ShareLinkPasswordMismatch" | "InvalidSharePwd" => ErrorKind::Password,
-                    "TooManyRequests" | "429" => ErrorKind::RateLimit,
-                    _ => ErrorKind::Upstream,
-                };
-                if kind == ErrorKind::Login {
+                let error = DriveError::from_business_code(wire.provider, &code);
+                if error.kind == ErrorKind::Login {
                     wire.auth_rejected(true).await;
                 }
-                return Err(wire.error(kind, "网盘拒绝操作，请检查登录凭据、提取码或账号限制"));
+                return Err(error);
+            }
+            // Live-verified 2026-10-05: a missing Guangya share answers HTTP 200
+            // `{"code":200,"msg":"分享链接错误"}` with no payload; the pass-through
+            // `code` alone must not read as success.
+            if wire.provider == Provider::Guangya
+                && code == "200"
+                && value.get("data").is_none_or(|data| data.is_null())
+                && scalar(&value["msg"]) == "分享链接错误"
+            {
+                return Err(wire.error(ErrorKind::InvalidLink, "分享链接已失效或不存在"));
             }
         } else if wire.provider == Provider::Guangya {
             // Guangya does not use one uniform envelope. Failures carry a `code`
@@ -377,6 +372,8 @@ impl Extended {
                     top_keys = ?value.as_object().map(|o| o.keys().collect::<Vec<_>>()),
                     "guangya reply carries no business code"
                 );
+            } else if scalar(&value["msg"]) == "分享链接错误" {
+                return Err(wire.error(ErrorKind::InvalidLink, "分享链接已失效或不存在"));
             } else {
                 tracing::warn!(
                     top_keys = ?value.as_object().map(|o| o.keys().collect::<Vec<_>>()),

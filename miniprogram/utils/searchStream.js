@@ -196,6 +196,7 @@ function searchStream(options) {
     });
 
     let rawBody = '';
+    let receivedChunks = false;
 
     task = wx.request({
       url: `${API_BASE}/api/search`,
@@ -207,6 +208,14 @@ function searchStream(options) {
       success(response) {
         if (aborted || settled) return;
         if (response.statusCode >= 200 && response.statusCode < 300) {
+          // Some clients deliver the final body only in success; others leave
+          // the last event without its blank-line delimiter in the last chunk.
+          if (!receivedChunks && response.data) {
+            parser.feed(typeof response.data === 'string' ? response.data : decoder.decode(new Uint8Array(response.data), true));
+          } else {
+            parser.feed(decoder.decode(new Uint8Array(0), true));
+          }
+          parser.flush();
           if (settled) return;
           // Stream ended without a complete/error event.
           settleError(new Error('搜索流在完成事件前中断，请重试'));
@@ -214,8 +223,8 @@ function searchStream(options) {
         }
         if (response.statusCode === 401 && attempt === 0) {
           refreshing = true;
-          auth.clearSession();
-          auth.login()
+          if (session && auth.getSession() && auth.getSession().token === session.token) auth.clearSession();
+          auth.ensureSession()
             .then(() => { refreshing = false; run(1); })
             .catch((error) => { refreshing = false; settleError(error); });
           return;
@@ -238,6 +247,7 @@ function searchStream(options) {
 
     if (typeof task.onChunkReceived !== 'function') {
       settleError(new Error('当前微信版本不支持流式搜索，请升级微信后重试'));
+      if (task.abort) task.abort();
       return;
     }
 
@@ -245,8 +255,11 @@ function searchStream(options) {
       if (aborted || settled) return;
       const bytes = chunk && (chunk.data || chunk.arrayBuffer);
       if (!bytes) return;
+      receivedChunks = true;
       const text = decoder.decode(new Uint8Array(bytes), false);
-      rawBody += text;
+      // Only keep a bounded error response sample, not a second copy of all
+      // streamed search results.
+      if (rawBody.length < 16384) rawBody += text.slice(0, 16384 - rawBody.length);
       if (!settled) parser.feed(text);
     });
   }

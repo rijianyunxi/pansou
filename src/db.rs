@@ -57,6 +57,7 @@ pub async fn init_db(pool: &PgPool) -> Result<()> {
         .run(pool)
         .await
         .context("执行 PostgreSQL migrations 失败")?;
+    crate::resource_links::repair_password_suffixes(pool).await?;
     Ok(())
 }
 

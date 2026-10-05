@@ -130,6 +130,13 @@ impl Baidu {
                 .wire
                 .error(ErrorKind::Password, "百度未返回分享授权，请检查提取码"));
         }
+        // Baidu only returns the share-session cookie to requests that already
+        // carry BAIDUID. A bare client (no configured account) gets none, so
+        // install the still-encoded randsk as BDCLND; without it the share
+        // page and /share/list answer "need verify" right after a valid check.
+        if self.wire.cookie_value("BDCLND").await.is_empty() {
+            self.wire.merge_cookie(&format!("BDCLND={randsk}")).await;
+        }
         let encoded = format!("key={}", randsk.replace('+', "%2B"));
         Ok(url::form_urlencoded::parse(encoded.as_bytes())
             .next()
@@ -154,10 +161,17 @@ impl Baidu {
             .captures(&html)
             .map(|c| c[1].to_owned())
             .ok_or_else(|| {
-                self.wire.error(
-                    ErrorKind::Upstream,
-                    "未能解析百度分享信息，不能确认链接状态",
-                )
+                if html.contains("<title>百度网盘-链接不存在")
+                    || html.contains(r#""share_page_type":"error""#)
+                {
+                    self.wire
+                        .error(ErrorKind::InvalidLink, "百度分享链接不存在或已失效")
+                } else {
+                    self.wire.error(
+                        ErrorKind::Upstream,
+                        "未能解析百度分享信息，不能确认链接状态",
+                    )
+                }
             })?;
         let owner = SHARE_UK
             .captures(&html)

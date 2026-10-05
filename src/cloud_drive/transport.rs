@@ -77,6 +77,13 @@ impl Wire {
     pub async fn cookie_value(&self, key: &str) -> String {
         cookie_value(&*self.cookie.lock().await, key)
     }
+    /// Merge one `Set-Cookie`-shaped value into the in-memory jar. Unlike the
+    /// response path this never touches the account binding: session-scoped
+    /// share cookies (BDCLND) must not reach stored credentials.
+    pub async fn merge_cookie(&self, value: &str) {
+        let mut cookie = self.cookie.lock().await;
+        *cookie = merge_cookies(&cookie, &[value.to_owned()]);
+    }
     pub async fn require_login(&self) -> Result<(), DriveError> {
         let cookie = self.cookie.lock().await;
         if cookie.trim().is_empty() {
@@ -178,10 +185,12 @@ impl Wire {
             // without_url strips paths and query strings; only the failure class
             // (timeout/connect/body) is logged, never credentials or URLs.
             tracing::warn!(provider=%self.provider.name(), error=%e.without_url(), "cloud drive request failed");
-            self.error(
-                ErrorKind::Network,
-                "网盘请求超时或连接失败；写操作结果可能未确认，请勿重复提交",
-            )
+            let message = if write {
+                "网盘请求超时或连接失败；写操作结果可能未确认，请勿重复提交"
+            } else {
+                "网盘请求超时或连接失败，请稍后重试"
+            };
+            self.error(ErrorKind::Network, message)
         })?;
         let status = response.status();
         if status.is_redirection() {
@@ -290,6 +299,26 @@ impl Wire {
                     self.auth_rejected(true).await;
                 }
                 return Err(error);
+            }
+            // Token providers reject business operations on non-2xx with string
+            // codes (Aliyun's `ShareLink.Cancelled`) or Xunlei's numeric
+            // `error_code` instead of an errno envelope; without this a dead
+            // share reads as a provider outage and stays "unknown".
+            if self.provider.token_auth()
+                && let Ok(payload) = serde_json::from_slice::<Value>(&bytes)
+            {
+                let code = payload
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+                    .or_else(|| payload.get("error_code").map(super::scalar));
+                if let Some(code) = code.filter(|code| !code.is_empty() && code != "0") {
+                    let error = DriveError::from_business_code(self.provider, &code);
+                    if error.kind == ErrorKind::Login {
+                        self.auth_rejected(true).await;
+                    }
+                    return Err(error);
+                }
             }
             return Err(self.error(
                 ErrorKind::Upstream,
@@ -400,15 +429,25 @@ pub(crate) fn merge_cookies(cookie: &str, values: &[String]) -> String {
         .join("; ")
 }
 pub fn http_client() -> Client {
-    Client::builder()
+    // 网盘请求默认绕过系统代理直连；PANSOU_CLOUD_PROXY_URL 为网盘流量单独
+    // 指定出口（例如服务器到夸克链路不佳时走一台中转代理），未配置时行为不变。
+    let mut builder = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
         .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(8)
-        .build()
-        .expect("cloud drive HTTP client")
+        .pool_max_idle_per_host(8);
+    builder = match std::env::var("PANSOU_CLOUD_PROXY_URL").as_deref() {
+        Ok(url) if !url.trim().is_empty() => match reqwest::Proxy::all(url.trim()) {
+            Ok(proxy) => builder.proxy(proxy),
+            Err(error) => {
+                tracing::warn!(%error, "invalid PANSOU_CLOUD_PROXY_URL; cloud requests stay direct");
+                builder.no_proxy()
+            }
+        },
+        _ => builder.no_proxy(),
+    };
+    builder.build().expect("cloud drive HTTP client")
 }
 
 #[cfg(test)]

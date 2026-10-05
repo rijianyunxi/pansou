@@ -16,10 +16,25 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 
+fn account_config_payload(policy: &crate::policy::UserPolicy) -> Value {
+    json!({
+        "anonymousCustomChannels": policy.anonymous_custom_channels,
+        "showHotSearch": policy.show_hot_search,
+        "showAuthButtons": policy.show_auth_buttons,
+        "homeSearchPlaceholder": policy.home_search_placeholder,
+    })
+}
+
+pub async fn account_config(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    let policy = crate::policy::load(&state.pool).await?;
+    Ok(Json(account_config_payload(&policy)))
+}
+
 pub async fn account_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let policy = crate::policy::load(&state.pool).await?;
     let auth = state.auth();
     let existing = auth.existing_session(&headers).await?;
     let created = existing.is_none();
@@ -32,8 +47,10 @@ pub async fn account_session(
         Some(id) => Some(auth.public_user(id).await?),
         None => None,
     };
-    let policy = policy(&state).await;
-    let body = json!({"authenticated":user.is_some(),"user":user,"sessionId":s.token,"anonymousCustomChannels":policy.get("anonymousCustomChannels").and_then(Value::as_bool).unwrap_or(false),"showHotSearch":policy.get("showHotSearch").and_then(Value::as_bool).unwrap_or(true),"showAuthButtons":policy.get("showAuthButtons").and_then(Value::as_bool).unwrap_or(true),"homeSearchPlaceholder":policy.get("homeSearchPlaceholder").and_then(Value::as_str).unwrap_or("搜索电影、剧集、资料等资源…")});
+    let mut body = account_config_payload(&policy);
+    body["authenticated"] = json!(user.is_some());
+    body["user"] = json!(user);
+    body["sessionId"] = json!(s.token);
     let mut out = Json(body).into_response();
     if created || headers.get(header::COOKIE).is_none() {
         out.headers_mut().insert(
@@ -285,13 +302,16 @@ pub async fn wechat_login(
         .await
         .map_err(|_| ApiError::Upstream("微信登录服务返回格式异常".into()))?;
     let openid = wechat_openid(&data)?;
+    let policy = crate::policy::load(&state.pool).await?;
     let auth = state.auth();
     let (session, user) = auth.login_wechat(app_id.trim(), openid).await?;
     let expires_at =
         chrono::Utc::now().timestamp_millis() + (auth.session_ttl_seconds().await as i64 * 1000);
-    Ok(Json(
-        json!({"token":session.token,"expiresAt":expires_at,"user":user}),
-    ))
+    let mut payload = account_config_payload(&policy);
+    payload["token"] = json!(session.token);
+    payload["expiresAt"] = json!(expires_at);
+    payload["user"] = json!(user);
+    Ok(Json(payload))
 }
 
 fn wechat_openid(data: &Value) -> Result<&str, ApiError> {
@@ -321,6 +341,23 @@ fn wechat_openid(data: &Value) -> Result<&str, ApiError> {
 #[cfg(test)]
 mod wechat_tests {
     use super::*;
+    #[test]
+    fn public_config_preserves_disabled_flags_and_excludes_internal_settings() {
+        let policy = crate::policy::UserPolicy {
+            show_hot_search: false,
+            anonymous_custom_channels: true,
+            home_search_placeholder: "配置的提示词".into(),
+            ..Default::default()
+        };
+        let config = account_config_payload(&policy);
+        assert_eq!(config["showHotSearch"], false);
+        assert_eq!(config["anonymousCustomChannels"], true);
+        assert_eq!(config["homeSearchPlaceholder"], "配置的提示词");
+        assert_eq!(config.as_object().unwrap().len(), 4);
+        assert!(config.get("sessionDays").is_none());
+        assert!(config.get("globalSearchConcurrency").is_none());
+    }
+
     #[test]
     fn exchange_requires_verified_identity() {
         assert_eq!(

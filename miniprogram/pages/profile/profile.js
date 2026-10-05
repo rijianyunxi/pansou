@@ -16,10 +16,11 @@ require('../../utils/theme').themedPage({
   async refreshSession() {
     this.setData({ loading: true });
     try {
-      const session = await api.fetchSession({ fresh: true });
+      const session = await api.fetchSession();
       this.setData({ authenticated: session.authenticated, user: session.user });
     } catch (error) {
-      this.setData({ authenticated: false, user: null });
+      const session = auth.hasValidSession() && auth.getSession();
+      this.setData({ authenticated: !!(session && session.user), user: session && session.user || null });
     } finally {
       this.setData({ loading: false });
     }
@@ -54,10 +55,10 @@ require('../../utils/theme').themedPage({
         this.setData({ loading: true });
         try {
           await auth.logout();
-          await this.refreshSession();
         } catch (error) {
           feedback.showToast({ title: error.message, icon: 'none' });
         } finally {
+          await this.refreshSession();
           this.setData({ loading: false });
         }
       },

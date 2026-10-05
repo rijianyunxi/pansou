@@ -104,8 +104,15 @@ impl DriveError {
     }
     pub fn from_code(provider: Provider, code: i64) -> Self {
         let (kind, message) = match (provider, code) {
-            // 41012 arrives on HTTP 404 with a JSON body ("好友已取消了分享").
-            (Provider::Quark, 41008 | 41012) => (ErrorKind::InvalidLink, "夸克分享已失效或被取消"),
+            // 41012 arrives on HTTP 404 with a JSON body ("好友已取消了分享");
+            // 41011 is the same 404 family for expired share addresses
+            // ("分享地址已失效"), live-verified 2026-10-05.
+            (Provider::Quark, 41008 | 41011 | 41012) => {
+                (ErrorKind::InvalidLink, "夸克分享已失效或被取消")
+            }
+            // 41010 is the removal notice for content that failed platform
+            // review ("文件涉及违规内容"), live-verified 2026-10-05.
+            (Provider::Quark, 41010) => (ErrorKind::InvalidLink, "夸克分享因内容违规被取消"),
             (Provider::Quark, 41002 | 41003) => (ErrorKind::Password, "夸克提取码错误或缺失"),
             (Provider::Quark, 31001) => (ErrorKind::Login, "夸克 Cookie 已失效，请重新配置"),
             (Provider::Quark, 31024) => (ErrorKind::RateLimit, "夸克操作过于频繁，请稍后再试"),
@@ -121,6 +128,9 @@ impl DriveError {
                 "夸克拒绝分享：文件未通过平台审核或账号分享受限，请换用其他资源或账号",
             ),
             (Provider::Baidu, -7 | 105) => (ErrorKind::InvalidLink, "百度分享资源已删除或不存在"),
+            // Live-verified 2026-10-05: a cancelled share still passes verify
+            // and then answers the file list with -21 ("来晚啦，该分享已被取消").
+            (Provider::Baidu, -21) => (ErrorKind::InvalidLink, "百度分享已被取消、删除或已过期"),
             (Provider::Baidu, -9 | -1) => {
                 (ErrorKind::Password, "百度链接无法验证，请检查链接及提取码")
             }
@@ -139,6 +149,42 @@ impl DriveError {
             kind,
             message: message.into(),
             code: Some(code),
+        }
+    }
+    /// String business codes from the token providers (Aliyun/Guangya `code`,
+    /// Xunlei `error_code`). Live-verified 2026-10-05: a cancelled Aliyun share
+    /// answers HTTP 400 with `ShareLink.Cancelled`. Unknown codes stay upstream
+    /// so an unmodeled rejection can never mark a link invalid.
+    pub fn from_business_code(provider: Provider, code: &str) -> Self {
+        let (kind, message) = match code {
+            "AccessTokenInvalid"
+            | "AccessTokenExpired"
+            | "InvalidAccessToken"
+            | "Unauthorized"
+            | "401"
+            | "DeviceSessionSignatureInvalid"
+            | "DeviceSessionSignatureOffline"
+            | "DeviceSessionNotFound" => (ErrorKind::Login, "网盘授权已失效，请重新连接账号"),
+            "ShareLinkNotFound"
+            | "ShareLinkExpired"
+            | "ShareLinkCancelled"
+            | "ShareLink.NotFound"
+            | "ShareLink.Expired"
+            | "ShareLink.Cancelled" => (ErrorKind::InvalidLink, "分享链接已失效或被取消"),
+            "ShareLinkPasswordMismatch" | "InvalidSharePwd" => {
+                (ErrorKind::Password, "提取码错误或缺失")
+            }
+            "TooManyRequests" | "429" => (ErrorKind::RateLimit, "网盘操作过于频繁，请稍后再试"),
+            _ => (
+                ErrorKind::Upstream,
+                "网盘返回未识别的业务错误，请检查账号和链接",
+            ),
+        };
+        Self {
+            provider,
+            kind,
+            message: message.into(),
+            code: None,
         }
     }
     pub fn api(self) -> ApiError {
@@ -337,7 +383,14 @@ impl Drive {
     ) -> Result<(), ApiError> {
         use sqlx::Row;
         let row=sqlx::query("SELECT credential,account_key,binding_epoch,token_revision,auth_status FROM cloud_account_settings WHERE provider=$1").bind(self.wire.provider.name()).fetch_optional(connection).await?;
+        // Mirror `cloud_auth::credentials`: an unconfigured row (empty
+        // credential) serves the anonymous drive no matter what account_key a
+        // previous connection left behind. Comparing against that stale key
+        // made every anonymous delivery conflict until its deadline expired.
         let current = row.as_ref().map(|r| {
+            if r.get::<String, _>("credential").trim().is_empty() {
+                return credential_fingerprint(self.wire.provider, "");
+            }
             r.get::<Option<String>, _>("account_key")
                 .unwrap_or_else(|| {
                     credential_fingerprint(self.wire.provider, &r.get::<String, _>("credential"))
@@ -382,7 +435,10 @@ impl Drive {
                 .await?;
             }
         }
-        if self.wire.provider.token_auth() {
+        // Identity verification fences cloud writes. An anonymous drive never
+        // writes (require_login rejects it at the write call), so refusing it
+        // here would only block the read-only validity check that runs first.
+        if self.managed.is_some() && self.wire.provider.token_auth() {
             self.extended.verify_account().await.map_err(|error| {
                 if error.kind == ErrorKind::Ownership {
                     ApiError::Conflict(error.message)

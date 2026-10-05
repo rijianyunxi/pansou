@@ -110,7 +110,7 @@ export function useSearch() {
       const status = error?.statusCode ?? error?.status ?? error?.response?.status;
       const code = error?.data?.code || error?.code;
       const serverMessage = error?.data?.statusMessage || error?.data?.message || error?.message;
-      if (status === 401 && code === "SEARCH_LIMIT_EXCEEDED") {
+      if ((status === 429 || status === 401) && code === "SEARCH_LIMIT_EXCEEDED") {
         state.value.error = serverMessage || "搜索次数或并发数已超过限制，请稍后再试。";
       } else if (status === 401) {
         state.value.error = serverMessage || "搜索会话不存在或已失效，正在重新建立会话，请稍后重试。";
