@@ -824,7 +824,9 @@ impl Extended {
         let ids: Vec<_> = files.iter().map(|f| &f.id).collect();
         let expires = chrono::Utc::now() + chrono::Duration::days(days as i64);
         let value=match self.wire.provider {
-            Provider::Aliyun=>self.post("adrive/v2/share_link/create",json!({"drive_id":self.drive_id,"file_id_list":ids,"expiration":expires.to_rfc3339(),"share_pwd":"","share_name":"pansou 分享"}),None,true).await?,
+            // The share endpoint rejects our default RFC3339 serialization.
+            // Use the canonical UTC milliseconds accepted by that endpoint.
+            Provider::Aliyun=>self.post("adrive/v2/share_link/create",json!({"drive_id":self.drive_id,"file_id_list":ids,"expiration":expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),"share_pwd":"","share_name":"pansou 分享"}),None,true).await?,
             Provider::Xunlei=>self.post("drive/v1/share/batch",json!({"file_ids":ids,"need_password":true,"expiration_days":days}),None,true).await?,
             // shareType=0 disables extraction codes; autoFillCode only controls
             // whether a generated code is included in the platform's URL.
@@ -967,6 +969,55 @@ mod tests {
             Wire::new(reqwest::Client::new(), provider, raw.clone()),
             &raw,
         )
+    }
+
+    #[tokio::test]
+    async fn aliyun_share_uses_an_expiration_accepted_by_the_upstream() {
+        async fn create(Json(input): Json<Value>) -> impl IntoResponse {
+            let expiration = input["expiration"].as_str().unwrap_or_default();
+            // Live upstream responds with HTTP 500 / Exception and "Unable to
+            // parse the date" for a timestamp such as ...729930+00:00.
+            if expiration.len() != 24
+                || !expiration.ends_with('Z')
+                || chrono::DateTime::parse_from_rfc3339(expiration).is_err()
+            {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"code":"Exception","message":"Unable to parse the date"})),
+                );
+            }
+            assert_eq!(input["drive_id"], "fixture-drive");
+            assert_eq!(input["file_id_list"], json!(["fixture-file"]));
+            let expires = chrono::DateTime::parse_from_rfc3339(expiration)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert!(
+                (expires - chrono::Utc::now() - chrono::Duration::days(1))
+                    .num_seconds()
+                    .abs()
+                    < 5
+            );
+            (
+                axum::http::StatusCode::OK,
+                Json(
+                    json!({"share_id":"fixture-share","share_url":"https://www.alipan.com/s/fixture-share"}),
+                ),
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut drive = provider(Provider::Aliyun);
+        drive.base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(any(create)))
+                .await
+                .unwrap()
+        });
+        let file = drive
+            .file(&json!({"file_id":"fixture-file","name":"movie.mp4","type":"file","size":42}))
+            .unwrap();
+        let share = drive.share(&[file], 1).await.unwrap();
+        assert_eq!(share["url"], "https://www.alipan.com/s/fixture-share");
+        server.abort();
     }
 
     #[tokio::test]

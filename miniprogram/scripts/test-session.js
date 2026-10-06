@@ -52,7 +52,7 @@ test('launch, homepage and search share login and never fetch hot searches when 
   let loginRequest;
   const { app, page, api, auth, calls } = setup(t, {
     respond(path, options) {
-      assert.equal(path, '/api/account/wechat/login');
+      assert.equal(path, '/api/account/wechat/session');
       assert.equal(options.header.Authorization, undefined);
       loginRequest = options;
     },
@@ -63,7 +63,7 @@ test('launch, homepage and search share login and never fetch hot searches when 
   const search = auth.ensureSession();
   const hotSearches = api.fetchHotSearches();
   await flush();
-  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
   assert.equal(page.data.showHotSearch, false);
   succeed(loginRequest, loginData());
   await Promise.all([launch, homepage, search]);
@@ -71,14 +71,14 @@ test('launch, homepage and search share login and never fetch hot searches when 
   assert.equal(app.globalData.sessionReady, true);
   assert.equal(app.globalData.session.authenticated, true);
   assert.equal(page.data.homeSearchPlaceholder, flags.homeSearchPlaceholder);
-  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
 });
 
 test('enabled hot searches wait for login configuration and use the requested limit', async t => {
   let loginRequest;
   const { app, page, calls } = setup(t, {
     respond(path, options) {
-      if (path === '/api/account/wechat/login') { loginRequest = options; return; }
+      if (path === '/api/account/wechat/session' && options.data && options.data.code) { loginRequest = options; return; }
       assert.equal(path, '/api/hot-searches');
       assert.equal(new URL(options.url).searchParams.get('limit'), '10');
       succeed(options, { code: 0, data: { hotSearches: [{ term: '电影' }] } });
@@ -90,16 +90,16 @@ test('enabled hot searches wait for login configuration and use the requested li
   assert.equal(calls.includes('/api/hot-searches'), false);
   succeed(loginRequest, loginData({ ...flags, showHotSearch: true }));
   await Promise.all([launch, homepage]);
-  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login', '/api/hot-searches']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session', '/api/hot-searches']);
   assert.deepEqual(page.data.hotSearches, [{ term: '电影', rank: 1 }]);
 });
 
-test('cached login reads deployed session flags with Bearer and shares the in-flight request', async t => {
+test('cached login reads dedicated mini program session with Bearer and shares the in-flight request', async t => {
   let configRequest;
   const { app, page, calls } = setup(t, {
     session: loginData(),
     respond(path, options) {
-      assert.equal(path, '/api/account/session');
+      assert.equal(path, '/api/account/wechat/session');
       assert.equal(options.header.Authorization, 'Bearer user-token');
       configRequest = options;
     },
@@ -107,10 +107,10 @@ test('cached login reads deployed session flags with Bearer and shares the in-fl
   const launch = app.onLaunch();
   const homepage = page.loadSessionFlags();
   await flush();
-  assert.deepEqual(calls, ['/api/account/session']);
+  assert.deepEqual(calls, ['/api/account/wechat/session']);
   succeed(configRequest, flags);
   await Promise.all([launch, homepage]);
-  assert.deepEqual(calls, ['/api/account/session']);
+  assert.deepEqual(calls, ['/api/account/wechat/session']);
 });
 
 for (const failure of ['network', 'missing flag']) {
@@ -119,7 +119,7 @@ for (const failure of ['network', 'missing flag']) {
     const { page, api, calls } = setup(t, {
       session: loginData(),
       respond(path, options) {
-        assert.equal(path, '/api/account/session');
+        assert.equal(path, '/api/account/wechat/session');
         attempts++;
         if (attempts > 1) succeed(options, flags);
         else if (failure === 'network') options.fail();
@@ -132,7 +132,7 @@ for (const failure of ['network', 'missing flag']) {
     assert.deepEqual(page.data.hotSearches, []);
     assert.equal(calls.includes('/api/hot-searches'), false);
     await api.fetchSession();
-    assert.deepEqual(calls, ['/api/account/session', '/api/account/session']);
+    assert.deepEqual(calls, ['/api/account/wechat/session', '/api/account/wechat/session']);
   });
 }
 
@@ -141,27 +141,27 @@ test('login failure shares one anonymous fallback and respects its configuration
   const { app, page, calls } = setup(t, {
     loginFails: true,
     respond(path, options) {
-      assert.equal(path, '/api/account/session');
+      assert.equal(path, '/api/account/wechat/session');
       sessionRequest = options;
     },
   });
   const launch = app.onLaunch();
   const homepage = page.loadSessionFlags();
   await flush();
-  assert.deepEqual(calls, ['wx.login', '/api/account/session']);
-  succeed(sessionRequest, { authenticated: false, sessionId: 'anonymous', ...flags });
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
+  succeed(sessionRequest, { authenticated: false, token: 'anonymous', ...flags });
   await Promise.all([launch, homepage]);
   assert.equal(app.globalData.session.authenticated, false);
-  assert.deepEqual(calls, ['wx.login', '/api/account/session']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
 });
 
 test('logout remains anonymous; manual login updates user without a stale session cache', async t => {
   const { auth, api, calls } = setup(t, {
     respond(path, options) {
-      if (path === '/api/account/wechat/login') return succeed(options, loginData());
+      if (path === '/api/account/wechat/session' && options.data && options.data.code) return succeed(options, loginData());
       if (path === '/api/account/logout') return succeed(options, { ok: true });
-      assert.equal(path, '/api/account/session');
-      succeed(options, { authenticated: false, sessionId: 'anonymous', ...flags });
+      assert.equal(path, '/api/account/wechat/session');
+      succeed(options, { authenticated: false, token: 'anonymous', ...flags });
     },
   });
   assert.equal((await api.fetchSession()).authenticated, true);
@@ -171,7 +171,7 @@ test('logout remains anonymous; manual login updates user without a stale sessio
   await auth.login();
   assert.equal((await api.fetchSession()).authenticated, true);
   assert.deepEqual((await api.fetchSession()).user, { id: 7 });
-  assert.equal(calls.filter(path => path === '/api/account/session').length, 1);
+  assert.equal(calls.filter(path => path === '/api/account/wechat/session').length, 3, 'two user logins and one explicit anonymous session');
 });
 
 test('a cached anonymous token retries login once on launch and reuses the token if login fails', async t => {
@@ -179,14 +179,14 @@ test('a cached anonymous token retries login once on launch and reuses the token
     session: { token: 'old-anonymous', user: null },
     loginFails: true,
     respond(path, options) {
-      assert.equal(path, '/api/account/session');
+      assert.equal(path, '/api/account/wechat/session');
       succeed(options, flags);
     },
   });
   const sessions = await Promise.all([api.fetchSession(), api.fetchSession()]);
   assert.ok(sessions.every(session => !session.authenticated));
   await api.fetchSession();
-  assert.deepEqual(calls, ['wx.login', '/api/account/session']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
 });
 
 test('expired config is refreshed before hot searches; cached true cannot bypass a failed refresh', async t => {
@@ -197,8 +197,8 @@ test('expired config is refreshed before hot searches; cached true cannot bypass
   let configAttempts = 0;
   const { api, calls } = setup(t, {
     respond(path, options) {
-      if (path === '/api/account/wechat/login') return succeed(options, loginData({ ...flags, showHotSearch: true }));
-      assert.equal(path, '/api/account/session');
+      if (path === '/api/account/wechat/session' && options.data && options.data.code) return succeed(options, loginData({ ...flags, showHotSearch: true }));
+      assert.equal(path, '/api/account/wechat/session');
       if (++configAttempts === 1) options.fail();
       else succeed(options, flags);
     },
@@ -210,12 +210,12 @@ test('expired config is refreshed before hot searches; cached true cannot bypass
   assert.equal(calls.includes('/api/hot-searches'), false);
 });
 
-test('deployed login response without flags reads session once before deciding about hot searches', async t => {
+test('missing login flags are recovered only through the dedicated session endpoint', async t => {
   let sessionRequest;
   const { app, page, api, calls } = setup(t, {
     respond(path, options) {
-      if (path === '/api/account/wechat/login') return succeed(options, loginData({}));
-      assert.equal(path, '/api/account/session');
+      if (path === '/api/account/wechat/session' && options.data && options.data.code) return succeed(options, loginData({}));
+      assert.equal(path, '/api/account/wechat/session');
       assert.equal(options.header.Authorization, 'Bearer user-token');
       sessionRequest = options;
     },
@@ -224,21 +224,24 @@ test('deployed login response without flags reads session once before deciding a
   const homepage = page.loadSessionFlags();
   const hot = api.fetchHotSearches();
   await flush();
-  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login', '/api/account/session']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session', '/api/account/wechat/session']);
   assert.equal(page.data.showHotSearch, false);
-  succeed(sessionRequest, { ...flags, authenticated: true, sessionId: 'user-token', user: { id: 7 } });
+  succeed(sessionRequest, { ...flags, authenticated: true, token: 'user-token', user: { id: 7 } });
   await Promise.all([launch, homepage]);
   assert.deepEqual(await hot, []);
   assert.equal(app.globalData.session.authenticated, true);
-  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login', '/api/account/session']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session', '/api/account/wechat/session']);
 });
 
 test('server-side revoked sessions replace a locally unexpired token and clear account state', async t => {
   const { api, auth } = setup(t, {
     session: loginData(),
+    loginFails: true,
     respond(path, options) {
-      assert.equal(path, '/api/account/session');
-      succeed(options, { ...flags, authenticated: false, user: null, sessionId: 'new-anonymous' });
+      assert.equal(path, '/api/account/wechat/session');
+      if (options.method === 'GET') return options.success({ statusCode: 401, data: {} });
+      assert.deepEqual(options.data, { anonymous: true });
+      succeed(options, { ...flags, authenticated: false, user: null, token: 'new-anonymous' });
     },
   });
   const session = await api.fetchSession();
@@ -247,20 +250,31 @@ test('server-side revoked sessions replace a locally unexpired token and clear a
   assert.equal(auth.getSession().token, 'new-anonymous');
 });
 
+test('an undeployed mini program endpoint reports the deployment issue without calling the browser session API', async t => {
+  const { api, calls } = setup(t, {
+    respond(path, options) {
+      assert.equal(path, '/api/account/wechat/session');
+      options.success({ statusCode: 404, data: { message: '未知接口' } });
+    },
+  });
+  await assert.rejects(api.fetchSession(), /小程序会话接口尚未部署/);
+  assert.equal(calls.includes('/api/account/session'), false);
+});
+
 test('late session responses cannot overwrite a manual login', async t => {
   let sessionRequest;
   const { api, auth } = setup(t, {
     session: loginData(),
     respond(path, options) {
-      if (path === '/api/account/session') { sessionRequest = options; return; }
-      assert.equal(path, '/api/account/wechat/login');
+      if (path === '/api/account/wechat/session' && options.method === 'GET') { sessionRequest = options; return; }
+      assert.equal(path, '/api/account/wechat/session');
       succeed(options, { ...loginData(), token: 'fresh-user-token' });
     },
   });
   const pending = api.fetchSession();
   await flush();
   await auth.login();
-  succeed(sessionRequest, { ...flags, authenticated: false, sessionId: 'old-anonymous' });
+  succeed(sessionRequest, { ...flags, authenticated: false, token: 'old-anonymous' });
   assert.equal((await pending).authenticated, true);
   assert.equal(auth.getSession().token, 'fresh-user-token');
 });
@@ -270,7 +284,7 @@ test('concurrent 401 recovery logs in once; a late old-token 401 preserves the f
   const { api, auth, calls } = setup(t, {
     session: loginData(),
     respond(path, options) {
-      if (path === '/api/account/wechat/login') return succeed(options, { ...loginData(), token: 'fresh-token' });
+      if (path === '/api/account/wechat/session' && options.data && options.data.code) return succeed(options, { ...loginData(), token: 'fresh-token' });
       assert.equal(path, '/api/account/channels');
       if (options.header.Authorization === 'Bearer user-token') oldRequests.push(options);
       else {
@@ -296,7 +310,7 @@ test('channel requests recover an expired anonymous token even when wx.login is 
     session: { token: 'old-anonymous', user: null },
     loginFails: true,
     respond(path, options) {
-      if (path === '/api/account/session') return succeed(options, { ...flags, authenticated: false, sessionId: 'fresh-anonymous' });
+      if (path === '/api/account/wechat/session') return succeed(options, { ...flags, authenticated: false, token: 'fresh-anonymous' });
       assert.equal(path, '/api/account/channels');
       if (options.header.Authorization === 'Bearer old-anonymous') options.success({ statusCode: 401, data: {} });
       else {
@@ -313,7 +327,7 @@ test('homepage lifecycle merges flag loading and clears channels after logout', 
   const { page, calls } = setup(t, {
     loginFails: true,
     respond(path, options) {
-      assert.equal(path, '/api/account/session');
+      assert.equal(path, '/api/account/wechat/session');
       loginRequest = options;
     },
   });
@@ -325,13 +339,13 @@ test('homepage lifecycle merges flag loading and clears channels after logout', 
   page.onShow();
   assert.equal(page._flagsPromise, pending);
   await flush();
-  succeed(loginRequest, { ...flags, authenticated: false, sessionId: 'anonymous' });
+  succeed(loginRequest, { ...flags, authenticated: false, token: 'anonymous' });
   await pending;
   await flush();
   assert.deepEqual(page._userChannels, []);
   assert.equal(page.data.channelsCount, 0);
   assert.equal(page.data.scope, 'site');
-  assert.deepEqual(calls, ['wx.login', '/api/account/session']);
+  assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
 });
 
 test('re-scanning a new website QR ticket resets the previous confirmation', t => {

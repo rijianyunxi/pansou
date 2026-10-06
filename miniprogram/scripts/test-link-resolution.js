@@ -58,10 +58,10 @@ global.wx = {
 
 test('anonymous session is stored, existing login is never overwritten', () => {
   stored = null;
-  auth.storeAnonymousSession({ authenticated: false, sessionId: 'anonymous' });
+  auth.storeAnonymousSession({ authenticated: false, token: 'anonymous' });
   assert.equal(auth.getSession().token, 'anonymous');
   stored = { token: 'logged-in', user: { id: 1 } };
-  auth.storeAnonymousSession({ authenticated: false, sessionId: 'other' });
+  auth.storeAnonymousSession({ authenticated: false, token: 'other' });
   assert.equal(auth.getSession().token, 'logged-in');
 });
 
@@ -282,7 +282,7 @@ test('anonymous search token does not bypass WeChat login', async () => {
   };
   try {
     assert.deepEqual(await auth.ensureLogin(), { id: 7 });
-    assert.deepEqual(calls, ['wx.login', '/api/account/wechat/login']);
+    assert.deepEqual(calls, ['wx.login', '/api/account/wechat/session']);
     assert.equal(auth.getSession().token, 'user-token');
     await auth.ensureLogin();
     assert.equal(calls.length, 2, 'authenticated sessions can be reused');

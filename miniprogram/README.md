@@ -1,6 +1,6 @@
 # 盘搜微信小程序
 
-原生微信小程序（无构建工具，CommonJS），对接 PanHub 后端的 SSE 流式搜索。全程使用 Bearer token 会话（`POST /api/account/wechat/login` code2Session 静默登录，首登自动建号），不依赖 Cookie。
+原生微信小程序（无构建工具，CommonJS），对接 PanHub 后端的 SSE 流式搜索。全程使用 Bearer token 会话（`POST /api/account/wechat/session` code2Session 静默登录，首登自动建号），不依赖 Cookie。
 
 ## 目录结构
 
@@ -38,8 +38,10 @@ miniprogram/
 
 ## 服务端依赖
 
-- `POST /api/account/wechat/login`：需在管理后台配置小程序 AppID/Secret（`/api/settings/wechat`）；当前线上返回 token、expiresAt 和 user。
-- `GET /api/account/session`：携带现有 Bearer token 读取会话及页面配置；没有有效 token 时创建匿名会话。小程序不依赖尚未上线的 `/api/account/config`。
+- `POST /api/account/wechat/session`：提交 `{code}`，后端使用 AppID/Secret 换取 openid，建立账号会话，一次返回 token、expiresAt、authenticated、user 和页面配置。客户端不传 openid/session_key。
+- `GET /api/account/wechat/session`：仅接受 Bearer token，返回当前用户和页面配置；失效时返回 401，不创建会话、不续期、不使用 Cookie。
+- `POST /api/account/wechat/session` 提交 `{anonymous:true}`：登录失败或退出后显式申请匿名 token，同样返回 expiresAt 和页面配置；不设置 Cookie。
+- 小程序不调用通用 `/api/account/session` 或 `/api/account/config`。**先部署包含专用路由的新后端，再发布小程序**；旧后端的 404 会明确提示接口未部署。
 - `POST /api/search`（SSE）、`GET /api/hot-searches`、`/api/account/channels*`、
   `POST /api/links/resolve`、`GET /api/links/resolve-operations/{key}` 均已就绪
   （小程序 `wx.request` 不发送 Origin 头，不受同源校验影响）。
@@ -47,7 +49,7 @@ miniprogram/
 ## 行为说明
 
 - **登录**：启动时静默 `wx.login`，用户无感知；登录失败仍可匿名搜索（服务端一次性匿名会话，限流按 IP）。
-- **初始化**：启动、首页及搜索共用进行中的登录请求。当前线上登录完成后，从 `/api/account/session` 读取配置；若未来登录响应同时携带配置，则直接复用。配置在内存中缓存 60 秒，读取请求合并；退出登录后保持匿名，手动登录可恢复账号。
+- **初始化**：启动、首页及搜索共用进行中的登录请求；微信登录和匿名会话响应都直接携带配置。已有 token 或配置缓存过期时，通过专用会话 GET 接口读取，不再追加通用 session 请求。配置在内存中缓存 60 秒，读取请求合并；退出登录后保持匿名，手动登录可恢复账号。
 - **热搜**：默认隐藏，只有成功获取配置且 `showHotSearch=true` 时才请求 `/api/hot-searches`；配置获取失败、缺少开关或开关关闭时不请求。
 - **搜索**：SSE 流式返回，客户端按服务端 dedupKey 合并完整链接集合；结果>30 条分页渲染。正常结束时处理最后一个事件，只保留有上限的错误报文，避免重复缓存全部结果。
 - **打开/复制**：操作先调用取链接口；打开使用 web-view 跳转，复制只写入可打开的链接，已确认支持的网盘将提取码放入 URL 参数。返回的提取码显示在卡片上，可点击单独复制。过期或失效的提取码不能复制。

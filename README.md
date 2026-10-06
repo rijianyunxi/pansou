@@ -744,6 +744,7 @@ GET /api/search/json?kw=关键词
 | `/api/hot-searches` | 公开热搜 |
 | `/api/monitor` | 服务、后台任务与实时来源运行监控（管理员） |
 | `/api/account/*` | 会话、登录、退出、资料、微信、频道 |
+| `/api/account/wechat/session` | 小程序专用会话：POST 用微信 code 建号/登录，GET 用 Bearer 读取用户和页面配置 |
 | `/api/settings/*` | 搜索、来源、模板、策略和云盘设置 |
 | `/api/admin/resources/*` | 后台资源管理 |
 | `/api/admin/proxies/*` | 代理节点、代理组和代理路由 |
@@ -762,6 +763,15 @@ GET /api/search/json?kw=关键词
 GET /api/account/session
   -> 有效 Cookie/Bearer：复用现有 Session
   -> 无有效 Session：创建匿名 Session，并设置 HttpOnly Cookie
+
+POST /api/account/wechat/session
+  -> {code}：服务端换取 openid，返回业务 token、expiresAt、user 和页面配置
+  -> {anonymous:true}：显式申请匿名 token，返回到期时间和页面配置
+  -> 不设置 Cookie；不接受客户端提交的 openid/session_key
+
+GET /api/account/wechat/session
+  -> 必须携带有效 Bearer：返回当前用户和页面配置，不创建或续期 Session
+  -> 缺少或失效 Bearer：401
 
 POST /api/search
   -> 无有效 Session：401 SESSION_REQUIRED

@@ -8,6 +8,7 @@ let configuration;
 let configurationExpiresAt = 0;
 let pendingConfiguration;
 const CONFIG_TTL_MS = 60000;
+const SESSION_API = '/api/account/wechat/session';
 
 function storeConfiguration(data) {
   // An absent flag is unknown, never permission to request hot searches.
@@ -23,24 +24,31 @@ function storeConfiguration(data) {
 function ensureConfiguration() {
   if (configuration && configurationExpiresAt > Date.now()) return Promise.resolve(configuration);
   if (!pendingConfiguration) {
-    const session = getSession();
-    // The deployed API exposes UI flags on account/session. Reuse the Bearer
-    // token so this reads the current session instead of issuing another one.
-    pendingConfiguration = request('/api/account/session')
-      .then(({ data }) => {
+    pendingConfiguration = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const session = getSession();
+        let response;
+        try { response = await sessionRequest(); }
+        catch (error) {
+          if (error.statusCode !== 401 || attempt > 0) throw error;
+          await ensureSession();
+          if (configuration && configurationExpiresAt > Date.now()) return configuration;
+          continue;
+        }
+        const data = response.data;
         if (!data || typeof data.showHotSearch !== 'boolean') throw new Error('未获取到首页配置');
         const current = getSession();
-        if (data.sessionId && (current && current.token) === (session && session.token)) {
+        if (data.token && (current && current.token) === (session && session.token)) {
           wx.setStorageSync(STORAGE_KEY, {
-            token: data.sessionId,
+            token: data.token,
             user: data.authenticated ? data.user || null : null,
-            expiresAt: current && data.sessionId === current.token ? current.expiresAt : undefined,
+            expiresAt: current && data.token === current.token ? current.expiresAt : data.expiresAt,
           });
         }
         storeConfiguration(data);
         return configuration;
-      })
-      .finally(() => { pendingConfiguration = undefined; });
+      }
+    })().finally(() => { pendingConfiguration = undefined; });
   }
   return pendingConfiguration;
 }
@@ -115,6 +123,14 @@ function loginCode() {
   }));
 }
 
+async function sessionRequest(options) {
+  try { return await request(SESSION_API, options); }
+  catch (error) {
+    if (error.statusCode === 404) error.message = '小程序会话接口尚未部署，请更新服务端';
+    throw error;
+  }
+}
+
 /**
  * Silent wx.login + code2Session. First login auto-creates the account on the
  * server; the returned Bearer token is the only credential the mini program
@@ -124,7 +140,7 @@ function login() {
   if (pendingLogin) return pendingLogin;
   pendingLogin = (async () => {
     const code = await loginCode();
-    const { data } = await request('/api/account/wechat/login', { method: 'POST', data: { code }, authenticated: false });
+    const { data } = await sessionRequest({ method: 'POST', data: { code }, authenticated: false });
     if (!data.token || !data.user) throw new Error('微信登录未完成，请重试');
     const session = { token: data.token, expiresAt: data.expiresAt, user: data.user || null };
     wx.setStorageSync(STORAGE_KEY, session);
@@ -161,15 +177,15 @@ async function confirmQrLogin(scene) {
 
 let pendingSession;
 function storeAnonymousSession(data) {
-  if (data && !data.authenticated && data.sessionId && !hasValidSession()) {
-    wx.setStorageSync(STORAGE_KEY, { token: data.sessionId, user: null });
+  if (data && !data.authenticated && data.token && !hasValidSession()) {
+    wx.setStorageSync(STORAGE_KEY, { token: data.token, expiresAt: data.expiresAt, user: null });
     storeConfiguration(data);
   }
 }
 async function anonymousSession() {
   if (hasValidSession()) return;
-  const { data } = await request('/api/account/session', { authenticated: false });
-  if (!data.sessionId) throw new Error('未获取到匿名会话');
+  const { data } = await sessionRequest({ method: 'POST', data: { anonymous: true }, authenticated: false });
+  if (!data.token) throw new Error('未获取到匿名会话');
   storeAnonymousSession(data);
 }
 function ensureSession() {
@@ -178,7 +194,10 @@ function ensureSession() {
   // to an anonymous token. Within this launch all callers reuse that outcome.
   if (hasValidSession() && (getSession().user || sessionInitialized || stayAnonymous)) return Promise.resolve(getSession());
   sessionInitialized = true;
-  pendingSession = (stayAnonymous ? anonymousSession() : login().catch(anonymousSession))
+  pendingSession = (stayAnonymous ? anonymousSession() : login().catch(error => {
+    if (error.statusCode === 404) throw error;
+    return anonymousSession();
+  }))
     .then(() => getSession()).finally(() => { pendingSession = undefined; });
   return pendingSession;
 }

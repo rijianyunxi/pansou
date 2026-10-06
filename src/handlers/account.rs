@@ -30,6 +30,71 @@ pub async fn account_config(State(state): State<Arc<AppState>>) -> Result<Json<V
     Ok(Json(account_config_payload(&policy)))
 }
 
+fn wechat_session_payload(
+    session: &crate::auth::Session,
+    user: Option<crate::models::UserView>,
+    policy: &crate::policy::UserPolicy,
+) -> Value {
+    let mut payload = account_config_payload(policy);
+    payload["authenticated"] = json!(user.is_some());
+    payload["token"] = json!(session.token);
+    payload["user"] = json!(user);
+    payload
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WechatSessionBody {
+    code: Option<String>,
+    #[serde(default)]
+    anonymous: bool,
+}
+
+pub async fn wechat_session_post(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WechatSessionBody>,
+) -> Result<Json<Value>, ApiError> {
+    if body.anonymous {
+        if body.code.is_some() {
+            return Err(ApiError::BadRequest("匿名会话不能同时提交微信 code".into()));
+        }
+        let policy = crate::policy::load(&state.pool).await?;
+        let session = state.auth().issue(true).await?;
+        let mut payload = wechat_session_payload(&session, None, &policy);
+        payload["expiresAt"] = json!(
+            chrono::Utc::now().timestamp_millis() + policy.session_ttl_seconds() as i64 * 1000
+        );
+        return Ok(Json(payload));
+    }
+    // Only a code verified by WeChat can establish a user session; callers
+    // cannot supply an openid or a session_key as their identity.
+    wechat_login(State(state), Json(json!({"code": body.code}))).await
+}
+
+pub async fn wechat_session_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    // Require an explicit Bearer token. Reading a mini program session never
+    // falls back to browser cookies, issues a token, or extends its lifetime.
+    if !headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| !token.trim().is_empty())
+    {
+        return Err(ApiError::Unauthorized("请提供小程序会话 token".into()));
+    }
+    let auth = state.auth();
+    let session = auth.session(&headers).await?;
+    let user = match session.user_id {
+        Some(id) => Some(auth.public_user(id).await?),
+        None => None,
+    };
+    let policy = crate::policy::load(&state.pool).await?;
+    Ok(Json(wechat_session_payload(&session, user, &policy)))
+}
+
 pub async fn account_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -307,10 +372,8 @@ pub async fn wechat_login(
     let (session, user) = auth.login_wechat(app_id.trim(), openid).await?;
     let expires_at =
         chrono::Utc::now().timestamp_millis() + (auth.session_ttl_seconds().await as i64 * 1000);
-    let mut payload = account_config_payload(&policy);
-    payload["token"] = json!(session.token);
+    let mut payload = wechat_session_payload(&session, Some(user), &policy);
     payload["expiresAt"] = json!(expires_at);
-    payload["user"] = json!(user);
     Ok(Json(payload))
 }
 
@@ -341,6 +404,26 @@ fn wechat_openid(data: &Value) -> Result<&str, ApiError> {
 #[cfg(test)]
 mod wechat_tests {
     use super::*;
+    #[test]
+    fn mini_session_payload_includes_flags_without_browser_or_wechat_credentials() {
+        let session = crate::auth::Session {
+            token: "business-token".into(),
+            user_id: None,
+        };
+        let policy = crate::policy::UserPolicy {
+            show_hot_search: false,
+            ..Default::default()
+        };
+        let payload = wechat_session_payload(&session, None, &policy);
+        assert_eq!(payload["token"], "business-token");
+        assert_eq!(payload["authenticated"], false);
+        assert_eq!(payload["showHotSearch"], false);
+        assert!(payload["user"].is_null());
+        for key in ["openid", "session_key", "secret", "sessionId", "expiresAt"] {
+            assert!(payload.get(key).is_none());
+        }
+    }
+
     #[test]
     fn public_config_preserves_disabled_flags_and_excludes_internal_settings() {
         let policy = crate::policy::UserPolicy {

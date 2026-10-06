@@ -224,6 +224,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/account/login", post(handlers::account_login))
         .route("/account/logout", post(handlers::account_logout))
         .route("/account/wechat/login", post(handlers::wechat_login))
+        .route(
+            "/account/wechat/session",
+            get(handlers::wechat_session_get).post(handlers::wechat_session_post),
+        )
         .route("/account/wechat/qr/start", post(handlers::wechat_qr_start))
         .route("/account/wechat/qr/poll", get(handlers::wechat_qr_poll))
         .route(
@@ -469,8 +473,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mini_program_session_requires_bearer_and_ignores_browser_cookie() {
+        for cookie in [None, Some("pansou_session=browser-only")] {
+            let mut request = Request::builder()
+                .method(Method::GET)
+                .uri("/api/account/wechat/session");
+            if let Some(cookie) = cookie {
+                request = request.header(axum::http::header::COOKIE, cookie);
+            }
+            let response = test_router()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(axum::http::header::SET_COOKIE)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mini_program_session_rejects_unverified_identity_and_ambiguous_login() {
+        for body in [
+            r#"{"openid":"unverified"}"#,
+            r#"{"session_key":"unverified"}"#,
+            r#"{"code":"","anonymous":false}"#,
+            r#"{"code":"code","anonymous":true}"#,
+        ] {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/account/wechat/session")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_client_error());
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(axum::http::header::SET_COOKIE)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn registers_all_former_dynamic_api_routes_explicitly() {
         let routes = [
+            "/api/account/wechat/session",
             "/api/account/config",
             "/api/admin/resources/enabled",
             "/api/admin/resources/batch-delete",
