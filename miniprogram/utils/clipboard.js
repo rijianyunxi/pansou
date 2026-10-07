@@ -6,21 +6,21 @@ function hideNativeClipboardToast() {
   // WeChat may enqueue the clipboard toast after the success callback.
   [0, 80, 220].forEach((delay) => setTimeout(() => wx.hideToast(), delay));
 }
-function copyLink(url, { successMessage = '链接已复制，请到浏览器或网盘 App 粘贴打开' } = {}) {
+function copyLink(url, { successMessage = '链接已复制，请到浏览器或网盘 App 粘贴打开', silent = false } = {}) {
   const page = feedback.owner();
-  if (pending) { feedback.showToast({ title: '正在复制，请稍候' }, page); return Promise.resolve(false); }
+  if (pending) { if (!silent) feedback.showToast({ title: '正在复制，请稍候' }, page); return Promise.resolve(false); }
   if (typeof url !== 'string' || !url.trim()) {
-    feedback.showToast({ title: '链接为空，无法复制', icon: 'error' }, page);
+    if (!silent) feedback.showToast({ title: '链接为空，无法复制', icon: 'error' }, page);
     return Promise.resolve(false);
   }
   pending = true;
-  feedback.showToast({ title: '正在复制…', duration: 15000 }, page);
+  if (!silent) feedback.showToast({ title: '正在复制…', duration: 15000 }, page);
   return new Promise((resolve) => {
     let settled = false;
     const finish = (ok) => {
       if (settled) return;
       settled = true; pending = false; clearTimeout(timer);
-      feedback.showToast({
+      if (!silent) feedback.showToast({
         title: ok ? successMessage : '复制未完成，请重试并允许剪贴板操作',
         icon: ok ? 'success' : 'error', duration: 4000,
       }, page);

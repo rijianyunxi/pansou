@@ -34,6 +34,35 @@ fn clean(value: &str, links: &[Link]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// Count Unicode characters, not UTF-8 bytes. The ellipsis is included in the 60-character budget.
+fn description_preview(value: &str) -> String {
+    if value.chars().count() <= 60 {
+        return value.to_owned();
+    }
+    value.chars().take(59).chain(std::iter::once('…')).collect()
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    #[test]
+    fn previews_bound_chinese_and_emoji_without_splitting_utf8() {
+        assert_eq!(description_preview(&"简".repeat(60)), "简".repeat(60));
+        let long = description_preview(&"简😀".repeat(40));
+        assert_eq!(long.chars().count(), 60);
+        assert!(long.ends_with('…'));
+        let links = vec![Link {
+            r#type: "quark".into(),
+            url: "https://pan.quark.cn/s/private-token".into(),
+            password: Some("pass-secret".into()),
+        }];
+        let text = format!("{} {} pass-secret", "简介".repeat(40), links[0].url);
+        let preview = description_preview(&clean(&text, &links));
+        assert!(!preview.contains("pan.quark"));
+        assert!(!preview.contains("pass-secret"));
+    }
+}
+
 pub(crate) async fn project(
     state: &AppState,
     session: &Session,
@@ -104,7 +133,7 @@ pub(crate) async fn project(
                     .map_err(|_| ApiError::Internal("引用编码失败".into()))?,
             )
             .ignore();
-        projected.push(json!({"id":keyed(&session.token,&format!("{}:{}",source.unwrap_or("local"),result.id)),"resultRef":result_ref,"dedupKey":keyed(&session.token,&keys.join(":")),"name":clean(&result.name,&result.links),"description":result.description.as_ref().map(|v|clean(v,&result.links)),"datetime":result.datetime.as_ref().map(|v|clean(v,&result.links)),"cloud_types":links.iter().map(|l|l["type"].clone()).collect::<Vec<_>>(),"validity":aggregate(links.iter().map(|l| l["validity"].as_i64().unwrap_or(-1) as i16)),"links":links,"images":[],"refsExpireAt":expires_at}));
+        projected.push(json!({"id":keyed(&session.token,&format!("{}:{}",source.unwrap_or("local"),result.id)),"resultRef":result_ref,"dedupKey":keyed(&session.token,&keys.join(":")),"name":clean(&result.name,&result.links),"description":result.description.as_ref().map(|v|description_preview(&clean(v,&result.links))),"datetime":result.datetime.as_ref().map(|v|clean(v,&result.links)),"cloud_types":links.iter().map(|l|l["type"].clone()).collect::<Vec<_>>(),"validity":aggregate(links.iter().map(|l| l["validity"].as_i64().unwrap_or(-1) as i16)),"links":links,"images":[],"refsExpireAt":expires_at}));
     }
     if !results.is_empty() {
         let _: () = pipe
@@ -113,4 +142,30 @@ pub(crate) async fn project(
             .map_err(|_| ApiError::Unavailable("链接引用暂不可用".into()))?;
     }
     Ok(projected)
+}
+
+/// Only send display, deduplication and link-capability fields to public clients.
+/// Observations remain available from the link-resolution/admin endpoints.
+pub(crate) fn compact(results: Vec<Value>) -> Vec<Value> {
+    results
+        .into_iter()
+        .map(|mut row| {
+            if let Some(fields) = row.as_object_mut() {
+                fields.retain(|key, value| {
+                    matches!(
+                        key.as_str(),
+                        "resultRef" | "dedupKey" | "name" | "description" | "datetime" | "links"
+                    ) && !value.is_null()
+                });
+                if let Some(links) = fields.get_mut("links").and_then(Value::as_array_mut) {
+                    for link in links {
+                        if let Some(fields) = link.as_object_mut() {
+                            fields.retain(|key, _| matches!(key.as_str(), "type" | "linkRef"));
+                        }
+                    }
+                }
+            }
+            row
+        })
+        .collect()
 }

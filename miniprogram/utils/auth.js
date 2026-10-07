@@ -73,15 +73,19 @@ function hasValidSession() {
   return !session.expiresAt || session.expiresAt > Date.now() + 60000;
 }
 
-function request(path, { method = 'GET', data, authenticated = true } = {}) {
+function request(path, { method = 'GET', data, authenticated = true, control } = {}) {
   const session = getSession();
   const header = { 'content-type': 'application/json' };
   // Mini program sessions are Bearer-only: the server isolates them from
   // browser cookie sessions and never relies on wx.request cookies here.
   if (authenticated && session) header.Authorization = `Bearer ${session.token}`;
-  return new Promise((resolve, reject) => wx.request({
+  return new Promise((resolve, reject) => {
+    if (control && control.stopped) return reject(new Error('已停止查询'));
+    let settled = false;
+    const task = wx.request({
     url: `${API_BASE}${path}`, method, data, header, timeout: 15000,
     success(response) {
+      settled = true; if (control) delete control.request;
       if (response.statusCode >= 200 && response.statusCode < 300) return resolve(response);
       // A late response for an old token must not clear a newer login.
       if (response.statusCode === 401 && authenticated && session && getSession() && getSession().token === session.token) clearSession();
@@ -108,11 +112,14 @@ function request(path, { method = 'GET', data, authenticated = true } = {}) {
       reject(error);
     },
     fail() {
+      settled = true; if (control) delete control.request;
       const error = new Error('网络请求失败，请稍后重试');
       error.statusCode = 0;
       reject(error);
     }
-  }));
+    });
+    if (control && !settled) control.request = task;
+  });
 }
 
 function loginCode() {

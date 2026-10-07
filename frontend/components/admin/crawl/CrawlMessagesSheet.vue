@@ -9,6 +9,7 @@ import AdminDialog from "../AdminDialog.vue";
 import AdminCheckbox from "../AdminCheckbox.vue";
 import AdminPagination from "../AdminPagination.vue";
 import ResourceDetailDrawer from "../ResourceDetailDrawer.vue";
+import CrawlMessageFailure from "./CrawlMessageFailure.vue";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Button } from "../ui/button";
 import AdminStatusBadge from "../AdminStatusBadge.vue";
@@ -19,6 +20,7 @@ const { confirm } = useAdminConfirm();
 const status = ref(props.initialStatus || "all"), page = ref(1), pageSize = ref(20);
 const selectedIds = ref<number[]>([]), actionBusy = ref<"retry" | "ignore" | null>(null);
 const actionError = ref(""), notice = ref(""), resourceId = ref<string>();
+const expandedMessageId = ref<number>();
 const url = computed(() => "/api/admin/crawl/channels/" + encodeURIComponent(props.channel) + "/messages");
 const params = computed(() => ({ status: status.value, scope: props.scope || "all", page: page.value, pageSize: pageSize.value }));
 const { data, loading, error, refresh } = useCrawlQuery<MessagePage>(url, params, 5000);
@@ -30,7 +32,7 @@ const allSelected = computed({
 });
 const someSelected = computed(() => selectedIds.value.length > 0 && !allSelected.value);
 watch([status, () => props.scope], () => { page.value = 1; selectedIds.value = []; notice.value = ""; });
-watch([page, pageSize], () => { selectedIds.value = []; });
+watch([page, pageSize, status, () => props.channel], () => { selectedIds.value = []; expandedMessageId.value = undefined; });
 watch(data, result => {
   if (result) {
     selectedIds.value = selectedIds.value.filter(id => result.items.some(m => m.messageId === id && m.status === "failed"));
@@ -87,6 +89,10 @@ function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
                 <p v-if="task.status === 'failed'" class="failure-reason">{{ task.errorMessage || '解析失败' }}</p>
                 <ul v-else-if="task.resources.length" class="resource-names"><li v-for="resource in task.resources" :key="resource.id"><Button variant="link" class="resource-name tw:h-auto tw:p-0 tw:text-left tw:whitespace-normal tw:justify-start" @click="resourceId = resource.id">{{ resource.name }}</Button></li></ul>
                 <span v-else class="summary-empty">{{ task.status === 'empty' ? '未识别到资源' : '资源已删除' }}</span>
+                <template v-if="task.status === 'failed'">
+                  <Button variant="link" size="sm" class="tw:h-auto tw:p-0" :aria-expanded="expandedMessageId === task.messageId" :aria-controls="'failure-' + task.messageId" @click="expandedMessageId = expandedMessageId === task.messageId ? undefined : task.messageId">{{ expandedMessageId === task.messageId ? '收起详情' : '查看错误与原文' }}</Button>
+                  <CrawlMessageFailure v-if="expandedMessageId === task.messageId" :id="'failure-' + task.messageId" :key="task.messageId" :channel="channel" :message-id="task.messageId" />
+                </template>
               </TableCell>
             </TableRow>
             <TableRow v-if="loading || (!error && !data?.items.length)"><TableCell :colspan="selectable ? 4 : 3" class="task-empty">{{ loading ? '正在加载任务…' : '没有匹配的任务' }}</TableCell></TableRow>

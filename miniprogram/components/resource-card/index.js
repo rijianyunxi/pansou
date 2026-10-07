@@ -10,7 +10,7 @@ Component({
     item: { type: Object, value: {} },
   },
 
-  data: { descExpanded: false, copiedKey: '', copyingPassword: false, resolved: {}, loading: {}, progress: {} },
+  data: { descExpanded: false, copiedKey: '', copyingPassword: false, resolved: {}, loading: {}, progress: {}, dialog: null },
   lifetimes: {
     attached() { this._gone = false; this._controls = {}; this._keys = {}; },
     detached() { this._gone = true; this.stopQueries(); clearTimeout(this._copyTimer); clearInterval(this._expiryTimer); },
@@ -41,7 +41,7 @@ Component({
 
   methods: {
     startExpiryTimer() { if (!this._expiryTimer) this._expiryTimer = setInterval(() => this.expireLinks(), 1000); },
-    stopQueries() { Object.values(this._controls || {}).forEach(control => { stop(control); clearInterval(control.progressTimer); }); this._controls = {}; this.setData({ loading: {}, progress: {} }); },
+    stopQueries() { Object.values(this._controls || {}).forEach(control => { stop(control); clearInterval(control.progressTimer); }); this._controls = {}; this._dialogOperation = null; this.setData({ loading: {}, progress: {}, dialog: null }); },
     expireLinks() {
       const resolved = { ...this.data.resolved };
       for (const key of Object.keys(resolved)) {
@@ -49,56 +49,81 @@ Component({
       }
       this.setData({ resolved });
     },
+    noop() {},
+    closeDialog() {
+      const operation = this._dialogOperation;
+      if (operation) { stop(operation.control); clearInterval(operation.control.progressTimer); }
+      this._dialogOperation = null;
+      this.setData({ dialog: null });
+    },
+    setDialogStatus(status, message, retryable = true) {
+      if (this.data.dialog) this.setData({ dialog: { ...this.data.dialog, status, message, retryable } });
+    },
     async runAction(event, action) {
       const key = event.currentTarget.dataset.key;
-      if (this.data.loading[key]) return;
+      if (this.data.loading[key] || this.data.dialog && this.data.dialog.status === 'loading') return;
       const item = this.data.item;
       const link = item.links.find(l => l.key === key);
       if (!link) return;
       const resume = !!this._keys[key]; this._keys[key] ||= uuid();
       const control = {}; this._controls[key] = control;
-      this.setData({ loading: { ...this.data.loading, [key]: action } });
+      const operation = { key, item, link, action, control };
+      this._dialogOperation = operation;
       const startedAt = Date.now();
-      let stage = 'queued';
-      const updateProgress = () => {
-        if (control.stopped || this._gone || this._controls[key] !== control || this.data.item.id !== item.id) return;
-        const labels = { queued: '排队中', checking: '读取分享', transferring: '正在转存', sharing: '生成分享', reusing: '验证已有分享' };
-        this.setData({ progress: { ...this.data.progress, [key]: { label: labels[stage] || '正在获取链接', elapsed: Math.floor((Date.now() - startedAt) / 1000) } } });
-      };
-      updateProgress();
-      control.progressTimer = setInterval(updateProgress, 1000);
+      this.setData({ loading: { ...this.data.loading, [key]: action }, dialog: { status: 'loading', action, name: item.name, provider: link.label, slow: false } });
+      control.progressTimer = setInterval(() => {
+        if (!control.stopped && !this._gone && this._dialogOperation === operation && this.data.dialog) this.setData({ dialog: { ...this.data.dialog, slow: Date.now()-startedAt >= 15000 } });
+      }, 1000);
       try {
-        const value = await resolveLink(item.resultRef, link.linkRef, this._keys[key], control, resume, value => { stage = value.stage || 'checking'; updateProgress(); });
-        if (value && !control.stopped && !this._gone && this.data.item.id === item.id) {
-          this.setData({ resolved: { ...this.data.resolved, [key]: value } });
-          delete this._keys[key];
-          this.startExpiryTimer();
-          if (value.status === 'unavailable' || value.validity === 0) {
-            feedback.showModal({ title: '提示', content: value.reasonCode === 'resource_missing' ? '分享中的资源已不存在' : '原分享链接已失效', showCancel: false });
-          } else if (!usable(value)) {
-            feedback.showToast({ title: '未获取到可用链接，请稍后重试', icon: 'error' });
-          } else if (action === 'open') {
-            this.openResolvedLink(value);
-          } else {
-            const text = clipboardText(value);
-            if (await copyLink(text, { successMessage: value.password ? '链接已复制；提取码可点击单独复制' : undefined }) && !control.stopped && !this._gone && this.data.item.id === item.id) {
-              clearTimeout(this._copyTimer);
-              this.setData({ copiedKey: key });
-              this._copyTimer = setTimeout(() => { if (!this._gone) this.setData({ copiedKey: '' }); }, 2400);
-            }
-          }
+        const value = await resolveLink(item.resultRef, link.linkRef, this._keys[key], control, resume);
+        if (!value || control.stopped || this._gone || this._dialogOperation !== operation) return;
+        operation.value = value;
+        this.setData({ resolved: { ...this.data.resolved, [key]: value } });
+        delete this._keys[key];
+        this.startExpiryTimer();
+        if (value.status === 'unavailable' || value.validity === 0) {
+          this.setDialogStatus('error', value.reasonCode === 'resource_missing' ? '资源已不存在，试试其他搜索结果。' : '这个链接已失效，试试其他搜索结果。', false);
+        } else if (!usable(value)) {
+          this.setDialogStatus('error', '暂时没有获取到可用链接，请再试一次。');
+        } else if (action === 'open') {
+          this.setDialogStatus('ready', '点击打开资源，继续查看。');
+        } else {
+          await this.copyReady(true);
         }
-      } catch (e) { if (!this._gone && !control.stopped && this.data.item.id === item.id) feedback.showToast({ title: e.message || '获取失败，请稍后重试', icon: 'error' }); }
-      finally {
+      } catch (error) {
+        if (!this._gone && !control.stopped && this._dialogOperation === operation) this.setDialogStatus('error', error.message || '获取失败，请稍后再试。');
+      } finally {
         clearInterval(control.progressTimer);
         if (this._controls[key] === control) {
-          if (!this._gone && this.data.item.id === item.id) {
-            const progress = { ...this.data.progress }; delete progress[key];
-            this.setData({ loading: { ...this.data.loading, [key]: false }, progress });
-          }
+          if (!this._gone && this.data.item.id === item.id) this.setData({ loading: { ...this.data.loading, [key]: false } });
           delete this._controls[key];
         }
       }
+    },
+    async copyReady(initial = false) {
+      const operation = this._dialogOperation;
+      if (!operation || !this.data.dialog || initial !== true && this.data.dialog.status === 'loading') return;
+      if (!usable(operation.value) || operation.value.validity === 0) { operation.value = null; this.setDialogStatus('error','链接需要重新获取，请再试一次。'); return; }
+      this.setDialogStatus('loading', '正在复制到剪贴板。');
+      const success = await copyLink(clipboardText(operation.value), { silent: true });
+      if (this._gone || operation.control.stopped || this._dialogOperation !== operation) return;
+      if (!success) { this.setDialogStatus('error','复制未完成，请允许剪贴板操作后再试一次。'); return; }
+      this.setDialogStatus('success', operation.value.password ? '去浏览器或网盘 App 粘贴打开，提取码也已为你保留。' : '去浏览器或网盘 App 粘贴打开。');
+      clearTimeout(this._copyTimer);
+      this.setData({ copiedKey: operation.key });
+      this._copyTimer = setTimeout(() => { if (!this._gone) this.setData({ copiedKey: '' }); },2400);
+    },
+    retryDialog() {
+      const operation = this._dialogOperation;
+      if (!operation) return;
+      if (usable(operation.value) && operation.value.validity !== 0) return this.copyReady();
+      return this.runAction({ currentTarget: { dataset: { key: operation.key } } }, operation.action);
+    },
+    openReady() {
+      const operation = this._dialogOperation;
+      if (!operation) return;
+      if (!usable(operation.value) || operation.value.validity === 0) { operation.value = null; this.setDialogStatus('error','链接需要重新获取，请再试一次。'); return; }
+      this.openResolvedLink(operation.value);
     },
     toggleDesc() {
       this.setData({ descExpanded: !this.data.descExpanded });

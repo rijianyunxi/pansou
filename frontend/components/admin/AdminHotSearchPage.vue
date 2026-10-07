@@ -87,6 +87,7 @@
         </form>
         <div class="query-meta">
           已选 {{ selected.length }} 项 · 共 {{ total }} 条
+          <p>热门词最多保留 30 条，置顶及人工维护的词优先保留；完整搜索明细请查看搜索日志。</p>
         </div>
       </Card>
       <Card

@@ -19,18 +19,28 @@ pub(super) async fn create_search_log(
     let channels = req.channels.clone().unwrap_or_default();
     let source_ids = req.source_ids.clone().unwrap_or_default();
     // Both JSON and SSE (including cache hits) record one accepted search here.
-    // Keep the log and popularity increment atomic without changing moderation settings.
-    sqlx::query_scalar::<_, i64>(include_str!("../../queries/create_search_log.sql"))
-        .bind(&session.token)
-        .bind(session.user_id)
-        .bind(keyword)
-        .bind(ip.to_string())
-        .bind(scope)
-        .bind(json!(channels))
-        .bind(json!(source_ids))
-        .bind(keyword.to_lowercase())
-        .fetch_one(&state.pool)
-        .await
+    // Full search history is retained here; the database trims the hot shortlist.
+    // Take the lock before the statement snapshot so an evicted term can recover
+    // its historical score even when concurrent searches are accepted.
+    let result = async {
+        let mut tx = state.pool.begin().await?;
+        crate::hot_search::lock(&mut tx).await?;
+        let id = sqlx::query_scalar::<_, i64>(include_str!("../../queries/create_search_log.sql"))
+            .bind(&session.token)
+            .bind(session.user_id)
+            .bind(keyword)
+            .bind(ip.to_string())
+            .bind(scope)
+            .bind(json!(channels))
+            .bind(json!(source_ids))
+            .bind(keyword.to_lowercase())
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>(id)
+    }
+    .await;
+    result
         .map_err(|error| tracing::warn!(%error, "search log create failed"))
         .ok()
 }

@@ -9,6 +9,8 @@ const { sortResults } = require('../../utils/format');
 
 const PAGE_SIZE = 30;
 const FLUSH_INTERVAL = 300;
+const BATCH_INTERVAL_MS = 500;
+const MAX_BATCHES = 4;
 const DESC_TOGGLE_LENGTH = 66;
 
 const SORT_OPTIONS = ['默认顺序', '最新发布', '最早发布'];
@@ -83,12 +85,9 @@ function toVM(result) {
     dateText: result.datetime || '',
     description,
     hasLongDesc: description.length > DESC_TOGGLE_LENGTH,
-    images: result.images || [],
     links: (result.links || []).map((link) => ({
       key: link.linkRef,
       linkRef: link.linkRef,
-      validity: link.validity,
-      invalid: link.validity === 0 && !link.stale,
       type: link.type,
       label: platformLabel(link.type),
       icon: platformIcon(link.type),
@@ -142,10 +141,15 @@ require('../../utils/theme').themedPage({
     this.refreshChannelsCount();
   },
 
+  onHide() {
+    if (this.data.loading) this.onPause();
+  },
+
   onUnload() {
+    this._searchSeq += 1;
     this.stopTimer();
     if (this._flushTimer) clearTimeout(this._flushTimer);
-    if (this._stream) this._stream.abort();
+    this.cancelActiveSearch();
   },
 
   onShareAppMessage() {
@@ -278,6 +282,11 @@ require('../../utils/theme').themedPage({
     this.cancelActiveSearch();
     this._searchSeq += 1;
     this._merged = [];
+    this._nextCursor = null;
+    this._searchContext = null;
+    this._batchCount = 0;
+    this._catalogMerged = [];
+    this._serverPagination = false;
     this._filterPlatform = 'all';
     this._accumulated = 0;
     this._snapshot = {
@@ -303,28 +312,54 @@ require('../../utils/theme').themedPage({
 
   continueSearch() {
     if (!this._snapshot || !this.data.paused) return;
+    if (this._serverPagination && this._merged.length && !this._activeCursor) { this.setData({ paused: false }); this.flush(); return; }
     this.cancelActiveSearch();
     this._searchSeq += 1;
     this.setData({ loading: true, paused: false, error: '' });
-    this.runSearch();
+    this.runSearch(this._activeCursor);
   },
 
-  runSearch() {
+  runSearch(cursor) {
+    this._activeCursor = cursor;
     const seq = this._searchSeq;
     const snapshot = this._snapshot;
     this.startTimer();
     this._stream = searchStream({
+      cursor,
+      searchContext: this._serverPagination ? this._searchContext : undefined,
       keyword: snapshot.keyword,
       userChannels: snapshot.userChannels,
+      onStart: (info) => {
+        if (seq !== this._searchSeq) return;
+        if (info && info.searchContext) { this._searchContext = info.searchContext; this._serverPagination = true; }
+      },
       onUpdate: (update) => {
         if (seq !== this._searchSeq || !update) return;
+        if (Object.prototype.hasOwnProperty.call(update,'nextCursor')) {
+          this._nextCursor = update.nextCursor || null;
+          this._activeCursor = this._nextCursor;
+        }
         this._merged = mergeResultsByLink(this._merged.concat(update.results || []));
+        this._catalogMerged = mergeResultsByLink((this._catalogMerged || []).concat(update.results || []));
         this.scheduleFlush();
       },
-      onComplete: () => {
+      onComplete: (info) => {
         if (seq !== this._searchSeq) return;
-        this.stopTimer();
-        this.setData({ loading: false });
+        this._nextCursor = info && info.hasMore ? info.nextCursor : null;
+        if (info && info.searchContext) { this._searchContext = info.searchContext; this._serverPagination = true; }
+        this._batchCount = (this._batchCount || 0) + 1;
+        if (this._batchCount >= MAX_BATCHES) this._nextCursor = null;
+        const more = Boolean(this._nextCursor);
+        if (!more) this.stopTimer();
+        this._stream = null;
+        this.setData({ loading: more });
+        if (more) {
+          this._activeCursor = this._nextCursor;
+          this._batchTimer = setTimeout(() => {
+            this._batchTimer = null;
+            if (seq === this._searchSeq && this._snapshot) this.runSearch(this._nextCursor);
+          }, BATCH_INTERVAL_MS);
+        }
         this.flush();
         if (!this._merged.length) this.setData({ isEmpty: true });
       },
@@ -344,7 +379,12 @@ require('../../utils/theme').themedPage({
   },
 
   onPause() {
-    if (this._stream && this.data.loading) this._stream.abort();
+    if (!this.data.loading) return;
+    this._searchSeq += 1;
+    this.cancelActiveSearch();
+    this.stopTimer();
+    this.setData({ loading: false, paused: true });
+    this.flush();
   },
 
   onContinue() {
@@ -352,6 +392,8 @@ require('../../utils/theme').themedPage({
   },
 
   onReset() {
+    this._nextCursor = null;
+    this._searchContext = null; this._serverPagination = false; this._batchCount = 0; this._catalogMerged = [];
     this.cancelActiveSearch();
     this._searchSeq += 1;
     this._snapshot = null;
@@ -374,6 +416,7 @@ require('../../utils/theme').themedPage({
   },
 
   cancelActiveSearch() {
+    if (this._batchTimer) { clearTimeout(this._batchTimer); this._batchTimer = null; }
     if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
     if (this._stream) { this._stream.abort(); this._stream = null; }
   },
@@ -407,7 +450,8 @@ require('../../utils/theme').themedPage({
     const completed = !this.data.loading && !this.data.paused;
     const sortType = completed ? SORT_TYPES[this.data.sortIndex] : 'default';
     const displayResults = flattenResultsForDisplay(this._merged);
-    const counts = platformCountsOf(displayResults);
+    const catalog = flattenResultsForDisplay(this._catalogMerged || this._merged);
+    const counts = platformCountsOf(catalog);
     const pills = sortCloudTypes(Object.keys(counts))
       .map((type) => ({
         type,
@@ -423,19 +467,21 @@ require('../../utils/theme').themedPage({
       : displayResults.filter((result) => (result.cloud_types || []).indexOf(this._filterPlatform) >= 0);
     if (sortType !== 'default') filtered = sortResults(filtered, sortType);
 
-    const visibleCount = this.data.visibleCount || PAGE_SIZE;
+    const visibleCount = this._serverPagination ? filtered.length : this.data.visibleCount || PAGE_SIZE;
     const visible = filtered.slice(0, visibleCount).map(toVM);
     this.setData({
       total,
       pills,
       results: visible,
-      hasMore: filtered.length > visible.length,
+      hasMore: filtered.length > visible.length || Boolean(this._nextCursor && this.data.error),
+      loadMoreText: this.data.error && this._nextCursor ? '重试加载剩余结果' : '显示更多结果',
       isEmpty: completed && !filtered.length && !this.data.error,
     });
   },
 
   onPillTap(event) {
     this._filterPlatform = event.currentTarget.dataset.type;
+    this.setData({ visibleCount: PAGE_SIZE });
     this.flush();
   },
 
@@ -448,8 +494,15 @@ require('../../utils/theme').themedPage({
   },
 
   onLoadMore() {
-    this.setData({ visibleCount: (this.data.visibleCount || PAGE_SIZE) + PAGE_SIZE });
+    if (this.data.loading || this.data.paused) return;
+    const visibleCount = (this.data.visibleCount || PAGE_SIZE) + PAGE_SIZE;
+    this.setData({ visibleCount });
     this.flush();
+    if (this._nextCursor && this.data.error) {
+      this._searchSeq += 1;
+      this.setData({ loading: true, error: '' });
+      this.runSearch(this._nextCursor);
+    }
   },
 
   onBackTop() {

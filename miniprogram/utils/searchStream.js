@@ -176,6 +176,9 @@ function searchStream(options) {
     // The mere presence of `channels` selects custom-channel mode on the server;
     // the authoritative list is always read from the account there.
     const body = buildSearchBody(keyword, userChannels);
+    if (options.cursor) body.cursor = options.cursor;
+    if (options.cloudType) body.cloudType = options.cloudType;
+    if (options.searchContext) body.searchContext = options.searchContext;
 
     const decoder = createTextDecoder();
     const parser = createSseParser((event) => {

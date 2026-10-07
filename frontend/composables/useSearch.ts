@@ -16,8 +16,14 @@ interface SearchOptions {
   onSessionExpired?: () => void | Promise<void>;
 }
 interface SearchState {
+  platform: string;
+  serverPagination: boolean;
+  catalogResults: SearchResult[];
   loading: boolean;
-    paused: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  nextCursor?: string;
+  paused: boolean;
   error: string;
   searched: boolean;
   elapsedMs: number;
@@ -25,12 +31,12 @@ interface SearchState {
   results: SearchResult[];
 }
 
-function mergeIncremental(current: SearchResult[], incoming: SearchResult[]): SearchResult[] {
+function mergeIncremental(current: SearchResult[], incoming: SearchResponse["results"]): SearchResult[] {
   return mergeResultsByLink([...current, ...incoming]);
 }
 
 export function useSearch() {
-  const initial = (): SearchState => ({ loading: false, paused: false,
+  const initial = (): SearchState => ({ platform: "all", serverPagination: false, catalogResults: [], loading: false, loadingMore: false, hasMore: false, paused: false,
     error: "", searched: false, elapsedMs: 0, total: 0, results: [] });
   const state = ref<SearchState>(initial());
   let seq = 0;
@@ -40,6 +46,12 @@ export function useSearch() {
   let accumulated = 0;
   let elapsedTimer: ReturnType<typeof setInterval> | undefined;
   let searchLogId: number | undefined;
+  let resumeCursor: string | undefined;
+  let searchContext: string | undefined;
+  let batchTimer: ReturnType<typeof setTimeout> | undefined;
+  let batches = 0;
+  const MAX_BATCHES = 4;
+  const BATCH_INTERVAL_MS = 500;
 
   function stopElapsedTimer() {
     if (elapsedTimer !== undefined) {
@@ -54,19 +66,29 @@ export function useSearch() {
 
   function cancelActiveRequests() {
     seq++;
+    if (batchTimer !== undefined) { clearTimeout(batchTimer); batchTimer = undefined; }
     stopElapsedTimer();
     controller?.abort();
     controller = undefined;
   }
   function applyResponse(data: SearchResponse | undefined, replace: boolean) {
     const incoming = data?.results ?? [];
-    state.value.results = replace ? incoming : mergeIncremental(state.value.results, incoming);
+    state.value.results = replace ? mergeIncremental([], incoming) : mergeIncremental(state.value.results, incoming);
     state.value.total = state.value.results.length;
+    state.value.catalogResults = mergeIncremental(state.value.catalogResults, incoming);
   }
-  async function run(options: SearchOptions) {
+  function applyPage(data: { hasMore?: boolean; nextCursor?: string | null; searchContext?: string }) {
+    if (data.searchContext) { searchContext = data.searchContext; state.value.serverPagination = true; }
+    state.value.hasMore = Boolean(data.hasMore && data.nextCursor);
+    state.value.nextCursor = state.value.hasMore ? data.nextCursor! : undefined;
+  }
+  async function run(options: SearchOptions, cursor?: string) {
     const mySeq = ++seq;
     stopElapsedTimer();
-    const ac = new AbortController(); controller = ac; started = performance.now();
+    const ac = new AbortController(); controller = ac;
+    if (!state.value.loading) started = performance.now();
+    resumeCursor = cursor;
+    state.value.loadingMore = Boolean(cursor);
     state.value.loading = true; state.value.paused = false; state.value.error = "";
     searchLogId = undefined;
     updateElapsed();
@@ -79,6 +101,10 @@ export function useSearch() {
       const body: Record<string, unknown> = { kw: options.keyword.trim() };
       // All searches use one resource-source endpoint. User channels are
       // channels are sent only in custom-channel mode; otherwise the backend uses configured sources.
+      if (cursor) body.cursor = cursor;
+      if (state.value.serverPagination) {
+        if (searchContext) body.searchContext = searchContext;
+      }
       if (options.onlyUserChannels) body.channels = options.userChannels ?? [];
       const response = await fetch(`${options.apiBase}/search`, { method: "POST", credentials: "include", signal: ac.signal,
         headers: { "Accept": "text/event-stream", "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -87,23 +113,38 @@ export function useSearch() {
         const error = new Error(data?.statusMessage || data?.message || httpErrorMessage(response.status, "搜索请求")) as Error & { status?: number; data?: unknown };
         error.status = response.status; error.data = data; throw error;
       }
-      if (!response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("搜索接口未返回 SSE 数据流");
-      await consumeSearchEventStream(response, async (event) => {
+      if (response.headers.get("content-type")?.includes("application/json")) {
+        const payload = await response.json() as { data: SearchResponse };
         if (mySeq !== seq || ac.signal.aborted) return;
-        const payload = JSON.parse(event.data) as { results?: SearchResult[]; total?: number; searchLogId?: unknown; message?: string };
-        if (event.event === "start") {
-          const id = Number(payload.searchLogId);
-          searchLogId = Number.isSafeInteger(id) && id > 0 ? id : undefined;
-        } else if (event.event === "result") {
-          const update = payload as SearchStreamResultData;
-          if (update.results) {
-            applyResponse({ total: update.results.length, results: update.results }, false);
-            await nextTick();
-          }
-        } else if (event.event === "complete") {
-          completed = true;
-        } else if (event.event === "error") throw new Error(payload.message || "搜索请求失败，请重试。");
-      });
+        applyResponse(payload.data, false);
+        applyPage(payload.data);
+        searchLogId = payload.data.searchLogId;
+        completed = true;
+      } else {
+        if (!response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("搜索接口返回格式异常");
+        await consumeSearchEventStream(response, async (event) => {
+          if (mySeq !== seq || ac.signal.aborted) return;
+          const payload = JSON.parse(event.data) as { results?: SearchResult[]; total?: number; searchLogId?: unknown; message?: string; hasMore?: boolean; nextCursor?: string | null; searchContext?: string };
+          if (event.event === "start") {
+            const id = Number(payload.searchLogId);
+            searchLogId = Number.isSafeInteger(id) && id > 0 ? id : undefined;
+            if (payload.searchContext) { searchContext = payload.searchContext; state.value.serverPagination = true; }
+          } else if (event.event === "result") {
+            const update = payload as SearchStreamResultData;
+            if (update.results) {
+              if ('nextCursor' in payload) {
+                applyPage({ ...payload, hasMore: Boolean(payload.nextCursor) });
+                resumeCursor = state.value.nextCursor;
+              }
+              applyResponse({ total: update.results.length, results: update.results }, false);
+              await nextTick();
+            }
+          } else if (event.event === "complete") {
+            applyPage(payload);
+            completed = true;
+          } else if (event.event === "error") throw new Error(payload.message || "搜索请求失败，请重试。");
+        });
+      }
       if (!completed && mySeq === seq && !ac.signal.aborted) throw new Error("搜索流在完成事件前中断");
     } catch (error: any) {
       if (mySeq !== seq || ac.signal.aborted) return;
@@ -129,36 +170,66 @@ export function useSearch() {
       reportApiError(error, { url: `${options.apiBase}/search`, method: "POST" });
     } finally {
       if (mySeq === seq) {
-        stopElapsedTimer();
-        accumulated += performance.now() - started;
-        state.value.elapsedMs = Math.round(accumulated);
-        state.value.loading = false;
+        if (completed) {
+          batches++;
+          if (batches >= MAX_BATCHES) { state.value.hasMore = false; state.value.nextCursor = undefined; }
+        }
         controller = undefined;
+        if (completed && state.value.hasMore && snapshot) {
+          // Space request starts by at least 500ms; slow requests never overlap.
+          resumeCursor = state.value.nextCursor;
+          state.value.loading = true;
+          state.value.loadingMore = true;
+          batchTimer = setTimeout(() => {
+            batchTimer = undefined;
+            if (mySeq === seq && snapshot) void run(snapshot, state.value.nextCursor);
+          }, BATCH_INTERVAL_MS);
+        } else {
+          stopElapsedTimer();
+          accumulated += performance.now() - started;
+          state.value.elapsedMs = Math.round(accumulated);
+          state.value.loading = false;
+          state.value.loadingMore = false;
+        }
       }
     }
   }
   async function performSearch(options: SearchOptions) {
-    cancelActiveRequests(); state.value = initial(); snapshot = undefined; searchLogId = undefined; accumulated = 0;
+    cancelActiveRequests(); batches = 0; searchContext = undefined; state.value = initial(); snapshot = undefined; searchLogId = undefined; accumulated = 0;
     if (!options.keyword.trim()) { state.value.error = "请输入搜索关键词"; return; }
     if (options.onlyUserChannels && !options.userChannels?.length) { state.value.error = "请先添加至少一个公开频道，再选择「自定义频道」搜索。"; return; }
     snapshot = { ...options, userChannels: [...(options.userChannels ?? [])] }; state.value.searched = true;
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLInputElement) document.activeElement.blur(); await run(snapshot);
   }
   function pauseSearch() {
-    if (!controller || state.value.paused) return;
+    if ((!controller && batchTimer === undefined) || state.value.paused) return;
     accumulated += performance.now() - started;
     state.value.elapsedMs = Math.round(accumulated);
     cancelActiveRequests();
     state.value.loading = false;
+    state.value.loadingMore = false;
     state.value.paused = true;
   }
-  async function continueSearch(_options?: SearchOptions) { if (!state.value.paused || !snapshot) return; await run(snapshot); }
-  function resetSearch() { cancelActiveRequests(); snapshot = undefined; searchLogId = undefined; accumulated = 0; state.value = initial(); }
+  async function continueSearch(_options?: SearchOptions) {
+    if (!state.value.paused || !snapshot) return;
+    if (state.value.serverPagination && state.value.results.length && !resumeCursor) { state.value.paused = false; return; }
+    await run(snapshot, resumeCursor);
+  }
+  async function selectPlatform(platform: string) {
+    // Every view shares the same 200-result search; filtering never fetches.
+    state.value.platform = platform;
+  }
+
+  async function loadMore() {
+    if (!snapshot || state.value.loading || state.value.paused || !state.value.nextCursor) return;
+    await run(snapshot, state.value.nextCursor);
+  }
+  function resetSearch() { cancelActiveRequests(); batches = 0; searchContext = undefined; snapshot = undefined; searchLogId = undefined; accumulated = 0; state.value = initial(); }
   // Leaving the home page should abort the SSE request immediately instead of
   // letting the server continue querying sources for an abandoned search.
   onBeforeUnmount(cancelActiveRequests);
   return {
     state, loading: computed(() => state.value.loading), paused: computed(() => state.value.paused), error: computed(() => state.value.error), searched: computed(() => state.value.searched), elapsedMs: computed(() => state.value.elapsedMs), total: computed(() => state.value.total), results: computed(() => state.value.results), hasResults: computed(() => state.value.results.length > 0),
-    performSearch, resetSearch, cancelActiveRequests, pauseSearch, continueSearch,
+    performSearch, resetSearch, cancelActiveRequests, pauseSearch, continueSearch, loadMore, selectPlatform,
   };
 }

@@ -3,11 +3,11 @@
       <div class="stats-content">
         <div class="stats-main" aria-live="polite">
           <h2>{{ keyword }}</h2>
-          <span class="result-summary">找到 <strong>{{ total }}</strong> 条资源 · 用时 {{ (elapsedMs / 1000).toFixed(1) }} 秒</span>
-          <span class="search-status" :class="{ 'is-loading': loading, 'is-paused': paused, 'is-error': error }"><i></i>{{ error ? '搜索异常' : paused ? '搜索已暂停' : loading ? '正在搜索…' : '搜索完成' }}</span>
+          <span class="result-summary">本次已加载 <strong>{{ resourceTotal ?? total }}</strong> 条资源 · 用时 {{ (elapsedMs / 1000).toFixed(1) }} 秒</span>
+          <span class="search-status" :class="{ 'is-loading': loading, 'is-paused': paused, 'is-error': error }"><i></i>{{ error ? '搜索异常' : paused ? '搜索已暂停' : loading ? '正在搜索…' : hasMore ? '还有更多结果' : '搜索完成' }}</span>
         </div>
 
-        <div class="platform-filters" v-if="hasResults">
+        <div class="platform-filters" v-if="platforms.length">
           <button
             :class="['filter-pill', { active: filterPlatform === 'all' }]"
             :aria-pressed="filterPlatform === 'all'"
@@ -24,6 +24,7 @@
           </button>
         </div>
 
+        <p v-if="platforms.length" class="platform-count-hint">网盘只筛选已加载结果，每次搜索最多 200 条资源</p>
         <div v-if="hasResults" class="sort-options" role="group" aria-label="排序方式">
           <button v-for="option in sortOptions" :key="option.value" type="button"
             :class="['sort-option', { active: sortType === option.value }]"
@@ -47,14 +48,14 @@
           :platform-label="platformLabel"
           />
       </div>
-      <p class="results-footer">已展示 {{ filteredResults.length }} 条资源</p>
+      <p class="results-footer">已展示 {{ filteredResults.length }} 条网盘链接<template v-if="serverPagination && !hasMore && !loading && !paused && !error && filterPlatform !== 'all'"> · 本次搜索结果加载完成</template></p>
     </section>
 
     <section v-else-if="searched && !error && !loading && !paused" class="empty-state">
       <div class="empty-card">
         <div class="empty-icon">🔍</div>
-        <h3>未找到相关资源</h3>
-        <p>试试其他关键词，或检查设置中的搜索来源是否已开启</p>
+        <h3>{{ filterPlatform === 'all' ? '未找到相关资源' : '当前网盘暂无结果' }}</h3>
+        <p>{{ filterPlatform === 'all' ? '试试其他关键词，或检查设置中的搜索来源是否已开启' : '切换其他网盘，或尝试其他关键词' }}</p>
       </div>
     </section>
 
@@ -93,11 +94,14 @@ interface Props {
   searched: boolean;
   keyword: string;
   total: number;
+  resourceTotal?: number;
   elapsedMs: number;
   paused: boolean;
   loading: boolean;
   error: string;
   hasResults: boolean;
+  hasMore?: boolean;
+  serverPagination?: boolean;
   platforms: string[];
   platformCounts: Record<string, number>;
   filterPlatform: string;

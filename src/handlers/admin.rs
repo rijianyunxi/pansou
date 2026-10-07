@@ -313,7 +313,26 @@ pub async fn admin_hot_searches_post(
         .or_else(|| body.get("manual_weight"))
         .and_then(Value::as_i64)
         .unwrap_or(0) as i32;
-    let r=sqlx::query("INSERT INTO hot_searches(term,normalized_term,score,last_searched,status,source,pinned,manual_weight,updated_at) VALUES($1,$2,$3,now(),$4,$5,$6,$7,now()) ON CONFLICT(term) DO UPDATE SET score=excluded.score,status=excluded.status,source=excluded.source,pinned=excluded.pinned,manual_weight=excluded.manual_weight,updated_at=now() RETURNING term,score,pinned,status,source,manual_weight,last_searched,updated_at").bind(&term).bind(term.to_lowercase()).bind(score).bind(status).bind(source).bind(pinned).bind(manual_weight).fetch_one(&state.pool).await?;
+    let mut tx = state.pool.begin().await?;
+    crate::hot_search::lock(&mut tx).await?;
+    let protected: i64 = sqlx::query_scalar("SELECT count(*) FROM hot_searches WHERE term<>$1 AND (pinned OR source='manual' OR status<>'approved')")
+        .bind(&term).fetch_one(&mut *tx).await?;
+    if protected >= crate::hot_search::LIMIT {
+        return Err(ApiError::Conflict(
+            "热门搜索已保留30条人工维护的词，请先删除一条再新增".into(),
+        ));
+    }
+    let r=sqlx::query("INSERT INTO hot_searches(term,normalized_term,score,last_searched,status,source,pinned,manual_weight,updated_at) VALUES($1,$2,$3,now(),$4,$5,$6,$7,now()) ON CONFLICT(term) DO UPDATE SET score=excluded.score,status=excluded.status,source=excluded.source,pinned=excluded.pinned,manual_weight=excluded.manual_weight,updated_at=now() RETURNING term,score,pinned,status,source,manual_weight,last_searched,updated_at").bind(&term).bind(term.to_lowercase()).bind(score).bind(status).bind(source).bind(pinned).bind(manual_weight).fetch_one(&mut *tx).await?;
+    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM hot_searches WHERE term=$1)")
+        .bind(&term)
+        .fetch_one(&mut *tx)
+        .await?
+    {
+        return Err(ApiError::Conflict(
+            "该词热度未进入前30名，可设为置顶或人工来源后添加".into(),
+        ));
+    }
+    tx.commit().await?;
     let item = json!({"term":r.get::<String,_>("term"),"score":r.get::<i64,_>("score"),"pinned":r.get::<bool,_>("pinned"),"status":r.get::<String,_>("status"),"source":r.get::<String,_>("source"),"manualWeight":r.get::<i32,_>("manual_weight"),"lastSearched":r.get::<chrono::DateTime<chrono::Utc>,_>("last_searched"),"updatedAt":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")});
     Ok(ok(json!({"item":item})))
 }

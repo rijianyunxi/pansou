@@ -7,6 +7,7 @@ mod crawl;
 mod db;
 mod error;
 mod handlers;
+mod hot_search;
 mod link_resolution;
 mod local_index;
 mod models;

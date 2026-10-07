@@ -44,8 +44,8 @@ pub async fn hot_searches(
         .get("limit")
         .and_then(|x| x.parse::<i64>().ok())
         .unwrap_or(20)
-        .clamp(1, 100);
-    let rows=sqlx::query("SELECT term,score,pinned,status FROM hot_searches WHERE status='approved' ORDER BY pinned DESC,score DESC,last_searched DESC LIMIT $1").bind(limit).fetch_all(&state.pool).await?;
+        .clamp(1, crate::hot_search::LIMIT);
+    let rows=sqlx::query("SELECT term,score,pinned,status FROM hot_searches WHERE status='approved' ORDER BY pinned DESC,score DESC,last_searched DESC,term ASC LIMIT $1").bind(limit).fetch_all(&state.pool).await?;
     let data=rows.into_iter().map(|r|json!({"term":r.get::<String,_>("term"),"score":r.get::<i64,_>("score"),"pinned":r.get::<bool,_>("pinned"),"status":r.get::<String,_>("status")})).collect::<Vec<_>>();
     Ok(Json(
         json!({"code":0,"message":"success","data":{"hotSearches":data}}),

@@ -107,11 +107,68 @@ fn log_local_search(
     );
 }
 
+pub const PAGE_SIZE: usize = 50;
+pub const MAX_RESULTS: usize = 200;
+
+fn query_cache_key(
+    keyword: &str,
+    channels: &[String],
+    revision: i64,
+    page: Option<&Value>,
+    cloud_type: Option<&str>,
+) -> String {
+    match page {
+        None => cache_key(keyword, channels, revision),
+        Some(after) => format!(
+            "pansou:local-page:v2:{:x}",
+            Sha256::digest(
+                json!([keyword, channels, revision, after, cloud_type, PAGE_SIZE])
+                    .to_string()
+                    .as_bytes()
+            )
+        ),
+    }
+}
+
 pub async fn query(
     state: &AppState,
     channels: &[String],
     keyword: &str,
 ) -> Result<Vec<SearchResult>, ApiError> {
+    results(query_rows(state, channels, keyword, None, None).await?)
+}
+
+pub struct Page {
+    pub results: Vec<SearchResult>,
+    pub next: Option<Value>,
+}
+
+/// Seek by exact match, publication time and ID; never assemble links for other pages.
+pub async fn page(
+    state: &AppState,
+    channels: &[String],
+    keyword: &str,
+    after: &Value,
+    cloud_type: Option<&str>,
+) -> Result<Page, ApiError> {
+    let rows = query_rows(state, channels, keyword, Some(after), cloud_type).await?;
+    let next = rows
+        .last()
+        .filter(|r| r["_hasMore"] == true)
+        .map(|r| r["_anchor"].clone());
+    Ok(Page {
+        results: results(rows)?,
+        next,
+    })
+}
+
+async fn query_rows(
+    state: &AppState,
+    channels: &[String],
+    keyword: &str,
+    page: Option<&Value>,
+    cloud_type: Option<&str>,
+) -> Result<Vec<Value>, ApiError> {
     let started = Instant::now();
     let keyword = keyword.trim().to_lowercase();
     if channels.is_empty() {
@@ -120,7 +177,7 @@ pub async fn query(
     let mut scope = channels.to_vec();
     scope.sort();
     scope.dedup();
-    let key = cache_key(&keyword, &scope, revision(state).await?);
+    let key = query_cache_key(&keyword, &scope, revision(state).await?, page, cloud_type);
     if let Some(rows) = cached(state, &key).await {
         log_local_search(
             &keyword,
@@ -130,20 +187,20 @@ pub async fn query(
             LocalSearchTiming::default(),
             rows.len(),
         );
-        return results(rows);
+        return Ok(rows);
     }
     // Coalesce before acquiring a scarce DB execution slot. Revision changes do
     // not split the lock for the same keyword/scope.
     let lock = state
         .local_search_locks
-        .for_key(&cache_key(&keyword, &scope, 0))
+        .for_key(&query_cache_key(&keyword, &scope, 0, page, cloud_type))
         .await;
     let lock_started = Instant::now();
     let _refresh = tokio::time::timeout(Duration::from_secs(6), lock.lock())
         .await
         .map_err(|_| ApiError::Unavailable("本地搜索繁忙，请稍后重试".into()))?;
     let lock_ms = lock_started.elapsed().as_millis() as u64;
-    let key = cache_key(&keyword, &scope, revision(state).await?);
+    let key = query_cache_key(&keyword, &scope, revision(state).await?, page, cloud_type);
     if let Some(rows) = cached(state, &key).await {
         log_local_search(
             &keyword,
@@ -156,7 +213,7 @@ pub async fn query(
             },
             rows.len(),
         );
-        return results(rows);
+        return Ok(rows);
     }
     let slot_started = Instant::now();
     let _slot = tokio::time::timeout(Duration::from_secs(2), state.local_search_slots.acquire())
@@ -186,19 +243,30 @@ pub async fn query(
     .fetch_one(&mut *tx)
     .await?;
     let grams = search_grams(&keyword);
-    let values = sqlx::query_scalar::<_, Value>(include_str!("queries/telegram_search.sql"))
-        .bind(&keyword)
-        .bind(&grams)
-        .bind(&scope)
-        .fetch_all(&mut *tx)
-        .await?;
+    let values = if let Some(after) = page {
+        sqlx::query_scalar::<_, Value>(include_str!("queries/telegram_search_page.sql"))
+            .bind(&keyword)
+            .bind(&grams)
+            .bind(&scope)
+            .bind(after)
+            .bind(cloud_type)
+            .fetch_all(&mut *tx)
+            .await?
+    } else {
+        sqlx::query_scalar::<_, Value>(include_str!("queries/telegram_search.sql"))
+            .bind(&keyword)
+            .bind(&grams)
+            .bind(&scope)
+            .fetch_all(&mut *tx)
+            .await?
+    };
     tx.commit().await?;
     let sql_ms = sql_started.elapsed().as_millis() as u64;
     drop(_slot);
     // Result/version were read from one snapshot. Redis is never awaited while
     // the SQL transaction/connection is held, even during a cache fill.
     if let Ok(mut connection) = state.redis.connection() {
-        let key = cache_key(&keyword, &scope, snapshot_revision);
+        let key = query_cache_key(&keyword, &scope, snapshot_revision, page, cloud_type);
         let ttl = if values.is_empty() { 10 } else { 60 };
         let serialized =
             serde_json::to_string(&values).map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -220,7 +288,7 @@ pub async fn query(
         },
         values.len(),
     );
-    results(values)
+    Ok(values)
 }
 
 #[cfg(test)]

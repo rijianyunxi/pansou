@@ -227,3 +227,175 @@ async fn direct_resource_search_matches_oracle_and_invalidates_only_content_chan
     assert_eq!(grams, resource_clean::grams("新标题"));
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test"]
+async fn hot_search_shortlist_is_bounded_and_evicted_terms_can_return() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = db::connect(&url).await.unwrap();
+    let schema = format!("hot_retention_{}", uuid::Uuid::new_v4().simple());
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    // Upgrade an existing unbounded shortlist, preserving full search logs.
+    for migration in sqlx::migrate!("./migrations")
+        .iter()
+        .filter(|m| m.version < 52)
+    {
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql("INSERT INTO hot_searches(term,score,last_searched) SELECT 'old-'||i,2,'2026-10-01'::timestamptz + i * interval '1 second' FROM generate_series(1,70) i;
+        INSERT INTO search_logs(keyword,ip,search_scope) SELECT 'warming','127.0.0.1','system' FROM generate_series(1,1);
+        INSERT INTO hot_searches(term,status,source,pinned,score) VALUES('blocked','blocked','manual',false,0),('pinned','approved','auto',true,0);")
+        .execute(&mut *tx).await.unwrap();
+    for migration in sqlx::migrate!("./migrations")
+        .iter()
+        .filter(|m| m.version == 52)
+    {
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        30
+    );
+    assert!(sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM hot_searches WHERE term='blocked' AND status='blocked') AND EXISTS(SELECT 1 FROM hot_searches WHERE term='pinned' AND pinned)")
+        .fetch_one(&mut *tx).await.unwrap());
+    tx.commit().await.unwrap();
+    // Each writer follows the production lock-before-snapshot contract.
+    let mut writers = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let pool = pool.clone();
+        let schema = schema.clone();
+        writers.spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query(&format!("SET LOCAL search_path TO {schema},public"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            crate::hot_search::lock(&mut tx).await.unwrap();
+            let id: i64 = sqlx::query_scalar(include_str!("queries/create_search_log.sql"))
+                .bind("shortlist-test")
+                .bind(None::<i64>)
+                .bind("warming")
+                .bind("127.0.0.1")
+                .bind("system")
+                .bind(json!([]))
+                .bind(json!([]))
+                .bind("warming")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert!(id > 0);
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap(),
+                30
+            );
+            tx.commit().await.unwrap();
+        });
+    }
+    while let Some(result) = writers.join_next().await {
+        result.unwrap();
+    }
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(&format!("SET LOCAL search_path TO {schema},public"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT score FROM hot_searches WHERE term='warming'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        21
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM search_logs WHERE keyword='warming'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        21
+    );
+    // Even a low-scoring evicted candidate still keeps its full search log.
+    for i in 0..50 {
+        let term = format!("cold-{i}");
+        sqlx::query_scalar::<_, i64>(include_str!("queries/create_search_log.sql"))
+            .bind("cold-test")
+            .bind(None::<i64>)
+            .bind(&term)
+            .bind("127.0.0.1")
+            .bind("system")
+            .bind(json!([]))
+            .bind(json!([]))
+            .bind(&term)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        30
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM search_logs")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        71
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches WHERE term LIKE 'cold-%'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        0
+    );
+    // Bulk SQL inserts and manual terms also obey the cap; curation wins over popularity.
+    sqlx::raw_sql(
+        "INSERT INTO hot_searches(term,score) SELECT 'bulk-'||i,100 FROM generate_series(1,100) i;
+        INSERT INTO hot_searches(term,source,score) VALUES('manual','manual',0);",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        30
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM hot_searches WHERE term IN ('blocked','pinned','manual')"
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        3
+    );
+    tx.rollback().await.unwrap();
+    sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&pool)
+        .await
+        .unwrap();
+}

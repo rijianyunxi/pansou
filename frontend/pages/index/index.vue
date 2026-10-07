@@ -50,12 +50,15 @@
     <HomeResultsPanel
       :searched="searched"
       :keyword="submittedKeyword"
-      :total="displayResults.length"
+      :total="allResults.length"
+      :resource-total="searchState.results.length"
       :elapsed-ms="searchState.elapsedMs"
       :paused="searchState.paused"
       :loading="searchState.loading"
       :error="searchState.error"
       :has-results="displayResults.length > 0"
+      :has-more="searchState.hasMore"
+      :server-pagination="searchState.serverPagination"
       :platforms="platforms"
       :platform-counts="platformCounts"
       :filter-platform="filterPlatform"
@@ -63,10 +66,15 @@
       :filtered-results="filteredResults"
       :platform-label="platformName"
       :show-back-to-top="showBackToTop"
-      @update:filter-platform="filterPlatform = $event"
+      @update:filter-platform="changePlatform"
       @update:sort-type="sortType = $event"
       @apply-time-sort="applyTimeSort"
       @scroll-to-top="scrollToTop" />
+    <div v-if="searchState.hasMore && searchState.error" class="search-pagination">
+      <button type="button" :disabled="searchState.loading || searchState.paused" @click="loadMore">
+        {{ searchState.loading ? '正在加载…' : '重试加载剩余结果' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -189,6 +197,8 @@ const {
   resetSearch,
   pauseSearch,
   continueSearch,
+  loadMore,
+  selectPlatform,
 } = useSearch();
 const settingsApi = useSettings();
 const { settings, settingsReady, storageError } = settingsApi;
@@ -198,6 +208,12 @@ const searchScopeDisabled = computed(() =>
 );
 const canUseCustomChannels = computed(() => !!auth.user.value || auth.anonymousCustomChannels.value);
 const needsChannelConfiguration = computed(() => onlyUserChannels.value && settings.value.userChannels.length === 0);
+const catalogResults = computed(() => flattenResultsForDisplay(searchState.value.catalogResults));
+const allResults = computed(() => displayResults.value);
+async function changePlatform(platform: string) {
+  filterPlatform.value = platform;
+  await selectPlatform(platform);
+}
 const displayResults = computed<DisplaySearchResult[]>(() => flattenResultsForDisplay(searchState.value.results));
 const openChannelSettings = inject<() => void>("openChannelSettings", () => {});
 const showToast = inject<(message: string, type?: "info" | "success" | "error") => void>("showToast", () => {});
@@ -276,14 +292,15 @@ const platformName = (type?: string): string => CLOUD_TYPE_LABELS[type || "other
 // 数据仍按资源合并，展示时按单个分享链接展开。
 const platforms = computed(() => {
   const seen = new Set<string>();
-  for (const item of displayResults.value) for (const type of item.cloud_types) seen.add(type);
+  for (const item of catalogResults.value) for (const type of item.cloud_types) seen.add(type);
   return sortCloudTypes([...seen]);
 });
 
 const platformCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {};
-  for (const item of displayResults.value) {
-    for (const type of new Set(item.cloud_types)) counts[type] = (counts[type] || 0) + 1;
+  for (const platform of platforms.value) {
+    const items = catalogResults.value;
+    counts[platform] = items.filter(item => item.cloud_types.includes(platform as any)).length;
   }
   return counts;
 });
@@ -330,6 +347,10 @@ function sortItems<T extends SearchResult>(items: T[]): T[] {
 </script>
 
 <style scoped>
+.search-pagination { display: flex; justify-content: center; margin: 24px 0; }
+.search-pagination button { padding: 12px 24px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-primary); color: var(--primary); font: inherit; cursor: pointer; }
+.search-pagination button:disabled { opacity: .6; cursor: default; }
+
 
 .home { width: 100%; max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
 .hero { display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; position: relative; min-height: 310px; }

@@ -53,6 +53,16 @@ export interface CrawlMessageTask {
   errorMessage: string | null;
   resources: { id: string; name: string }[];
 }
+export interface CrawlMessageDetail {
+  messageId: number;
+  taskAt: string;
+  status: string;
+  errorMessage: string | null;
+  publishedAt: string | null;
+  rawText: string | null;
+  rawHtml: string | null;
+  messageUrl: string;
+}
 interface MessageCounts {
   all: number;
   success: number;

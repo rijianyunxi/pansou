@@ -504,15 +504,13 @@ async fn telegram_ingestion_search_and_admin_contracts() {
     .await
     .unwrap();
     tx.rollback().await.unwrap();
-    assert!(
-        !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=999)"
-        )
-        .bind(&channel)
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-    );
+    assert!(!sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=999)"
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap());
     let local = local_index::query(&state, std::slice::from_ref(&channel), "兰香")
         .await
         .unwrap();
@@ -2380,4 +2378,825 @@ async fn canonical_resources_keep_latest_content_and_channel_membership_without_
         2
     );
     tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn failed_message_content_is_durable_and_admin_only() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
+    db::init_db(&pool).await.unwrap();
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
+            .await
+            .unwrap(),
+    ));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let channel = format!("failure_{unique}");
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,false,$2)")
+        .bind(&channel)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let source = crawl::source_for(&pool, &channel).await.unwrap();
+    let links = (0..13)
+        .map(|i| format!("<a href=\"https://pan.quark.cn/s/{unique}{i}\">网盘{i}</a><br>"))
+        .collect::<String>();
+    let html = format!(
+        r#"<div class="tgme_widget_message" data-post="{channel}/77"><div class="tgme_widget_message_text">资源合集 &amp; 原文<br>提取码：abcd<br>{links}<script>alert('unsafe')</script></div><time datetime="2026-10-06T01:02:03Z"></time></div>"#
+    );
+    let published = chrono::DateTime::parse_from_rfc3339("2026-10-06T01:02:03Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for _ in 0..2 {
+        assert_eq!(
+            ingest(
+                &state,
+                &channel,
+                &source,
+                telegram::Message {
+                    id: 77,
+                    html: html.clone(),
+                    published: Some(published),
+                }
+            )
+            .await,
+            (0, true)
+        );
+    }
+    let captured = telegram::messages(&html, &channel).unwrap().remove(0).html;
+    let row = sqlx::query("SELECT raw_html,published_at,error_message FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=77")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(row.get::<String, _>("raw_html"), captured);
+    assert_eq!(
+        row.get::<chrono::DateTime<Utc>, _>("published_at"),
+        published
+    );
+    assert_eq!(
+        row.get::<String, _>("error_message"),
+        "聚合消息缺少明确资源边界，需要调整规则"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crawl_message_tasks WHERE channel_id=$1"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    // Unhandled errors survive the ordinary daily task cleanup.
+    sqlx::query(
+        "UPDATE crawl_message_tasks SET task_at=now()-interval '3 days' WHERE channel_id=$1",
+    )
+    .bind(&channel)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("SELECT prune_crawl_tasks($1)")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let username = format!("failure_admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
+        .bind(&username).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&username, &unique).await.unwrap().0;
+    let router = build_router(state.clone());
+    let path = format!("/api/admin/crawl/channels/{channel}/messages/77");
+    assert_eq!(
+        call(&router, "GET", &path, None, Value::Null).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body) = call(&router, "GET", &path, Some(&session.token), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let detail = serde_json::from_str::<Value>(&body).unwrap()["data"].clone();
+    assert_eq!(detail["rawHtml"], captured);
+    assert_eq!(detail["publishedAt"], "2026-10-06T01:02:03Z");
+    assert_eq!(detail["messageUrl"], format!("https://t.me/{channel}/77"));
+    let text = detail["rawText"].as_str().unwrap();
+    assert!(text.starts_with("资源合集 & 原文\n提取码：abcd\n"));
+    assert!(text.contains(&format!("https://pan.quark.cn/s/{unique}12")));
+    assert!(!text.contains("alert('unsafe')"));
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            "/api/admin/crawl/channels/missing/messages/77",
+            Some(&session.token),
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,status,error_message) VALUES($1,78,'failed','legacy error')")
+        .bind(&channel).execute(&pool).await.unwrap();
+    let (_, body) = call(
+        &router,
+        "GET",
+        &format!("/api/admin/crawl/channels/{channel}/messages/78"),
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    let legacy = serde_json::from_str::<Value>(&body).unwrap()["data"].clone();
+    assert!(legacy["rawHtml"].is_null());
+    assert!(legacy["rawText"].is_null());
+    assert_eq!(legacy["errorMessage"], "legacy error");
+    // Actual transform errors use the same durable capture path.
+    let mut invalid_source = source.clone();
+    invalid_source.transform = "{".into();
+    assert_eq!(
+        ingest(
+            &state,
+            &channel,
+            &invalid_source,
+            message(&channel, 79, "规则出错", "invalid")
+        )
+        .await,
+        (0, true)
+    );
+    assert!(sqlx::query_scalar::<_,bool>("SELECT raw_html IS NOT NULL AND error_message IS NOT NULL FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=79")
+        .bind(&channel).fetch_one(&pool).await.unwrap());
+    // Retry submission retains the snapshot until the message is processed again.
+    sqlx::query("UPDATE crawl_channels SET enabled=true WHERE id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &router,
+        "POST",
+        &format!("/api/admin/crawl/channels/{channel}/messages/action"),
+        Some(&session.token),
+        json!({"action":"retry","ids":[77]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT raw_html FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=77"
+        )
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        captured
+    );
+    assert_eq!(
+        ingest(
+            &state,
+            &channel,
+            &source,
+            message(&channel, 77, "重试成功", "recovered")
+        )
+        .await,
+        (1, false)
+    );
+    let row = sqlx::query("SELECT status,error_message,raw_html FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=77")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(row.get::<String, _>("status"), "parsed");
+    assert!(row.get::<Option<String>, _>("error_message").is_none());
+    assert!(row.get::<Option<String>, _>("raw_html").is_none());
+    state.auth().revoke_session(&session).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn hot_search_admin_respects_shortlist_capacity() {
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("TRUNCATE hot_searches")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO hot_searches(term,source,status) SELECT 'manual-'||i,'manual',CASE WHEN i=1 THEN 'blocked' ELSE 'approved' END FROM generate_series(1,30) i")
+        .execute(&pool).await.unwrap();
+    let logs_before = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM search_logs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
+            .await
+            .unwrap(),
+    ));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let username = format!("shortlist_admin_{unique}");
+    sqlx::query("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin')")
+        .bind(&username).bind(auth::hash_password(&unique).unwrap()).execute(&pool).await.unwrap();
+    let session = state.auth().login(&username, &unique).await.unwrap().0;
+    let router = build_router(state.clone());
+    let token = Some(session.token.as_str());
+    let (status, body) = call(
+        &router,
+        "GET",
+        "/api/admin/hot-searches?pageSize=100",
+        token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["data"]["total"],
+        30
+    );
+    let (_, body) = call(
+        &router,
+        "GET",
+        "/api/hot-searches?limit=100",
+        None,
+        Value::Null,
+    )
+    .await;
+    let terms = serde_json::from_str::<Value>(&body).unwrap();
+    assert_eq!(terms["data"]["hotSearches"].as_array().unwrap().len(), 29);
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/api/admin/hot-searches",
+        token,
+        json!({"term":"extra","source":"manual"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // Existing curated entries remain editable at capacity.
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/api/admin/hot-searches",
+            token,
+            json!({"term":"manual-2","score":10,"source":"manual"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &router,
+            "DELETE",
+            "/api/admin/hot-searches/manual-30",
+            token,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/api/admin/hot-searches",
+            token,
+            json!({"term":"extra","source":"manual"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM hot_searches")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        30
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM search_logs")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        logs_before
+    );
+    state.auth().revoke_session(&session).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PANSOU_TEST_DATABASE_URL ending _test and PANSOU_TEST_REDIS_URL"]
+async fn search_pages_bound_payload_and_preserve_order_scope_and_logs() {
+    use redis::AsyncCommands;
+    let url = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(url::Url::parse(&url).unwrap().path().ends_with("_test"));
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
+    db::init_db(&pool).await.unwrap();
+    sqlx::query("UPDATE resource_sources SET enabled=false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        RedisStore::connect(&std::env::var("PANSOU_TEST_REDIS_URL").unwrap())
+            .await
+            .unwrap(),
+    ));
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let keyword = format!("分页{unique}");
+    let channel = format!("page_{unique}");
+    sqlx::query("INSERT INTO crawl_channels(id,name,enabled,transform) VALUES($1,$1,false,$2)")
+        .bind(&channel)
+        .bind(DSL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let description = "中文😀简介".repeat(30);
+    sqlx::query("INSERT INTO managed_resources(id,name,description,origin,source_channel_ids,published_at) SELECT $1||'-'||lpad(i::text,3,'0'),CASE WHEN i<=140 THEN $2 ELSE $2||i END,$3,'telegram',ARRAY[$1::text],CASE WHEN i%3=0 THEN NULL ELSE '2026-10-01'::timestamptz+(i%2)*interval '1 day' END FROM generate_series(1,273) i")
+        .bind(&channel).bind(&keyword).bind(&description).execute(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    for i in 1..=273 {
+        let id = format!("{channel}-{i:03}");
+        crate::resource_links::replace(
+            &mut tx,
+            &id,
+            &[crate::models::Link {
+                r#type: if i <= 140 { "mobile" } else { "quark" }.into(),
+                url: if i <= 140 {
+                    format!("https://yun.139.com/shareweb/#/w/i/{id}")
+                } else {
+                    format!("https://pan.quark.cn/s/{id}")
+                },
+                password: Some("secret".into()),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let session = state.auth().issue(true).await.unwrap();
+    let other = state.auth().issue(true).await.unwrap();
+    let request: crate::models::SearchRequest =
+        serde_json::from_value(json!({"kw":keyword})).unwrap();
+    let expected = local_index::query(&state, std::slice::from_ref(&channel), &keyword)
+        .await
+        .unwrap();
+    assert_eq!(expected.len(), 200);
+    let expected = crate::link_resolution::project(&state, &session, &request, None, &expected)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r["dedupKey"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let router = build_router(state.clone());
+    async fn send(
+        router: &Router,
+        token: &str,
+        body: Value,
+        accept: &str,
+        gzip: bool,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/search")
+            .header("content-type", "application/json")
+            .header("accept", accept)
+            .header("authorization", format!("Bearer {token}"));
+        if gzip {
+            builder = builder.header("accept-encoding", "gzip");
+        }
+        let mut req = builder.body(Body::from(body.to_string())).unwrap();
+        req.extensions_mut().insert(ConnectInfo(
+            format!(
+                "127.0.{}.{}:41234",
+                token.as_bytes()[0],
+                token.as_bytes()[1]
+            )
+            .parse::<SocketAddr>()
+            .unwrap(),
+        ));
+        router.clone().oneshot(req).await.unwrap()
+    }
+    async fn read(response: axum::response::Response) -> Value {
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        assert!(
+            response.headers()["vary"]
+                .to_str()
+                .unwrap()
+                .contains("Accept")
+        );
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+    }
+    let first = read(
+        send(
+            &router,
+            &session.token,
+            json!({"kw":keyword}),
+            "application/json, text/event-stream",
+            false,
+        )
+        .await,
+    )
+    .await;
+    let log_id = first["data"]["searchLogId"].as_i64().unwrap();
+    let first_cursor = first["data"]["nextCursor"].as_str().unwrap().to_owned();
+    let mut page = first.clone();
+    let mut seen = vec![];
+    let mut sizes = vec![];
+    loop {
+        let data = &page["data"];
+        assert_eq!(data["pageSize"], 50);
+        let rows = data["results"].as_array().unwrap();
+        sizes.push(rows.len());
+        for row in rows {
+            assert_eq!(row["description"].as_str().unwrap().chars().count(), 60);
+            assert!(!row.to_string().contains("pan.quark.cn"));
+            assert!(!row.to_string().contains("secret"));
+            seen.push(row["dedupKey"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(data["total"], rows.len());
+        assert_eq!(data["searchLogId"], log_id);
+        if data["hasMore"] == false {
+            assert!(data["nextCursor"].is_null());
+            break;
+        }
+        page = read(
+            send(
+                &router,
+                &session.token,
+                json!({"kw":keyword,"cursor":data["nextCursor"]}),
+                "application/json",
+                false,
+            )
+            .await,
+        )
+        .await;
+    }
+    assert_eq!(sizes, vec![50, 50, 50, 50]);
+    assert_eq!(
+        seen, expected,
+        "exact matches, timestamp ties and NULL dates must retain stable ordering without gaps"
+    );
+    let context = first["data"]["searchContext"].as_str().unwrap();
+    for (cloud, count) in [("mobile", 140usize), ("quark", 133usize)] {
+        let mut body = json!({"kw":keyword,"cloudType":cloud,"searchContext":context});
+        let mut ids = std::collections::HashSet::new();
+        let mut cloud_cursor = None;
+        loop {
+            let filtered = read(
+                send(
+                    &router,
+                    &session.token,
+                    body.clone(),
+                    "application/json",
+                    false,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(filtered["data"]["searchLogId"], log_id);
+            let rows = filtered["data"]["results"].as_array().unwrap();
+            assert!(rows.len() <= 50);
+            for r in rows {
+                assert!(
+                    r["links"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|l| l["type"] == cloud)
+                );
+                assert!(ids.insert(r["dedupKey"].as_str().unwrap().to_owned()));
+            }
+            if filtered["data"]["hasMore"] == false {
+                break;
+            }
+            let cursor = filtered["data"]["nextCursor"].as_str().unwrap().to_owned();
+            cloud_cursor = Some(cursor.clone());
+            body["cursor"] = json!(cursor);
+        }
+        assert_eq!(ids.len(), count);
+        assert_eq!(
+            send(
+                &router,
+                &session.token,
+                json!({"kw":keyword,"cursor":cloud_cursor.unwrap()}),
+                "application/json",
+                false
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        send(
+            &router,
+            &other.token,
+            json!({"kw":keyword,"cloudType":"mobile","searchContext":context}),
+            "application/json",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(
+            &router,
+            &session.token,
+            json!({"kw":"另一个关键词","cloudType":"mobile","searchContext":context}),
+            "application/json",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let no_provider = read(
+        send(
+            &router,
+            &session.token,
+            json!({"kw":keyword,"cloudType":"baidu","searchContext":context}),
+            "application/json",
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_provider["data"]["results"], json!([]));
+    assert_eq!(no_provider["data"]["hasMore"], false);
+    let retry = read(
+        send(
+            &router,
+            &session.token,
+            json!({"kw":keyword,"cursor":first_cursor}),
+            "application/json",
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(retry["data"]["results"].as_array().unwrap().len(), 50);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM search_logs WHERE keyword=$1")
+            .bind(&keyword)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT result_count FROM search_logs WHERE id=$1")
+            .bind(log_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        200
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT score FROM hot_searches WHERE term=$1")
+            .bind(&keyword)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT description FROM managed_resources WHERE source_channel_ids @> ARRAY[$1::text] LIMIT 1").bind(&channel).fetch_one(&pool).await.unwrap(),description);
+    for (token, kw) in [
+        (&other.token, keyword.clone()),
+        (&session.token, "另一个关键词".into()),
+    ] {
+        assert_eq!(
+            send(
+                &router,
+                token,
+                json!({"kw":kw,"cursor":first_cursor}),
+                "application/json",
+                false
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    // Compress JSON in the app even without a reverse proxy; leave SSE uncompressed.
+    let extra_session = state.auth().issue(true).await.unwrap();
+    let compressed = send(
+        &router,
+        &extra_session.token,
+        json!({"kw":keyword}),
+        "application/json",
+        true,
+    )
+    .await;
+    assert_eq!(compressed.status(), StatusCode::OK);
+    assert_eq!(compressed.headers()["content-encoding"], "gzip");
+    let compressed = to_bytes(compressed.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(&compressed[..2], &[0x1f, 0x8b]);
+    assert!(compressed.len() < first.to_string().len());
+    let sse = send(
+        &router,
+        &extra_session.token,
+        json!({"kw":keyword}),
+        "text/event-stream",
+        true,
+    )
+    .await;
+    assert!(!sse.headers().contains_key("content-encoding"));
+    assert_eq!(sse.headers()["x-accel-buffering"], "no");
+    use futures::StreamExt;
+    let mut chunks = sse.into_body().into_data_stream();
+    let mut batches = Vec::new();
+    let mut previous_batch = None;
+    let mut events = Vec::new();
+    while let Some(chunk) = chunks.next().await {
+        let text = String::from_utf8(chunk.unwrap().to_vec()).unwrap();
+        let event = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let event: Value = serde_json::from_str(event).unwrap();
+        if let Some(rows) = event["results"].as_array() {
+            if let Some(previous) = previous_batch {
+                assert!(
+                    tokio::time::Instant::now().duration_since(previous)
+                        >= std::time::Duration::from_millis(490)
+                );
+            }
+            previous_batch = Some(tokio::time::Instant::now());
+            batches.push(rows.len());
+            for row in rows {
+                assert!(row.as_object().unwrap().keys().all(|k| {
+                    [
+                        "name",
+                        "description",
+                        "datetime",
+                        "dedupKey",
+                        "resultRef",
+                        "links",
+                    ]
+                    .contains(&k.as_str())
+                }));
+                assert!(row["links"].as_array().unwrap().iter().all(|l| {
+                    l.as_object()
+                        .unwrap()
+                        .keys()
+                        .all(|k| ["type", "linkRef"].contains(&k.as_str()))
+                }));
+            }
+        }
+        events.push(event);
+    }
+    assert_eq!(batches, vec![50, 50, 50, 50]);
+    assert_eq!(events.last().unwrap()["total"], 200);
+    // Dropping the stream stops paging and releases the search concurrency slot.
+    let canceled = send(
+        &router,
+        &extra_session.token,
+        json!({"kw":keyword}),
+        "text/event-stream",
+        false,
+    )
+    .await;
+    let mut chunks = canceled.into_body().into_data_stream();
+    let start = String::from_utf8(chunks.next().await.unwrap().unwrap().to_vec()).unwrap();
+    let start: Value = serde_json::from_str(
+        start
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .unwrap(),
+    )
+    .unwrap();
+    let canceled_log = start["searchLogId"].as_i64().unwrap();
+    chunks.next().await.unwrap().unwrap();
+    drop(chunks);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT result_count FROM search_logs WHERE id=$1")
+            .bind(canceled_log)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        50
+    );
+    let _: () = state
+        .redis
+        .connection()
+        .unwrap()
+        .del(format!("pansou:search-page:v1:{first_cursor}"))
+        .await
+        .unwrap();
+    assert_eq!(
+        send(
+            &router,
+            &session.token,
+            json!({"kw":keyword,"cursor":first_cursor}),
+            "application/json",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::GONE
+    );
+    let empty = read(
+        send(
+            &router,
+            &extra_session.token,
+            json!({"kw":format!("不存在{unique}")}),
+            "application/json",
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(empty["data"]["results"], json!([]));
+    assert_eq!(empty["data"]["hasMore"], false);
+    // A configured live source still streams, but cannot exceed the public 200-row budget.
+    let items = (0..240).map(|i| json!({"title":format!("实时资源{i}"),"description":"实时😀简介".repeat(30),"url":format!("https://pan.quark.cn/s/live-{unique}-{i}")})).collect::<Vec<_>>();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mock = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/",
+                axum::routing::get(move || {
+                    let items = items.clone();
+                    async move { axum::Json(json!({"items":items})) }
+                }),
+            ),
+        )
+        .into_future(),
+    );
+    let live_id = format!("livepage_{unique}");
+    sqlx::query("INSERT INTO resource_sources(id,name,url,method,format,transform) VALUES($1,$1,$2,'GET','json',$3)")
+        .bind(&live_id).bind(format!("http://{addr}/")).bind(r#"{"kind":"json","items":"$.items[*]","fields":{"name":"title","description":"description","url":"url"}}"#).execute(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    crate::outbound::save(
+        &mut tx,
+        crate::outbound::Owner::Source(&live_id),
+        &crate::outbound::Policy::direct(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let live = send(
+        &router,
+        &extra_session.token,
+        json!({"kw":format!("只搜上游{unique}"),"source_ids":[live_id]}),
+        "application/json, text/event-stream",
+        true,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    assert!(!live.headers().contains_key("content-encoding"));
+    assert!(
+        live.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("text/event-stream")
+    );
+    let live = String::from_utf8(
+        to_bytes(live.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let events = live
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect::<Vec<_>>();
+    let rows = events
+        .iter()
+        .filter_map(|e| e["results"].as_array())
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 200, "{live}");
+    assert!(
+        rows.iter()
+            .all(|r| r["description"].as_str().unwrap().chars().count() == 60)
+    );
+    assert_eq!(events.last().unwrap()["total"], 200);
+    mock.abort();
+    sqlx::query("UPDATE resource_sources SET enabled=false WHERE id=$1")
+        .bind(&live_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    state.auth().revoke_session(&extra_session).await.unwrap();
+    state.auth().revoke_session(&session).await.unwrap();
+    state.auth().revoke_session(&other).await.unwrap();
 }

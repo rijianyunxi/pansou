@@ -7,21 +7,30 @@
   <script type="module">
     import { createApp, h, ref } from 'vue';
     import CrawlMessagesSheet from '/components/admin/crawl/CrawlMessagesSheet.vue';
+    import { provideAdminConfirm } from '/composables/admin/useAdminConfirm.ts';
     import '/assets/admin.css';
     const scenario = new URLSearchParams(location.search).get('scenario');
     const resource = { id: 'fixture-resource', name: '示例资源', description: '当前入库资源详情', cloud_types: ['quark'], links: [{ type: 'quark', url: 'https://pan.quark.cn/s/fixture' }], images: [], enabled: true };
-    const message = { messageId: 101, taskAt: '2026-10-04T09:00:00Z', status: scenario === 'empty' ? 'empty' : 'parsed', errorMessage: null, resources: scenario === 'empty' ? [] : [{ id: resource.id, name: resource.name }] };
+    const failed = ['failed', 'legacy', 'detail-error'].includes(scenario);
+    const reason = '聚合消息缺少明确资源边界，需要调整规则';
+    const rawHtml = '<div class="tgme_widget_message_text">资源合集<br><a href="https://pan.quark.cn/s/fixture">夸克网盘</a><script>window.failurePreviewExecuted = true</' + 'script></div>';
+    const message = { messageId: 101, taskAt: '2026-10-04T09:00:00Z', status: failed ? 'failed' : scenario === 'empty' ? 'empty' : 'parsed', errorMessage: failed ? reason : null, resources: failed || scenario === 'empty' ? [] : [{ id: resource.id, name: resource.name }] };
     // Fail closed: this fixture must never forward requests to a real API.
     window.fetch = async (url, options = {}) => {
       if (options.method && options.method !== 'GET') throw new Error('验收页禁止写入');
       const path = new URL(String(url), location.origin).pathname;
       if (path === '/api/admin/resources/fixture-resource') return Response.json({ data: { resource } });
+      if (path === '/api/admin/crawl/channels/fixture_channel/messages/101') {
+        if (scenario === 'detail-error') return Response.json({ message: '模拟原文读取失败' }, { status: 503 });
+        return Response.json({ data: { ...message, publishedAt: '2026-10-03T08:00:00Z', rawHtml: scenario === 'legacy' ? null : rawHtml, rawText: scenario === 'legacy' ? null : '资源合集\n夸克网盘 (https://pan.quark.cn/s/fixture)\n提取码：abcd', messageUrl: 'https://t.me/fixture_channel/101' } });
+      }
       if (path !== '/api/admin/crawl/channels/fixture_channel/messages') throw new Error('验收页禁止真实请求：' + path);
       if (scenario === 'error') return Response.json({ message: '模拟任务读取失败' }, { status: 503 });
-      return Response.json({ data: { items: [message], total: 1, page: 1, pageSize: 20, counts: { all: 1, success: 1, failed: 0 } } });
+      return Response.json({ data: { items: [message], total: 1, page: 1, pageSize: 20, counts: { all: 1, success: failed ? 0 : 1, failed: failed ? 1 : 0 } } });
     };
     createApp({
       setup() {
+        provideAdminConfirm();
         const open = ref(true);
         return () => open.value ? h(CrawlMessagesSheet, {
           channel: 'fixture_channel',

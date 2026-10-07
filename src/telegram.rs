@@ -70,6 +70,52 @@ pub struct Message {
     pub html: String,
     pub published: Option<DateTime<Utc>>,
 }
+
+/// Readable failure preview; the original HTML is stored separately and never rendered.
+pub fn message_text(raw: &str) -> String {
+    fn walk(node: scraper::ElementRef<'_>, out: &mut String) {
+        for child in node.children() {
+            match child.value() {
+                scraper::Node::Text(text) => out.push_str(text),
+                scraper::Node::Element(tag) => {
+                    if matches!(tag.name(), "script" | "style") {
+                        continue;
+                    }
+                    if tag.name() == "br" {
+                        out.push('\n');
+                        continue;
+                    }
+                    if let Some(element) = scraper::ElementRef::wrap(child) {
+                        let start = out.len();
+                        walk(element, out);
+                        if tag.name() == "a" {
+                            if let Some(href) = tag.attr("href") {
+                                if !out[start..].contains(href) {
+                                    out.push_str(" (");
+                                    out.push_str(href);
+                                    out.push(')');
+                                }
+                            }
+                        }
+                        if matches!(tag.name(), "p" | "div" | "li") && !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let doc = Html::parse_fragment(raw);
+    let selector = Selector::parse(".tgme_widget_message_text").unwrap();
+    let body = doc
+        .select(&selector)
+        .next()
+        .unwrap_or_else(|| doc.root_element());
+    let mut out = String::new();
+    walk(body, &mut out);
+    out.trim().to_owned()
+}
 pub fn messages(raw: &str, expected: &str) -> Result<Vec<Message>, ApiError> {
     let doc = Html::parse_document(raw);
     let sel = Selector::parse(".tgme_widget_message[data-post]").unwrap();
@@ -156,6 +202,18 @@ mod tests {
             segments("名称：甲\nhttps://pan.quark.cn/s/a\n名称：乙\nhttps://pan.quark.cn/s/b")
                 .len(),
             2
+        );
+    }
+    #[test]
+    fn failure_preview_preserves_lines_entities_and_hidden_links() {
+        let raw = r#"<div class="tgme_widget_message"><div class="tgme_widget_message_text">资源 &amp; 说明<br>提取码：abcd<br><a href="https://pan.quark.cn/s/demo">夸克网盘</a><br><a href="https://example.com">https://example.com</a><script>alert('unsafe')</script></div><footer>不属于正文</footer></div>"#;
+        assert_eq!(
+            message_text(raw),
+            "资源 & 说明\n提取码：abcd\n夸克网盘 (https://pan.quark.cn/s/demo)\nhttps://example.com"
+        );
+        assert_eq!(
+            message_text("<div>无正文节点<br>原始内容</div>"),
+            "无正文节点\n原始内容"
         );
     }
     #[test]

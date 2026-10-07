@@ -9,7 +9,7 @@ use axum::{
     body::Body,
     extract::{ConnectInfo, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use futures::stream::StreamExt;
 use serde_json::{Value, json};
@@ -26,6 +26,7 @@ mod execution;
 mod health;
 mod logging;
 mod orchestration;
+mod pagination;
 mod sources;
 
 #[cfg(test)]
@@ -121,7 +122,7 @@ pub async fn search_json(
     if let Some(log_id) = search_log_id {
         complete_search_log(&state, log_id, &out).await;
     }
-    let (results, sources) = project_output(&state, &session, &req, &out).await?;
+    let (results, sources) = project_output(&state, &session, &req, &out, out.total).await?;
     Ok(Json(
         json!({"code":0,"message":"success","data":{"contractVersion":2,"total":out.total,"results":results,"sources":sources,"searchLogId":search_log_id}}),
     ))
@@ -132,18 +133,32 @@ async fn project_output(
     session: &crate::auth::Session,
     req: &SearchRequest,
     out: &SearchResponse,
+    limit: usize,
 ) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
     let metas = out.sources.as_deref().unwrap_or_default();
     let live_count: usize = metas.iter().map(|m| m.results.len()).sum();
     let local_count = out.results.len().saturating_sub(live_count);
-    let mut results =
-        crate::link_resolution::project(state, session, req, None, &out.results[..local_count])
-            .await?;
+    let mut results = crate::link_resolution::project(
+        state,
+        session,
+        req,
+        None,
+        &out.results[..local_count.min(limit)],
+    )
+    .await?;
     let mut sources = vec![];
     for source in metas {
-        let items =
-            crate::link_resolution::project(state, session, req, Some(&source.id), &source.results)
-                .await?;
+        let items = crate::link_resolution::project(
+            state,
+            session,
+            req,
+            Some(&source.id),
+            &source.results[..source
+                .results
+                .len()
+                .min(limit.saturating_sub(results.len()))],
+        )
+        .await?;
         results.extend(items.iter().cloned());
         sources.push(json!({"id":source.id,"name":crate::resource_clean::clean_field(&source.name),"priority":source.priority,"status":source.status,"resultCount":items.len(),"elapsedMs":source.elapsed_ms,"transformMs":source.transform_ms,"proxyNodes":[],"results":items}));
     }
@@ -207,11 +222,12 @@ pub async fn search_sse(
     State(state): State<Arc<AppState>>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(req): Json<SearchRequest>,
+    Json(body): Json<pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
     let session = state.auth().session(&headers).await?;
     let ip = crate::security::client_ip(&headers, remote, &state.security);
-    let mut req = req;
+    pagination::validate_cloud_type(body.cloud_type.as_deref())?;
+    let mut req = body.search;
     if !valid_search_keyword(&req.kw) {
         return Err(ApiError::BadRequest(
             "kw must contain 1 to 100 characters".into(),
@@ -228,16 +244,34 @@ pub async fn search_sse(
         policy.search_timeout_ms.div_ceil(1000).saturating_add(30),
     )
     .await?;
-    let search_log_id = create_search_log(&state, &session, &req, ip).await;
     let sources = match load_sources(&state, req.source_ids.as_ref(), req.channels.as_ref()).await {
         Ok(sources) => sources,
         Err(error) => {
-            if let Some(log_id) = search_log_id {
-                fail_search_log(&state, log_id).await;
-            }
+            permit.release().await;
             return Err(error);
         }
     };
+    if sources.live_sources.is_empty() && req.channels.is_none() {
+        let result = pagination::respond(
+            &state,
+            &session,
+            &req,
+            &sources.local_channels,
+            body.cursor.as_deref(),
+            body.cloud_type.as_deref(),
+            body.search_context.as_deref(),
+            ip,
+            &headers,
+            permit,
+        )
+        .await;
+        return result;
+    }
+    if body.cursor.is_some() || body.cloud_type.is_some() || body.search_context.is_some() {
+        permit.release().await;
+        return Err(ApiError::BadRequest("搜索来源已改变，请重新搜索".into()));
+    }
+    let search_log_id = create_search_log(&state, &session, &req, ip).await;
     let cache_key = if sources.local_channels.is_empty() && req.channels.is_none() {
         Some(search_cache_key(&state, &req).await?)
     } else {
@@ -264,14 +298,14 @@ pub async fn search_sse(
             encoded.push_str(&encode_sse_event(
                 event_id,
                 "result",
-                json!({"contractVersion":2,"results":project_output(&state,&session,&req,&output).await?.0}),
+                json!({"results":crate::link_resolution::compact(project_output(&state,&session,&req,&output,crate::local_index::MAX_RESULTS).await?.0)}),
             ));
         }
         event_id += 1;
         encoded.push_str(&encode_sse_event(
             event_id,
             "complete",
-            sse_complete_payload(output.total),
+            sse_complete_payload(output.total.min(crate::local_index::MAX_RESULTS)),
         ));
         return Ok(sse_response(Body::from(encoded)));
     }
@@ -306,6 +340,7 @@ pub async fn search_sse(
             policy.clone(),
         );
         let mut all = Vec::new();
+        let mut sent = 0usize;
         let mut metas = Vec::new();
         let mut last_result_sent_at: Option<Instant> = None;
         futures::pin_mut!(executions);
@@ -370,7 +405,9 @@ pub async fn search_sse(
                 &session,
                 &req,
                 source_id.as_deref(),
-                &items,
+                &items[..items
+                    .len()
+                    .min(crate::local_index::MAX_RESULTS.saturating_sub(sent))],
             )
             .await
             {
@@ -386,11 +423,15 @@ pub async fn search_sse(
                     return;
                 }
             };
+            sent += projected.len();
+            if projected.is_empty() {
+                continue;
+            }
             if push_sse_event(
                 &sender,
                 &mut event_id,
                 "result",
-                json!({"contractVersion":2,"results":projected}),
+                json!({"results":crate::link_resolution::compact(projected)}),
             )
             .await
             .is_err()
@@ -414,7 +455,7 @@ pub async fn search_sse(
             &sender,
             &mut event_id,
             "complete",
-            sse_complete_payload(output.total),
+            sse_complete_payload(output.total.min(crate::local_index::MAX_RESULTS)),
         )
         .await;
     });

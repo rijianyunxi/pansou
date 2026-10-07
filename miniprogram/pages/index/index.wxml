@@ -124,7 +124,7 @@
     </view>
 
     <view wx:if="{{hasMore}}" class="load-more card" hover-class="btn-hover" bindtap="onLoadMore">
-      显示更多结果
+      {{loading ? "正在加载…" : (loadMoreText || "显示更多结果")}}
     </view>
 
     <view wx:if="{{isEmpty}}" class="empty-card card">

@@ -9,6 +9,7 @@ use axum::{
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::{
+    compression::{CompressionLayer, CompressionLevel},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -203,6 +204,10 @@ fn api_router() -> Router<Arc<AppState>> {
             post(handlers::crawl_messages_action),
         )
         .route(
+            "/admin/crawl/channels/{channel}/messages/{message}",
+            get(handlers::crawl_message_get),
+        )
+        .route(
             "/admin/crawl/settings",
             get(handlers::crawl_settings_get).put(handlers::crawl_settings_put),
         )
@@ -217,7 +222,11 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/health", get(handlers::health))
         .route("/hot-searches", get(handlers::hot_searches))
         .route("/monitor", get(handlers::monitor))
-        .route("/search", post(handlers::search_sse))
+        .route(
+            "/search",
+            post(handlers::search_sse)
+                .layer(CompressionLayer::new().quality(CompressionLevel::Fastest)),
+        )
         .route("/search/json", get(handlers::search_json))
         .route("/account/session", get(handlers::account_session))
         .route("/account/config", get(handlers::account_config))

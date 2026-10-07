@@ -7,7 +7,11 @@ WITH search_log AS (
     RETURNING id, keyword, created_at
 ), hot_search AS (
     INSERT INTO hot_searches (term, normalized_term, score, last_searched, updated_at)
-    SELECT keyword, $8, 1, created_at, created_at FROM search_log
+    SELECT keyword, $8,
+           CASE WHEN EXISTS(SELECT 1 FROM hot_searches WHERE term=$3) THEN 1
+                ELSE (SELECT count(*) FROM search_logs WHERE keyword=$3) + 1 END,
+           created_at, created_at
+    FROM search_log WHERE btrim(keyword)<>''
     ON CONFLICT (term) DO UPDATE SET
         score = hot_searches.score + 1,
         last_searched = GREATEST(hot_searches.last_searched, excluded.last_searched),

@@ -9,7 +9,7 @@ mod worker;
 use capability::{authorize, snapshot};
 pub use delivery::{clear_cloud_provider_delivery, get_cloud_providers, put_cloud_provider};
 pub use management::{cleanup_jobs, ignore_cleanup, retry_cleanup};
-pub(crate) use projection::project;
+pub(crate) use projection::{compact, project};
 pub use status::{resource_statuses, statuses};
 pub use worker::run as worker;
 
@@ -656,9 +656,17 @@ async fn operation(
     }
     Ok((
         StatusCode::ACCEPTED,
-        json!({"status":"processing","requestKey":key,"stage":row.get::<String,_>("progress_stage"),"pollAfterMs":750,"deadlineAt":row.get::<DateTime<Utc>,_>("deadline_at")}),
+        json!({"status":"processing","requestKey":key,"stage":row.get::<String,_>("progress_stage"),"pollAfterMs":poll_interval_ms((Utc::now()-row.get::<DateTime<Utc>,_>("created_at")).num_seconds()),"deadlineAt":row.get::<DateTime<Utc>,_>("deadline_at")}),
     ))
 }
+fn poll_interval_ms(elapsed_seconds: i64) -> u64 {
+    match elapsed_seconds {
+        ..=5 => 750,
+        6..=20 => 1500,
+        _ => 2500,
+    }
+}
+
 pub async fn poll(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

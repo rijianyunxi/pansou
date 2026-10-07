@@ -86,7 +86,7 @@ test('each new click revalidates the owned share despite historical original inv
   spec.lifetimes.attached.call(card);
   try {
     const event = { currentTarget: { dataset: { key: 'l' } } };
-    await card.onOpen(event); await card.onCopy(event);
+    await card.onOpen(event); assert.equal(card.data.dialog.status, "ready"); assert.deepEqual(opened, []); card.openReady(); await card.onCopy(event);
     assert.deepEqual(opened, ['/pages/link/index', 'https://example.test/share']);
     assert.deepEqual(copied, ['https://example.test/share']);
     assert.equal(resolves.length, 2);
@@ -123,7 +123,7 @@ test('a failed link shows a modal and prevents both actions from being executed'
     const event = { currentTarget: { dataset: { key: 'l' } } };
     await card.onCopy(event); await card.onOpen(event);
     assert.equal(calls, 2, 'a later click can retry; historical invalidity must not block an owned share');
-    assert.ok(notices.every(value => value === '原分享链接已失效'));
+    assert.equal(card.data.dialog.status,'error'); assert.equal(card.data.dialog.retryable,false); assert.match(card.data.dialog.message,/链接已失效/);
     assert.equal(card.data.resolved.l.status, 'unavailable');
   } finally {
     spec.lifetimes.detached.call(card);
@@ -235,38 +235,12 @@ test('recycled cards discard late results and expired URLs', async () => {
   }
 });
 
-test('card progress follows actual stages and hiding clears timers and late updates', async () => {
-  const original = links.resolveLink;
-  let finish, notify;
-  links.resolveLink = (_r, _l, _key, _control, _resume, onProgress) => {
-    notify = onProgress;
-    return new Promise(resolve => { finish = resolve; });
-  };
-  let spec; global.Component = value => { spec = value; };
-  delete require.cache[require.resolve('../components/resource-card/index')];
-  require('../components/resource-card/index');
-  const card = { data: { ...spec.data, progress: {}, loading: {}, item: { id: 'item', resultRef: 'r', links: [{ key: 'l', linkRef: 'ref' }] } }, setData(data) { Object.assign(this.data, data); } };
-  for (const [key, value] of Object.entries(spec.methods)) card[key] = value.bind(card);
-  spec.lifetimes.attached.call(card);
-  try {
-    const pending = card.onOpen({ currentTarget: { dataset: { key: 'l' } } });
-    assert.equal(card.data.progress.l.label, '排队中');
-    notify({ stage: 'transferring' });
-    assert.equal(card.data.progress.l.label, '正在转存');
-    notify({ stage: 'sharing' });
-    assert.equal(card.data.progress.l.label, '生成分享');
-    spec.pageLifetimes.hide.call(card);
-    assert.deepEqual(card.data.progress, {});
-    assert.deepEqual(card.data.loading, {});
-    notify({ stage: 'sharing' });
-    assert.deepEqual(card.data.progress, {});
-    finish(null);
-    await pending;
-  } finally {
-    spec.lifetimes.detached.call(card);
-    links.resolveLink = original;
-    delete global.Component;
-  }
+test('the modal hides implementation stages and hiding stops all waiting', async () => {
+  const original=links.resolveLink;let finish;links.resolveLink=()=>new Promise(r=>finish=r);
+  let spec;global.Component=v=>spec=v;delete require.cache[require.resolve('../components/resource-card/index')];require('../components/resource-card/index');
+  const card={data:{...spec.data,loading:{},item:{id:'item',name:'测试资源',resultRef:'r',links:[{key:'l',linkRef:'ref',label:'夸克网盘'}]}},setData(d){Object.assign(this.data,d);}};
+  for(const [k,v] of Object.entries(spec.methods))card[k]=v.bind(card);spec.lifetimes.attached.call(card);
+  try {const pending=card.onOpen({currentTarget:{dataset:{key:'l'}}});assert.equal(card.data.dialog.status,'loading');assert.equal(card.data.dialog.provider,'夸克网盘');spec.pageLifetimes.hide.call(card);assert.equal(card.data.dialog,null);assert.deepEqual(card.data.loading,{});finish(null);await pending;}finally{spec.lifetimes.detached.call(card);links.resolveLink=original;delete global.Component;}
 });
 
 test('anonymous search token does not bypass WeChat login', async () => {
@@ -341,7 +315,7 @@ test('malformed resolve responses fail promptly instead of polling until timeout
   const original = auth.request;
   auth.request = async () => ({ statusCode: 200, data: { data: null } });
   try {
-    await assert.rejects(links.resolveLink('result', 'link', 'key', {}, false), /返回格式异常/);
+    await assert.rejects(links.resolveLink('result', 'link', 'key', {}, false), /没有获取到链接/);
   } finally { auth.request = original; stored = null; }
 });
 
@@ -358,4 +332,23 @@ test('opening supported drive links includes the resolved extraction code', () =
       assert.equal(opened.pop(), url + '?pwd=own1');
     }
   } finally { delete wx.navigateTo; delete global.Component; }
+});
+
+test('a missing operation can replay only its original idempotency key',async t=>{
+  stored={token:'session'};const original=auth.request;const calls=[];
+  t.mock.method(global,'setTimeout',(fn)=>{queueMicrotask(fn);return 1;});t.mock.method(global,'clearTimeout',()=>{});
+  auth.request=async(path,options)=>{calls.push({path,method:options.method||'GET',data:options.data});if(calls.length===1)throw Object.assign(new Error('lost'),{statusCode:0});if(calls.length===2)throw Object.assign(new Error('missing'),{statusCode:404});return {statusCode:200,data:{data:{status:'completed',url:'https://example.test/share'}}};};
+  try{await links.resolveLink('r','l','stable',{},false);assert.deepEqual(calls.map(c=>c.method),['POST','GET','POST']);assert.deepEqual(calls[0].data,calls[2].data);}finally{auth.request=original;}
+});
+test('stop aborts an actual in-flight wx.request rather than only its next timer',async()=>{
+  stored={token:'session'};const original=wx.request;let aborted=0;const control={};
+  wx.request=options=>({abort(){aborted++;options.fail();}});
+  try{const pending=links.resolveLink('r','l','stable',control,false);assert.ok(control.request);links.stop(control);assert.equal(await pending,null);assert.equal(aborted,1);}finally{wx.request=original;}
+});
+test('clipboard retry in the modal reuses a successful resolution',async()=>{
+  const clipboard=require('../utils/clipboard');const oldResolve=links.resolveLink,oldCopy=clipboard.copyLink;let resolves=0,copies=0;
+  links.resolveLink=async()=>{resolves++;return {status:'completed',validity:1,url:'https://example.test/share'};};clipboard.copyLink=async(_text,options)=>{assert.equal(options.silent,true);return ++copies>1;};
+  let spec;global.Component=v=>spec=v;delete require.cache[require.resolve('../components/resource-card/index')];require('../components/resource-card/index');
+  const card={data:{...spec.data,loading:{},resolved:{},item:{id:'i',resultRef:'r',links:[{key:'l',linkRef:'ref'}]}},setData(d){Object.assign(this.data,d);}};for(const[k,v]of Object.entries(spec.methods))card[k]=v.bind(card);spec.lifetimes.attached.call(card);
+  try{await card.onCopy({currentTarget:{dataset:{key:'l'}}});assert.equal(card.data.dialog.status,'error');await card.retryDialog();assert.equal(card.data.dialog.status,'success');assert.equal(resolves,1);assert.equal(copies,2);}finally{spec.lifetimes.detached.call(card);links.resolveLink=oldResolve;clipboard.copyLink=oldCopy;delete global.Component;}
 });

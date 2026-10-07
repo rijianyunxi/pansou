@@ -209,3 +209,22 @@
 .resource-item .link-progress { flex: 1 0 100%; }
 .resource-item button.password-badge { display: inline-block; width: auto; min-height: 48rpx; margin: 0; padding: 4rpx 10rpx; font-size: 22rpx; line-height: 36rpx; color: inherit; background: transparent; border: 1rpx solid currentColor; border-radius: 8rpx; white-space: normal; }
 .resource-item button.password-badge::after { border: 0; }
+
+.link-dialog-mask { position: fixed; inset: 0; z-index: 2100; display: flex; align-items: center; justify-content: center; padding: 40rpx; box-sizing: border-box; background: rgba(35,27,20,.42); }
+.link-dialog { position: relative; width: 100%; max-width: 690rpx; max-height: 90vh; overflow-y: auto; padding: 64rpx 48rpx 44rpx; box-sizing: border-box; border: 1rpx solid #ece7de; border-radius: 44rpx; background: #fffdf9; color: #24231f; text-align: center; animation: dialog-in .2s ease-out; }
+.dialog-close { position: absolute; right: 12rpx; top: 12rpx; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; color: #706c65; background: transparent; font-size: 44rpx; line-height: 88rpx; }.dialog-close::after,.dialog-actions button::after { border: 0; }
+.dialog-symbol { position: relative; display: flex; align-items: center; justify-content: center; width: 140rpx; height: 140rpx; margin: 6rpx auto 40rpx; border-radius: 50%; background: #fff0e5; color: #da541c; }
+.dialog-symbol.error { background: #fff0ed; color: #bc442d; }
+.dialog-orbit { position: absolute; inset: -4rpx; border: 4rpx solid transparent; border-top-color: #da541c; border-right-color: #f8d5c4; border-radius: 50%; animation: dialog-spin 1.1s linear infinite; }
+.dialog-chain { position: relative; width: 62rpx; height: 62rpx; transform: rotate(-40deg); }.dialog-chain view { position: absolute; left: 5rpx; top: 17rpx; width: 32rpx; height: 23rpx; border: 4rpx solid #da541c; border-radius: 14rpx; }.dialog-chain view + view { left: 28rpx; }
+.dialog-check { width: 45rpx; height: 23rpx; border-left: 5rpx solid #da541c; border-bottom: 5rpx solid #da541c; transform: translateY(-6rpx) rotate(-45deg); }.dialog-exclamation { font-size: 64rpx; line-height: 1; font-weight: 500; }
+.dialog-title { display: block; font-size: 40rpx; line-height: 1.4; font-weight: 650; }.dialog-description { display: block; margin: 20rpx 0 40rpx; min-height: 80rpx; color: #706c65; font-size: 27rpx; line-height: 1.65; }
+.dialog-resource { padding: 24rpx 28rpx; border-radius: 22rpx; background: #fff4e9; text-align: left; }.dialog-provider { display: block; color: #bd491b; font-size: 24rpx; font-weight: 600; }.dialog-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 8rpx; font-size: 26rpx; line-height: 1.5; word-break: break-all; }
+.dialog-wait { display: flex; align-items: center; justify-content: center; gap: 18rpx; min-height: 84rpx; color: #706c65; font-size: 24rpx; }.wait-dots { display: flex; gap: 8rpx; }.wait-dots view { width: 8rpx; height: 8rpx; background: #da541c; border-radius: 50%; animation: dialog-pulse 1.2s ease-in-out infinite; }.wait-dots view:nth-child(2){animation-delay:.15s}.wait-dots view:nth-child(3){animation-delay:.3s}
+.dialog-actions { display: flex; gap: 20rpx; margin-top: 40rpx; }.dialog-wait + .dialog-actions { margin-top: 0; }.dialog-actions button { flex: 1; margin: 0; min-height: 92rpx; padding: 22rpx 16rpx; border: 1rpx solid #e7dfd4; border-radius: 20rpx; box-sizing: border-box; font-size: 28rpx; font-weight: 600; line-height: 1.5; }.dialog-primary { color: #fff; background: #c84916; }.dialog-secondary { color: #706c65; background: #fffdf9; }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(12rpx) scale(.98); } to { opacity: 1; transform: none; } }@keyframes dialog-spin { to { transform: rotate(360deg); } }@keyframes dialog-pulse { 50% { opacity: .3; } }
+@media(prefers-reduced-motion:reduce) { .link-dialog,.dialog-orbit,.wait-dots view { animation: none; } }
+
+/* Keep both link actions comfortably tappable on narrow screens. */
+.resource-item .link-actions { flex-wrap: wrap; gap: 16rpx; }
+.resource-item button.link-btn { min-height: 88rpx; height: auto; }

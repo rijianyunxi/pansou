@@ -11,33 +11,47 @@ export function usable(value?: ResolvedLink): value is ResolvedLink & { url: str
 export async function resolveLink(resultRef: string, linkRef: string, requestKey: string, signal: AbortSignal, resume = false, onProgress?: (value: ResolvedLink) => void): Promise<ResolvedLink> {
   const deadline = Date.now() + 150000;
   let poll = resume;
+  let failures = 0;
+  let replayed = false;
   while (!signal.aborted && Date.now() < deadline) {
     let response: Response;
+    let body: { data?: ResolvedLink };
     try {
       response = await fetch(poll ? `/api/links/resolve-operations/${requestKey}` : '/api/links/resolve', {
         method: poll ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
         headers: { 'Content-Type': 'application/json' },
         ...(poll ? {} : { body: JSON.stringify({ resultRef, linkRef, requestKey }) }),
       });
+      if (poll && response.status === 404 && !replayed) {
+        // An interrupted submission may never have reached the server. Replaying
+        // its SAME idempotency key can recover it without creating a second job.
+        replayed = true; poll = false; continue;
+      }
+      if ([401,403,409,410].includes(response.status)) throw Object.assign(new Error('链接信息已变化，请重新搜索后再试。'), { terminal: true });
+      if ([400,404].includes(response.status)) throw Object.assign(new Error('暂时无法获取这个链接，请重新搜索后再试。'), { terminal: true });
+      if (!response.ok) throw new Error('temporary');
+      body = await response.json();
+      if (!body.data || !['processing','completed','unavailable'].includes(body.data.status)) throw Object.assign(new Error('暂时没有获取到链接，请稍后再试。'), { terminal: true });
     } catch (error) {
-      if (signal.aborted) throw error;
-      poll = true; // A lost POST response does not authorize another write.
-      await delay(signal); continue;
+      if (signal.aborted) throw new Error('已停止查询');
+      if ((error as { terminal?: boolean }).terminal) throw error;
+      if (++failures >= 4) throw new Error('网络不太稳定，请稍后再试。');
+      poll = true;
+      await delay(signal, Math.min(5000, 1000 * 2 ** (failures - 1))); continue;
     }
-    const body = await response.json();
-    if (!response.ok) throw new Error([401,403,409,410].includes(response.status)
-      ? '会话、资源或链接已变化，请重新搜索' : (body.message || '获取失败，请稍后重试'));
-    const data = body.data as ResolvedLink;
+    failures = 0;
+    const data = body.data!;
     if (response.status === 200 && ['completed','unavailable'].includes(data.status)) return data;
     onProgress?.(data);
     poll = true; await delay(signal, data.pollAfterMs);
   }
-  throw new Error('等待超时，可继续查询本次操作');
+  if (signal.aborted) throw new Error('已停止查询');
+  throw new Error('这次等待有些久，点击重试可继续获取。');
 }
 function delay(signal: AbortSignal, interval = 1500) {
   return new Promise<void>((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); reject(new Error('已停止查询')); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, Math.max(500, Math.min(3000, interval || 1500)));
+    const abort = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(new Error('已停止查询')); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, Math.max(500, Math.min(5000, Number.isFinite(interval) ? interval : 1500)));
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
   });

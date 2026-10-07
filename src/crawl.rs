@@ -413,8 +413,10 @@ async fn persist_parsed_message(
     let items = parsed.results;
     let status = parsed.status.as_str();
     let error = parsed.error;
-    sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,task_at,status,error_message) VALUES($1,$2,now(),$3,$4) ON CONFLICT(channel_id,message_id) DO UPDATE SET task_at=now(),status=EXCLUDED.status,error_message=EXCLUDED.error_message,resource_ids='{}'")
-        .bind(channel).bind(message.id).bind(status).bind(error).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO crawl_message_tasks(channel_id,message_id,task_at,status,error_message,raw_html,published_at) VALUES($1,$2,now(),$3,$4,$5,$6) ON CONFLICT(channel_id,message_id) DO UPDATE SET task_at=now(),status=EXCLUDED.status,error_message=EXCLUDED.error_message,raw_html=EXCLUDED.raw_html,published_at=EXCLUDED.published_at,resource_ids='{}'")
+        .bind(channel).bind(message.id).bind(status).bind(error)
+        .bind((status == "failed").then_some(message.html.as_str()))
+        .bind(message.published).execute(&mut **tx).await?;
     if status == "failed" {
         return Ok((0, true));
     }

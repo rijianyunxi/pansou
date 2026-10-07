@@ -550,29 +550,44 @@ HTML 来源示例：
 
 如果搜索主流程返回错误，则把日志状态更新为 `failed`。
 
-### 7.11 SSE 返回
+### 7.11 搜索响应与分页
 
-`POST /api/search` 返回 `text/event-stream`：
+`POST /api/search` 纯库搜索默认使用一次 SSE 连接，最多返回 200 条资源。每批 50 条，成功推送上一批后再等待 500ms 查询下一批；不足 200 条时提前结束。慢查询不会与下一批并发，实际总时间是查询/传输时间加批间等待时间。
+
+网页和小程序发送 `Accept: text/event-stream`。网盘切换只筛选当前已加载结果，不额外请求。暂停、重置、新搜索或退出会断开流；每批携带下一页游标，继续搜索从最新成功批次恢复。流异常时保留已加载结果和游标，允许手动重试。后端按需读取下一页，客户端断开后停止后续查询并释放并发额度。
+
+公开简介最多 60 个 Unicode 字符，数据库原文不变。公开资源只返回 `name`、非空 `description`/`datetime`、`dedupKey`、`resultRef` 和 `links`；链接只返回 `type`、`linkRef`。客户端由去重标识生成展示 ID，由 links 推导网盘类型和链接展示键。省略空图片、资源/链接检测观测、引用过期时间以及重复 ID/类型/链接键。取链接口仍在用户点击时返回真实 URL、提取码及有效性信息。
+
+JSON 分页保持兼容：请求 `Accept: application/json` 返回每页最多 50 条，后续请求带相同关键词/范围与 `cursor: nextCursor`。JSON 支持 gzip；SSE 不压缩，避免缓冲影响逐批展示。JSON 示例（资源数组省略）：
+
+```json
+{"code":0,"message":"success","data":{"total":50,"results":[],"pageSize":50,"hasMore":true,"nextCursor":"opaque-session-bound-token","searchContext":"opaque-context-token","searchLogId":42}}
+```
+
+游标与搜索上下文绑定会话和范围，30 分钟过期；过期返回 410，不匹配返回 400。每次搜索最多 200 条，不表示返回全部匹配；一条资源可含多条网盘链接。SQL 每页只取 51 个候选 ID、组装最多 50 条内容，沿用精确匹配、发布时间、ID 的稳定顺序。后续批次/重试沿用同一搜索日志，不额外增加搜索次数和热门词热度。`cloudType` 保留兼容能力，官方客户端不再按网盘追加搜索。实时上游/自定义频道继续使用 SSE，公开结果最多 200 条。
+
+
+SSE 示例：
 
 ```text
 id: 1
 event: start
-data: {"intervalMs":16,"searchLogId":42}
+data: {"intervalMs":500,"searchLogId":42,"searchContext":"opaque-context-token"}
 
 id: 2
 event: result
-data: {"results":[...]}
+data: {"results":[...],"nextCursor":"opaque-next-batch-token"}
 
 id: 3
 event: complete
-data: {"total":54}
+data: {"total":200}
 ```
 
-SSE 对外字段与 `main` 分支保持一致：
+SSE 对外字段：
 
-- `start` 只包含 `intervalMs` 和 `searchLogId`；
-- `result` 只包含公开的 `results`，不会暴露 `sourceId`、`plugin` 或其他来源内部身份；
-- `complete` 只包含最终 `total`；
+- `start` 包含 `contractVersion`、`intervalMs` 和 `searchLogId`；
+- `result` 包含 `contractVersion` 和公开的 `results`，不会暴露 `sourceId`、`plugin` 或其他来源内部身份；
+- `complete` 包含本次返回条数 `total`，纯库搜索同时包含分页字段；
 - 每个事件包含递增的 SSE `id`；
 - 响应设置 `Cache-Control: private, no-store, no-transform` 和 `X-Accel-Buffering: no`。
 
@@ -585,10 +600,10 @@ SSE 对外字段与 `main` 分支保持一致：
 `frontend/composables/useSearch.ts`：
 
 1. 使用 `fetch()` 请求 `/api/search`。
-2. `searchEventStream.ts` 从 `ReadableStream` 解析 SSE block。
+2. 根据响应 Content-Type 读取 JSON 或用 `searchEventStream.ts` 解析 SSE block。
 3. 收到 `start` 保存 `searchLogId`。
 4. 收到 `result` 把新结果合并到现有状态。
-5. 收到 `complete` 标记搜索完成。
+5. 读取分页字段，提供加载更多；切换关键词时清空旧游标并取消旧请求。
 6. 处理 `401`、`403`、`429`、`503` 和普通错误；`SESSION_REQUIRED` 会触发一次 Session 重建，`SEARCH_LIMIT_EXCEEDED` 不会被误判成登录失效。
 7. 使用 `AbortController` 支持取消、暂停和离开页面时中断请求。
 
@@ -739,7 +754,7 @@ GET /api/search/json?kw=关键词
 | 分组 | 主要用途 |
 | --- | --- |
 | `/api/health` | PostgreSQL、Redis、来源配置健康检查 |
-| `/api/search` | 首页 SSE 搜索；必须有有效 Session |
+| `/api/search` | 首页搜索；纯库支持 JSON 分页，实时上游保持 SSE；必须有有效 Session |
 | `/api/search/json` | 带来源统计的 JSON 搜索；仅管理员可访问 |
 | `/api/hot-searches` | 公开热搜 |
 | `/api/monitor` | 服务、后台任务与实时来源运行监控（管理员） |
@@ -1044,7 +1059,7 @@ Session/权限/限流/并发校验 → 服务端计算可见来源 → TG 一次
 - 仅按标题匹配，标题精确命中优先，其余按消息发布时间降序；本地返回上限 200，SQL 5 秒超时。total 是 API 本次返回的记录数，包含跨来源重复结果，不是全库计数。
 - 共享资源从本次允许频道的 occurrence 取展示文本，不泄漏其他个人频道的标题/简介。
 - 仅查询缓存失败可回源 PostgreSQL；Redis 会话/安全校验失败仍拒绝请求，不匿名放行。
-- /api/search 仍为 start/result/complete/error。纯本地查询通常快速返回；混合查询本地结果不等慢来源。
+- /api/search 纯库支持每批 50 条、最多 200 条的 JSON 或 SSE 游标分页；混合查询保持 start/result/complete/error，本地结果不等慢来源。
 - /api/search/json 仍仅管理员，返回 total/results/sources/searchLogId；results 为本地优先的扁平资源数组，sources 仅保留外部实时来源统计，TG 不再返回来源 priority 或执行统计。历史采集代理记录只在采集管理展示。
 - 采集入库和前端展示只合并完全相同的分享集合，避免合集“桥接”误合并单资源。移动云盘不同 hash 是不同分享。API 仍是一资源多个 links，前端仍拆链接卡片。
 - 人工创建的旧资源不自动公开到 TG 搜索；TG 资源删除是软下架，保留采集溯源，避免下次爬取又恢复。

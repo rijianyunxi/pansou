@@ -29,13 +29,10 @@
               <button v-if="resolved[link.linkRef]?.password" class="password-badge" type="button" :disabled="!!loading[link.linkRef] || !!copyingPassword" title="复制提取码" @click="copyPassword(link.linkRef)">提取码 {{ resolved[link.linkRef]?.password }} · 复制</button>
             </div>
             <div class="link-actions">
-              <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在打开…' : '打开资源 ↗' }}</button>
+              <button class="open-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'open'" title="获取链接后打开" @click="act('open', resource, link)">{{ loading[link.linkRef] === 'open' ? '正在获取…' : '打开资源 ↗' }}</button>
               <button class="copy-btn" type="button" :disabled="!!loading[link.linkRef]" :aria-busy="loading[link.linkRef] === 'copy'" title="获取并复制链接" @click="act('copy', resource, link)">{{ loading[link.linkRef] === 'copy' ? '正在复制…' : copiedKey === link.linkRef ? '已复制' : '复制链接' }}</button>
             </div>
-            <div v-if="loading[link.linkRef] && progress[link.linkRef]" class="link-progress" role="status" aria-live="polite">
-              <div class="progress-caption"><span class="progress-spinner" aria-hidden="true"></span><span>{{ stageLabel(progress[link.linkRef]!.stage) }}</span><span class="progress-elapsed" aria-hidden="true">{{ Math.floor((now - progress[link.linkRef]!.startedAt) / 1000) }} 秒</span></div>
-              <div class="progress-track" aria-hidden="true"><span></span></div>
-            </div>
+
           </div>
         </div>
       </li>
@@ -50,12 +47,14 @@
       </button>
     </footer>
   </section>
+  <LinkActionDialog :state="dialog" :now="now" @close="closeDialog" @retry="retryDialog" @copy="copyReady" @open="openReady" />
 </template>
 
 <script setup lang="ts">
 import { computed, ref, reactive, inject, onBeforeUnmount } from "vue";
 import { resolveLink, usable } from '~/utils/linkResolution';
-import { executeLinkAction, invalidLink, originalFallbackMessage, type LinkAction } from '~/utils/linkActions';
+import { executeLinkAction, invalidLink, type LinkAction } from '~/utils/linkActions';
+import LinkActionDialog, { type LinkDialogState } from "./LinkActionDialog.vue";
 import ResourceDescription from "./ResourceDescription.vue";
 import type { SearchLink, ResolvedLink } from "~/shared/apiModels";
 import type { DisplaySearchResult } from "~/utils/resultDisplay";
@@ -103,11 +102,9 @@ const copiedKey = ref("");
 const copyingPassword = ref("");
 const resolved = reactive<Record<string, ResolvedLink>>({});
 const loading = reactive<Record<string, LinkAction | undefined>>({});
-const progress = reactive<Record<string, { stage: string; startedAt: number }>>({});
 const now = ref(Date.now());
-function stageLabel(stage: string) {
-  return ({ queued: '排队中', checking: '读取分享', transferring: '正在转存', sharing: '生成分享', reusing: '验证已有分享' } as Record<string, string>)[stage] || '正在获取链接';
-}
+const dialog = ref<LinkDialogState | null>(null);
+let active: { resource: DisplaySearchResult; link: SearchLink; action: LinkAction; controller: AbortController; value?: ResolvedLink } | undefined;
 const keys = reactive<Record<string, string>>({});
 const controllers = new Set<AbortController>();
 const showToast = inject<ShowToast>('showToast', () => () => {});
@@ -119,51 +116,9 @@ const timer = setInterval(() => {
     if ([value.deliveryExpiresAt, value.shareExpiresAt].some(t => t && Date.parse(t) <= Date.now())) { delete resolved[ref]; delete keys[ref]; }
   }
 }, 1000);
-onBeforeUnmount(() => { gone = true; clearInterval(timer); clearTimeout(copiedTimer); controllers.forEach(c => c.abort()); });
+onBeforeUnmount(() => { gone = true; closeDialog(); clearInterval(timer); clearTimeout(copiedTimer); controllers.forEach(c => c.abort()); });
 function isInvalid(link: SearchLink) {
   return invalidLink(resolved[link.linkRef]);
-}
-function prepareOpen() {
-  const popup = window.open('about:blank', '_blank');
-  if (popup) {
-    popup.opener = null;
-    popup.document.title = '正在打开链接';
-    popup.document.body.innerHTML = `<style>body{margin:0;display:grid;place-items:center;min-height:100vh;font:14px system-ui;color:#18181b;background:#fafafa}.card{padding:32px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.spinner{margin:0 auto 16px;width:24px;height:24px;border:2px solid #e4e4e7;border-top-color:#18181b;border-radius:50%;animation:spin 1s linear infinite}p{color:#71717a;font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
-.result-card, .result-card--flat { border-radius: 12px; box-shadow: none; }
-.resource-list { padding: 0 18px; gap: 0; background: var(--bg-primary); }
-.resource-item { position: relative; display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 20px; padding: 22px 6px; border-bottom: 1px solid var(--border-light); }
-.resource-item:last-child { border-bottom: 0; }
-.resource-item:hover { background: #fffdf9; }
-.resource-art { display: grid; place-items: center; grid-column: 1; grid-row: 1 / 3; align-self: start; margin-top: 2px; width: 56px; height: 62px; border-radius: 12px; background: #fff3e5; color: #ff8a32; }
-.resource-heading { grid-column: 2; padding-right: 245px; }
-.resource-title { font-size: 17px; line-height: 1.5; }
-.resource-title mark { background: transparent; color: var(--primary); }
-.resource-links { grid-column: 2; margin-top: 7px; }
-.link-row { padding: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; min-height: 24px; }
-.link-main { padding-right: 245px; }
-.link-provider { display: inline-flex; align-items: center; padding: 1px 9px; border-radius: 999px; color: #fff; background: #8d8172; font-size: 10px; font-weight: 550; }
-.link-provider[data-provider="quark"] { background: #7450ff; }
-.link-provider[data-provider="baidu"] { background: #2981f5; }
-.link-provider[data-provider="aliyun"] { background: #ff8a1c; }
-.link-provider[data-provider="uc"] { background: #ec6c21; }
-.resource-date { padding: 0; font-size: 11px; color: var(--text-tertiary); }
-.link-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); gap: 10px; }
-.open-btn, .copy-btn { min-height: 40px; padding: 8px 14px; font-size: 12px; }
-.open-btn { border-color: var(--primary); color: var(--primary); }
-.copy-btn { color: var(--text-secondary); }
-.link-progress { padding-right: 245px; }
-.progress-track span { background: var(--primary); }
-@media(max-width:760px) { .resource-list { padding: 0 12px; } .resource-item { grid-template-columns: 40px minmax(0,1fr); gap: 0 12px; padding: 18px 0; } .resource-art { width: 40px; height: 46px; border-radius: 9px; } .resource-art svg { width: 24px; } .resource-heading, .link-main, .link-progress { padding-right: 0; } .resource-title { font-size: 15px; } .link-actions { position: static; transform: none; display: flex; width: auto; margin-top: 6px; } .link-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; } .link-main { min-height: 0; gap: 6px; } .resource-date { margin: 0; } .open-btn, .copy-btn { width: auto; min-width: 90px; } .link-progress { width: 100%; } }
-</style><main class="card"><div class="spinner" aria-hidden="true"></div><div role="status" id="stage">正在获取链接</div><p>准备好后自动打开</p></main>`;
-  }
-  return {
-    navigate(url: string) { if (popup && !popup.closed) popup.location.replace(url); else window.location.assign(url); },
-    close() { if (popup && !popup.closed) popup.close(); },
-    update(stage: string) {
-      try { const label = popup && !popup.closed ? popup.document.getElementById?.('stage') : null; if (label) label.textContent = stageLabel(stage); }
-      catch { /* The user may navigate the reserved tab while this operation waits. */ }
-    },
-  };
 }
 async function copyDeferred(text: Promise<string>) {
   if (!navigator.clipboard) throw new Error('当前浏览器无法访问剪贴板，请使用打开链接');
@@ -180,52 +135,73 @@ async function copyDeferred(text: Promise<string>) {
     throw new Error('复制未完成，请重试，或使用打开链接');
   }
 }
+function closeDialog() {
+  active?.controller.abort();
+  active = undefined;
+  dialog.value = null;
+}
+function failDialog(message: string, retryable = true) {
+  if (dialog.value) Object.assign(dialog.value, { status: 'error', message, retryable });
+}
 async function act(action: LinkAction, resource: DisplaySearchResult, link: SearchLink) {
   const ref = link.linkRef;
-  if (loading[ref]) return;
+  if (loading[ref] || dialog.value?.status === 'loading') return;
+  const controller = new AbortController(); controllers.add(controller);
+  const operation = { resource, link, action, controller, value: undefined as ResolvedLink | undefined };
+  active = operation;
   loading[ref] = action;
   now.value = Date.now();
-  progress[ref] = { stage: 'queued', startedAt: now.value };
+  dialog.value = { status: 'loading', action, name: resource.name, provider: props.platformLabel(link.type), startedAt: now.value };
   if (copiedKey.value === ref) copiedKey.value = '';
-  const dismissProgress = showToast(action === 'copy' ? '正在获取并复制链接，请稍候…' : '正在获取链接，即将打开，请稍候…', 'info', { duration: 0, loading: true });
   const resume = !!keys[ref];
-  const controller = new AbortController(); controllers.add(controller);
-  let destination: ReturnType<typeof prepareOpen> | undefined;
   try {
     keys[ref] ||= crypto.randomUUID();
     const completed = await executeLinkAction(action, async () => {
-      const value = await resolveLink(resource.resultRef, ref, keys[ref]!, controller.signal, resume, value => {
-        if (gone || controller.signal.aborted) return;
-        progress[ref]!.stage = value.stage || 'checking';
-        destination?.update(progress[ref]!.stage);
-      });
+      const value = await resolveLink(resource.resultRef, ref, keys[ref]!, controller.signal, resume);
       if (gone || controller.signal.aborted) throw new Error('操作已取消');
+      operation.value = value;
       resolved[ref] = value;
-      // A fresh click revalidates the owned share; only unresolved operations retain their key.
       delete keys[ref];
       return value;
     }, {
-      prepareOpen: () => { destination = prepareOpen(); return destination; },
+      prepareOpen: () => ({ navigate: url => { if (active === operation && dialog.value) Object.assign(dialog.value, { status: 'ready', url, message: undefined }); }, close() {} }),
       copy: copyDeferred,
-      invalid: value => { if (!gone && !controller.signal.aborted) showToast(value.reasonCode === 'resource_missing' ? '分享中的资源已不存在，请尝试其他资源' : '原分享链接已失效，请尝试其他资源', 'error'); },
-      failed: message => { if (!gone && !controller.signal.aborted) showToast(message, 'error'); },
+      invalid: value => { if (active === operation && !controller.signal.aborted) failDialog(value.reasonCode === 'resource_missing' ? '资源已不存在，试试其他搜索结果。' : '这个链接已失效，试试其他搜索结果。', false); },
+      failed: message => { if (active === operation && !controller.signal.aborted) failDialog(message); },
     });
-    if (!gone && !controller.signal.aborted && completed && !isInvalid(link)) {
-      const fallbackMessage = originalFallbackMessage(action, completed);
-      if (action === 'copy') {
-        if (fallbackMessage) showToast(fallbackMessage, 'info');
-        else showToast(completed.password ? '链接已复制；提取码可点击单独复制' : '链接已复制，可粘贴打开', 'success');
-        copiedKey.value = ref;
-        clearTimeout(copiedTimer);
-        copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
-      } else {
-        if (fallbackMessage) showToast(fallbackMessage, 'info');
-        else showToast('链接已就绪，已请求浏览器打开', 'success');
-      }
-    }
-  } catch {
-    if (!gone && !controller.signal.aborted) showToast('操作未能开始，请刷新页面后重试', 'error');
-  } finally { dismissProgress(); loading[ref] = undefined; delete progress[ref]; controllers.delete(controller); }
+    if (active === operation && !controller.signal.aborted && completed && !invalidLink(completed) && action === 'copy') finishCopy(ref, completed);
+  } catch (error) {
+    if (active === operation && !controller.signal.aborted) failDialog(error instanceof Error ? error.message : '操作未能开始，请稍后重试。');
+  } finally {
+    loading[ref] = undefined;
+    controllers.delete(controller);
+  }
+}
+function finishCopy(ref: string, value: ResolvedLink) {
+  if (dialog.value) Object.assign(dialog.value, { status: 'success', message: value.password ? '去浏览器或网盘 App 粘贴打开，提取码也已为你保留。' : '去浏览器或网盘 App 粘贴打开。' });
+  copiedKey.value = ref;
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => { copiedKey.value = ''; }, 2400);
+}
+async function copyReady() {
+  const operation = active;
+  if (!operation || !dialog.value || dialog.value.status === 'loading') return;
+  if (!usable(operation.value) || invalidLink(operation.value)) { failDialog('链接需要重新获取，请再试一次。'); operation.value = undefined; return; }
+  Object.assign(dialog.value, { status: 'loading', action: 'copy', message: '正在复制到剪贴板。' });
+  const result = await executeLinkAction('copy', async () => operation.value!, {
+    prepareOpen: () => ({ navigate() {}, close() {} }), copy: copyDeferred, invalid: () => {},
+    failed: message => { if (active === operation) failDialog(message); },
+  });
+  if (active === operation && result) finishCopy(operation.link.linkRef, result);
+}
+function retryDialog() {
+  const operation = active;
+  if (!operation) return;
+  if (usable(operation.value) && !invalidLink(operation.value)) return copyReady();
+  return act(operation.action, operation.resource, operation.link);
+}
+function openReady(event: MouseEvent) {
+  if (!usable(active?.value) || invalidLink(active?.value)) { event.preventDefault(); if (active) active.value = undefined; failDialog('链接需要重新获取，请再试一次。'); }
 }
 async function copyPassword(ref: string) {
   if (gone || loading[ref] || copyingPassword.value) return;

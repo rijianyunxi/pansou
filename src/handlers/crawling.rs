@@ -375,6 +375,28 @@ pub async fn crawl_messages(
     admin_only(&h, &s).await?;
     Ok(ok(message_list(&s.pool, &channel, q).await?))
 }
+
+pub async fn crawl_message_get(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Path((channel, message)): Path<(String, i64)>,
+) -> Result<Json<Value>, ApiError> {
+    admin_only(&h, &s).await?;
+    let row = sqlx::query("SELECT message_id,task_at,status,error_message,raw_html,published_at FROM crawl_message_tasks WHERE channel_id=$1 AND message_id=$2")
+        .bind(&channel).bind(message).fetch_optional(&s.pool).await?
+        .ok_or_else(|| ApiError::NotFound("采集记录不存在或已处理".into()))?;
+    let raw_html = row.get::<Option<String>, _>("raw_html");
+    Ok(ok(json!({
+        "messageId": row.get::<i64, _>("message_id"),
+        "taskAt": row.get::<chrono::DateTime<chrono::Utc>, _>("task_at"),
+        "status": row.get::<String, _>("status"),
+        "errorMessage": row.get::<Option<String>, _>("error_message"),
+        "publishedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("published_at"),
+        "rawText": raw_html.as_deref().map(crate::telegram::message_text),
+        "rawHtml": raw_html,
+        "messageUrl": format!("https://t.me/{channel}/{message}"),
+    })))
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageAction {
