@@ -1,6 +1,7 @@
 //! Authentication contracts: aligo/core/Auth.py, guangyapan/client.py and official
 //! web sessions. Credentials and upstream responses must never be logged.
 use super::AuthFailure;
+pub(crate) mod xunlei;
 use crate::{
     app::AppState,
     cloud_drive::{Provider, scalar, valid_id},
@@ -35,6 +36,12 @@ pub enum Poll {
     Ready(String),
     Expired,
     Denied,
+    /// Provider-scoped scheduling; delay may exceed the normal polling interval.
+    Scheduled {
+        scanned: bool,
+        delay: i64,
+        interval: i64,
+    },
 }
 pub struct Identity {
     pub subject: String,
@@ -43,8 +50,14 @@ pub struct Identity {
     pub raw: String,
 }
 
-pub fn qr_supported(provider: Provider) -> bool {
-    provider != Provider::Xunlei
+pub async fn qr_supported(
+    state: &AppState,
+    provider: Provider,
+) -> Result<bool, crate::error::ApiError> {
+    if provider != Provider::Xunlei {
+        return Ok(true);
+    }
+    super::qr_settings::enabled(state).await
 }
 pub fn official_url(provider: Provider) -> &'static str {
     match provider {
@@ -105,6 +118,32 @@ pub fn refreshable(provider: Provider, raw: &str) -> bool {
         })
 }
 fn token_update(previous: &Value, response: &Value) -> Result<Value, AuthFailure> {
+    if previous["auth_flow"] == "xunlei_device_code_v1" {
+        if response["access_token"]
+            .as_str()
+            .is_none_or(|v| !xunlei::safe_value(v, 16384))
+        {
+            return Err(oauth_failure(response));
+        }
+        if response
+            .get("refresh_token")
+            .is_some_and(|v| v.as_str().is_none_or(|v| !xunlei::safe_value(v, 16384)))
+        {
+            return Err(AuthFailure::Protocol);
+        }
+        for key in ["client_id", "device_id"] {
+            let expected = previous[key]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or(AuthFailure::ClientConfiguration)?;
+            if response
+                .get(key)
+                .is_some_and(|v| v.as_str() != Some(expected))
+            {
+                return Err(AuthFailure::ClientConfiguration);
+            }
+        }
+    }
     if scalar(&response["access_token"]).is_empty() {
         return Err(oauth_failure(response));
     }
@@ -151,7 +190,9 @@ fn oauth_failure(value: &Value) -> AuthFailure {
         | "unauthenticated"
         | "unauthorized_client"
         | "access_denied" => AuthFailure::Reauthorize,
-        "review_panel" | "captcha_required" => AuthFailure::Verification,
+        "review_panel" | "captcha_required" | "captcha_invalid" | "verification_required" => {
+            AuthFailure::Verification
+        }
         _ => match scalar(&value["code"]).as_str() {
             "RefreshTokenExpired"
             | "RefreshTokenInvalid"
@@ -254,6 +295,17 @@ impl<'a> Http<'a> {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         if status.as_u16() == 429 {
+            if host == "xluser-ssl.xunlei.com"
+                && let Some(delay) = xunlei::retry_after(
+                    response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok()),
+                    Utc::now(),
+                )
+            {
+                return Err(AuthFailure::RateLimitedAfter(delay));
+            }
             return Err(AuthFailure::RateLimited);
         }
         let mut bytes = Vec::new();
@@ -664,6 +716,9 @@ fn guangya_verification_url(value: &Value) -> String {
 }
 
 pub async fn start(state: &AppState, provider: Provider) -> Result<LoginStart, AuthFailure> {
+    if provider == Provider::Xunlei {
+        return xunlei::start(state).await;
+    }
     let mut http = Http::new(state, Context::default());
     let (qr_url, expires, interval) = match provider {
         Provider::Quark => {
@@ -817,6 +872,9 @@ pub async fn poll(
     provider: Provider,
     context: &mut Context,
 ) -> Result<Poll, AuthFailure> {
+    if provider == Provider::Xunlei {
+        return xunlei::poll(state, context).await;
+    }
     let mut http = Http::new(state, context.clone());
     let result = match provider {
         Provider::Quark => {

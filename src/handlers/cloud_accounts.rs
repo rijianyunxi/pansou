@@ -196,3 +196,36 @@ mod tests {
         }
     }
 }
+
+pub async fn cloud_account_qr_settings(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    cloud_response(
+        async {
+            admin_only(&headers, &state).await?;
+            cloud_auth::qr_settings::get(&state, Provider::from_name(&provider)?).await
+        }
+        .await,
+    )
+}
+pub async fn cloud_account_save_qr_settings(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    body: Result<Json<cloud_auth::qr_settings::Update>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    cloud_response(
+        async {
+            cloud_origin(&headers)?;
+            admin_only(&headers, &state).await?;
+            // Do not reflect serde diagnostics (including unknown field names)
+            // from a write-only settings body, and keep errors non-cacheable.
+            let Json(body) =
+                body.map_err(|_| ApiError::BadRequest("扫码设置请求格式无效".into()))?;
+            cloud_auth::qr_settings::update(&state, Provider::from_name(&provider)?, body).await
+        }
+        .await,
+    )
+}

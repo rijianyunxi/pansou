@@ -97,6 +97,10 @@ fn api_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/admin/cloud-accounts", get(handlers::cloud_accounts))
         .route(
+            "/admin/cloud-accounts/{provider}/qr-settings",
+            get(handlers::cloud_account_qr_settings).put(handlers::cloud_account_save_qr_settings),
+        )
+        .route(
             "/admin/cloud-accounts/{provider}/login-sessions",
             post(handlers::cloud_account_start),
         )

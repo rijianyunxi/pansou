@@ -92,6 +92,8 @@ pub struct DriveError {
     pub kind: ErrorKind,
     pub message: String,
     pub code: Option<i64>,
+    #[serde(skip)]
+    pub(crate) retry_after_seconds: Option<i64>,
 }
 impl DriveError {
     pub fn new(provider: Provider, kind: ErrorKind, message: &str) -> Self {
@@ -100,6 +102,7 @@ impl DriveError {
             kind,
             message: message.into(),
             code: None,
+            retry_after_seconds: None,
         }
     }
     pub fn from_code(provider: Provider, code: i64) -> Self {
@@ -149,6 +152,7 @@ impl DriveError {
             kind,
             message: message.into(),
             code: Some(code),
+            retry_after_seconds: None,
         }
     }
     /// String business codes from the token providers (Aliyun/Guangya `code`,
@@ -185,6 +189,7 @@ impl DriveError {
             kind,
             message: message.into(),
             code: None,
+            retry_after_seconds: None,
         }
     }
     pub fn api(self) -> ApiError {

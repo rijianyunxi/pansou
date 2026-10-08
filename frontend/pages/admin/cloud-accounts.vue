@@ -4,13 +4,14 @@ import { RouterLink } from 'vue-router';
 import { ArrowUpRight, Cloud, RefreshCw } from '@lucide/vue';
 import { apiFetch, apiErrorMessage, setDocumentHead } from '../../src/appRuntime';
 import { DELIVERY_PROVIDERS, providerForm, providerPayload, providerRecord, type ProviderForm, type ProviderKey, type ProviderPolicy } from '../../lib/linkPolicy';
-import { accountStatus, accountCheckResult, authReason, loginRequest, rebindQuestion, scanInstructions, sessionActive, sessionExpired, safeQrImage, usableAccount, type AccountCheckFeedback, type CloudAccount, type LoginSession } from '../../lib/cloudAccounts';
+import { accountStatus, accountCheckResult, authReason, loginRequest, rebindQuestion, scanInstructions, sessionActive, sessionExpired, safeQrImage, usableAccount, type AccountCheckFeedback, type CloudAccount, type LoginSession, type QrSettings, type QrSettingsUpdate } from '../../lib/cloudAccounts';
 import type { MonitorData } from '../../components/monitor/monitorView';
 import { Button } from '../../components/admin/ui/button';
 import { Textarea } from '../../components/admin/ui/textarea';
 import AdminDialog from '../../components/admin/AdminDialog.vue';
 import CloudProviderCard from '../../components/admin/CloudProviderCard.vue';
 import CloudPolicyDialog from '../../components/admin/CloudPolicyDialog.vue';
+import CloudQrSettingsDialog from '../../components/admin/CloudQrSettingsDialog.vue';
 import { useAdminConfirm } from '../../composables/admin/useAdminConfirm';
 import { useAdminSession } from '../../composables/admin/useAdminSession';
 const confirm = useAdminConfirm(), admin = useAdminSession();
@@ -21,6 +22,8 @@ const checkFeedback = ref<Partial<Record<ProviderKey, AccountCheckFeedback>>>({}
 const creating = ref(false), loginError = ref(''), intent = ref('connect'), importing = ref(false), credential = ref('');
 const policyKey = ref<ProviderKey | null>(null), policyForm = ref<ProviderForm | null>(null), policyBusy = ref(false);
 const monitor = ref<MonitorData | null>(null);
+const qrSettings = ref<QrSettings | null>(null), qrSettingsBusy = ref(false), qrSettingsError = ref('');
+let qrSettingsController: AbortController | undefined;
 const configured = computed(() => Object.fromEntries(accounts.value.map(a => [a.provider, usableAccount(a)])) as Partial<Record<ProviderKey, boolean>>);
 let alive = true, generation = 0, pollTimer: ReturnType<typeof setTimeout> | undefined, refreshTimer: ReturnType<typeof setInterval> | undefined;
 let loadController: AbortController | undefined, pollController: AbortController | undefined, checkController: AbortController | undefined;
@@ -69,6 +72,28 @@ async function savePolicy(form: ProviderForm) {
     policyKey.value = null; policyForm.value = null;
   } catch (e) { if (alive) error.value = apiErrorMessage(e, '保存配置失败'); }
   finally { policyBusy.value = false; }
+}
+async function openQrSettings() {
+  if (busy.value || qrSettingsBusy.value || admin.locked.value) return;
+  qrSettingsBusy.value = true; qrSettingsError.value = '';
+  qrSettingsController?.abort(); const controller = new AbortController(); qrSettingsController = controller;
+  try {
+    const result = await apiFetch<{ data: QrSettings }>('/api/admin/cloud-accounts/xunlei/qr-settings', { cache: 'no-store', silentError: true, signal: controller.signal });
+    if (alive && !admin.locked.value && !controller.signal.aborted) qrSettings.value = result.data;
+  } catch (e) { if (alive && !controller.signal.aborted) notice.value = apiErrorMessage(e, '读取实验扫码设置失败'); }
+  finally { if (controller === qrSettingsController) qrSettingsBusy.value = false; }
+}
+async function saveQrSettings(value: QrSettingsUpdate) {
+  if (!qrSettings.value || qrSettingsBusy.value || admin.locked.value) return;
+  qrSettingsBusy.value = true; qrSettingsError.value = '';
+  qrSettingsController?.abort(); const controller = new AbortController(); qrSettingsController = controller;
+  try {
+    await apiFetch('/api/admin/cloud-accounts/xunlei/qr-settings', { method: 'PUT', body: value, cache: 'no-store', silentError: true, signal: controller.signal });
+    if (!alive || admin.locked.value || controller.signal.aborted) return;
+    qrSettings.value = null; notice.value = '迅雷扫码设置已保存，立即生效；未完成的旧扫码会话已取消。';
+    await load();
+  } catch (e) { if (alive && !controller.signal.aborted) qrSettingsError.value = apiErrorMessage(e, '保存实验扫码设置失败，请重新打开后重试'); }
+  finally { if (controller === qrSettingsController) qrSettingsBusy.value = false; }
 }
 async function choose(a: CloudAccount, mode: 'qr' | 'import', replace = false) {
   if (busy.value || loading.value || !!error.value) return;
@@ -155,9 +180,9 @@ async function disconnect(a: CloudAccount) {
   try { const result = await apiFetch<{ data: { items: CloudAccount[] } }>(`/api/admin/cloud-accounts/${a.provider}/connection`, { method: 'DELETE', body: { expectedEpoch: a.bindingEpoch }, silentError: true }); if (alive) { accounts.value = result.data.items; notice.value = '已断开连接，网盘文件未删除。'; } }
   catch (e) { if (alive) error.value = apiErrorMessage(e, '断开失败，请刷新状态'); } finally { busy.value = null; }
 }
-watch(() => admin.locked.value, locked => { if (!locked) void load(); else { loadController?.abort(); pollController?.abort(); checkController?.abort(); checkFeedback.value = {}; clearTimeout(pollTimer); generation++; accounts.value = []; loaded.value = false; dialog.value = null; credential.value = ''; policyKey.value = null; policyForm.value = null; } });
-onMounted(() => { setDocumentHead({ title: '网盘账号 - pansou' }); void load(); void refreshStatus(); refreshTimer = setInterval(() => { if (document.visibilityState === 'visible' && !dialog.value && !policyKey.value && !busy.value) { void load(true); void refreshStatus(); } }, 30000); });
-onBeforeUnmount(() => { alive = false; generation++; loadController?.abort(); pollController?.abort(); checkController?.abort(); clearTimeout(pollTimer); clearInterval(refreshTimer); const a = dialog.value, s = session.value; if (a && s && sessionActive(s.status)) void cancelRemote(a, s); credential.value = ''; });
+watch(() => admin.locked.value, locked => { if (!locked) void load(); else { loadController?.abort(); pollController?.abort(); checkController?.abort(); qrSettingsController?.abort(); qrSettings.value = null; qrSettingsError.value = ''; checkFeedback.value = {}; clearTimeout(pollTimer); generation++; accounts.value = []; loaded.value = false; dialog.value = null; credential.value = ''; policyKey.value = null; policyForm.value = null; } });
+onMounted(() => { setDocumentHead({ title: '网盘账号 - pansou' }); void load(); void refreshStatus(); refreshTimer = setInterval(() => { if (document.visibilityState === 'visible' && !dialog.value && !policyKey.value && !qrSettings.value && !qrSettingsBusy.value && !busy.value) { void load(true); void refreshStatus(); } }, 30000); });
+onBeforeUnmount(() => { alive = false; generation++; qrSettingsController?.abort(); qrSettings.value = null; loadController?.abort(); pollController?.abort(); checkController?.abort(); clearTimeout(pollTimer); clearInterval(refreshTimer); const a = dialog.value, s = session.value; if (a && s && sessionActive(s.status)) void cancelRemote(a, s); credential.value = ''; });
 </script>
 <template>
   <main class="cloud-accounts" :aria-busy="loading">
@@ -183,7 +208,8 @@ onBeforeUnmount(() => { alive = false; generation++; loadController?.abort(); po
         :configured="configured[p.key] || false"
         :busy="busy === p.key"
         :feedback="checkFeedback[p.key]"
-        :disabled="loading || !!busy || !!error"
+        :disabled="loading || !!busy || qrSettingsBusy || !!error"
+        @qr-settings="openQrSettings"
         @configure="openPolicy(p.key)"
         @qr="account(p.key) && choose(account(p.key)!, 'qr')"
         @import="account(p.key) && choose(account(p.key)!, 'import')"
@@ -192,6 +218,8 @@ onBeforeUnmount(() => { alive = false; generation++; loadController?.abort(); po
         @disconnect="account(p.key) && disconnect(account(p.key)!)"
       />
     </section>
+
+    <CloudQrSettingsDialog v-if="qrSettings" :settings="qrSettings" :busy="qrSettingsBusy" :error="qrSettingsError" @close="!qrSettingsBusy && (qrSettings = null)" @save="saveQrSettings" />
 
     <CloudPolicyDialog v-if="policyKey && policyForm" :provider="policyKey" :policy="policyForm" :configured="configured[policyKey] || false" :busy="policyBusy" @close="closePolicy" @save="savePolicy" />
 

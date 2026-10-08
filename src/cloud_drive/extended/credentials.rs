@@ -48,15 +48,44 @@ pub fn validate_credential(provider: Provider, raw: &str) -> Result<(), crate::e
             "迅雷凭据还需要 x-captcha-token（网页请求头）".into(),
         ));
     }
+    validate_qr_context(provider, &value).map_err(|_| {
+        crate::error::ApiError::BadRequest("迅雷扫码凭据缺少原授权客户端/设备，或别名不一致".into())
+    })?;
     credential_headers(provider, raw)
         .map(|_| ())
         .map_err(|_| crate::error::ApiError::BadRequest("凭据包含无效请求头或控制字符".into()))
+}
+fn validate_qr_context(provider: Provider, value: &Value) -> Result<(), ()> {
+    // Keep legacy imports compatible, but never silently use a default client
+    // for a credential issued through this explicit QR context.
+    if provider == Provider::Xunlei && value["auth_flow"] == "xunlei_device_code_v1" {
+        for key in ["client_id", "device_id"] {
+            if value[key].as_str().is_none_or(|v| {
+                v.is_empty() || v.len() > 256 || !v.bytes().all(|c| (0x21..=0x7e).contains(&c))
+            }) {
+                return Err(());
+            }
+        }
+        for (key, aliases) in [
+            ("client_id", &["x-client-id", "clientId"][..]),
+            ("device_id", &["x-device-id", "deviceId", "did"][..]),
+        ] {
+            if aliases
+                .iter()
+                .any(|alias| value.get(*alias).is_some_and(|v| v != &value[key]))
+            {
+                return Err(());
+            }
+        }
+    }
+    Ok(())
 }
 pub(in crate::cloud_drive) fn credential_headers(
     provider: Provider,
     raw: &str,
 ) -> Result<HeaderMap, ()> {
     let value: Value = serde_json::from_str(raw).map_err(|_| ())?;
+    validate_qr_context(provider, &value)?;
     let mut headers = HeaderMap::new();
     let token = text(&value, &["authorization", "access_token", "accessToken"]);
     if !token.is_empty() {
@@ -151,4 +180,31 @@ pub(crate) fn guangya_auth_headers(raw: &str) -> Result<HeaderMap, ()> {
         );
     }
     Ok(headers)
+}
+#[cfg(test)]
+mod qr_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn qr_credentials_require_same_client_and_device_without_breaking_imports() {
+        let good = json!({"auth_flow":"xunlei_device_code_v1","access_token":"fixture-access","user_id":"subject1","client_id":"fixture-client","device_id":"fixture-device","captcha_token":"fixture-captcha"});
+        assert!(validate_credential(Provider::Xunlei, &good.to_string()).is_ok());
+        for field in ["client_id", "device_id"] {
+            let mut bad = good.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(validate_credential(Provider::Xunlei, &bad.to_string()).is_err());
+            assert!(credential_headers(Provider::Xunlei, &bad.to_string()).is_err());
+        }
+        for alias in ["x-client-id", "clientId", "x-device-id", "deviceId", "did"] {
+            let mut bad = good.clone();
+            bad[alias] = json!("other");
+            assert!(validate_credential(Provider::Xunlei, &bad.to_string()).is_err());
+            assert!(credential_headers(Provider::Xunlei, &bad.to_string()).is_err());
+        }
+        let mut legacy = good;
+        for key in ["auth_flow", "client_id", "device_id"] {
+            legacy.as_object_mut().unwrap().remove(key);
+        }
+        assert!(validate_credential(Provider::Xunlei, &legacy.to_string()).is_ok());
+    }
 }

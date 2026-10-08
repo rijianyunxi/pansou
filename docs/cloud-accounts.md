@@ -2,7 +2,7 @@
 
 ## 支持范围与入口
 
-后台 `/admin/cloud-accounts` 管理 `baidu`、`quark`、`aliyun`、`xunlei`、`guangya`。百度、夸克使用 Cookie；阿里、光鸭使用 Token 并支持凭证维护；迅雷使用高级导入，不能假设所有平台都支持相同扫码协议。
+后台 `/admin/cloud-accounts` 管理 `baidu`、`quark`、`aliyun`、`xunlei`、`guangya`。百度、夸克使用 Cookie；阿里、光鸭使用 Token 并支持凭证维护；迅雷默认使用高级导入；提供默认关闭、需显式客户端/设备上下文的实验扫码适配，尚未完成真实端到端验收。不能假设所有平台都支持相同扫码协议。
 
 账号授权、凭证维护和资源交付是独立职责：关闭采集或链接后台任务不等于关闭凭证维护。启动模式及 `PANSOU_AUTH_WORKER_ENABLED` 以 [main.rs](../src/main.rs) 为准。
 
@@ -19,6 +19,8 @@
 | `POST /admin/cloud-accounts/{provider}/import` | 高级导入凭证 |
 | `POST /admin/cloud-accounts/{provider}/check` | 检查账号 |
 | `DELETE /admin/cloud-accounts/{provider}/connection` | 断开账号 |
+| `GET /admin/cloud-accounts/xunlei/qr-settings` | 获取实验扫码设置状态，不回显敏感上下文 |
+| `PUT /admin/cloud-accounts/xunlei/qr-settings` | 保存实验扫码设置，版本校验、立即生效 |
 
 连接和导入请求包含 `intent`、`expectedEpoch`，断开请求包含 `expectedEpoch`；更新必须与当前绑定版本一致。授权会话还绑定管理员身份。响应禁止缓存，账号写接口检查请求来源。具体字段和错误处理见 [cloud_accounts.rs](../src/handlers/cloud_accounts.rs)。
 
@@ -33,3 +35,7 @@
 迁移说明见 [migrations/README.md](../migrations/README.md)。旧版凭证升级必须按实际库版本验证，不能把开发者本地已经完成的升级当作其他环境的保证。
 
 账号配置和资源交付策略分别维护，交付、检测与清理说明见 [网盘交付与清理](cloud-drive-providers.md)。
+
+## 迅雷实验扫码与设计文档
+
+迅雷扫码的调研依据、需求、实现方案与验收门槛见 [迅雷扫码登录需求与实现设计](xunlei-qr-login-requirements-design.md)。已交付实验适配及 mock 回归；启用配置、实现范围与未完成的真实验收见 [迅雷实验扫码实现说明](xunlei-qr-login-implementation.md)。默认仍使用高级导入，不自动开启扫码。实验开关及敏感上下文通过“迅雷 → 更多操作 → 实验扫码设置”保存在数据库中，无需环境变量、外部 JSON 文件或重启；上下文只写不回显。保存设置取消未完成的扫码会话，不影响已连接账号。自动 captcha 获取/续期及真实扫码验收仍未完成。

@@ -28,7 +28,7 @@ const errors: Record<string,string> = {
   verification_required:'请在官方网站完成额外验证后重新连接。',
   refresh_uncertain:'刷新请求结果未确认，为防止重复使用旧刷新令牌，请重新授权。',
   authorization_exchange_uncertain:'扫码授权兑换结果未确认。为避免重复使用一次性票据，请重新生成二维码并扫码。',
-  client_configuration_required:'续期缺少同一官方会话的客户端配置，请高级导入完整 client_id 和所需设备字段，不要混用不同客户端的令牌。',
+  client_configuration_required:'缺少或不匹配同一官方会话的客户端与设备配置，请检查后台实验扫码设置，或高级导入完整凭证；不要混用不同客户端的令牌。',
   refresh_commit_failed:'刷新后的凭证未能安全保存，请重新授权。',
   network_error:'认证服务连接失败，系统会稍后再试。', rate_limited:'认证频率受限，系统会稍后再试。',
   state_changed:'扫码期间账号状态或登录会话已变化，凭证未保存。请重新生成二维码再扫码。',
@@ -54,7 +54,7 @@ export function rebindQuestion(replace:boolean){
     :'原凭证尚未完成身份核实，无法确认与即将登录的账号是否相同。继续后将以本次登录的账号为准；旧凭证的转存产物不会被新账号清理。确认继续？';
 }
 export function scanInstructions(provider:ProviderKey){
-  const apps:Record<ProviderKey,string>={quark:'夸克 App 的网盘扫一扫',baidu:'百度网盘 App 的扫一扫',aliyun:'阿里云盘 App 的扫一扫',guangya:'光鸭网盘官方 App 的扫码功能',xunlei:'迅雷官方 App'};
+  const apps:Record<ProviderKey,string>={quark:'夸克 App 的网盘扫一扫',baidu:'百度网盘 App 的扫一扫',aliyun:'阿里云盘 App 的扫一扫',guangya:'光鸭网盘官方 App 的扫码功能',xunlei:'迅雷官方客户端的扫码功能（实验接入，需完成兼容性验证）'};
   return `请使用${apps[provider]}，扫码后在手机端确认授权。请勿用其他网盘 App 扫码，也不要扫描来历不明的二维码。`;
 }
 const stages:Record<string,string>={session_context:'读取扫码会话',token_exchange:'兑换扫码授权',account_identity:'核实官方账号',root_access:'验证根目录访问',credential_save:'保存账号凭证'};
@@ -74,3 +74,21 @@ export function sessionActive(status:string){return ['starting','waiting','scann
 export function sessionExpired(session:LoginSession,now=Date.now()){return sessionActive(session.status)&&Date.parse(session.expiresAt)<=now;}
 export function usableAccount(account?:CloudAccount){return !!account?.configured&&['ready','degraded'].includes(account.status);}
 export function safeQrImage(value?:string){return !!value&&/^data:image\/(?:png|jpeg|svg\+xml);base64,[A-Za-z0-9+/]+=*$/.test(value);}
+
+export type QrSettings = { enabled: boolean; configured: boolean; revision: number; experimental: boolean };
+export type QrSettingsUpdate = { enabled: boolean; expectedRevision: number; context?: Record<string, unknown>; clearContext?: boolean };
+export function qrSettingsPayload(settings: QrSettings, enabled: boolean, raw: string, clearContext = false): QrSettingsUpdate {
+  if (!Number.isSafeInteger(settings.revision) || settings.revision < 0) throw new Error('设置版本无效，请重新打开设置。');
+  if (clearContext && (enabled || raw.trim())) throw new Error('清除上下文时请关闭扫码，并保持输入框为空。');
+  const payload: QrSettingsUpdate = { enabled, expectedRevision: settings.revision };
+  if (clearContext) { payload.clearContext = true; return payload; }
+  if (raw.trim()) {
+    if (new TextEncoder().encode(raw).length > 65536) throw new Error('客户端上下文不能超过64 KiB。');
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { throw new Error('客户端上下文必须是有效的 JSON。'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('客户端上下文必须是 JSON 对象。');
+    payload.context = value as Record<string, unknown>;
+  }
+  if (enabled && !settings.configured && !payload.context) throw new Error('启用前请填写同一官方客户端的设备与验证上下文。');
+  return payload;
+}

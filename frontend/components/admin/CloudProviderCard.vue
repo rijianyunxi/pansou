@@ -6,7 +6,7 @@ import { directoryLabel, durationLabel, providerName, type ProviderKey, type Pro
 import { Button } from './ui/button';
 import AdminRowActions from './AdminRowActions.vue';
 const props = defineProps<{ provider: ProviderKey; account?: CloudAccount; policy: ProviderPolicy; configured: boolean; busy: boolean; disabled: boolean; feedback?: AccountCheckFeedback }>();
-const emit = defineEmits<{ configure: []; qr: []; import: []; check: []; replace: []; disconnect: [] }>();
+const emit = defineEmits<{ qrSettings: []; configure: []; qr: []; import: []; check: []; replace: []; disconnect: [] }>();
 function date(value?: string) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN') : '未记录'; }
 function maintenance(account: CloudAccount) {
   if (account.refreshable) return '自动续期';
@@ -53,12 +53,15 @@ function checkValue(policy: ProviderPolicy) {
     <p v-if="feedback" class="provider-feedback" :data-state="feedback.state" :role="feedback.state === 'error' ? 'alert' : 'status'"><component :is="feedback.state === 'checking' ? LoaderCircle : feedback.state === 'success' ? CircleCheck : CircleAlert" :size="14" aria-hidden="true" /><span>{{ feedback.message }}</span></p>
     <p v-else-if="issue" class="provider-error" role="status"><CircleAlert :size="14" aria-hidden="true" /><span>{{ issue }}</span></p>
 
+    <p v-if="provider === 'xunlei' && account?.qrSupported" class="provider-note">实验扫码：需验证官方客户端兼容性；设备验证失败时请使用高级导入。</p>
+
     <footer class="provider-footer">
       <div class="provider-actions">
         <Button v-if="account?.qrSupported" size="sm" :disabled="busy || disabled" @click="emit('qr')"><QrCode :size="15" aria-hidden="true" />{{ account.configured ? '重新连接' : '扫码连接' }}</Button>
         <Button v-else size="sm" :disabled="busy || disabled" @click="emit('import')">导入凭证</Button>
         <Button v-if="account?.configured" variant="outline" size="sm" :disabled="busy || disabled" @click="emit('check')"><LoaderCircle v-if="feedback?.state === 'checking'" :size="14" class="check-spinner" aria-hidden="true" />{{ feedback?.state === 'checking' ? '验证中…' : '验证账号' }}</Button>
         <AdminRowActions :label="providerName(provider) + '更多操作'">
+          <Button v-if="provider === 'xunlei'" variant="ghost" :disabled="busy || disabled" @click="emit('qrSettings')">实验扫码设置</Button>
           <Button v-if="account?.qrSupported" variant="ghost" :disabled="busy || disabled" @click="emit('import')">高级导入</Button>
           <Button v-if="account?.configured" variant="ghost" :disabled="busy || disabled" @click="emit('replace')">更换账号</Button>
           <Button v-if="account?.configured" variant="ghost" :disabled="busy || disabled" @click="emit('disconnect')">断开连接</Button>

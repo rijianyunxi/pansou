@@ -76,6 +76,12 @@ struct MockAuth {
     ali_resource_missing: bool,
     ali_drive_list_calls: usize,
     qr_exchanges: usize,
+    xunlei_poll_mode: String,
+    xunlei_polls: usize,
+    xunlei_slow_poll: bool,
+    xunlei_in_flight: bool,
+    xunlei_refresh_limited: bool,
+    xunlei_root_limited: bool,
 }
 async fn upstream(
     axum::extract::State(mock): axum::extract::State<Arc<tokio::sync::Mutex<MockAuth>>>,
@@ -99,6 +105,16 @@ async fn upstream(
             axum::Json(json!({"error":"unimplemented"})),
         )
             .into_response();
+    }
+    if path == "/xluser-ssl.xunlei.com/v1/auth/token" {
+        let slow = {
+            let mut m = mock.lock().await;
+            m.xunlei_in_flight = m.xunlei_slow_poll;
+            m.xunlei_slow_poll
+        };
+        if slow {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
     }
     let cookie = request
         .headers()
@@ -219,12 +235,47 @@ async fn upstream(
             )
             .unwrap();
             if input["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code" {
+                if path == "/xluser-ssl.xunlei.com/v1/auth/token" {
+                    mock.xunlei_polls += 1;
+                    assert_eq!(input["client_id"], "fixture-client");
+                    match mock.xunlei_poll_mode.as_str() {
+                        "pending"=>return (axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"authorization_pending"}))).into_response(),
+                        "scanned"=>return (axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"authorization_pending","details":[{"state":"WAITING_CONSENT"}]}))).into_response(),
+                        "slower"=>return (axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"slow_down"}))).into_response(),
+                        "limited"=>return (axum::http::StatusCode::TOO_MANY_REQUESTS,[("retry-after","120")],"not-json").into_response(),
+                        "denied"=>return (axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"access_denied"}))).into_response(),
+                        "expired"=>return (axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"expired_token"}))).into_response(),
+                        "uncertain"=>return (axum::http::StatusCode::BAD_GATEWAY,"secret").into_response(),
+                        _=>{},
+                    }
+                }
                 mock.qr_exchanges += 1;
                 json!({"access_token":"qr-access","refresh_token":"qr-refresh","expires_in":7200})
             } else {
+                if path == "/xluser-ssl.xunlei.com/v1/auth/token" && mock.xunlei_refresh_limited {
+                    return (
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        [("retry-after", "120")],
+                        "not-json",
+                    )
+                        .into_response();
+                }
                 mock.refreshes += 1;
                 json!({"access_token":format!("access-{}",mock.refreshes),"refresh_token":format!("refresh-{}",mock.refreshes),"expires_in":7200})
             }
+        }
+        "/xluser-ssl.xunlei.com/v1/auth/device/code" => {
+            assert_eq!(request.headers()["x-client-id"], "fixture-client");
+            assert_eq!(request.headers()["x-device-id"], "fixture-device");
+            assert_eq!(request.headers()["x-captcha-token"], "fixture-captcha");
+            let input: Value = serde_json::from_slice(
+                &axum::body::to_bytes(request.into_body(), 32768)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(input["client_id"], "fixture-client");
+            json!({"device_code":"fixture-xunlei-code","interval":3,"expires_in":300,"verification_uri_complete":"https://i.xunlei.com/device/?device_code=fixture-xunlei-code"})
         }
         "/account.guangyapan.com/v1/auth/device/code" => {
             json!({"device_code":"fixture-device","verification_uri_complete":"https://account.guangyapan.com/authorize?code=fixture","expires_in":300,"interval":2})
@@ -316,6 +367,19 @@ async fn upstream(
             json!({"content":{"data":{"qrCodeStatus":"CONFIRMED","bizExt":STANDARD.encode(br#"{"pds_login_result":{"refreshToken":"fixture-refresh"}}"#)}}})
         }
         p if p.starts_with("/drive/") => {
+            if mock.xunlei_root_limited
+                && request
+                    .headers()
+                    .get("x-client-id")
+                    .is_some_and(|v| v == "fixture-client")
+            {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "120")],
+                    "not-json",
+                )
+                    .into_response();
+            }
             if mock.directory_failure {
                 return (axum::http::StatusCode::BAD_GATEWAY, axum::Json(json!({})))
                     .into_response();
@@ -610,6 +674,11 @@ async fn provider_qr_protocols_and_independent_polling_are_strict() {
     .expect("a pending Baidu poll blocked Quark's next poll");
     state.shutdown.cancel();
     worker.await.unwrap();
+    sqlx::query("DELETE FROM cloud_login_sessions WHERE actor_id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
 }
 
@@ -1086,6 +1155,780 @@ async fn plaintext_bindings_refresh_sessions_and_ownership_are_fenced() {
                 .unwrap();
         }
     }
+    sqlx::query("DELETE FROM users WHERE id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated _test PostgreSQL and Redis"]
+async fn xunlei_qr_scheduling_recovery_and_late_results_are_fenced() {
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(
+        url::Url::parse(&database)
+            .unwrap()
+            .path()
+            .ends_with("_test")
+    );
+    let redis = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert_ne!(url::Url::parse(&redis).unwrap().path(), "/0");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(12)
+        .connect(&database)
+        .await
+        .unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let mock = Arc::new(tokio::sync::Mutex::new(MockAuth::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let router = axum::Router::new()
+        .fallback(axum::routing::any(upstream))
+        .with_state(mock.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut state = AppState::new(
+        pool.clone(),
+        crate::redis_store::RedisStore::connect(&redis)
+            .await
+            .unwrap(),
+    );
+    state.cloud_auth_test_base = Some(base.clone());
+    let drive = url::Url::parse(&format!("{base}drive/")).unwrap();
+    state.cloud_test_bases = Some(cloud_drive::TestBases {
+        baidu: drive.clone(),
+        quark_pc: drive.clone(),
+        quark_share: drive,
+    });
+    assert!(
+        !providers::qr_supported(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+    );
+    for p in [
+        Provider::Baidu,
+        Provider::Quark,
+        Provider::Aliyun,
+        Provider::Guangya,
+    ] {
+        assert!(providers::qr_supported(&state, p).await.unwrap());
+    }
+    let state = Arc::new(state);
+    let username = format!("xunlei_{}", Uuid::new_v4().simple());
+    let actor:i64=sqlx::query_scalar("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,'fixture','admin') RETURNING id").bind(&username).fetch_one(&pool).await.unwrap();
+    // Test fixture owns only its provider binding in this isolated database.
+    sqlx::query("DELETE FROM cloud_account_settings WHERE provider='xunlei'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    qr_settings::update(&state,Provider::Xunlei,qr_settings::Update{enabled:true,expected_revision:0,context:Some(json!({"client_id":"fixture-client","device_id":"fixture-device","captcha_token":"fixture-captcha"})),clear_context:false}).await.unwrap();
+    let login = start_login(&state, Provider::Xunlei, actor, "connect", 0)
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    assert!(
+        login["qrImage"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/svg+xml;base64,")
+    );
+    let public = login.to_string();
+    assert!(!public.contains("fixture-captcha"));
+    assert!(!public.contains("fixture-xunlei-code"));
+    assert!(
+        session(&state, Provider::Xunlei, id, actor + 99999)
+            .await
+            .is_err()
+    );
+    let delay:f64=sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM (next_poll_at-updated_at))::float8 FROM cloud_login_sessions WHERE id=$1").bind(id).fetch_one(&pool).await.unwrap();
+    assert!(delay >= 3.0);
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    assert_eq!(
+        mock.lock().await.xunlei_polls,
+        0,
+        "first poll must honor upstream interval"
+    );
+    async fn due(pool: &sqlx::PgPool, id: Uuid) {
+        sqlx::query("UPDATE cloud_login_sessions SET next_poll_at=now() WHERE id=$1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    for (mode, status) in [
+        ("pending", "waiting"),
+        ("scanned", "scanned"),
+        ("pending", "scanned"),
+        ("slower", "scanned"),
+        ("limited", "scanned"),
+    ] {
+        mock.lock().await.xunlei_poll_mode = mode.into();
+        due(&pool, id).await;
+        poll_provider_once(&state, Some(Provider::Xunlei))
+            .await
+            .unwrap();
+        assert_eq!(
+            session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+            status
+        );
+        let context: String =
+            sqlx::query_scalar("SELECT context_json FROM cloud_login_sessions WHERE id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&context).unwrap()["data"]["phase"],
+            "awaiting"
+        );
+    }
+    let delay:f64=sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM (next_poll_at-updated_at))::float8 FROM cloud_login_sessions WHERE id=$1").bind(id).fetch_one(&pool).await.unwrap();
+    assert!(delay >= 120.0);
+    let polls = mock.lock().await.xunlei_polls;
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    assert_eq!(mock.lock().await.xunlei_polls, polls);
+    {
+        let mut m = mock.lock().await;
+        m.xunlei_poll_mode.clear();
+        m.directory_failure = true;
+    }
+    due(&pool, id).await;
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+        "verifying"
+    );
+    assert_eq!(
+        stored(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+            .unwrap()
+            .credential,
+        ""
+    );
+    let polls = mock.lock().await.xunlei_polls;
+    {
+        let mut m = mock.lock().await;
+        m.directory_failure = false;
+        m.xunlei_root_limited = true;
+    }
+    due(&pool, id).await;
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    let delay:f64=sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM (next_poll_at-updated_at))::float8 FROM cloud_login_sessions WHERE id=$1").bind(id).fetch_one(&pool).await.unwrap();
+    assert!(delay >= 120.0);
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["errorCode"],
+        "root_access:rate_limited"
+    );
+    mock.lock().await.xunlei_root_limited = false;
+    due(&pool, id).await;
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+        "connected"
+    );
+    assert_eq!(
+        mock.lock().await.xunlei_polls,
+        polls,
+        "verification must reuse saved token"
+    );
+    let old = stored(&state, Provider::Xunlei).await.unwrap().unwrap();
+    let raw: Value = serde_json::from_str(&old.credential).unwrap();
+    assert_eq!(raw["client_id"], "fixture-client");
+    assert_eq!(raw["user_id"], "subject1");
+    assert_eq!(raw["captcha_token"], "fixture-captcha");
+    let cleared: Option<String> =
+        sqlx::query_scalar("SELECT context_json FROM cloud_login_sessions WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(cleared.is_none());
+
+    for (mode, status) in [
+        ("denied", "denied"),
+        ("expired", "expired"),
+        ("uncertain", "failed"),
+    ] {
+        let login = start_login(
+            &state,
+            Provider::Xunlei,
+            actor,
+            "reauthorize",
+            old.binding_epoch,
+        )
+        .await
+        .unwrap();
+        let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+        mock.lock().await.xunlei_poll_mode = mode.into();
+        due(&pool, id).await;
+        poll_provider_once(&state, Some(Provider::Xunlei))
+            .await
+            .unwrap();
+        let public = session(&state, Provider::Xunlei, id, actor).await.unwrap();
+        assert_eq!(public["status"], status);
+        if mode == "uncertain" {
+            assert_eq!(
+                public["errorCode"],
+                "token_exchange:authorization_exchange_uncertain"
+            );
+        }
+        assert_eq!(
+            stored(&state, Provider::Xunlei)
+                .await
+                .unwrap()
+                .unwrap()
+                .token_revision,
+            old.token_revision
+        );
+        let cleared: Option<String> =
+            sqlx::query_scalar("SELECT context_json FROM cloud_login_sessions WHERE id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(cleared.is_none());
+    }
+    // Recovered exchanging intent must fail without sending another token request.
+    let login = start_login(
+        &state,
+        Provider::Xunlei,
+        actor,
+        "reauthorize",
+        old.binding_epoch,
+    )
+    .await
+    .unwrap();
+    let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    let raw: String =
+        sqlx::query_scalar("SELECT context_json FROM cloud_login_sessions WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut context: providers::Context = serde_json::from_str(&raw).unwrap();
+    providers::xunlei::begin_exchange(&mut context).unwrap();
+    sqlx::query("UPDATE cloud_login_sessions SET context_json=$2,next_poll_at=now() WHERE id=$1")
+        .bind(id)
+        .bind(serde_json::to_string(&context).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let polls = mock.lock().await.xunlei_polls;
+    poll_provider_once(&state, Some(Provider::Xunlei))
+        .await
+        .unwrap();
+    assert_eq!(mock.lock().await.xunlei_polls, polls);
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["errorCode"],
+        "token_exchange:authorization_exchange_uncertain"
+    );
+
+    // Cancellation during the upstream request discards its late successful token.
+    let login = start_login(
+        &state,
+        Provider::Xunlei,
+        actor,
+        "reauthorize",
+        old.binding_epoch,
+    )
+    .await
+    .unwrap();
+    let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    {
+        let mut m = mock.lock().await;
+        m.xunlei_poll_mode.clear();
+        m.xunlei_slow_poll = true;
+        m.xunlei_in_flight = false;
+    }
+    due(&pool, id).await;
+    let running = state.clone();
+    let poll = tokio::spawn(async move {
+        poll_provider_once(&running, Some(Provider::Xunlei))
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !mock.lock().await.xunlei_in_flight {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cancel(&state, Provider::Xunlei, id, actor).await.unwrap();
+    poll.await.unwrap();
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        stored(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+            .unwrap()
+            .token_revision,
+        old.token_revision
+    );
+    assert!(matches!(
+        start_login(
+            &state,
+            Provider::Xunlei,
+            actor,
+            "reauthorize",
+            old.binding_epoch
+        )
+        .await,
+        Err(ApiError::TooManyRequests(_))
+    ));
+    // More concurrency scenarios use fresh rate-limit windows in the isolated fixture.
+    sqlx::query(
+        "UPDATE cloud_login_sessions SET created_at=now()-interval '2 minutes' WHERE actor_id=$1",
+    )
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for cause in ["lease", "expiry", "replacement"] {
+        let login = start_login(
+            &state,
+            Provider::Xunlei,
+            actor,
+            "reauthorize",
+            old.binding_epoch,
+        )
+        .await
+        .unwrap();
+        let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+        {
+            let mut m = mock.lock().await;
+            m.xunlei_slow_poll = true;
+            m.xunlei_in_flight = false;
+        }
+        due(&pool, id).await;
+        let running = state.clone();
+        let poll = tokio::spawn(async move {
+            poll_provider_once(&running, Some(Provider::Xunlei))
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !mock.lock().await.xunlei_in_flight {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // A second worker cannot redeem the same session while its lease is live.
+        let before = mock.lock().await.xunlei_polls;
+        poll_provider_once(&state, Some(Provider::Xunlei))
+            .await
+            .unwrap();
+        assert_eq!(mock.lock().await.xunlei_polls, before);
+        let replacement = match cause {
+            "lease" => {
+                sqlx::query("UPDATE cloud_login_sessions SET poll_lease_until=now()-interval '1 second' WHERE id=$1").bind(id).execute(&pool).await.unwrap();
+                None
+            }
+            "expiry" => {
+                sqlx::query("UPDATE cloud_login_sessions SET expires_at=now()-interval '1 second' WHERE id=$1").bind(id).execute(&pool).await.unwrap();
+                None
+            }
+            _ => {
+                let newer = start_login(
+                    &state,
+                    Provider::Xunlei,
+                    actor,
+                    "reauthorize",
+                    old.binding_epoch,
+                )
+                .await
+                .unwrap();
+                Some(Uuid::parse_str(newer["id"].as_str().unwrap()).unwrap())
+            }
+        };
+        poll.await.unwrap();
+        assert_eq!(
+            stored(&state, Provider::Xunlei)
+                .await
+                .unwrap()
+                .unwrap()
+                .token_revision,
+            old.token_revision
+        );
+        mock.lock().await.xunlei_slow_poll = false;
+        if cause == "lease" {
+            let polls = mock.lock().await.xunlei_polls;
+            poll_provider_once(&state, Some(Provider::Xunlei))
+                .await
+                .unwrap();
+            assert_eq!(mock.lock().await.xunlei_polls, polls);
+            assert_eq!(
+                session(&state, Provider::Xunlei, id, actor).await.unwrap()["errorCode"],
+                "token_exchange:authorization_exchange_uncertain"
+            );
+        } else if cause == "expiry" {
+            poll_provider_once(&state, Some(Provider::Xunlei))
+                .await
+                .unwrap();
+            assert_eq!(
+                session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+                "expired"
+            );
+        } else {
+            assert_eq!(
+                session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+                "cancelled"
+            );
+            let newer = replacement.unwrap();
+            assert_eq!(
+                session(&state, Provider::Xunlei, newer, actor)
+                    .await
+                    .unwrap()["status"],
+                "waiting"
+            );
+            cancel(&state, Provider::Xunlei, newer, actor)
+                .await
+                .unwrap();
+        }
+    }
+    mock.lock().await.xunlei_slow_poll = false;
+
+    mock.lock().await.xunlei_refresh_limited = true;
+    assert!(check(&state, Provider::Xunlei).await.is_err());
+    let limited = stored(&state, Provider::Xunlei).await.unwrap().unwrap();
+    assert_eq!(limited.auth_status, "degraded");
+    assert_eq!(limited.token_revision, old.token_revision);
+    assert_eq!(limited.credential, old.credential);
+    let delay:f64=sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM (next_check_at-now()))::float8 FROM cloud_account_settings WHERE provider='xunlei'").fetch_one(&pool).await.unwrap();
+    assert!(delay >= 119.0);
+
+    sqlx::query("DELETE FROM cloud_login_sessions WHERE actor_id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM cloud_account_settings WHERE provider='xunlei'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM users WHERE id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated _test PostgreSQL and Redis"]
+async fn xunlei_qr_settings_are_write_only_versioned_live_and_admin_only() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let database = std::env::var("PANSOU_TEST_DATABASE_URL").unwrap();
+    assert!(
+        url::Url::parse(&database)
+            .unwrap()
+            .path()
+            .ends_with("_test")
+    );
+    let redis = std::env::var("PANSOU_TEST_REDIS_URL").unwrap();
+    assert_ne!(url::Url::parse(&redis).unwrap().path(), "/0");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(12)
+        .connect(&database)
+        .await
+        .unwrap();
+    crate::db::init_db(&pool).await.unwrap();
+    let mock = Arc::new(tokio::sync::Mutex::new(MockAuth::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let server = axum::Router::new()
+        .fallback(axum::routing::any(upstream))
+        .with_state(mock.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let mut state = AppState::new(
+        pool.clone(),
+        crate::redis_store::RedisStore::connect(&redis)
+            .await
+            .unwrap(),
+    );
+    state.cloud_auth_test_base = Some(base.clone());
+    let drive = url::Url::parse(&format!("{base}drive/")).unwrap();
+    state.cloud_test_bases = Some(cloud_drive::TestBases {
+        baidu: drive.clone(),
+        quark_pc: drive.clone(),
+        quark_share: drive,
+    });
+    let state = Arc::new(state);
+    sqlx::query("DELETE FROM cloud_account_settings WHERE provider='xunlei'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let unique = Uuid::new_v4().simple().to_string();
+    let username = format!("qr_settings_{unique}");
+    let actor:i64=sqlx::query_scalar("INSERT INTO users(username,username_normalized,password_hash,role) VALUES($1,$1,$2,'admin') RETURNING id").bind(&username).bind(crate::auth::hash_password(&unique).unwrap()).fetch_one(&pool).await.unwrap();
+    let token = state
+        .auth()
+        .login(&username, &unique)
+        .await
+        .unwrap()
+        .0
+        .token;
+    let router = crate::app::build_router(state.clone());
+    async fn request(
+        router: axum::Router,
+        token: Option<&str>,
+        method: &str,
+        body: Option<Value>,
+        cross: bool,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .uri("/api/admin/cloud-accounts/xunlei/qr-settings")
+            .method(method)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        if cross {
+            request = request.header("sec-fetch-site", "cross-site");
+        }
+        let response = router
+            .oneshot(
+                request
+                    .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            response.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("no-store")
+        );
+        let status = response.status();
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert!(!value.to_string().contains("fixture-captcha"));
+        (status, value)
+    }
+    assert_eq!(
+        request(router.clone(), None, "GET", None, false).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    sqlx::query("UPDATE users SET role='user' WHERE id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(router.clone(), Some(&token), "GET", None, false)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(json!({"enabled":false,"expectedRevision":0})),
+            false
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("UPDATE users SET role='admin' WHERE id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, view) = request(router.clone(), Some(&token), "GET", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["data"]["configured"], false);
+    assert_eq!(view["data"]["revision"], 0);
+    for invalid in [
+        json!({"enabled":false,"expectedRevision":0,"context":null}),
+        json!({"enabled":"fixture-captcha","expectedRevision":0}),
+        json!({"enabled":false,"expectedRevision":0,"fixture-captcha":true}),
+        json!({"enabled":false,"expectedRevision":0,"context":{"client_id":"fixture-captcha"}}),
+    ] {
+        assert_eq!(
+            request(router.clone(), Some(&token), "PUT", Some(invalid), false)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let profile = json!({"client_id":"fixture-client","device_id":"fixture-device","captcha_token":"fixture-captcha"});
+    let save = json!({"enabled":false,"expectedRevision":0,"context":profile});
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(save.clone()),
+            true
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(json!({"enabled":true,"expectedRevision":0})),
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(save.clone()),
+            false
+        )
+        .await
+        .1["data"]["revision"],
+        1
+    );
+    assert!(
+        !providers::qr_supported(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        request(router.clone(), Some(&token), "PUT", Some(save), false)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let (status, view) = request(router.clone(), Some(&token), "GET", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["data"]["configured"], true);
+    assert!(view["data"].get("context").is_none());
+    // The running worker must observe DB enable without an AppState restart.
+    mock.lock().await.xunlei_poll_mode = "pending".into();
+    let running = state.clone();
+    let worker = tokio::spawn(async move { super::worker(running).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let enable = json!({"enabled":true,"expectedRevision":1});
+    assert_eq!(
+        request(router.clone(), Some(&token), "PUT", Some(enable), false)
+            .await
+            .1["data"]["revision"],
+        2
+    );
+    assert!(
+        providers::qr_supported(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+    );
+    let login = start_login(&state, Provider::Xunlei, actor, "connect", 0)
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(login["id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE cloud_login_sessions SET next_poll_at=now() WHERE id=$1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while mock.lock().await.xunlei_polls == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("worker did not observe DB enable without restart");
+    // Settings must not disconnect an existing binding or mutate its revisions.
+    sqlx::query("UPDATE cloud_account_settings SET credential='fixture-connected-credential',auth_status='ready',binding_epoch=7,token_revision=9,next_check_at=now()+interval '1 day' WHERE provider='xunlei'").execute(&pool).await.unwrap();
+    let (status, view) = request(
+        router.clone(),
+        Some(&token),
+        "PUT",
+        Some(json!({"enabled":false,"expectedRevision":2})),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["data"]["configured"], true);
+    assert_eq!(
+        session(&state, Provider::Xunlei, id, actor).await.unwrap()["status"],
+        "cancelled"
+    );
+    assert!(
+        !providers::qr_supported(&state, Provider::Xunlei)
+            .await
+            .unwrap()
+    );
+    let context: Option<String> =
+        sqlx::query_scalar("SELECT context_json FROM cloud_login_sessions WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(context.is_none());
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(json!({"enabled":false,"expectedRevision":3,"clearContext":true})),
+            false
+        )
+        .await
+        .1["data"]["configured"],
+        false
+    );
+    assert_eq!(
+        request(
+            router.clone(),
+            Some(&token),
+            "PUT",
+            Some(json!({"enabled":true,"expectedRevision":4})),
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let binding = stored(&state, Provider::Xunlei).await.unwrap().unwrap();
+    assert_eq!(binding.credential, "fixture-connected-credential");
+    assert_eq!(binding.auth_status, "ready");
+    assert_eq!(binding.binding_epoch, 7);
+    assert_eq!(binding.token_revision, 9);
+    state.shutdown.cancel();
+    worker.await.unwrap();
+    sqlx::query("DELETE FROM cloud_login_sessions WHERE actor_id=$1")
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM cloud_account_settings WHERE provider='xunlei'")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM users WHERE id=$1")
         .bind(actor)
         .execute(&pool)

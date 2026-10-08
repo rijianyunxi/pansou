@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {accountStatus,accountCheckResult,authReason,loginRequest,rebindQuestion,sessionExpired,sessionActive,usableAccount,safeQrImage} from '../lib/cloudAccounts.ts';
+import {readFileSync} from 'node:fs';
+import {accountStatus,accountCheckResult,authReason,loginRequest,rebindQuestion,sessionExpired,sessionActive,usableAccount,safeQrImage,scanInstructions,qrSettingsPayload} from '../lib/cloudAccounts.ts';
 test('verification requires a ready account, not just a successful HTTP response or stored credential',()=>{
   assert.deepEqual(accountCheckResult({configured:true,status:'ready'}),{state:'success',message:'账号验证通过'});
   for(const status of ['unverified','degraded','reauthorization_required','disconnected']) {
@@ -58,4 +59,32 @@ test('a credential that was never identity-verified must ask to rebind instead o
   assert.match(rebindQuestion(false),/不会.*清理/);
   assert.doesNotMatch(rebindQuestion(false),/阿里存储空间/);
   assert.match(rebindQuestion(true),/阿里存储空间/);
+});
+
+test('Xunlei scan instructions distinguish experimental integration and safe recovery',()=>{
+  assert.match(scanInstructions('xunlei'),/迅雷官方客户端/);
+  assert.match(scanInstructions('xunlei'),/实验接入/);
+  assert.match(authReason('token_exchange:client_configuration_required'),/客户端与设备配置/);
+  assert.match(authReason('token_exchange:verification_required'),/官方网站/);
+  assert.match(authReason('token_exchange:authorization_exchange_uncertain'),/重新生成二维码/);
+  assert.match(scanInstructions('quark'),/夸克 App 的网盘扫一扫/);
+});
+
+test('QR settings preserve secrets on blank input and require explicit clear or replacement',()=>{
+  const saved={enabled:false,configured:true,revision:4,experimental:true};
+  assert.deepEqual(qrSettingsPayload(saved,true,''),{enabled:true,expectedRevision:4});
+  assert.deepEqual(qrSettingsPayload(saved,false,'',true),{enabled:false,expectedRevision:4,clearContext:true});
+  assert.deepEqual(qrSettingsPayload(saved,true,'{"client_id":"fixture"}'),{enabled:true,expectedRevision:4,context:{client_id:'fixture'}});
+  assert.throws(()=>qrSettingsPayload({...saved,configured:false},true,''),/填写/);
+  assert.throws(()=>qrSettingsPayload(saved,true,'',true),/关闭/);
+  assert.throws(()=>qrSettingsPayload(saved,false,'not-json'),/有效的 JSON/);
+  assert.throws(()=>qrSettingsPayload(saved,false,'[]'),/JSON 对象/);
+  assert.throws(()=>qrSettingsPayload(saved,false,'"TOP_SECRET"'),/JSON 对象/);
+  assert.throws(()=>qrSettingsPayload(saved,false,' '.repeat(65536)+'{}'),/64 KiB/);
+});
+
+test('Xunlei business QR settings do not use process environment configuration',()=>{
+  for(const file of ['../../.env.example','../../src/main.rs','../../src/app.rs','../../src/cloud_auth/providers/xunlei.rs']) {
+    assert.doesNotMatch(readFileSync(new URL(file,import.meta.url),'utf8'),/PANSOU_XUNLEI_QR_(?:ENABLED|CONTEXT_FILE)/);
+  }
 });

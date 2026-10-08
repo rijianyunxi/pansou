@@ -341,3 +341,31 @@ async fn guangya_replies_without_a_business_code_still_need_a_payload() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn xunlei_captcha_rejections_are_not_misreported_as_retryable_network_failures() {
+    async fn captcha(State(status): State<u16>) -> impl IntoResponse {
+        (
+            axum::http::StatusCode::from_u16(status).unwrap(),
+            Json(json!({"error":"captcha_invalid"})),
+        )
+    }
+    for status in [200, 401, 403] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let router = Router::new().fallback(any(captcha)).with_state(status);
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut drive = provider(Provider::Xunlei);
+        drive.base = base;
+        let error = drive
+            .call(Method::GET, "drive/v1/files", &[], None, None, false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Verification);
+        assert!(matches!(
+            error.api(),
+            crate::error::ApiError::CloudAuthRequired(_)
+        ));
+        server.abort();
+    }
+}

@@ -179,6 +179,22 @@ impl Extended {
         if !value.is_object() {
             return Err(wire.error(ErrorKind::Upstream, "网盘响应格式异常"));
         }
+        if wire.provider == Provider::Xunlei {
+            match value["error"].as_str().unwrap_or("") {
+                "captcha_invalid" | "captcha_required" | "verification_required" => {
+                    wire.auth_rejected(false).await;
+                    return Err(wire.error(
+                        ErrorKind::Verification,
+                        "迅雷要求更新设备验证，请在官方客户端完成验证或高级导入完整凭证",
+                    ));
+                }
+                "invalid_token" | "invalid_grant" | "unauthenticated" => {
+                    wire.auth_rejected(true).await;
+                    return Err(wire.error(ErrorKind::Login, "迅雷访问令牌已失效，请重新连接"));
+                }
+                _ => {}
+            }
+        }
         if let Some(code) = value.get("code") {
             let code = scalar(code);
             if code.is_empty() {

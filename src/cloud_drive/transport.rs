@@ -267,9 +267,35 @@ impl Wire {
             ));
         }
         if status.as_u16() == 429 {
-            return Err(self.error(ErrorKind::RateLimit, "网盘限制操作频率，请稍后再试"));
+            let mut error = self.error(ErrorKind::RateLimit, "网盘限制操作频率，请稍后再试");
+            if self.provider == Provider::Xunlei {
+                error.retry_after_seconds = crate::cloud_auth::xunlei_retry_after(
+                    response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok()),
+                    chrono::Utc::now(),
+                );
+            }
+            return Err(error);
         }
         if status.as_u16() == 401 || status.as_u16() == 403 {
+            if self.provider == Provider::Xunlei
+                && serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .is_some_and(|v| {
+                        matches!(
+                            v["error"].as_str(),
+                            Some("captcha_invalid" | "captcha_required" | "verification_required")
+                        )
+                    })
+            {
+                self.auth_rejected(false).await;
+                return Err(self.error(
+                    ErrorKind::Verification,
+                    "迅雷要求更新设备验证，请在官方客户端完成验证或高级导入完整凭证",
+                ));
+            }
             self.auth_rejected(status.as_u16() == 401).await;
             return Err(self.error(ErrorKind::Login, "网盘拒绝访问，请检查登录凭据或账号权限"));
         }
